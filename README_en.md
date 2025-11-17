@@ -3,7 +3,7 @@
 
 # 🌟 SAG
 
-**SQL-Driven RAG Engine · Automatically Build Knowledge Graph at Runtime**
+**SQL-Driven RAG Engine · Automatically Build Knowledge Graph During Querying**
 
 *The SQL-Driven Smart Auto Graph Engine*
 
@@ -30,7 +30,7 @@ https://github.com/user-attachments/assets/e03567a5-2cc4-4d09-aab9-01277d8d4457
 
 ## 🌟 What is SAG?
 
-**SAG** is a SQL-driven next-generation RAG engine that can automatically build knowledge graphs at runtime
+**SAG** is a SQL-driven next-generation RAG engine that can automatically build knowledge graphs during querying
 
   - 🧩 Automatically decompose raw text into "**semantic atomic events**"  
   - 🧑‍💻 Extract multi-dimensional "**natural language vectors (multi-dimensional entities)**" for each event  
@@ -501,5 +501,6 @@ Made with ❤️ by [Zleap Team](https://zleap.ai)
 </div>
 
 ---
+
 
 
