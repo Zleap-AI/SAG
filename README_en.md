@@ -474,7 +474,7 @@ git push origin feature/amazing-feature
 ## 🙏 Acknowledgments
 
 - Thanks to all contributors
-- Special thanks to 302.AI for computing power support
+- Special thanks to [302.AI](https://302.ai) for computing power support
 
 ---
 
@@ -501,6 +501,7 @@ Made with ❤️ by [Zleap Team](https://zleap.ai)
 </div>
 
 ---
+
 
 
 
