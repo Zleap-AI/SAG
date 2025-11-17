@@ -30,6 +30,9 @@ https://github.com/user-attachments/assets/e03567a5-2cc4-4d09-aab9-01277d8d4457
 
 ## 🌟 What is SAG?
 
+> [Introduction to Basic Principles](https://medium.com/@zleapai/the-post-rag-era-is-here-sag-redefines-ai-search-3c307c786e1e)
+
+
 **SAG** is a SQL-driven next-generation RAG engine that can automatically build knowledge graphs during querying
 
   - 🧩 Automatically decompose raw text into "**semantic atomic events**"  
@@ -501,6 +504,7 @@ Made with ❤️ by [Zleap Team](https://zleap.ai)
 </div>
 
 ---
+
 
 
 
