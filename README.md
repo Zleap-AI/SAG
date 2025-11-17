@@ -29,6 +29,8 @@ https://github.com/user-attachments/assets/e03567a5-2cc4-4d09-aab9-01277d8d4457
 
 ## 🌟 SAG 是什么？
 
+> [入门版原理介绍](https://mp.weixin.qq.com/s/dmrLphM3bLBC2Nj1xsfdHg)
+
 **SAG**是SQL驱动的新一代 RAG 引擎，可以在查询时自动构建知识图谱
 
   - 把原始文本自动拆解成“**语义原子事件**”  
