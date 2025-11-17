@@ -1,0 +1,163 @@
+# version: '3.8'
+
+services:
+  # 数据库服务
+  mysql:
+    image: mysql:8.0
+    container_name: sag_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: sag_root
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-sag}
+      MYSQL_USER: sag
+      MYSQL_PASSWORD: sag_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --max-allowed-packet=64M
+      --innodb-buffer-pool-size=512M
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sag_network
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: sag_elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test:
+        ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - sag_network
+
+  # 后端 API 服务
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: sag_api
+    environment:
+      # 数据库配置（连接宿主机服务）
+      - MYSQL_HOST=host.docker.internal
+      - MYSQL_PORT=${MYSQL_PORT:-3306}
+      - MYSQL_USER=${MYSQL_USER:-sag}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-sag}
+      
+      # Elasticsearch 配置（连接宿主机服务）
+      - ES_HOST=host.docker.internal
+      - ES_PORT=${ES_PORT:-9200}
+      
+      # LLM 配置
+      - LLM_MODEL=${LLM_MODEL:-sophnet/Qwen3-30B-A3B-Thinking-2507}
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_API_KEY=${LLM_API_KEY}
+      
+      # Embedding 配置
+      - EMBEDDING_MODEL_NAME=${EMBEDDING_MODEL_NAME:-Qwen/Qwen3-Embedding-0.6B}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
+      
+      # 系统配置
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - API_WORKERS=${API_WORKERS:-4}  # 服务器生产环境默认 4 workers
+    expose:
+      - "8000:8000"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini
+    # 🆕 添加启动命令，先迁移数据库再初始化（生产环境）
+    command: >
+      sh -c "
+        echo '🔧 开始初始化...' &&
+        echo '⏳ 等待数据库就绪...' &&
+        sleep 5 &&
+        echo '🔄 执行数据库迁移 (Alembic)...' &&
+        uv run alembic upgrade head &&
+        echo '✅ 数据库迁移完成' &&
+        echo '📊 插入默认实体类型...' &&
+        uv run python scripts/init_database.py &&
+        echo '🔍 初始化 Elasticsearch...' &&
+        uv run python scripts/init_elasticsearch.py &&
+        echo '🌐 启动 API 服务 (Workers: $${API_WORKERS:-4})...' &&
+        uv run python -m sag.api.main
+      "
+    depends_on:
+      mysql:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - sag_network
+    restart: unless-stopped
+
+  # 前端 Web 服务
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: sag_web
+    expose:
+      - "3000"
+    depends_on:
+      - api
+    networks:
+      - sag_network
+    restart: unless-stopped
+
+  # Nginx 反向代理（HTTP Only）
+  nginx:
+    image: nginx:alpine
+    container_name: sag_nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - web
+      - api
+    networks:
+      - sag_network
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--quiet",
+          "--tries=1",
+          "--spider",
+          "http://localhost/health",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  mysql_data:
+    driver: local
+  es_data:
+    driver: local
+
+networks:
+  sag_network:
+    driver: bridge

@@ -1,0 +1,542 @@
+@import "tailwindcss";
+
+/* === 流光动画 === */
+@keyframes shimmer {
+  0% {
+    background-position: -200% center;
+  }
+  100% {
+    background-position: 200% center;
+  }
+}
+
+/* === 脉冲一次动画（用于高亮片段） - 优化版 === */
+@keyframes pulse-once {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  25% {
+    opacity: 0.8;
+    transform: scale(1.01);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.02);
+  }
+  75% {
+    opacity: 0.8;
+    transform: scale(1.01);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-pulse-once {
+  animation: pulse-once 1.5s ease-in-out 1;
+  /* 确保动画在滚动完成后触发 */
+  animation-delay: 0.3s;
+}
+
+/* 高亮渐入动画 - 用于突出显示新高亮的元素 */
+@keyframes highlight-fade-in {
+  0% {
+    background-color: rgba(236, 253, 245, 0);
+    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0);
+  }
+  50% {
+    background-color: rgba(236, 253, 245, 0.95);
+    box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.3);
+  }
+  100% {
+    background-color: rgba(236, 253, 245, 0.8);
+    box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.4);
+  }
+}
+
+.animate-highlight-fade-in {
+  animation: highlight-fade-in 0.6s ease-out forwards;
+}
+
+@keyframes shimmer-fade {
+  /* 0-70%: 保持浅黑色 */
+  0%, 70% {
+    opacity: 0;
+  }
+  /* 70-75%: 淡入流光 */
+  75% {
+    opacity: 1;
+  }
+  /* 75-95%: 显示流光 */
+  95% {
+    opacity: 1;
+  }
+  /* 95-100%: 淡出流光 */
+  100% {
+    opacity: 0;
+  }
+}
+
+.shimmer-text {
+  position: relative;
+  color: rgb(107, 114, 128); /* gray-500 默认颜色 */
+  display: inline-block;
+}
+
+.shimmer-text::before {
+  content: attr(data-text);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background-image: linear-gradient(
+    90deg,
+    rgb(251, 146, 60) 0%,      /* orange-400 */
+    rgb(236, 72, 153) 20%,     /* pink-500 */
+    rgb(168, 85, 247) 40%,     /* purple-500 */
+    rgb(59, 130, 246) 60%,     /* blue-500 */
+    rgb(34, 197, 94) 80%,      /* green-500 */
+    rgb(251, 146, 60) 100%     /* orange-400 回到起点 */
+  );
+  background-size: 200% auto;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation:
+    shimmer 2s linear infinite,
+    shimmer-fade 8s ease-in-out infinite;
+  opacity: 0;
+  pointer-events: none;
+}
+
+:root {
+  /* === 主色调配置（可快速修改） === */
+  --primary: 217 91% 60%;           /* 蓝色主题 - macOS 风格 */
+  --primary-foreground: 0 0% 100%;  /* 主色前景色 */
+  
+  /* === 辅助色 === */
+  --secondary: 220 14.3% 95.9%;
+  --secondary-foreground: 220.9 39.3% 11%;
+  --accent: 217 91% 95%;            /* 蓝色调的强调色 */
+  --accent-foreground: 217 91% 60%;
+  
+  /* === 背景和文字 === */
+  --background: 0 0% 98%;           /* 浅灰背景 - macOS 风格 */
+  --foreground: 222.2 84% 4.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 222.2 84% 4.9%;
+  
+  /* === 边框和输入 === */
+  --border: 220 13% 91%;            /* 更柔和的边框 */
+  --input: 220 13% 91%;
+  --ring: 217 91% 60%;              /* 蓝色焦点环 */
+  
+  /* === 其他 === */
+  --muted: 210 40% 96.1%;
+  --muted-foreground: 215.4 16.3% 46.9%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 210 40% 98%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222.2 84% 4.9%;
+  --radius: 0.75rem;                /* 更大的圆角 - macOS 风格 */
+  
+  /* === 图表颜色 === */
+  --chart-1: 12 76% 61%;
+  --chart-2: 173 58% 39%;
+  --chart-3: 197 37% 24%;
+  --chart-4: 43 74% 66%;
+  --chart-5: 27 87% 67%;
+  
+  /* === 自定义动画速度 === */
+  --transition-speed: 0.2s;         /* 更快的响应 - macOS 风格 */
+  --animation-duration: 0.4s;
+  
+  /* === macOS 风格阴影 === */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+}
+
+.dark {
+  --primary: 262 83% 58%;
+  --primary-foreground: 0 0% 100%;
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --card: 222.2 84% 4.9%;
+  --card-foreground: 210 40% 98%;
+  --border: 217.2 32.6% 17.5%;
+  --input: 217.2 32.6% 17.5%;
+  --ring: 262 83% 58%;
+  --accent: 262 80% 15%;
+  --accent-foreground: 262 80% 95%;
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 210 40% 98%;
+  --popover: 222.2 84% 4.9%;
+  --popover-foreground: 210 40% 98%;
+  --chart-1: 220 70% 50%;
+  --chart-2: 160 60% 45%;
+  --chart-3: 30 80% 55%;
+  --chart-4: 280 65% 60%;
+  --chart-5: 340 75% 55%;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-feature-settings: "rlig" 1, "calt" 1;
+  transition: background-color var(--transition-speed) ease;
+}
+
+/* ========== 全局动画类 ========== */
+
+/* 淡入淡出 */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeInDown {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 缩放动画 */
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 滑动动画 */
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Radix Dialog/Sheet 滑动动画 - 从右侧 */
+@keyframes slideInFromRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideOutToRight {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* 应用动画类 */
+.animate-fade-in {
+  animation: fadeIn var(--animation-duration) ease-out;
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp var(--animation-duration) ease-out;
+}
+
+.animate-fade-in-down {
+  animation: fadeInDown var(--animation-duration) ease-out;
+}
+
+.animate-scale-in {
+  animation: scaleIn var(--animation-duration) cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.animate-slide-in-left {
+  animation: slideInLeft var(--animation-duration) ease-out;
+}
+
+.animate-slide-in-right {
+  animation: slideInRight var(--animation-duration) ease-out;
+}
+
+/* ========== 交互状态 ========== */
+
+/* 按钮悬停效果 - macOS 风格 */
+.btn-hover {
+  transition: all var(--transition-speed) cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.btn-hover:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.12), 0 2px 6px -2px rgba(0, 0, 0, 0.08);
+}
+
+.btn-hover:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.1);
+}
+
+/* 卡片悬停效果 - macOS 风格 */
+.card-hover {
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 24px -4px rgba(0, 0, 0, 0.08), 0 6px 12px -2px rgba(0, 0, 0, 0.04);
+}
+
+/* 链接悬停效果 */
+.link-hover {
+  position: relative;
+  transition: color var(--transition-speed) ease;
+}
+
+.link-hover::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  width: 0;
+  height: 2px;
+  background-color: hsl(var(--primary));
+  transition: width var(--transition-speed) ease;
+}
+
+.link-hover:hover::after {
+  width: 100%;
+}
+
+/* ========== 页面过渡动画 ========== */
+.page-enter {
+  animation: fadeInUp 0.5s ease-out;
+}
+
+/* ========== 骨架屏动画 ========== */
+@keyframes shimmer {
+  0% {
+    background-position: -200px 0;
+  }
+  100% {
+    background-position: calc(200px + 100%) 0;
+  }
+}
+
+.shimmer {
+  animation: shimmer 2s infinite;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+  background-size: 200px 100%;
+}
+
+/* ========== 加载动画 ========== */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* ========== 搜索框动画 ========== */
+.search-glow {
+  box-shadow: 0 0 0 1px hsl(var(--primary)), 0 0 20px hsl(var(--primary) / 0.3);
+  transition: all var(--transition-speed) ease;
+}
+
+/* ========== 渐变动画 ========== */
+@keyframes gradient {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+.animate-gradient {
+  background-size: 200% 200%;
+  animation: gradient 3s ease infinite;
+}
+
+/* ========== 数据流动画 ========== */
+.data-flow {
+  position: relative;
+  overflow: hidden;
+}
+
+.data-flow::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, hsl(var(--primary) / 0.15), transparent);
+  animation: sagMove 2.5s ease-in-out infinite;
+}
+
+@keyframes sagMove {
+  0% { left: -100%; }
+  100% { left: 100%; }
+}
+
+/* 思维活跃动画 */
+.thought-active {
+  position: relative;
+  overflow: hidden;
+}
+
+.thought-active::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, hsl(var(--accent) / 0.2), transparent);
+  animation: thoughtMove 2.5s ease-in-out infinite;
+  animation-delay: 0.3s;
+}
+
+@keyframes thoughtMove {
+  0% { left: -100%; }
+  100% { left: 100%; }
+}
+
+/* ========== 脉冲动画 ========== */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* ========== 弹跳动画 ========== */
+@keyframes bounce {
+  0%, 100% {
+    transform: translateY(-25%);
+    animation-timing-function: cubic-bezier(0.8, 0, 1, 1);
+  }
+  50% {
+    transform: translateY(0);
+    animation-timing-function: cubic-bezier(0, 0, 0.2, 1);
+  }
+}
+
+.animate-bounce {
+  animation: bounce 1s infinite;
+}
+
+/* ========== 隐藏滚动条 ========== */
+.scrollbar-hide {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;  /* Chrome, Safari and Opera */
+}
+
+/* ========== Radix Dialog/Sheet 动画支持 ========== */
+/* 从右侧滑入的抽屉动画 */
+[data-state="open"][data-side="right"] {
+  animation: slideInFromRight 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-state="closed"][data-side="right"] {
+  animation: slideOutToRight 0.2s cubic-bezier(0.4, 0, 1, 1);
+}
+
+/* Radix Overlay 渐变动画 */
+[data-state="open"].radix-overlay {
+  animation: fadeIn 0.2s ease-out;
+}
+
+[data-state="closed"].radix-overlay {
+  animation: fadeOut 0.15s ease-in;
+}
+
+@keyframes fadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+/* ========== 细滚动条样式 ========== */
+.scrollbar-thin {
+  scrollbar-width: thin;  /* Firefox */
+  scrollbar-color: #cbd5e0 #f7fafc;  /* thumb track */
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: #f7fafc;
+  border-radius: 10px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #cbd5e0;
+  border-radius: 10px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: #a0aec0;
+}
+

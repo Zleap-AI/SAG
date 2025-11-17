@@ -1,0 +1,59 @@
+# Docker Compose - API Only Mode
+# 只启动 API 服务，连接宿主机的数据库等服务
+# 使用方式：docker compose -f docker-compose.api.yml up -d
+# 注意：数据库迁移由主服务管理，此配置不执行迁移
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: sag_api
+    environment:
+      # 数据库配置（连接宿主机服务）
+      - MYSQL_HOST=host.docker.internal
+      - MYSQL_PORT=${MYSQL_PORT:-3306}
+      - MYSQL_USER=${MYSQL_USER:-sag}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-sag}
+      
+      # Elasticsearch 配置（连接宿主机服务）
+      - ES_HOST=host.docker.internal
+      - ES_PORT=${ES_PORT:-9200}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      
+      # LLM 配置
+      - LLM_MODEL=${LLM_MODEL:-sophnet/Qwen3-30B-A3B-Thinking-2507}
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_API_KEY=${LLM_API_KEY}
+      
+      # Embedding 配置
+      - EMBEDDING_MODEL_NAME=${EMBEDDING_MODEL_NAME:-Qwen/Qwen3-Embedding-0.6B}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
+      
+      # 系统配置
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - API_WORKERS=${API_WORKERS:-1}
+    ports:
+      - "8600:8000"  # API 端口映射
+    volumes:
+      - ./uploads:/app/uploads
+    # 映射 host.docker.internal 到宿主机网关
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # 执行初始化并启动 API
+    command: >
+      sh -c "
+        echo '🔧 开始初始化...' &&
+        echo '📊 初始化数据库...' &&
+        uv run python scripts/init_database.py &&
+        echo '🔍 初始化 Elasticsearch...' &&
+        uv run python scripts/init_elasticsearch.py &&
+        echo '🌐 启动 API 服务...' &&
+        echo '📚 API Docs: http://localhost:8600/api/docs' &&
+        uv run python -m sag.api.main
+      "
+    restart: unless-stopped
+

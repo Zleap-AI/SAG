@@ -1,0 +1,17 @@
+# SSL 证书文件 - 不应提交到 Git
+# SSL certificate files - should not be committed to Git
+
+# 证书和私钥
+*.pem
+*.crt
+*.key
+*.cer
+*.p12
+*.pfx
+
+# Let's Encrypt 目录
+letsencrypt/
+
+# 允许说明文件
+!README.md
+!.gitignore

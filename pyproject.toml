@@ -1,0 +1,185 @@
+[project]
+name = "sag"
+version = "0.1.0"
+description = "数据流智能引擎 - AI驱动的数据处理与聚合检索"
+authors = [
+    {name = "Zleap Team", email = "contact@zleap.ai"}
+]
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+keywords = ["ai", "nlp", "event-extraction", "knowledge-management", "rag"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "aiomysql>=0.2.0",
+    "cryptography>=41.0.0", # Required for MySQL sha256_password/caching_sha2_password auth
+    "redis>=5.0.0",
+    "aiohttp>=3.9.0",
+    "openai>=1.6.0",
+    "anthropic>=0.7.0",
+    "tiktoken>=0.5.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.1",
+    "click>=8.1.0",
+    "rich>=13.7.0",
+    "elasticsearch==8.19.1",
+    "elasticsearch-dsl==8.18.0",
+    "sumy>=0.11.0",
+    "numpy>=2.3.4",
+    "jieba>=0.42.1",
+    "pytest>=8.4.2",
+    "pytest-cov>=7.0.0",
+    "pytest-asyncio>=1.2.0",
+    "psutil>=7.1.1",
+    "aiofiles>=25.1.0",
+    # FastAPI for API server
+    "fastapi>=0.108.0",
+    "uvicorn[standard]>=0.25.0",
+    "python-multipart>=0.0.6", # for file uploads
+    "pandas>=2.3.3",
+    "alembic>=1.17.0",
+    "spacy>=3.8.7",
+    "rank-bm25>=0.2.2",
+    "ragas>=0.3.1",
+    "datasets>=4.3.0",
+    "pillow>=12.0.0",
+    "markitdown[all]>=0.0.1a4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "black>=23.12.0",
+    "ruff>=0.1.9",
+    "mypy>=1.7.0",
+    "pre-commit>=3.6.0",
+    "ipython>=8.18.0",
+    "sumy==0.11.0",
+    "numpy==2.3.4",
+    "jieba==0.42.1"
+]
+
+api = [
+    "fastapi>=0.108.0",
+    "uvicorn[standard]>=0.25.0",
+]
+
+[project.scripts]
+sag = "sag.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.ruff]
+line-length = 100
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by black)
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "aiomysql.*",
+    "elasticsearch.*",
+    "redis.*",
+    "tiktoken.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "search_tests: marks tests as search module tests",
+]
+
+[tool.coverage.run]
+source = ["sag"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+
+[tool.pylint.messages_control]
+disable = [
+    "logging-fstring-interpolation",  # 允许在日志中使用 f-string
+    "too-few-public-methods",         # 允许单方法类（如 EventExtractor, EventProcessor）
+    "broad-exception-caught",         # 允许捕获通用异常（批处理容错）
+    "no-member",                      # Pydantic Field(default_factory) 的误报
+]
+
+[tool.pylint.format]
+max-line-length = 100  # 与 black/ruff 保持一致
+
+[tool.pylint.typecheck]
+# 忽略 Pydantic 模型的动态属性
+generated-members = ["pydantic.*"]
+ignored-classes = ["pydantic.fields.FieldInfo"]

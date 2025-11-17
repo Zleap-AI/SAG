@@ -1,0 +1,47 @@
+# 依赖和缓存
+node_modules
+.next
+.swc
+
+# 环境变量文件（不要打包到镜像中）
+.env
+.env.local
+.env.development
+.env.development.local
+.env.test
+.env.test.local
+.env.production.local
+.env*.local
+
+# Git
+.git
+.gitignore
+
+# 日志
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 编辑器
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# 测试
+coverage
+.nyc_output
+
+# 其他
+.DS_Store
+Thumbs.db
+*.md
+README.md
+
+# 上传文件
+uploads
+
+# 开发工具
+.eslintcache
+

@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+ENV/
+
+# Node
+node_modules/
+.next/
+out/
+.turbo/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project
+.git/
+# .gitignore
+docs/
+tests/
+examples/
+uploads/
+*.log
+
+# 保留 NLTK 数据（用于 Docker 构建）
+!nltk_data/
+
+# Environment
+.env
+.env.local
+.env*.local
+

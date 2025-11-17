@@ -1,0 +1,969 @@
+'use client'
+
+import { useState, useEffect } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { X, ChevronDown, Database, Filter } from 'lucide-react'
+import { EntityType, ValueConstraints } from '@/types'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import { Switch } from '@/components/ui/switch'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  SelectGroup,
+  SelectLabel,
+} from '@/components/ui/select'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { DateTimePicker } from '@/components/ui/datetime-picker'
+
+interface EntityTypeDialogProps {
+  open: boolean
+  onClose: () => void
+  onSubmit: (data: EntityTypeFormData) => void
+  entityType?: EntityType | null
+  sources?: Array<{ id: string; name: string }>
+  articles?: Array<{ id: string; title: string; source_config_id: string }>  // 🆕 文档列表
+  isLoading?: boolean
+}
+
+export interface EntityTypeFormData {
+  type: string
+  name: string
+  description: string
+  weight: number
+  similarity_threshold: number
+  scope: 'global' | 'source' | 'article'  // 🆕 添加 article 范围
+  source_config_id?: string
+  article_id?: string  // 🆕 文档ID（仅 scope=article 时有值）
+  // 🆕 值类型化配置字段
+  value_format?: string
+  value_constraints?: ValueConstraints
+}
+
+export function EntityTypeDialog({
+  open,
+  onClose,
+  onSubmit,
+  entityType,
+  sources = [],
+  articles = [],  // 🆕 文档列表
+  isLoading = false,
+}: EntityTypeDialogProps) {
+  const isEditMode = !!entityType
+
+  const [formData, setFormData] = useState<EntityTypeFormData>({
+    type: '',
+    name: '',
+    description: '',
+    weight: 1.0,
+    similarity_threshold: 0.8,
+    scope: 'global',
+    source_config_id: undefined,
+    article_id: undefined,
+    value_format: undefined,
+    value_constraints: undefined,
+  })
+  
+  // 🆕 统一的范围选择值（用于树形下拉框）
+  const [scopeValue, setScopeValue] = useState<string>('global')
+
+  const [isValueTypeOpen, setIsValueTypeOpen] = useState(false)
+
+  const [errors, setErrors] = useState<Partial<Record<keyof EntityTypeFormData, string>>>({})
+
+  // 重置或填充表单
+  useEffect(() => {
+    if (open) {
+      if (entityType) {
+        // 如果 value_constraints 是字符串，需要解析
+        let parsedConstraints = entityType.value_constraints
+        if (typeof entityType.value_constraints === 'string') {
+          try {
+            parsedConstraints = JSON.parse(entityType.value_constraints)
+          } catch (e) {
+            console.error('Failed to parse value_constraints:', e)
+            parsedConstraints = undefined
+          }
+        }
+        
+        const scope = entityType.scope || (entityType.article_id ? 'article' : entityType.source_config_id ? 'source' : 'global')
+        
+        setFormData({
+          type: entityType.type,
+          name: entityType.name,
+          description: entityType.description || '',
+          weight: Number(entityType.weight),
+          similarity_threshold: Number(entityType.similarity_threshold),
+          scope: scope,
+          source_config_id: entityType.source_config_id || undefined,
+          article_id: entityType.article_id || undefined,
+          value_format: entityType.value_format || undefined,
+          value_constraints: parsedConstraints || undefined,
+        })
+        
+        // 设置树形下拉框的值
+        if (scope === 'article' && entityType.article_id) {
+          setScopeValue(`article:${entityType.article_id}`)
+        } else if (scope === 'source' && entityType.source_config_id) {
+          setScopeValue(`source:${entityType.source_config_id}`)
+        } else {
+          setScopeValue('global')
+        }
+        
+        // 如果有值类型配置，则展开折叠面板
+        setIsValueTypeOpen(!!parsedConstraints)
+      } else {
+        // 创建模式：初始化空表单
+        setFormData({
+          type: '',
+          name: '',
+          description: '',
+          weight: 1.0,
+          similarity_threshold: 0.8,
+          scope: 'global',
+          source_config_id: undefined,
+          article_id: undefined,
+          value_format: undefined,
+          value_constraints: undefined,
+        })
+        setScopeValue('global')
+        setIsValueTypeOpen(false)
+      }
+      setErrors({})
+    } else {
+      // 🔥 关键修复：弹框关闭时重置所有状态
+      setFormData({
+        type: '',
+        name: '',
+        description: '',
+        weight: 1.0,
+        similarity_threshold: 0.8,
+        scope: 'global',
+        source_config_id: undefined,
+        article_id: undefined,
+        value_format: undefined,
+        value_constraints: undefined,
+      })
+      setScopeValue('global')
+      setIsValueTypeOpen(false)
+      setErrors({})
+    }
+  }, [open, entityType])
+
+  const validateForm = (): boolean => {
+    const newErrors: Partial<Record<keyof EntityTypeFormData, string>> = {}
+
+    if (!formData.type.trim()) {
+      newErrors.type = '请输入类型标识符'
+    } else if (!/^[a-z][a-z0-9_]*$/.test(formData.type)) {
+      newErrors.type = '只能包含小写字母、数字和下划线，且必须以字母开头'
+    }
+
+    if (!formData.name.trim()) {
+      newErrors.name = '请输入类型名称'
+    }
+
+    if (formData.weight < 0 || formData.weight > 9.99) {
+      newErrors.weight = '权重范围：0.0 - 9.99'
+    }
+
+    if (formData.similarity_threshold < 0 || formData.similarity_threshold > 1) {
+      newErrors.similarity_threshold = '阈值范围：0.0 - 1.0'
+    }
+
+    if (formData.scope === 'source' && !formData.source_config_id) {
+      newErrors.source_config_id = '请选择信息源'
+    }
+
+    if (formData.scope === 'article' && !formData.article_id) {
+      newErrors.article_id = '请选择文档'
+    }
+
+    // 🆕 验证值类型配置
+    if (formData.value_constraints) {
+      // 枚举类型必须有至少一个枚举值
+      if (formData.value_constraints.type === 'enum') {
+        if (!formData.value_constraints.enum_values || formData.value_constraints.enum_values.length === 0) {
+          newErrors.value_constraints = '枚举类型至少需要一个可选值'
+        }
+      }
+
+      // 数值类型验证范围
+      if (['int', 'float'].includes(formData.value_constraints.type)) {
+        const min = formData.value_constraints.min
+        const max = formData.value_constraints.max
+        if (min !== undefined && max !== undefined && min > max) {
+          newErrors.value_constraints = '最小值不能大于最大值'
+        }
+      }
+    }
+
+    setErrors(newErrors)
+    return Object.keys(newErrors).length === 0
+  }
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (validateForm()) {
+      onSubmit(formData)
+    }
+  }
+
+  const handleChange = (field: keyof EntityTypeFormData, value: any) => {
+    setFormData((prev) => ({ ...prev, [field]: value }))
+    // 清除该字段的错误
+    if (errors[field]) {
+      setErrors((prev) => {
+        const newErrors = { ...prev }
+        delete newErrors[field]
+        return newErrors
+      })
+    }
+  }
+
+  if (!open) return null
+
+  return (
+    <AnimatePresence>
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        {/* 背景遮罩 */}
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2 }}
+          onClick={onClose}
+          className="absolute inset-0 bg-black/20 backdrop-blur-md"
+        />
+
+        {/* 对话框内容 */}
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: 20 }}
+          transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+          className="relative w-full max-w-2xl bg-white rounded-2xl shadow-2xl max-h-[85vh] overflow-hidden flex flex-col"
+        >
+          {/* 头部 */}
+          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+            <h2 className="text-lg font-semibold text-gray-800">
+              {isEditMode ? '编辑数据属性' : '创建数据属性'}
+            </h2>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+            >
+              <X className="w-5 h-5 text-gray-500" />
+            </button>
+          </div>
+
+          {/* 表单 */}
+          <form onSubmit={handleSubmit} className="overflow-y-auto scrollbar-thin">
+            <div className="px-6 py-5 space-y-5">
+            {/* 应用范围（仅创建时显示） */}
+            {!isEditMode && (
+              <div className="space-y-3">
+                <Label className="text-sm font-medium text-gray-800">
+                  应用范围 <span className="text-red-500">*</span>
+                </Label>
+                <RadioGroup
+                  value={formData.scope}
+                  onValueChange={(value) => {
+                    handleChange('scope', value)
+                    if (value === 'global') {
+                      handleChange('source_config_id', undefined)
+                      handleChange('article_id', undefined)
+                    } else if (value === 'source') {
+                      handleChange('article_id', undefined)
+                    }
+                  }}
+                  className="space-y-2.5"
+                >
+                  <label className={`flex items-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-all ${formData.scope === 'global'
+                    ? 'border-gray-700 bg-gray-50 shadow-sm'
+                    : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50/50'
+                    }`}>
+                    <RadioGroupItem value="global" />
+                    <div className="flex-1">
+                      <div className="text-sm font-semibold text-gray-800">通用</div>
+                      <div className="text-xs text-gray-500 mt-0.5">所有信息源可用</div>
+                    </div>
+                  </label>
+                  <label className={`flex items-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-all ${formData.scope === 'source'
+                    ? 'border-gray-700 bg-gray-50 shadow-sm'
+                    : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50/50'
+                    }`}>
+                    <RadioGroupItem value="source" />
+                    <div className="flex-1">
+                      <div className="text-sm font-semibold text-gray-800">信息源级别</div>
+                      <div className="text-xs text-gray-500 mt-0.5">仅指定信息源可用</div>
+                    </div>
+                  </label>
+                  <label className={`flex items-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-all ${formData.scope === 'article'
+                    ? 'border-gray-700 bg-gray-50 shadow-sm'
+                    : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50/50'
+                    }`}>
+                    <RadioGroupItem value="article" />
+                    <div className="flex-1">
+                      <div className="text-sm font-semibold text-gray-800">文档级别</div>
+                      <div className="text-xs text-gray-500 mt-0.5">仅指定文档可用</div>
+                    </div>
+                  </label>
+                </RadioGroup>
+              </div>
+            )}
+
+            {/* 信息源选择（条件显示） */}
+            {formData.scope === 'source' && !isEditMode && (
+              <div className="space-y-2.5">
+                <Label htmlFor="source-select" className="text-sm font-medium text-gray-800">
+                  选择信息源 <span className="text-red-500">*</span>
+                </Label>
+                <Select
+                  value={formData.source_config_id || ''}
+                  onValueChange={(value) => handleChange('source_config_id', value)}
+                >
+                  <SelectTrigger
+                    id="source-select"
+                    className={`w-full h-11 rounded-lg border-2 transition-all ${errors.source_config_id
+                      ? 'border-red-300 focus:border-red-500'
+                      : 'border-gray-200 hover:border-gray-300 focus:border-gray-500'
+                      }`}
+                  >
+                    <SelectValue placeholder="请选择信息源" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-white border-gray-200 shadow-lg z-[100]">
+                    {sources.map((source) => (
+                      <SelectItem key={source.id} value={source.id} className="cursor-pointer">
+                        {source.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {errors.source_config_id && (
+                  <p className="text-xs text-red-500 mt-1.5 animate-fade-in-down">{errors.source_config_id}</p>
+                )}
+              </div>
+            )}
+
+            {/* 🆕 文档选择（条件显示） */}
+            {formData.scope === 'article' && !isEditMode && (
+              <div className="space-y-2.5">
+                <Label htmlFor="article-select" className="text-sm font-medium text-gray-800">
+                  选择文档 <span className="text-red-500">*</span>
+                </Label>
+                <Select
+                  value={formData.article_id || ''}
+                  onValueChange={(value) => {
+                    handleChange('article_id', value)
+                    // 自动设置对应的 source_config_id
+                    const selectedArticle = articles.find(a => a.id === value)
+                    if (selectedArticle) {
+                      handleChange('source_config_id', selectedArticle.source_config_id)
+                    }
+                  }}
+                >
+                  <SelectTrigger
+                    id="article-select"
+                    className={`w-full h-11 rounded-lg border-2 transition-all ${errors.article_id
+                      ? 'border-red-300 focus:border-red-500'
+                      : 'border-gray-200 hover:border-gray-300 focus:border-gray-500'
+                      }`}
+                  >
+                    <SelectValue placeholder="请选择文档" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-white border-gray-200 shadow-lg z-[100] max-h-[300px]">
+                    {/* 按信息源分组显示文档 */}
+                    {sources.map((source) => {
+                      const sourceArticles = articles.filter(a => a.source_config_id === source.id)
+                      if (sourceArticles.length === 0) return null
+                      
+                      return (
+                        <SelectGroup key={source.id}>
+                          <SelectLabel className="flex items-center gap-1.5 px-2 py-1.5 text-xs text-gray-600">
+                            <Database className="w-3 h-3" />
+                            {source.name}
+                          </SelectLabel>
+                          
+                          {sourceArticles.map(article => (
+                            <SelectItem 
+                              key={article.id} 
+                              value={article.id} 
+                              className="cursor-pointer pl-6"
+                            >
+                              <div className="flex items-center gap-2">
+                                <Filter className="w-3 h-3 text-blue-500" />
+                                <span className="truncate max-w-[220px]">{article.title}</span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      )
+                    })}
+                  </SelectContent>
+                </Select>
+                {errors.article_id && (
+                  <p className="text-xs text-red-500 mt-1.5 animate-fade-in-down">{errors.article_id}</p>
+                )}
+              </div>
+            )}
+
+            {/* 类型标识符 */}
+            <div className="space-y-2.5">
+              <Label htmlFor="type-input" className="text-sm font-medium text-gray-800">
+                类型标识符 <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                id="type-input"
+                type="text"
+                value={formData.type}
+                onChange={(e) => handleChange('type', e.target.value)}
+                disabled={isEditMode}
+                placeholder="例如: company, project_stage"
+                className={`h-11 rounded-lg border-2 transition-all ${errors.type
+                  ? 'border-red-300 focus:border-red-500'
+                  : 'border-gray-200 hover:border-gray-300 focus:border-gray-500'
+                  } ${isEditMode ? 'bg-gray-50 cursor-not-allowed opacity-60' : ''}`}
+              />
+              {errors.type && <p className="text-xs text-red-500 mt-1.5 animate-fade-in-down">{errors.type}</p>}
+              {isEditMode && (
+                <p className="text-xs text-gray-500 mt-1.5">类型标识符创建后不可修改</p>
+              )}
+            </div>
+
+            {/* 类型名称 */}
+            <div className="space-y-2.5">
+              <Label htmlFor="name-input" className="text-sm font-medium text-gray-800">
+                类型名称 <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                id="name-input"
+                type="text"
+                value={formData.name}
+                onChange={(e) => handleChange('name', e.target.value)}
+                placeholder="例如: 公司、项目阶段"
+                className={`h-11 rounded-lg border-2 transition-all ${errors.name
+                  ? 'border-red-300 focus:border-red-500'
+                  : 'border-gray-200 hover:border-gray-300 focus:border-gray-500'
+                  }`}
+              />
+              {errors.name && <p className="text-xs text-red-500 mt-1.5 animate-fade-in-down">{errors.name}</p>}
+            </div>
+
+            {/* 描述 */}
+            <div className="space-y-2.5">
+              <Label htmlFor="description-input" className="text-sm font-medium text-gray-800">
+                描述
+              </Label>
+              <Textarea
+                id="description-input"
+                value={formData.description}
+                onChange={(e) => handleChange('description', e.target.value)}
+                placeholder="用于指导 AI 提取该类型实体的描述"
+                rows={3}
+                className="resize-none rounded-lg border-2 border-gray-200 hover:border-gray-300 focus:border-gray-500 transition-all"
+              />
+            </div>
+
+            {/* 🆕 值类型配置（可折叠） */}
+            <Collapsible open={isValueTypeOpen} onOpenChange={setIsValueTypeOpen}>
+              <CollapsibleTrigger className="flex items-center justify-between w-full p-3 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-gray-800">值类型配置</span>
+                  <span className="text-xs text-gray-500">(可选)</span>
+                </div>
+                <ChevronDown
+                  className={`w-4 h-4 text-gray-500 transition-transform ${isValueTypeOpen ? 'transform rotate-180' : ''
+                    }`}
+                />
+              </CollapsibleTrigger>
+
+              <CollapsibleContent className="space-y-4 pt-4">
+                {/* 🆕 常用模板快捷选择 */}
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-gray-800">快速模板</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleChange('value_constraints', {
+                          type: 'float',
+                          min: 0,
+                          unit: '元',
+                        })
+                        handleChange('value_format', '{number}{unit}')
+                      }}
+                      className="px-3 py-2 text-sm bg-white border-2 border-gray-200 rounded-lg hover:border-gray-400 hover:bg-gray-50 transition-all text-left"
+                    >
+                      <div className="font-medium text-gray-800">💰 价格</div>
+                      <div className="text-xs text-gray-500">浮点数 + 单位</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleChange('value_constraints', {
+                          type: 'enum',
+                          enum_values: ['需求分析', '设计', '开发', '测试', '上线'],
+                        })
+                        handleChange('value_format', undefined)
+                      }}
+                      className="px-3 py-2 text-sm bg-white border-2 border-gray-200 rounded-lg hover:border-gray-400 hover:bg-gray-50 transition-all text-left"
+                    >
+                      <div className="font-medium text-gray-800">📋 项目阶段</div>
+                      <div className="text-xs text-gray-500">枚举类型</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleChange('value_constraints', {
+                          type: 'datetime',
+                        })
+                        handleChange('value_format', undefined)
+                      }}
+                      className="px-3 py-2 text-sm bg-white border-2 border-gray-200 rounded-lg hover:border-gray-400 hover:bg-gray-50 transition-all text-left"
+                    >
+                      <div className="font-medium text-gray-800">📅 日期</div>
+                      <div className="text-xs text-gray-500">日期时间类型</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleChange('value_constraints', {
+                          type: 'enum',
+                          enum_values: ['待处理', '进行中', '已完成', '已取消'],
+                        })
+                        handleChange('value_format', undefined)
+                      }}
+                      className="px-3 py-2 text-sm bg-white border-2 border-gray-200 rounded-lg hover:border-gray-400 hover:bg-gray-50 transition-all text-left"
+                    >
+                      <div className="font-medium text-gray-800">✅ 状态</div>
+                      <div className="text-xs text-gray-500">枚举类型</div>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 值类型选择 */}
+                <div className="space-y-2.5">
+                  <Label htmlFor="value-type-select" className="text-sm font-medium text-gray-800">
+                    值类型
+                  </Label>
+                  <Select
+                    value={formData.value_constraints?.type || 'none'}
+                    onValueChange={(value) => {
+                      if (value === 'none') {
+                        handleChange('value_constraints', undefined)
+                        handleChange('value_format', undefined)
+                      } else {
+                        handleChange('value_constraints', {
+                          type: value as ValueConstraints['type'],
+                        })
+                      }
+                    }}
+                  >
+                    <SelectTrigger
+                      id="value-type-select"
+                      className="w-full h-11 rounded-lg border-2 border-gray-200 hover:border-gray-300 focus:border-gray-500 transition-all"
+                    >
+                      <SelectValue placeholder="选择值类型（留空则自动解析）" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-white border-gray-200 shadow-lg">
+                      <SelectItem value="none">不指定（自动解析）</SelectItem>
+                      <SelectItem value="text">文本</SelectItem>
+                      <SelectItem value="int">整数</SelectItem>
+                      <SelectItem value="float">浮点数</SelectItem>
+                      <SelectItem value="datetime">日期时间</SelectItem>
+                      <SelectItem value="bool">布尔值</SelectItem>
+                      <SelectItem value="enum">枚举</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* 枚举值输入（仅枚举类型显示） */}
+                {formData.value_constraints?.type === 'enum' && (
+                  <div className="space-y-2.5">
+                    <Label className="text-sm font-medium text-gray-800">
+                      枚举可选值 <span className="text-red-500">*</span>
+                    </Label>
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap gap-2">
+                        {formData.value_constraints.enum_values?.map((value, index) => (
+                          <span
+                            key={index}
+                            className="inline-flex items-center gap-1 px-3 py-1 bg-gray-100 text-gray-700 rounded-md text-sm"
+                          >
+                            {value}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const newEnumValues = [...(formData.value_constraints?.enum_values || [])]
+                                newEnumValues.splice(index, 1)
+                                handleChange('value_constraints', {
+                                  ...formData.value_constraints,
+                                  enum_values: newEnumValues.length > 0 ? newEnumValues : undefined,
+                                })
+                              }}
+                              className="ml-1 text-gray-400 hover:text-gray-600"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                      <div className="flex gap-2">
+                        <Input
+                          type="text"
+                          placeholder="输入枚举值后按回车添加"
+                          className="h-9 rounded-lg border-2 border-gray-200 hover:border-gray-300 focus:border-gray-500 transition-all"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
+                              const input = e.currentTarget
+                              const value = input.value.trim()
+                              if (value) {
+                                const currentEnumValues = formData.value_constraints?.enum_values || []
+                                if (!currentEnumValues.includes(value)) {
+                                  handleChange('value_constraints', {
+                                    ...formData.value_constraints,
+                                    type: 'enum',
+                                    enum_values: [...currentEnumValues, value],
+                                  })
+                                  input.value = ''
+                                }
+                              }
+                            }
+                          }}
+                        />
+                      </div>
+                    </div>
+                    {errors.value_constraints && (
+                      <p className="text-xs text-red-500 mt-1.5 animate-fade-in-down">
+                        {errors.value_constraints}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* 🚧 数值范围和单位输入框（暂时隐藏，待后端实现范围校验后启用）
+                    TODO: 后端实现 min/max 范围校验后，取消注释以下代码 */}
+                {['int', 'float'].includes(formData.value_constraints?.type || '') && (
+                  <>
+                    {/* <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2.5">
+                        <Label htmlFor="min-value-input" className="text-sm font-medium text-gray-800">
+                          最小值
+                        </Label>
+                        <Input
+                          id="min-value-input"
+                          type="number"
+                          value={formData.value_constraints?.min ?? ''}
+                          onChange={(e) => {
+                            const value = e.target.value === '' ? undefined : parseFloat(e.target.value)
+                            handleChange('value_constraints', {
+                              ...formData.value_constraints!,
+                              min: value,
+                            })
+                          }}
+                          placeholder="不限"
+                          step={formData.value_constraints?.type === 'float' ? '0.01' : '1'}
+                          className="h-9 rounded-lg border-2 border-gray-200 hover:border-gray-300 focus:border-gray-500 transition-all"
+                        />
+                      </div>
+                      <div className="space-y-2.5">
+                        <Label htmlFor="max-value-input" className="text-sm font-medium text-gray-800">
+                          最大值
+                        </Label>
+                        <Input
+                          id="max-value-input"
+                          type="number"
+                          value={formData.value_constraints?.max ?? ''}
+                          onChange={(e) => {
+                            const value = e.target.value === '' ? undefined : parseFloat(e.target.value)
+                            handleChange('value_constraints', {
+                              ...formData.value_constraints!,
+                              max: value,
+                            })
+                          }}
+                          placeholder="不限"
+                          step={formData.value_constraints?.type === 'float' ? '0.01' : '1'}
+                          className="h-9 rounded-lg border-2 border-gray-200 hover:border-gray-300 focus:border-gray-500 transition-all"
+                        />
+                      </div>
+                    </div> */}
+
+                    <div className="space-y-2.5">
+                      <Label htmlFor="unit-input" className="text-sm font-medium text-gray-800">
+                        单位
+                      </Label>
+                      <Input
+                        id="unit-input"
+                        type="text"
+                        value={formData.value_constraints?.unit || ''}
+                        onChange={(e) => {
+                          const value = e.target.value.trim()
+                          handleChange('value_constraints', {
+                            ...formData.value_constraints!,
+                            unit: value || undefined,
+                          })
+                        }}
+                        placeholder="例如: 元、美元、kg"
+                        className="h-9 rounded-lg border-2 border-gray-200 hover:border-gray-300 focus:border-gray-500 transition-all"
+                      />
+                    </div>
+
+                    {errors.value_constraints && (
+                      <p className="text-xs text-red-500 mt-1.5 animate-fade-in-down">
+                        {errors.value_constraints}
+                      </p>
+                    )}
+                  </>
+                )}
+
+                {/* 🆕 默认值配置 - 根据值类型联动 */}
+                {formData.value_constraints?.type && (
+                  <div className="space-y-3 p-4 border-2 border-gray-200 rounded-lg bg-gray-50">
+                    <Label className="text-sm font-medium text-gray-800">默认值</Label>
+                    
+                    {/* 枚举类型 */}
+                    {formData.value_constraints.type === 'enum' && formData.value_constraints.enum_values && (
+                      <div>
+                        <Select
+                          value={formData.value_constraints.default || '__none__'}
+                          onValueChange={(value) => {
+                            handleChange('value_constraints', {
+                              ...formData.value_constraints!,
+                              default: value === '__none__' ? undefined : value
+                            })
+                          }}
+                        >
+                          <SelectTrigger className="h-10 bg-white">
+                            <SelectValue placeholder="选择默认值（可选）" />
+                          </SelectTrigger>
+                          <SelectContent className="z-[100]">
+                            <SelectItem value="__none__">不设置</SelectItem>
+                            {formData.value_constraints.enum_values.map(val => (
+                              <SelectItem key={val} value={val}>{val}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                    
+                    {/* 时间类型 */}
+                    {formData.value_constraints.type === 'datetime' && (
+                      <div>
+                        <DateTimePicker
+                          value={formData.value_constraints.default ? new Date(formData.value_constraints.default) : undefined}
+                          onChange={(date) => {
+                            handleChange('value_constraints', {
+                              ...formData.value_constraints!,
+                              default: date ? date.toISOString() : undefined
+                            })
+                          }}
+                        />
+                      </div>
+                    )}
+
+                    {/* 文本类型 */}
+                    {formData.value_constraints.type === 'text' && (
+                      <div>
+                        <Input
+                          value={formData.value_constraints.default || ''}
+                          onChange={(e) => {
+                            handleChange('value_constraints', {
+                              ...formData.value_constraints!,
+                              default: e.target.value || undefined
+                            })
+                          }}
+                          placeholder="输入默认文本"
+                          className="h-10 bg-white"
+                        />
+                      </div>
+                    )}
+
+                    {/* 整数类型 */}
+                    {formData.value_constraints.type === 'int' && (
+                      <div>
+                        <Input
+                          type="number"
+                          step="1"
+                          value={formData.value_constraints.default || ''}
+                          onChange={(e) => {
+                            handleChange('value_constraints', {
+                              ...formData.value_constraints!,
+                              default: e.target.value || undefined
+                            })
+                          }}
+                          placeholder="输入默认整数"
+                          className="h-10 bg-white"
+                        />
+                      </div>
+                    )}
+
+                    {/* 浮点数类型 */}
+                    {formData.value_constraints.type === 'float' && (
+                      <div>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          value={formData.value_constraints.default || ''}
+                          onChange={(e) => {
+                            handleChange('value_constraints', {
+                              ...formData.value_constraints!,
+                              default: e.target.value || undefined
+                            })
+                          }}
+                          placeholder="输入默认浮点数"
+                          className="h-10 bg-white"
+                        />
+                      </div>
+                    )}
+                    
+                    {/* 布尔类型 */}
+                    {formData.value_constraints.type === 'bool' && (
+                      <div>
+                        <Select
+                          value={formData.value_constraints.default || '__none__'}
+                          onValueChange={(value) => {
+                            handleChange('value_constraints', {
+                              ...formData.value_constraints!,
+                              default: value === '__none__' ? undefined : value
+                            })
+                          }}
+                        >
+                          <SelectTrigger className="h-10 bg-white">
+                            <SelectValue placeholder="选择默认值（可选）" />
+                          </SelectTrigger>
+                          <SelectContent className="z-[100]">
+                            <SelectItem value="__none__">不设置</SelectItem>
+                            <SelectItem value="true">是</SelectItem>
+                            <SelectItem value="false">否</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                    
+                    {/* 🆕 强制模式开关 - 仅当有默认值时显示 */}
+                    {formData.value_constraints.default && (
+                      <div className="flex items-center justify-between pt-2 border-t border-gray-200">
+                        <div className="flex-1 pr-4">
+                          <Label className="text-sm font-medium text-gray-800">强制模式</Label>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            覆盖提取结果，始终使用默认值
+                          </p>
+                        </div>
+                        <Switch
+                          checked={formData.value_constraints.override || false}
+                          onCheckedChange={(checked) => {
+                            handleChange('value_constraints', {
+                              ...formData.value_constraints!,
+                              override: checked
+                            })
+                          }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 值格式模板 */}
+                {/* {formData.value_constraints?.type && (
+                  <div className="space-y-2.5">
+                    <Label htmlFor="value-format-input" className="text-sm font-medium text-gray-800">
+                      值格式模板
+                    </Label>
+                    <Input
+                      id="value-format-input"
+                      type="text"
+                      value={formData.value_format || ''}
+                      onChange={(e) => handleChange('value_format', e.target.value.trim() || undefined)}
+                      placeholder="例如: {number}{unit} 或 {value}"
+                      className="h-9 rounded-lg border-2 border-gray-200 hover:border-gray-300 focus:border-gray-500 transition-all"
+                    />
+                    <p className="text-xs text-gray-500">
+                      可使用占位符: {'{'}value{'}'}, {'{'}number{'}'}, {'{'}unit{'}'}
+                    </p>
+                  </div>
+                )} */}
+              </CollapsibleContent>
+            </Collapsible>
+
+            {/* 权重和阈值 */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2.5">
+                <Label htmlFor="weight-input" className="text-sm font-medium text-gray-800">
+                  权重 <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="weight-input"
+                  type="number"
+                  value={formData.weight}
+                  onChange={(e) => handleChange('weight', parseFloat(e.target.value) || 0)}
+                  step="0.1"
+                  min="0"
+                  max="9.99"
+                  className={`h-11 rounded-lg border-2 transition-all ${errors.weight
+                    ? 'border-red-300 focus:border-red-500'
+                    : 'border-gray-200 hover:border-gray-300 focus:border-gray-500'
+                    }`}
+                />
+                {errors.weight && <p className="text-xs text-red-500 mt-1.5 animate-fade-in-down">{errors.weight}</p>}
+              </div>
+
+              <div className="space-y-2.5">
+                <Label htmlFor="threshold-input" className="text-sm font-medium text-gray-800">
+                  相似度阈值 <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="threshold-input"
+                  type="number"
+                  value={formData.similarity_threshold}
+                  onChange={(e) =>
+                    handleChange('similarity_threshold', parseFloat(e.target.value) || 0)
+                  }
+                  step="0.01"
+                  min="0"
+                  max="1"
+                  className={`h-11 rounded-lg border-2 transition-all ${errors.similarity_threshold
+                    ? 'border-red-300 focus:border-red-500'
+                    : 'border-gray-200 hover:border-gray-300 focus:border-gray-500'
+                    }`}
+                />
+                {errors.similarity_threshold && (
+                  <p className="text-xs text-red-500 mt-1.5 animate-fade-in-down">{errors.similarity_threshold}</p>
+                )}
+              </div>
+            </div>
+
+            {/* 按钮 */}
+            <div className="flex gap-3 pt-3">
+              <motion.button
+                type="button"
+                onClick={onClose}
+                whileHover={{ scale: 1.01 }}
+                whileTap={{ scale: 0.99 }}
+                className="flex-1 h-11 px-4 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50 active:bg-gray-100 transition-all"
+              >
+                取消
+              </motion.button>
+              <motion.button
+                type="submit"
+                disabled={isLoading}
+                whileHover={{ scale: isLoading ? 1 : 1.01 }}
+                whileTap={{ scale: isLoading ? 1 : 0.99 }}
+                className="flex-1 h-11 px-4 text-sm font-medium text-white bg-gray-700 rounded-xl hover:bg-gray-800 active:bg-gray-900 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm hover:shadow transition-all"
+              >
+                {isLoading ? '提交中...' : isEditMode ? '更新' : '创建'}
+              </motion.button>
+            </div>
+            </div>
+          </form>
+        </motion.div>
+      </div>
+    </AnimatePresence>
+  )
+}

@@ -1,0 +1,61 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# 配置 apt 使用阿里云镜像源（解决网络超时问题）
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    (echo "deb https://mirrors.aliyun.com/debian/ bookworm main" > /etc/apt/sources.list && \
+     echo "deb https://mirrors.aliyun.com/debian/ bookworm-updates main" >> /etc/apt/sources.list && \
+     echo "deb https://mirrors.aliyun.com/debian-security/ bookworm-security main" >> /etc/apt/sources.list)
+
+
+# 安装系统依赖
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 uv
+RUN pip install --index-url https://mirrors.aliyun.com/pypi/simple --trusted-host mirrors.aliyun.com uv
+
+# 复制依赖文件
+COPY pyproject.toml .
+COPY uv.lock .
+COPY README.md .
+
+# 复制代码
+COPY sag/ ./sag/
+COPY prompts/ ./prompts/
+COPY scripts/ ./scripts/
+COPY alembic.ini .
+COPY migrations/ ./migrations/
+
+# 🆕 复制预下载的 NLTK 数据（避免每次构建都从网络下载）
+COPY nltk_data/ /root/nltk_data/
+
+# 🆕 配置 uv 使用阿里云镜像源
+RUN mkdir -p /root/.config/uv && \
+    echo '[pip]' > /root/.config/uv/uv.toml && \
+    echo 'index-url = "https://mirrors.aliyun.com/pypi/simple"' >> /root/.config/uv/uv.toml
+
+# 使用 uv 安装依赖
+# RUN uv sync --frozen
+# 重新解析依赖
+RUN uv sync --no-cache 
+
+# ✅ NLTK 数据已经通过 COPY 复制，不再需要下载
+# 旧方式（慢）: RUN uv run python scripts/init_nltk.py
+
+# 创建上传目录
+RUN mkdir -p /app/uploads
+
+# 暴露端口
+EXPOSE 8000
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD curl -f http://localhost:8000/health || exit 1
+
+# 启动命令
+CMD ["uv", "run", "python", "-m", "sag.api.main"]
