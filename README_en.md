@@ -194,7 +194,7 @@ custom_entities = [
 ```
 Stage 1: Recall - Entity Recall
 ├─ LLM understands query intent
-├─ Extract structured attributes
+├─ Extract structured entities
 ├─ Vector retrieval of related entities
 └─ Locate associated events
     
@@ -364,8 +364,8 @@ SAG's underlying philosophy can be summarized in two sentences:
 - **Event Atomization**  
   *Instead of "mechanically chunking" by character/Token length, convert documents into **semantically complete, mutually independent** "Events".*
 - **Natural Language Vector**  
-  *Not just encoding entire text segments into vectors, but extracting multi-dimensional attributes for each Event: time, location, person, action, topic, tags…  
-  They form a "**vector composed of natural language attributes**".*
+  *Not just encoding entire text segments into vectors, but extracting multi-dimensional entities for each Event: time, location, person, action, topic, tags…  
+  They form a "**vector composed of natural language entities**".*
 
 **Key Insights**:  
 - Event is the **atomic knowledge unit**  
@@ -380,7 +380,7 @@ SAG's underlying philosophy can be summarized in two sentences:
 **Goal**: Starting from the query statement, find a batch of highly relevant **entities + events**.
 
 - **Step Summary**:
-  - **LLM Parses Query**: Extract structured attributes (TOPIC, ACTION, PERSON…)
+  - **LLM Parses Query**: Extract structured entities (TOPIC, ACTION, PERSON…)
   - **Vector Retrieval of Entities**: Search in entity vector space  
   - **Query Events with Entities (SQL)**: Reverse lookup events through entity IDs  
   - **Event Vector Retrieval**: Query directly on Event vectors  
@@ -501,6 +501,7 @@ Made with ❤️ by [Zleap Team](https://zleap.ai)
 </div>
 
 ---
+
 
 
 
