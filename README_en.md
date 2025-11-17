@@ -120,14 +120,14 @@ Solution:
 
 ### Comparison with Traditional Solutions
 
-|              | Traditional RAG | GraphRAG | SAG      |
-| ------------ | -------- | -------- | -------- |
-| **Data Organization** | Fixed Chunking | Pre-built Graph | Event-based   |
-| **Relationship Maintenance** | None       | Static Storage | Dynamic Calculation |
-| **Scalability**   | ⭐⭐       | ⭐⭐⭐      | ⭐⭐⭐⭐⭐    |
-| **Maintenance Cost** | Low       | High       | Low       |
-| **Retrieval Precision** | ⭐⭐        | ⭐⭐⭐⭐     | ⭐⭐⭐⭐⭐    |
-| **Applicable Scenarios** | Simple Q&A | Deep Q&A | All Scenarios   |
+|                              | Traditional RAG | GraphRAG        | SAG                 |
+| ---------------------------- | --------------- | --------------- | ------------------- |
+| **Data Organization**        | Fixed Chunking  | Pre-built Graph | Event-based         |
+| **Relationship Maintenance** | None            | Static Storage  | Dynamic Calculation |
+| **Scalability**              | ⭐⭐              | ⭐⭐⭐             | ⭐⭐⭐⭐⭐               |
+| **Maintenance Cost**         | Low             | High            | Low                 |
+| **Retrieval Precision**      | ⭐⭐              | ⭐⭐⭐⭐            | ⭐⭐⭐⭐⭐               |
+| **Applicable Scenarios**     | Simple Q&A      | Deep Q&A        | All Scenarios       |
 
 ---
 
@@ -164,14 +164,14 @@ SAG's system design directly corresponds to its algorithm design: **"Event-based
 
 **System Default (5W1H)**:
 
-| Dimension       | Meaning | Weight | Examples                              |
-| ---------- | ---- | ---- | --------------------------------- |
-| 🕐 TIME     | Time | 0.9  | "June 2024", "Every Monday", "Yesterday afternoon" |
-| 📍 LOCATION | Location | 1.0  | "Meeting Room A", "Beijing", "Online Group Chat"     |
-| 👤 PERSON   | Person | 1.1  | "Zhang San", "Product Manager", "Customer"        |
-| 🎯 TOPIC    | Topic | 1.5  | "Large Model Optimization", "Project Delay"          |
-| ⚡ ACTION   | Action | 1.2  | "Decide", "Complete", "Optimize"            |
-| 🏷️ TAGS     | Tags | 1.0  | "Technology", "Urgent", "To Follow Up"          |
+| Dimension  | Meaning  | Weight | Examples                                           |
+| ---------- | -------- | ------ | -------------------------------------------------- |
+| 🕐 TIME     | Time     | 0.9    | "June 2024", "Every Monday", "Yesterday afternoon" |
+| 📍 LOCATION | Location | 1.0    | "Meeting Room A", "Beijing", "Online Group Chat"   |
+| 👤 PERSON   | Person   | 1.1    | "Zhang San", "Product Manager", "Customer"         |
+| 🎯 TOPIC    | Topic    | 1.5    | "Large Model Optimization", "Project Delay"        |
+| ⚡ ACTION   | Action   | 1.2    | "Decide", "Complete", "Optimize"                   |
+| 🏷️ TAGS     | Tags     | 1.0    | "Technology", "Urgent", "To Follow Up"             |
 
 **Custom Extension**:
 
@@ -252,16 +252,15 @@ cp .env.example .env
 #   LLM_API_KEY=sk-xxx
 #   MYSQL_PASSWORD=your_password
 
-# 3. Start services
+# 3. download nltk_data (first only)
+python scripts/download_nltk_data.py
+
+# 4. Start services
 docker compose up -d
 
-# 4. Initialize database
-docker compose exec api uv run python scripts/init_database.py
-docker compose exec api uv run python scripts/init_elasticsearch.py
-
 # 5. Access
-# Frontend: http://localhost:3000
-# API: http://localhost:8000/api/docs
+# Frontend: http://localhost
+# API: http://localhost/api/docs
 ```
 
 ### Method 2: Python SDK
@@ -322,16 +321,16 @@ Visit http://localhost:3000
 
 ### Feature Comparison
 
-| Feature         | Open Source Basic Edition | [Full Edition](https://zleap.ai) |
-| ------------ | ---------- | ------------------------------------ |
-| **Core Engine** | ✅ Fully Open Source | ✅ Same Engine                           |
-| **Document Loading** | ✅ Local Files | ✅ Multiple Information Sources            |
-| **Data Sources**   | ✅ Manual Upload | ✅ Automatic Updates                         |
-| **Content Publishing** | ❌          | ✅ One-click Article/Report Generation                  |
-| **Collaboration**     | ❌ Single User   | ✅ Team + Permission Management                    |
-| **Advanced Features** | ❌          | ✅ Intelligent Recommendations + Auto Summary                |
-| **Cloud Service**   | ❌ Self-hosted   | ✅ Ready to Use                           |
-| **Support**     | Community       | Professional Technical Team                         |
+| Feature                | Open Source Basic Edition | [Full Edition](https://zleap.ai)             |
+| ---------------------- | ------------------------- | -------------------------------------------- |
+| **Core Engine**        | ✅ Fully Open Source       | ✅ Same Engine                                |
+| **Document Loading**   | ✅ Local Files             | ✅ Multiple Information Sources               |
+| **Data Sources**       | ✅ Manual Upload           | ✅ Automatic Updates                          |
+| **Content Publishing** | ❌                         | ✅ One-click Article/Report Generation        |
+| **Collaboration**      | ❌ Single User             | ✅ Team + Permission Management               |
+| **Advanced Features**  | ❌                         | ✅ Intelligent Recommendations + Auto Summary |
+| **Cloud Service**      | ❌ Self-hosted             | ✅ Ready to Use                               |
+| **Support**            | Community                 | Professional Technical Team                  |
 
 ### Why Open Source Basic Edition?
 

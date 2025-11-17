@@ -258,8 +258,8 @@ python scripts/download_nltk_data.py
 docker compose up -d
 
 # 5. 访问
-# 前端: http://localhost:3000
-# API: http://localhost:8000/api/docs
+# 前端: http://localhost
+# API: http://localhost/api/docs
 ```
 
 ### 方式二：Python SDK
