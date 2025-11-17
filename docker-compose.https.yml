@@ -70,7 +70,7 @@ services:
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
       - API_HOST=0.0.0.0
       - API_PORT=8000
-      - API_WORKERS=${API_WORKERS:-4}  # 服务器生产环境默认 4 workers
+      - API_WORKERS=${API_WORKERS:-4} # 服务器生产环境默认 4 workers
     expose:
       - "8000"
     volumes:
