@@ -81,16 +81,17 @@ services:
     command: >
       sh -c "
         echo '🔧 开始初始化...' &&
-        echo '📊 初始化数据库...' &&
+        echo '⏳ 等待数据库就绪...' &&
+        sleep 5 &&
+        echo '🔄 执行数据库迁移 (Alembic)...' &&
+        uv run alembic upgrade head &&
+        echo '✅ 数据库迁移完成' &&
+        echo '📊 插入默认实体类型...' &&
         uv run python scripts/init_database.py &&
         echo '🔍 初始化 Elasticsearch...' &&
         uv run python scripts/init_elasticsearch.py &&
         echo '🌐 启动 API 服务 (Workers: $${API_WORKERS:-4})...' &&
-        uv run uvicorn sag.api.main:app \
-          --host 0.0.0.0 \
-          --port 8000 \
-          --workers $${API_WORKERS:-4} \
-          --log-level info
+        uv run python -m sag.api.main
       "
     depends_on:
       mysql:
