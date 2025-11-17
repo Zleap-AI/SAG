@@ -5,8 +5,8 @@ WORKDIR /app
 # 配置 apt 使用阿里云镜像源（解决网络超时问题）
 RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
     (echo "deb https://mirrors.aliyun.com/debian/ bookworm main" > /etc/apt/sources.list && \
-     echo "deb https://mirrors.aliyun.com/debian/ bookworm-updates main" >> /etc/apt/sources.list && \
-     echo "deb https://mirrors.aliyun.com/debian-security/ bookworm-security main" >> /etc/apt/sources.list)
+    echo "deb https://mirrors.aliyun.com/debian/ bookworm-updates main" >> /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian-security/ bookworm-security main" >> /etc/apt/sources.list)
 
 
 # 安装系统依赖
@@ -40,9 +40,9 @@ RUN mkdir -p /root/.config/uv && \
     echo 'index-url = "https://mirrors.aliyun.com/pypi/simple"' >> /root/.config/uv/uv.toml
 
 # 使用 uv 安装依赖
-# RUN uv sync --frozen
+RUN uv sync --frozen
 # 重新解析依赖
-RUN uv sync --no-cache 
+# RUN uv sync --no-cache 
 
 # ✅ NLTK 数据已经通过 COPY 复制，不再需要下载
 # 旧方式（慢）: RUN uv run python scripts/init_nltk.py
@@ -55,7 +55,7 @@ EXPOSE 8000
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
 # 启动命令
 CMD ["uv", "run", "python", "-m", "sag.api.main"]
