@@ -4,6 +4,8 @@
 
 # SAG
 
+**语言**：简体中文 | [English](README_EN.md)
+
 本项目是基于 SAG 制作的开箱即用的文档检索工作台：上传 Markdown / TXT 文档后，系统会自动完成切片、向量化、事项提取、实体提取和关系整理。你可以像使用 ChatGPT 一样围绕项目资料连续提问，也可以查看每个文档的切片、事项、实体、Embedding、搜索过程、原始模型日志和知识图谱。
 
 ![SAG 对话工作台](docs/assets/sag-chat.png)
