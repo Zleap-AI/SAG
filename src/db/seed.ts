@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { pool, closePool } from "./pool.js";
 import { logger } from "../observability/logger.js";
 
@@ -124,7 +126,8 @@ export async function seed(): Promise<void> {
   logger.info({ count: defaultEntityTypes.length }, "seed complete");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isMainModule = process.argv[1] && path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1]);
+if (isMainModule) {
   seed()
     .then(async () => closePool())
     .catch(async (error: unknown) => {
