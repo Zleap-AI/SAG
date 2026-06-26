@@ -45,7 +45,7 @@ export class QwenRerankClient implements RerankClient {
     candidates: EventRecord[];
     topK: number;
   }): Promise<string[]> {
-    const url = buildRerankUrl(settings.llmBaseUrl);
+    const url = buildRerankUrl(config.RERANK_BASE_URL ?? settings.llmBaseUrl);
     const documents = input.candidates.map((candidate) => eventToRerankDocument(candidate, input.candidates.length));
     const body = {
       model: config.RERANK_MODEL,
@@ -129,12 +129,12 @@ export class QwenRerankClient implements RerankClient {
   }
 }
 
-function buildRerankUrl(baseUrl: string): string {
+export function buildRerankUrl(baseUrl: string): string {
   const base = baseUrl.replace(/\/$/, "");
   if (base.endsWith("/v1")) {
     return `${base}/reranks`;
   }
-  if (base.endsWith("/reranks")) {
+  if (base.endsWith("/rerank") || base.endsWith("/reranks")) {
     return base;
   }
   return `${base}/v1/reranks`;

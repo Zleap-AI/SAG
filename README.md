@@ -228,7 +228,10 @@ API keys only show as "Configured / Not configured". Plaintext keys are not echo
 ```env
 EMBEDDING_API_KEY=your_embedding_key
 LLM_API_KEY=your_llm_key
+RERANK_BASE_URL=https://api.your-provider.com/v1/rerank
 ```
+
+By default, rerank requests use `LLM_BASE_URL` and append `/reranks`, for example `https://api.302ai.cn/v1/reranks`. Set `RERANK_BASE_URL` only when your provider needs a different full endpoint such as `/v1/rerank`.
 
 If no API key is configured, the system uses a local deterministic fallback. This is useful for tests and UI inspection, but real retrieval quality requires remote models.
 

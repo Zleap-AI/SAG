@@ -225,7 +225,10 @@ API Key 只会显示“已配置 / 未配置”，不会在界面和接口响应
 ```env
 EMBEDDING_API_KEY=你的_embedding_key
 LLM_API_KEY=你的_llm_key
+RERANK_BASE_URL=https://api.your-provider.com/v1/rerank
 ```
+
+默认情况下，重排序请求会基于 `LLM_BASE_URL` 追加 `/reranks`，例如 `https://api.302ai.cn/v1/reranks`。只有当平台需要 `/v1/rerank` 等不同完整 endpoint 时，才配置 `RERANK_BASE_URL`。
 
 如果没有配置 API Key，系统会使用本地 deterministic fallback，方便跑测试和看界面；真实检索效果请配置远程模型。
 

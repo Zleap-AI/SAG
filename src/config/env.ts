@@ -22,6 +22,7 @@ const envSchema = z.object({
   LLM_BASE_URL: z.string().url().default(DEFAULT_302AI_BASE_URL),
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   LLM_MAX_RETRIES: z.coerce.number().int().min(0).default(2),
+  RERANK_BASE_URL: z.string().url().optional(),
   RERANK_MODEL: z.string().min(1).default("qwen3-rerank"),
   RERANK_INSTRUCT: z.string().min(1).default("Given a user question, rank SAG event candidates by relevance and usefulness for retrieval-augmented question answering."),
   DEFAULT_SEARCH_MODE: z.enum(["standard", "fast"]).default("fast"),
