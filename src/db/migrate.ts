@@ -51,7 +51,8 @@ export async function migrate(): Promise<void> {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isMainModule = process.argv[1] && path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1]);
+if (isMainModule) {
   migrate()
     .then(async () => closePool())
     .catch(async (error: unknown) => {
