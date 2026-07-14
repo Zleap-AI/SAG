@@ -23,6 +23,8 @@
   基于 SOTA 的 SAG 架构，把分散的文档与数据变成可搜索、可关联、可追溯的知识。
 </p>
 
+https://github.com/user-attachments/assets/cae70570-3885-490f-9126-dea23dcb369c
+
 ## 目录
 
 <p align="center">
