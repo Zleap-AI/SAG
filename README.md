@@ -23,6 +23,8 @@
   Built on the state-of-the-art SAG architecture, it turns scattered documents and data into knowledge that is searchable, connected, and traceable.
 </p>
 
+https://github.com/user-attachments/assets/9bb618e9-fef8-4d07-8a30-3f7d83beb0ff
+
 ## Contents
 
 <p align="center">
