@@ -35,6 +35,7 @@ async def graph(
     document_limit: int = Query(default=1_000, ge=1, le=10_000),
     event_limit: int = Query(default=1_000, ge=1, le=10_000),
     entity_limit: int = Query(default=1_000, ge=1, le=10_000),
+    document_ids: list[str] | None = Query(default=None, max_length=1_000),
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     engine_manager: EngineManager = Depends(get_engine_manager),
@@ -47,4 +48,5 @@ async def graph(
         document_limit=document_limit,
         event_limit=event_limit,
         entity_limit=entity_limit,
+        document_ids=document_ids,
     )

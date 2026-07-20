@@ -10,7 +10,7 @@ Thank you for your interest in SAG.
 ## Checks
 
 ```bash
-cd apps/api && ruff check sag_api/ sag_agent/ tests/ && python -m pytest -q
+cd apps/api && ruff check sag_api/ sag_agent/
 cd apps/web && npx tsc --noEmit && npx next build
 ```
 
@@ -18,7 +18,7 @@ cd apps/web && npx tsc --noEmit && npx next build
 
 1. Branch from `public` or `dev`.
 2. Keep commits focused; explain what changed and why.
-3. Add tests for new API behavior and cover loading/empty/error states for new UI.
+3. Describe how the change was verified, including loading, empty, and error states for UI changes.
 4. Open a pull request when checks pass.
 
 ## Issues

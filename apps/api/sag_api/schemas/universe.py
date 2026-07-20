@@ -125,7 +125,10 @@ class UniverseExpandIn(BaseModel):
 class UniverseTimelineIn(BaseModel):
     epoch: int = Field(ge=1)
     source_id: str = Field(min_length=1, max_length=64)
-    limit: int = Field(default=6, ge=1, le=6)
+    # The product UI deliberately exposes a 10–50 range, while the transport
+    # still accepts smaller pages for deterministic pagination probes and
+    # internal callers. The public default remains the production page size.
+    limit: int = Field(default=20, ge=1, le=50)
     direction: UniverseTimelineDirection = "older"
     cursor: str | None = Field(default=None, max_length=2048)
     snapshot_id: str | None = Field(default=None, max_length=2048)
@@ -190,6 +193,10 @@ class UniverseTimelineRelationOut(UniverseRelationOut):
 
 class UniverseTimelineBundleOut(BaseModel):
     bundle_id: str = Field(min_length=1)
+    # Snapshot-stable position in the source's canonical exploration order
+    # (newest = 0). The client's counting axis places the event at
+    # ordinal × axis-unit, so this must never depend on which page was asked.
+    ordinal: int = Field(ge=0)
     event: UniverseTimelineEventOut
     nodes: list[UniverseTimelineEntityOut] = Field(default_factory=list)
     relations: list[UniverseTimelineRelationOut] = Field(default_factory=list)
@@ -251,7 +258,7 @@ class UniverseTimelinePageOut(BaseModel):
 
 
 class UniverseTimelineSliceOut(BaseModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     epoch: int
     source_id: str = Field(min_length=1, max_length=64)
     source_revision: str = Field(min_length=1, max_length=128)
@@ -260,6 +267,8 @@ class UniverseTimelineSliceOut(BaseModel):
     request_cursor: str | None = Field(default=None, max_length=2048)
     page_id: str = Field(min_length=1, max_length=128)
     bundles: list[UniverseTimelineBundleOut] = Field(default_factory=list)
+    # Snapshot-stable event total of this source: the counting axis' length.
+    total_events: int = Field(ge=0)
     page: UniverseTimelinePageOut
     as_of: datetime
 
@@ -273,6 +282,13 @@ class UniverseTimelineSliceOut(BaseModel):
             raise ValueError("时间轴页面包含重复事件包")
         if len(set(event_ids)) != len(event_ids):
             raise ValueError("时间轴页面包含重复事件")
+        # Hydration may drop an event inside the page, so ordinals may skip;
+        # they must still march strictly older within one page.
+        ordinals = [bundle.ordinal for bundle in self.bundles]
+        if any(later <= earlier for earlier, later in zip(ordinals, ordinals[1:], strict=False)):
+            raise ValueError("时间轴事件包序数必须严格递增")
+        if any(ordinal >= self.total_events for ordinal in ordinals):
+            raise ValueError("时间轴事件包序数超出来源总量")
         if len(set(after_cursors)) != len(after_cursors) or len(set(before_cursors)) != len(before_cursors):
             raise ValueError("时间轴页面包含重复游标")
         if any(bundle.event.source_id != self.source_id for bundle in self.bundles):

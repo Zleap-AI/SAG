@@ -54,7 +54,7 @@ export function ModelConfigForm() {
   const [llmKey, setLlmKey] = React.useState("");
   const [llmModel, setLlmModel] = React.useState("");
   const [temperature, setTemperature] = React.useState(0.3);
-  const [maxTokens, setMaxTokens] = React.useState(2048);
+  const [maxTokens, setMaxTokens] = React.useState(20_000);
   const [timeoutMs, setTimeoutMs] = React.useState(60_000);
   const [maxRetries, setMaxRetries] = React.useState(2);
   const [ctxWindow, setCtxWindow] = React.useState(128000);

@@ -7,11 +7,10 @@ import {
   universeNodeKey,
   type UniverseWorkingSet,
 } from "./universe-working-set";
-import { recommendedUniverseTimelineCacheLimit } from "./universe-timeline-prefetch";
 
-export const UNIVERSE_VIEW_PREFERENCES_VERSION = 5;
+export const UNIVERSE_VIEW_PREFERENCES_VERSION = 7;
 export const UNIVERSE_VIEW_PREFERENCES_STORAGE_KEY =
-  "sag:universe-view-preferences:v5";
+  "sag:universe-view-preferences:v7";
 export const UNIVERSE_ENTITY_CATEGORIES_STORAGE_KEY =
   "sag:universe-entity-categories";
 
@@ -23,47 +22,70 @@ const MAX_REMEMBERED_ENTITY_CATEGORIES = 64;
 
 export interface UniverseViewPreferences {
   version: typeof UNIVERSE_VIEW_PREFERENCES_VERSION;
-  visibleEventBundles: number;
-  cachedEventBundles: number;
-  showEventCards: boolean;
-  showEntityCards: boolean;
-  /** `null` means every discovered entity category is selected. */
-  entityCategories: string[] | null;
+  cacheCapacity: number;
+  eventWindowSize: number;
+  cardsEnabled: boolean;
+  eventCardPreviewCount: number;
+  temporalPageSize: number;
+  temporalPrefetchPages: number;
+  /** `null` means every discovered entity type is selected. */
+  entityTypes: string[] | null;
+  /** `null` means every document in the active source is selected. */
+  documentIds: string[] | null;
 }
 
-/** Limits shared by normalization, UI controls and the virtual bundle window. */
+/** Product limits shared by normalization, controls and the scene contract. */
 export const UNIVERSE_VIEW_LIMITS = {
-  visibleEventBundles: {
-    min: 2,
-    max: 18,
-    step: 1,
-    default: 6,
+  cacheCapacity: {
+    min: 200,
+    max: 5_000,
+    step: 100,
+    default: 1_000,
   },
-  cachedEventBundles: {
-    min: 12,
-    max: 96,
-    step: 6,
-    default: 24,
+  eventWindowSize: {
+    min: 20,
+    max: 100,
+    step: 5,
+    default: 50,
   },
-  deviceBundleCaps: {
-    desktop: { visible: 18, cached: 96 },
-    mobile: { visible: 8, cached: 36 },
-  },
-  cards: {
-    areaPerCard: 64_000,
+  eventCardPreviewCount: {
+    min: 1,
     max: 20,
-    eventShare: 0.42,
+    step: 1,
+    default: 13,
   },
+  temporalPageSize: {
+    min: 10,
+    max: 50,
+    step: 5,
+    default: 20,
+  },
+  temporalPrefetchPages: {
+    min: 0,
+    max: 3,
+    step: 1,
+    default: 3,
+  },
+  /**
+   * Internal DOM safety cap, sized for every resident entity belonging to the
+   * maximum 20-event card aperture (20 × the server's 8-entity page).
+   */
+  entityCardSafetyMax: 160,
 } as const;
 
 export const DEFAULT_UNIVERSE_VIEW_PREFERENCES: Readonly<UniverseViewPreferences> =
   Object.freeze({
     version: UNIVERSE_VIEW_PREFERENCES_VERSION,
-    visibleEventBundles: UNIVERSE_VIEW_LIMITS.visibleEventBundles.default,
-    cachedEventBundles: UNIVERSE_VIEW_LIMITS.cachedEventBundles.default,
-    showEventCards: true,
-    showEntityCards: true,
-    entityCategories: null,
+    cacheCapacity: UNIVERSE_VIEW_LIMITS.cacheCapacity.default,
+    eventWindowSize: UNIVERSE_VIEW_LIMITS.eventWindowSize.default,
+    cardsEnabled: true,
+    eventCardPreviewCount:
+      UNIVERSE_VIEW_LIMITS.eventCardPreviewCount.default,
+    temporalPageSize: UNIVERSE_VIEW_LIMITS.temporalPageSize.default,
+    temporalPrefetchPages:
+      UNIVERSE_VIEW_LIMITS.temporalPrefetchPages.default,
+    entityTypes: null,
+    documentIds: null,
   });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -80,47 +102,79 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function roundUpToStep(value: number, step: number) {
-  return Math.ceil(value / step) * step;
+function roundToStep(value: number, step: number) {
+  return Math.round(value / step) * step;
 }
 
 function cloneDefaultPreferences(): UniverseViewPreferences {
   return {
     ...DEFAULT_UNIVERSE_VIEW_PREFERENCES,
-    entityCategories: null,
+    entityTypes: null,
+    documentIds: null,
   };
 }
 
-function normalizeEntityCategories(value: unknown): string[] {
+function normalizeStringSelection(value: unknown, limit: number): string[] {
   if (!Array.isArray(value)) return [];
   return [...new Set(value
-    .filter((category): category is string => typeof category === "string")
-    .map((category) => category.trim())
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
     .filter(Boolean))]
     .sort((left, right) => left.localeCompare(right, "zh-CN"))
-    .slice(0, MAX_REMEMBERED_ENTITY_CATEGORIES);
+    .slice(0, limit);
 }
 
-/** Visible time window + one history page + two prefetched forward pages. */
-export function minimumUniverseCacheBundles(visibleEventBundles: number) {
-  const visible = clamp(
+/**
+ * The cache must hold the visible window and configured prefetch runways on
+ * both sides. Its normal default remains far above this functional minimum.
+ */
+export function minimumUniverseCacheCapacity(
+  eventWindowSize: number,
+  temporalPageSize: number = UNIVERSE_VIEW_LIMITS.temporalPageSize.default,
+  temporalPrefetchPages: number =
+    UNIVERSE_VIEW_LIMITS.temporalPrefetchPages.default,
+) {
+  const windowSize = clamp(
+    finiteInteger(eventWindowSize, UNIVERSE_VIEW_LIMITS.eventWindowSize.default),
+    UNIVERSE_VIEW_LIMITS.eventWindowSize.min,
+    UNIVERSE_VIEW_LIMITS.eventWindowSize.max,
+  );
+  const pageSize = clamp(
+    finiteInteger(temporalPageSize, UNIVERSE_VIEW_LIMITS.temporalPageSize.default),
+    UNIVERSE_VIEW_LIMITS.temporalPageSize.min,
+    UNIVERSE_VIEW_LIMITS.temporalPageSize.max,
+  );
+  const prefetchPages = clamp(
     finiteInteger(
-      visibleEventBundles,
-      UNIVERSE_VIEW_LIMITS.visibleEventBundles.default,
+      temporalPrefetchPages,
+      UNIVERSE_VIEW_LIMITS.temporalPrefetchPages.default,
     ),
-    UNIVERSE_VIEW_LIMITS.visibleEventBundles.min,
-    UNIVERSE_VIEW_LIMITS.visibleEventBundles.max,
+    UNIVERSE_VIEW_LIMITS.temporalPrefetchPages.min,
+    UNIVERSE_VIEW_LIMITS.temporalPrefetchPages.max,
   );
   return clamp(
-    roundUpToStep(
-      recommendedUniverseTimelineCacheLimit(
-        visible,
-        UNIVERSE_VIEW_LIMITS.cachedEventBundles.step,
-      ),
-      UNIVERSE_VIEW_LIMITS.cachedEventBundles.step,
+    Math.ceil(
+      (
+        windowSize
+        + pageSize * prefetchPages * 2
+      ) / UNIVERSE_VIEW_LIMITS.cacheCapacity.step,
+    ) * UNIVERSE_VIEW_LIMITS.cacheCapacity.step,
+    UNIVERSE_VIEW_LIMITS.cacheCapacity.min,
+    UNIVERSE_VIEW_LIMITS.cacheCapacity.max,
+  );
+}
+
+function normalizedNumber(
+  value: unknown,
+  limits: { min: number; max: number; step: number; default: number },
+) {
+  return clamp(
+    roundToStep(
+      finiteInteger(value, limits.default),
+      limits.step,
     ),
-    UNIVERSE_VIEW_LIMITS.cachedEventBundles.min,
-    UNIVERSE_VIEW_LIMITS.cachedEventBundles.max,
+    limits.min,
+    limits.max,
   );
 }
 
@@ -131,70 +185,83 @@ export function normalizeUniverseViewPreferences(
   const input = isRecord(value) && value.version === UNIVERSE_VIEW_PREFERENCES_VERSION
     ? value
     : {};
-  const visibleEventBundles = clamp(
-    finiteInteger(
-      input.visibleEventBundles,
-      UNIVERSE_VIEW_LIMITS.visibleEventBundles.default,
-    ),
-    UNIVERSE_VIEW_LIMITS.visibleEventBundles.min,
-    UNIVERSE_VIEW_LIMITS.visibleEventBundles.max,
+  const eventWindowSize = normalizedNumber(
+    input.eventWindowSize,
+    UNIVERSE_VIEW_LIMITS.eventWindowSize,
   );
-  const requestedCache = roundUpToStep(
-    finiteInteger(
-      input.cachedEventBundles,
-      UNIVERSE_VIEW_LIMITS.cachedEventBundles.default,
-    ),
-    UNIVERSE_VIEW_LIMITS.cachedEventBundles.step,
+  const temporalPageSize = normalizedNumber(
+    input.temporalPageSize,
+    UNIVERSE_VIEW_LIMITS.temporalPageSize,
   );
-  const cachedEventBundles = clamp(
+  const temporalPrefetchPages = normalizedNumber(
+    input.temporalPrefetchPages,
+    UNIVERSE_VIEW_LIMITS.temporalPrefetchPages,
+  );
+  const cacheCapacity = clamp(
     Math.max(
-      requestedCache,
-      minimumUniverseCacheBundles(visibleEventBundles),
+      normalizedNumber(
+        input.cacheCapacity,
+        UNIVERSE_VIEW_LIMITS.cacheCapacity,
+      ),
+      minimumUniverseCacheCapacity(
+        eventWindowSize,
+        temporalPageSize,
+        temporalPrefetchPages,
+      ),
     ),
-    UNIVERSE_VIEW_LIMITS.cachedEventBundles.min,
-    UNIVERSE_VIEW_LIMITS.cachedEventBundles.max,
+    UNIVERSE_VIEW_LIMITS.cacheCapacity.min,
+    UNIVERSE_VIEW_LIMITS.cacheCapacity.max,
   );
-  const selectedEntityCategories = normalizeEntityCategories(input.entityCategories);
+  const eventCardPreviewCount = Math.min(
+    eventWindowSize,
+    normalizedNumber(
+      input.eventCardPreviewCount,
+      UNIVERSE_VIEW_LIMITS.eventCardPreviewCount,
+    ),
+  );
+  const selectedEntityTypes = normalizeStringSelection(
+    input.entityTypes,
+    MAX_REMEMBERED_ENTITY_CATEGORIES,
+  );
+  const selectedDocumentIds = normalizeStringSelection(input.documentIds, 1_000);
 
   return {
     version: UNIVERSE_VIEW_PREFERENCES_VERSION,
-    visibleEventBundles,
-    cachedEventBundles,
-    showEventCards: typeof input.showEventCards === "boolean"
-      ? input.showEventCards
-      : DEFAULT_UNIVERSE_VIEW_PREFERENCES.showEventCards,
-    showEntityCards: typeof input.showEntityCards === "boolean"
-      ? input.showEntityCards
-      : DEFAULT_UNIVERSE_VIEW_PREFERENCES.showEntityCards,
-    entityCategories: selectedEntityCategories.length > 0
-      ? selectedEntityCategories
+    cacheCapacity,
+    eventWindowSize,
+    cardsEnabled: typeof input.cardsEnabled === "boolean"
+      ? input.cardsEnabled
+      : DEFAULT_UNIVERSE_VIEW_PREFERENCES.cardsEnabled,
+    eventCardPreviewCount,
+    temporalPageSize,
+    temporalPrefetchPages,
+    entityTypes: selectedEntityTypes.length > 0
+      ? selectedEntityTypes
+      : null,
+    documentIds: selectedDocumentIds.length > 0
+      ? selectedDocumentIds
       : null,
   };
 }
 
 export interface UniverseBundleWindow {
-  visibleEventBundles: number;
-  cachedEventBundles: number;
+  eventWindowSize: number;
+  cacheCapacity: number;
 }
 
-/** Applies device caps while retaining a six-bundle prefetch runway. */
+/** Resolves the one shared window configuration used by both scene states. */
 export function effectiveUniverseBundleWindow(
   preferences: UniverseViewPreferences,
-  isMobile: boolean,
+  _isMobile: boolean,
 ): UniverseBundleWindow {
+  // Mobile and desktop intentionally share the same product-level window.
+  // Renderer safety budgets are enforced independently below.
+  void _isMobile;
   const normalized = normalizeUniverseViewPreferences(preferences);
-  const caps = isMobile
-    ? UNIVERSE_VIEW_LIMITS.deviceBundleCaps.mobile
-    : UNIVERSE_VIEW_LIMITS.deviceBundleCaps.desktop;
-  const visibleEventBundles = Math.min(
-    normalized.visibleEventBundles,
-    caps.visible,
-  );
-  const cachedEventBundles = Math.max(
-    minimumUniverseCacheBundles(visibleEventBundles),
-    Math.min(normalized.cachedEventBundles, caps.cached),
-  );
-  return { visibleEventBundles, cachedEventBundles };
+  return {
+    eventWindowSize: normalized.eventWindowSize,
+    cacheCapacity: normalized.cacheCapacity,
+  };
 }
 
 export interface UniverseSceneBudget {
@@ -226,10 +293,12 @@ export function effectiveUniverseBudget(
  */
 export function projectUniverseWorkingSet(
   current: UniverseWorkingSet,
-  entityCategories: string[] | null,
+  entityTypes: string[] | null,
 ): UniverseWorkingSet {
-  if (entityCategories === null) return current;
-  const selectedCategories = new Set(normalizeEntityCategories(entityCategories));
+  if (entityTypes === null) return current;
+  const selectedCategories = new Set(
+    normalizeStringSelection(entityTypes, MAX_REMEMBERED_ENTITY_CATEGORIES),
+  );
   if (selectedCategories.size === 0) return current;
   const nodes = current.nodes.filter((node) =>
     node.kind === "event"
@@ -248,53 +317,6 @@ export function projectUniverseWorkingSet(
     relations,
     root_keys: current.root_keys.filter((key) => keptKeys.has(key)),
     node_order: current.node_order.filter((key) => keptKeys.has(key)),
-  };
-}
-
-export interface UniverseCardBudget {
-  events: number;
-  entities: number;
-  total: number;
-}
-
-/** Calculates an adaptive on-canvas card cap without affecting graph content. */
-export function universeCardBudget(
-  width: number,
-  height: number,
-  showEventCards: boolean,
-  showEntityCards: boolean,
-): UniverseCardBudget {
-  const safeWidth = Number.isFinite(width) ? Math.max(0, width) : 0;
-  const safeHeight = Number.isFinite(height) ? Math.max(0, height) : 0;
-  if (
-    safeWidth === 0
-    || safeHeight === 0
-    || (!showEventCards && !showEntityCards)
-  ) {
-    return { events: 0, entities: 0, total: 0 };
-  }
-
-  const total = Math.max(0, Math.min(
-    UNIVERSE_VIEW_LIMITS.cards.max,
-    Math.floor(
-      (safeWidth * safeHeight) / UNIVERSE_VIEW_LIMITS.cards.areaPerCard,
-    ),
-  ));
-  if (total === 0) return { events: 0, entities: 0, total: 0 };
-  if (!showEntityCards) return { events: total, entities: 0, total };
-  if (!showEventCards) return { events: 0, entities: total, total };
-
-  const events = total === 1
-    ? 1
-    : clamp(
-        Math.round(total * UNIVERSE_VIEW_LIMITS.cards.eventShare),
-        1,
-        total - 1,
-      );
-  return {
-    events,
-    entities: total - events,
-    total,
   };
 }
 
@@ -427,7 +449,12 @@ export function loadUniverseEntityCategories(
   if (!storage) return [];
   try {
     const raw = storage.getItem(UNIVERSE_ENTITY_CATEGORIES_STORAGE_KEY);
-    return raw ? normalizeEntityCategories(JSON.parse(raw)) : [];
+    return raw
+      ? normalizeStringSelection(
+          JSON.parse(raw),
+          MAX_REMEMBERED_ENTITY_CATEGORIES,
+        )
+      : [];
   } catch {
     return [];
   }
@@ -438,7 +465,10 @@ export function publishUniverseEntityCategories(
   storage: UniverseViewStorage | null = defaultStorage(),
 ) {
   const current = loadUniverseEntityCategories(storage);
-  const next = normalizeEntityCategories([...current, ...categories]);
+  const next = normalizeStringSelection(
+    [...current, ...categories],
+    MAX_REMEMBERED_ENTITY_CATEGORIES,
+  );
   if (next.join("\u0000") === current.join("\u0000")) return current;
   try {
     storage?.setItem(

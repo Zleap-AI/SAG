@@ -17,6 +17,7 @@ from sag_agent import CancellationToken, ModelChunk, ModelRequest, Usage
 from sag_agent import ToolCall as RuntimeToolCall
 from sag_api.core.config import Settings
 from sag_api.core.errors import ConfigurationError, UpstreamError
+from sag_api.core.litellm_policy import apply_litellm_completion_policy
 from sag_api.core.logging import get_logger
 
 log = get_logger("generation")
@@ -45,14 +46,6 @@ class LLMClient:
     def configured(self) -> bool:
         return self._settings.llm_configured
 
-    def _extra_body(self) -> dict | None:
-        """额外请求体：显式配置优先；qwen 系默认关思考（决策/首 token 提速 10 倍级）。"""
-        if self._settings.llm_extra_body:
-            return self._settings.llm_extra_body
-        if "qwen" in (self._settings.llm_model or "").lower():
-            return {"enable_thinking": False}
-        return None
-
     def _ensure_configured(self) -> None:
         if not self.configured:
             raise ConfigurationError("尚未配置 LLM（SAG_LLM_PROVIDER / SAG_LLM_API_KEY / SAG_LLM_MODEL）")
@@ -79,11 +72,9 @@ class LLMClient:
             request["tools"] = tools
             if tool_choice is not None:
                 request["tool_choice"] = tool_choice
-        extra_body = self._extra_body()
-        if extra_body is not None:
-            request["extra_body"] = extra_body
         if self._settings.llm_base_url:
             request["api_base"] = self._settings.llm_base_url
+        request = apply_litellm_completion_policy(self._settings, request)
         return await _litellm_completion(**request)
 
     @staticmethod

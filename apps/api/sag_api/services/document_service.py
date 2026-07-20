@@ -119,7 +119,12 @@ async def ingest_content(
 
 
 async def reprocess_document(
-    session: AsyncSession, source: Source, document_id: str, *, job_queue: JobQueue
+    session: AsyncSession,
+    source: Source,
+    document_id: str,
+    *,
+    job_queue: JobQueue,
+    engine_manager: EngineManager,
 ) -> Job:
     document = await get_document(session, source, document_id)
     latest = await session.scalar(
@@ -132,11 +137,41 @@ async def reprocess_document(
     }:
         return latest
     restart_from_scratch = document.status == DocumentStatus.READY
+    if restart_from_scratch:
+        derived_source_ids = {
+            value
+            for value in [
+                document.sag_source_id,
+                *[
+                    _checkpoint_source_id(candidate.payload)
+                    for candidate in (
+                        await session.scalars(
+                            select(Job).where(Job.document_id == document.id)
+                        )
+                    ).all()
+                ],
+            ]
+            if value
+        }
+        # 历史版本的“重新处理”每次都会新建 Article；从所有历史 Job 断点收集
+        # source_id，既清理当前记录，也清理此前已经遗留的重复派生数据。
+        for derived_source_id in sorted(derived_source_ids):
+            await engine_manager.delete_document_data(
+                source.sag_source_config_id,
+                derived_source_id,
+                source=source,
+            )
+
     document.status = DocumentStatus.PENDING
     document.error = None
     if restart_from_scratch:
         document.progress = 0
+        document.chunk_count = 0
+        document.event_count = 0
         document.token_usage = 0
+        document.sag_source_id = None
+        await session.flush()
+        await _refresh_source_counts(session, source)
     payload = dict(latest.payload or {}) if latest is not None and not restart_from_scratch else {}
     payload.pop("pause_requested", None)
     payload.pop("resume_requested", None)
@@ -153,6 +188,27 @@ async def reprocess_document(
     await session.refresh(job)
     await job_queue.enqueue(job.id)
     return job
+
+
+def _checkpoint_source_id(payload: dict | None) -> str | None:
+    checkpoint = (payload or {}).get("process_checkpoint")
+    value = checkpoint.get("source_id") if isinstance(checkpoint, dict) else None
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+async def _refresh_source_counts(session: AsyncSession, source: Source) -> None:
+    document_count, chunk_count, event_count = (
+        await session.execute(
+            select(
+                func.count(Document.id),
+                func.coalesce(func.sum(Document.chunk_count), 0),
+                func.coalesce(func.sum(Document.event_count), 0),
+            ).where(Document.source_id == source.id)
+        )
+    ).one()
+    source.document_count = int(document_count)
+    source.chunk_count = int(chunk_count)
+    source.event_count = int(event_count)
 
 
 async def pause_document(session: AsyncSession, source: Source, document_id: str) -> Job:
@@ -264,18 +320,7 @@ async def delete_document(
 
     await session.delete(document)
     await session.flush()
-    document_count, chunk_count, event_count = (
-        await session.execute(
-            select(
-                func.count(Document.id),
-                func.coalesce(func.sum(Document.chunk_count), 0),
-                func.coalesce(func.sum(Document.event_count), 0),
-            ).where(Document.source_id == source.id)
-        )
-    ).one()
-    source.document_count = int(document_count)
-    source.chunk_count = int(chunk_count)
-    source.event_count = int(event_count)
+    await _refresh_source_counts(session, source)
     await session.commit()
     if path:
         from sag_api.parsing.service import parsed_sidecar_paths

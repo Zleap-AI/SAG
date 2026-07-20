@@ -105,7 +105,7 @@ function validPageEnvelope(page: UniverseTimelineSlice) {
   const directionalCursor = page.request_direction === "older"
     ? page.page.older_cursor
     : page.page.newer_cursor;
-  return page.schema_version === 2
+  return page.schema_version === 3
     && page.page.direction === page.request_direction
     && page.page.returned_bundles === page.bundles.length
     && new Set(ids).size === ids.length
@@ -117,9 +117,17 @@ function validPageEnvelope(page: UniverseTimelineSlice) {
     && (page.request_cursor === null || page.request_cursor !== directionalCursor)
     && (page.bundles.length === 0 || first?.cursor_before === page.page.newer_cursor)
     && (page.bundles.length === 0 || last?.cursor_after === page.page.older_cursor)
+    && Number.isInteger(page.total_events)
+    && page.total_events >= 0
     && page.bundles.every((bundle, index) =>
       (index === 0 || bundle.cursor_before !== null)
-      && (index === page.bundles.length - 1 || bundle.cursor_after !== null));
+      && (index === page.bundles.length - 1 || bundle.cursor_after !== null)
+      // Ordinals are the counting axis: they must march strictly older within
+      // the page and stay inside the snapshot's event total.
+      && Number.isInteger(bundle.ordinal)
+      && bundle.ordinal >= 0
+      && bundle.ordinal < page.total_events
+      && (index === 0 || bundle.ordinal > page.bundles[index - 1].ordinal));
 }
 
 /**
@@ -176,6 +184,21 @@ export function admitUniverseTimelineDequePage(
 
   if (current && page.request_cursor !== expectedCursor(current, page.request_direction)) {
     throw new Error("timeline page is not adjacent to the requested cache edge");
+  }
+
+  // A page that is cursor-adjacent must also be ordinal-adjacent, or the
+  // counting axis would place its events at depths already owned by the cache.
+  if (current && incoming.length > 0) {
+    const currentFirst = current.bundles[0]?.ordinal;
+    const currentLast = current.bundles.at(-1)?.ordinal;
+    const incomingFirst = incoming[0].ordinal;
+    const incomingLast = incoming.at(-1)?.ordinal ?? incomingFirst;
+    const adjacent = page.request_direction === "older"
+      ? currentLast === undefined || incomingFirst > currentLast
+      : currentFirst === undefined || incomingLast < currentFirst;
+    if (!adjacent) {
+      throw new Error("timeline page ordinals overlap the cached window");
+    }
   }
 
   let merged = current

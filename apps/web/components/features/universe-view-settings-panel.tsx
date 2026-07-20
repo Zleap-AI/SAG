@@ -11,8 +11,7 @@ import { Slider } from "@/components/ui/slider";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   UNIVERSE_VIEW_LIMITS,
-  effectiveUniverseBundleWindow,
-  minimumUniverseCacheBundles,
+  minimumUniverseCacheCapacity,
   normalizeUniverseViewPreferences,
   type UniverseViewPreferences,
 } from "@/lib/universe-view-preferences";
@@ -25,6 +24,49 @@ export interface UniverseViewSettingsProps {
   entityCategories: string[];
   compact?: boolean;
   isMobile?: boolean;
+}
+
+function SettingSlider({
+  ariaLabel,
+  value,
+  min,
+  max,
+  step,
+  recommended,
+  onChange,
+}: {
+  ariaLabel: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  recommended: number;
+  onChange: (value: number) => void;
+}) {
+  const t = useTranslations("GraphSettings");
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-baseline justify-between text-sm">
+        <span className="text-muted-foreground">{t("value.current")}</span>
+        <span className="font-mono font-semibold tabular-nums">{value}</span>
+      </div>
+      <Slider
+        aria-label={ariaLabel}
+        max={max}
+        min={min}
+        onValueChange={([next]) => {
+          if (next !== undefined) onChange(next);
+        }}
+        step={step}
+        value={[value]}
+      />
+      <div className="flex justify-between text-xs text-muted-foreground">
+        <span>{min}</span>
+        <span>{t("value.recommended", { count: recommended })}</span>
+        <span>{max}</span>
+      </div>
+    </div>
+  );
 }
 
 export function UniverseViewSettings({
@@ -43,55 +85,41 @@ export function UniverseViewSettings({
     () => normalizeUniverseViewPreferences(preferences),
     [preferences],
   );
-  const effectiveWindow = React.useMemo(
-    () => effectiveUniverseBundleWindow(normalized, mobile),
-    [mobile, normalized],
-  );
-  const deviceCaps = mobile
-    ? UNIVERSE_VIEW_LIMITS.deviceBundleCaps.mobile
-    : UNIVERSE_VIEW_LIMITS.deviceBundleCaps.desktop;
-  const [draftWindow, setDraftWindow] = React.useState(() => ({
-    visibleEventBundles: effectiveWindow.visibleEventBundles,
-    cachedEventBundles: effectiveWindow.cachedEventBundles,
-  }));
-
-  React.useEffect(() => {
-    setDraftWindow({
-      visibleEventBundles: effectiveWindow.visibleEventBundles,
-      cachedEventBundles: effectiveWindow.cachedEventBundles,
-    });
-  }, [effectiveWindow.cachedEventBundles, effectiveWindow.visibleEventBundles]);
-
-  const availableCategories = React.useMemo(() => {
-    const selected = normalized.entityCategories ?? [];
+  const availableTypes = React.useMemo(() => {
+    const selected = normalized.entityTypes ?? [];
     return [...new Set([...entityCategories, ...selected]
       .map((category) => category.trim())
       .filter(Boolean))]
       .sort((left, right) => left.localeCompare(right, locale));
-  }, [entityCategories, locale, normalized.entityCategories]);
+  }, [entityCategories, locale, normalized.entityTypes]);
 
   const emit = React.useCallback((patch: Partial<UniverseViewPreferences>) => {
     onChange(normalizeUniverseViewPreferences({ ...normalized, ...patch }));
   }, [normalized, onChange]);
 
-  const toggleCategory = React.useCallback((category: string, checked: boolean) => {
-    const next = new Set(normalized.entityCategories ?? availableCategories);
+  const toggleType = React.useCallback((category: string, checked: boolean) => {
+    const next = new Set(normalized.entityTypes ?? availableTypes);
     if (checked) next.add(category);
     else {
       if (next.size <= 1) return;
       next.delete(category);
     }
-    const selected = availableCategories.filter((item) => next.has(item));
+    const selected = availableTypes.filter((item) => next.has(item));
     emit({
-      entityCategories: selected.length === availableCategories.length
+      entityTypes: selected.length === availableTypes.length
         ? null
         : selected,
     });
-  }, [availableCategories, emit, normalized.entityCategories]);
+  }, [availableTypes, emit, normalized.entityTypes]);
 
-  const allCategoriesSelected = normalized.entityCategories === null;
-  const selectedCategoryCount = normalized.entityCategories?.length
-    ?? availableCategories.length;
+  const allTypesSelected = normalized.entityTypes === null;
+  const selectedTypeCount = normalized.entityTypes?.length
+    ?? availableTypes.length;
+  const minimumCache = minimumUniverseCacheCapacity(
+    normalized.eventWindowSize,
+    normalized.temporalPageSize,
+    normalized.temporalPrefetchPages,
+  );
 
   return (
     <div
@@ -99,35 +127,43 @@ export function UniverseViewSettings({
       data-settings-section="graph"
       data-settings-compact={compact}
       data-settings-device={mobile ? "mobile" : "desktop"}
-      data-effective-visible-bundles={effectiveWindow.visibleEventBundles}
-      data-effective-cached-bundles={effectiveWindow.cachedEventBundles}
+      data-event-window-size={normalized.eventWindowSize}
+      data-event-card-preview-count={normalized.eventCardPreviewCount}
+      data-cache-capacity={normalized.cacheCapacity}
     >
       <SettingsSection
         title={t("cards.title")}
         description={t("cards.description")}
       >
         <SettingsRow
-          title={t("cards.event.title")}
-          description={t("cards.event.description")}
+          title={t("cards.enabled.title")}
+          description={t("cards.enabled.description")}
           layout="inline"
           className={cn(compact && "sm:flex-row sm:items-center")}
         >
           <Checkbox
-            aria-label={t("cards.event.aria")}
-            checked={normalized.showEventCards}
-            onCheckedChange={(value) => emit({ showEventCards: value === true })}
+            aria-label={t("cards.enabled.aria")}
+            checked={normalized.cardsEnabled}
+            onCheckedChange={(value) => emit({ cardsEnabled: value === true })}
           />
         </SettingsRow>
         <SettingsRow
-          title={t("cards.entity.title")}
-          description={t("cards.entity.description")}
-          layout="inline"
-          className={cn(compact && "sm:flex-row sm:items-center")}
+          title={t("cards.preview.title")}
+          description={t("cards.preview.description")}
         >
-          <Checkbox
-            aria-label={t("cards.entity.aria")}
-            checked={normalized.showEntityCards}
-            onCheckedChange={(value) => emit({ showEntityCards: value === true })}
+          <SettingSlider
+            ariaLabel={t("cards.preview.aria")}
+            value={normalized.eventCardPreviewCount}
+            min={UNIVERSE_VIEW_LIMITS.eventCardPreviewCount.min}
+            max={Math.min(
+              normalized.eventWindowSize,
+              UNIVERSE_VIEW_LIMITS.eventCardPreviewCount.max,
+            )}
+            step={UNIVERSE_VIEW_LIMITS.eventCardPreviewCount.step}
+            recommended={UNIVERSE_VIEW_LIMITS.eventCardPreviewCount.default}
+            onChange={(eventCardPreviewCount) => emit({
+              eventCardPreviewCount,
+            })}
           />
         </SettingsRow>
       </SettingsSection>
@@ -140,43 +176,48 @@ export function UniverseViewSettings({
           <div className="overflow-hidden rounded-lg border">
             <label className={cn(
               "flex items-center gap-3 border-b px-3 py-2.5 text-sm font-medium",
-              allCategoriesSelected ? "cursor-default" : "cursor-pointer",
+              allTypesSelected ? "cursor-default" : "cursor-pointer",
             )}>
               <Checkbox
-                checked={allCategoriesSelected}
-                disabled={allCategoriesSelected}
+                checked={allTypesSelected}
+                disabled={allTypesSelected}
                 onCheckedChange={(value) => {
-                  if (value === true) emit({ entityCategories: null });
+                  if (value === true) emit({ entityTypes: null });
                 }}
               />
               {t("entityTypes.all")}
               <span className="ml-auto text-xs font-normal text-muted-foreground">
-                {availableCategories.length || t("entityTypes.none")}
+                {availableTypes.length || t("entityTypes.none")}
               </span>
             </label>
-            {availableCategories.length > 0 ? (
+            {availableTypes.length > 0 ? (
               <div className={cn(
                 "grid max-h-48 overflow-y-auto py-1",
                 !compact && "sm:grid-cols-2",
               )}>
-                {availableCategories.map((category) => {
-                  const checked = allCategoriesSelected
-                    || Boolean(normalized.entityCategories?.includes(category));
-                  const lastSelected = checked && selectedCategoryCount <= 1;
+                {availableTypes.map((category) => {
+                  const checked = allTypesSelected
+                    || Boolean(normalized.entityTypes?.includes(category));
+                  const lastSelected = checked && selectedTypeCount <= 1;
                   return (
                     <label
                       className={cn(
                         "flex items-center gap-3 px-3 py-2 text-sm",
-                        lastSelected ? "cursor-default" : "cursor-pointer hover:bg-muted/60",
+                        lastSelected
+                          ? "cursor-default"
+                          : "cursor-pointer hover:bg-muted/60",
                       )}
                       key={category}
                     >
                       <Checkbox
                         checked={checked}
                         disabled={lastSelected}
-                        onCheckedChange={(value) => toggleCategory(category, value === true)}
+                        onCheckedChange={(value) =>
+                          toggleType(category, value === true)}
                       />
-                      <span className="min-w-0 truncate" title={category}>{category}</span>
+                      <span className="min-w-0 truncate" title={category}>
+                        {category}
+                      </span>
                     </label>
                   );
                 })}
@@ -195,95 +236,69 @@ export function UniverseViewSettings({
         description={t("window.description")}
       >
         <SettingsRow
-          title={t("visibleEventBundles.title")}
-          description={t("visibleEventBundles.description")}
+          title={t("eventWindow.title")}
+          description={t("eventWindow.description")}
         >
-          <div className="space-y-3">
-            <div className="flex items-baseline justify-between text-sm">
-              <span className="text-muted-foreground">
-                {t("visibleEventBundles.current")}
-              </span>
-              <span className="font-mono font-semibold tabular-nums">
-                {draftWindow.visibleEventBundles}
-              </span>
-            </div>
-            <Slider
-              aria-label={t("visibleEventBundles.aria")}
-              max={deviceCaps.visible}
-              min={UNIVERSE_VIEW_LIMITS.visibleEventBundles.min}
-              onValueChange={([value]) => {
-                const visibleEventBundles = value ?? effectiveWindow.visibleEventBundles;
-                setDraftWindow((current) => ({
-                  visibleEventBundles,
-                  cachedEventBundles: Math.max(
-                    current.cachedEventBundles,
-                    minimumUniverseCacheBundles(visibleEventBundles),
-                  ),
-                }));
-              }}
-              onValueCommit={([value]) => {
-                if (value === undefined) return;
-                emit({
-                  visibleEventBundles: value,
-                });
-              }}
-              step={UNIVERSE_VIEW_LIMITS.visibleEventBundles.step}
-              value={[draftWindow.visibleEventBundles]}
-            />
-            <div className="flex justify-between text-xs text-muted-foreground">
-              <span>{UNIVERSE_VIEW_LIMITS.visibleEventBundles.min}</span>
-              <span>{t("visibleEventBundles.recommended", {
-                count: UNIVERSE_VIEW_LIMITS.visibleEventBundles.default,
-              })}</span>
-              <span>{deviceCaps.visible}</span>
-            </div>
-          </div>
+          <SettingSlider
+            ariaLabel={t("eventWindow.aria")}
+            value={normalized.eventWindowSize}
+            min={UNIVERSE_VIEW_LIMITS.eventWindowSize.min}
+            max={UNIVERSE_VIEW_LIMITS.eventWindowSize.max}
+            step={UNIVERSE_VIEW_LIMITS.eventWindowSize.step}
+            recommended={UNIVERSE_VIEW_LIMITS.eventWindowSize.default}
+            onChange={(eventWindowSize) => emit({ eventWindowSize })}
+          />
         </SettingsRow>
 
         <SettingsRow
-          title={t("cachedEventBundles.title")}
-          description={t("cachedEventBundles.description")}
+          title={t("cacheCapacity.title")}
+          description={t("cacheCapacity.description")}
         >
-          <div className="space-y-3">
-            <div className="flex items-baseline justify-between text-sm">
-              <span className="text-muted-foreground">
-                {t("cachedEventBundles.current")}
-              </span>
-              <span className="font-mono font-semibold tabular-nums">
-                {draftWindow.cachedEventBundles}
-              </span>
-            </div>
-            <Slider
-              aria-label={t("cachedEventBundles.aria")}
-              max={deviceCaps.cached}
-              min={minimumUniverseCacheBundles(draftWindow.visibleEventBundles)}
-              onValueChange={([value]) => {
-                const cachedEventBundles = value ?? effectiveWindow.cachedEventBundles;
-                setDraftWindow((current) => ({
-                  visibleEventBundles: current.visibleEventBundles,
-                  cachedEventBundles,
-                }));
-              }}
-              onValueCommit={([value]) => {
-                if (value === undefined) return;
-                emit({
-                  cachedEventBundles: value,
-                });
-              }}
-              step={UNIVERSE_VIEW_LIMITS.cachedEventBundles.step}
-              value={[draftWindow.cachedEventBundles]}
-            />
-            <div className="flex justify-between text-xs text-muted-foreground">
-              <span>{minimumUniverseCacheBundles(draftWindow.visibleEventBundles)}</span>
-              <span>{t("cachedEventBundles.runway", {
-                count: Math.max(
-                  0,
-                  draftWindow.cachedEventBundles - draftWindow.visibleEventBundles,
-                ),
-              })}</span>
-              <span>{deviceCaps.cached}</span>
-            </div>
-          </div>
+          <SettingSlider
+            ariaLabel={t("cacheCapacity.aria")}
+            value={normalized.cacheCapacity}
+            min={minimumCache}
+            max={UNIVERSE_VIEW_LIMITS.cacheCapacity.max}
+            step={UNIVERSE_VIEW_LIMITS.cacheCapacity.step}
+            recommended={UNIVERSE_VIEW_LIMITS.cacheCapacity.default}
+            onChange={(cacheCapacity) => emit({ cacheCapacity })}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection
+        title={t("temporal.title")}
+        description={t("temporal.description")}
+      >
+        <SettingsRow
+          title={t("temporal.page.title")}
+          description={t("temporal.page.description")}
+        >
+          <SettingSlider
+            ariaLabel={t("temporal.page.aria")}
+            value={normalized.temporalPageSize}
+            min={UNIVERSE_VIEW_LIMITS.temporalPageSize.min}
+            max={UNIVERSE_VIEW_LIMITS.temporalPageSize.max}
+            step={UNIVERSE_VIEW_LIMITS.temporalPageSize.step}
+            recommended={UNIVERSE_VIEW_LIMITS.temporalPageSize.default}
+            onChange={(temporalPageSize) => emit({ temporalPageSize })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          title={t("temporal.prefetch.title")}
+          description={t("temporal.prefetch.description")}
+        >
+          <SettingSlider
+            ariaLabel={t("temporal.prefetch.aria")}
+            value={normalized.temporalPrefetchPages}
+            min={UNIVERSE_VIEW_LIMITS.temporalPrefetchPages.min}
+            max={UNIVERSE_VIEW_LIMITS.temporalPrefetchPages.max}
+            step={UNIVERSE_VIEW_LIMITS.temporalPrefetchPages.step}
+            recommended={UNIVERSE_VIEW_LIMITS.temporalPrefetchPages.default}
+            onChange={(temporalPrefetchPages) => emit({
+              temporalPrefetchPages,
+            })}
+          />
         </SettingsRow>
       </SettingsSection>
 

@@ -64,7 +64,7 @@ QUICK_SETUP_302 = {
     "llm_base_url": _OPENAI_COMPATIBLE.default_base_url,
     "llm_model": _OPENAI_COMPATIBLE.default_model,
     "llm_temperature": _OPENAI_COMPATIBLE.default_temperature,
-    "llm_max_tokens": 2048,
+    "llm_max_tokens": 20_000,
     "llm_context_window": _OPENAI_COMPATIBLE.default_context_window,
     "llm_timeout_ms": 60_000,
     "llm_max_retries": 2,

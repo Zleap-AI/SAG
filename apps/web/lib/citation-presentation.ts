@@ -10,9 +10,8 @@ const RAW_CITATION_TOKEN =
 export interface CitationCopy {
   mode: "event" | "external" | "source_only";
   title: string;
-  summary: string;
+  body: string;
   meta: string;
-  excerpt: string;
 }
 
 export function stripCitationTransportTokens(value: string | null | undefined): string {
@@ -78,12 +77,10 @@ function externalMeta(citation: Citation, title: string): string {
 
 /**
  * Present citation fields without assigning event semantics to retrieved text.
- * Only `event_refs[0]` may provide an internal event title/summary. The source
- * excerpt is kept intact for the explicit, initially-collapsed excerpt view.
+ * Only `event_refs[0]` may provide an internal event title/body. The retrieved
+ * chunk remains traceability data and is deliberately not promoted into card copy.
  */
 export function citationCopy(citation: Citation, fallbackIndex: number): CitationCopy {
-  const excerpt = cleanCitationText(citation.snippet);
-
   if (citation.kind === "external") {
     const source = cleanCitationText(citation.source);
     const domain = externalHostname(citation.url);
@@ -94,9 +91,8 @@ export function citationCopy(citation: Citation, fallbackIndex: number): Citatio
     return {
       mode: "external",
       title,
-      summary: cleanCitationText(citation.summary),
+      body: cleanCitationText(citation.summary),
       meta: externalMeta(citation, title),
-      excerpt,
     };
   }
 
@@ -106,9 +102,8 @@ export function citationCopy(citation: Citation, fallbackIndex: number): Citatio
     return {
       mode: "event",
       title: eventTitle,
-      summary: cleanCitationText(event?.summary),
+      body: cleanCitationText(event?.content),
       meta: "",
-      excerpt,
     };
   }
 
@@ -116,8 +111,7 @@ export function citationCopy(citation: Citation, fallbackIndex: number): Citatio
   return {
     mode: "source_only",
     title: clientErrorMessage("knowledgeSource", { index: number }),
-    summary: "",
+    body: "",
     meta: internalMeta(citation),
-    excerpt,
   };
 }

@@ -9,6 +9,7 @@ import type { SourceMcpDescriptor } from "@/lib/types";
 import { CodeBlock } from "@/components/features/code-block";
 import { CopyButton } from "@/components/features/copy-button";
 import { McpToolList } from "@/components/features/mcp-tool-list";
+import { mcpServerKey } from "@/lib/mcp-server-key";
 
 export function SourceMcpCard({ sourceId }: { sourceId: string }) {
   const t = useTranslations("SourceMcp");
@@ -24,10 +25,14 @@ export function SourceMcpCard({ sourceId }: { sourceId: string }) {
 
   if (failed || !desc) return null;
 
+  const serverKey = mcpServerKey(
+    desc.source_name,
+    `sag-source-${desc.source_id}`,
+  );
   const stdioSnippet = JSON.stringify(
     {
       mcpServers: {
-        [desc.stdio.env.SAG_MCP_SOURCE_ID ? desc.source_name || "sag" : "sag"]: {
+        [serverKey]: {
           command: desc.stdio.command,
           args: desc.stdio.args,
           env: desc.stdio.env,

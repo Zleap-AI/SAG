@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, File, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +12,11 @@ from sag_api.core.errors import ConflictError, NotFoundError, ValidationError
 from sag_api.db.models import User
 from sag_api.enums import DocumentStatus
 from sag_api.jobs import JobQueue
+from sag_api.parsing.text import (
+    TextDecodingError,
+    is_text_preview,
+    read_text_file,
+)
 from sag_api.sag import EngineManager
 from sag_api.schemas.common import Ok
 from sag_api.schemas.document import DocumentOut, IngestRequest
@@ -136,6 +143,40 @@ async def get_file(
     )
 
 
+@router.get("/{document_id}/preview")
+async def get_preview(
+    source_id: str,
+    document_id: str,
+    _user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """返回浏览器可直接消费的预览；文本统一转为 UTF-8，下载仍保留原字节。"""
+    import os
+
+    from fastapi.responses import FileResponse, Response
+
+    source = await get_source(session, source_id)
+    document = await get_document(session, source, document_id)
+    if not document.storage_path or not os.path.isfile(document.storage_path):
+        raise NotFoundError("原始文件不存在或已被清理")
+    if is_text_preview(document.filename, document.content_type):
+        try:
+            decoded = await asyncio.to_thread(read_text_file, document.storage_path)
+        except TextDecodingError as error:
+            raise ValidationError(f"文本预览编码识别失败：{error}") from error
+        return Response(
+            content=decoded.text,
+            media_type="text/plain; charset=utf-8",
+            headers={"X-Muse-Source-Encoding": decoded.encoding},
+        )
+    return FileResponse(
+        document.storage_path,
+        media_type=document.content_type or "application/octet-stream",
+        filename=document.filename,
+        content_disposition_type="inline",
+    )
+
+
 @router.get("/{document_id}/parsed")
 async def get_parsed(
     source_id: str,
@@ -173,9 +214,16 @@ async def reprocess(
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
+    engine_manager: EngineManager = Depends(get_engine_manager),
 ) -> JobOut:
     source = await get_source(session, source_id)
-    job = await reprocess_document(session, source, document_id, job_queue=job_queue)
+    job = await reprocess_document(
+        session,
+        source,
+        document_id,
+        job_queue=job_queue,
+        engine_manager=engine_manager,
+    )
     return JobOut.model_validate(job)
 
 

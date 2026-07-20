@@ -79,6 +79,7 @@ class GraphEventInfo(BaseModel):
     title: str
     source_config_id: str = ""
     summary: str = ""
+    content: str = ""
     category: str = ""
     rank: int = 0
     parent_id: str | None = None
@@ -140,6 +141,9 @@ class UniverseTimelineBundleInfo(BaseModel):
     """One event and its bounded first-screen factual neighborhood."""
 
     bundle_id: str = Field(min_length=1)
+    # Position in the source's canonical exploration order within this
+    # snapshot: 0 is the newest end, total_events - 1 the oldest.
+    ordinal: int = Field(ge=0)
     event: dict[str, Any]
     nodes: list[dict[str, Any]] = Field(default_factory=list)
     relations: list[dict[str, Any]] = Field(default_factory=list)
@@ -155,6 +159,9 @@ class UniverseTimelineInfo(BaseModel):
     """A bounded event-time page plus a small factual entity neighborhood."""
 
     bundles: list[UniverseTimelineBundleInfo] = Field(default_factory=list)
+    # Snapshot-stable count of the source's live events; the denominator that
+    # gives every ordinal (and the client's counting axis) its length.
+    total_events: int = Field(default=0, ge=0)
     snapshot_id: str = Field(min_length=1, max_length=2048)
     direction: Literal["older", "newer"] = "older"
     has_newer: bool = False

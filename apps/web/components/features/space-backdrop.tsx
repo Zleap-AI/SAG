@@ -2,20 +2,17 @@
 
 import * as React from "react";
 import dynamic from "next/dynamic";
+import { useReducedMotion } from "motion/react";
+import { createPortal } from "react-dom";
+import { ParticleGalaxy } from "@/components/features/particle-galaxy";
 import {
-  motion,
-  useMotionValue,
-  useReducedMotion,
-  useSpring,
-  useTransform,
-} from "motion/react";
-
-import {
-  UNIVERSE_VIEW_EVENT,
+  readUniversePresentation,
   readUniverseView,
+  UNIVERSE_PRESENTATION_EVENT,
+  UNIVERSE_VIEW_EVENT,
+  type UniversePresentationMode,
   type UniverseViewState,
 } from "@/lib/universe-events";
-import { ParticleGalaxy } from "@/components/features/particle-galaxy";
 
 const SpaceParticles = dynamic(
   () => import("@/components/features/space-particles").then((module) => module.SpaceParticles),
@@ -41,58 +38,140 @@ const SPARKLES = [
   { x: 88, y: 15, size: 4, delay: -2.4, duration: 9.4 },
   { x: 93, y: 44, size: 6, delay: -8.8, duration: 13.6 },
   { x: 96, y: 88, size: 6, delay: -10.7, duration: 14.8 },
+  { x: 4, y: 36, size: 4, delay: -4.2, duration: 12.6 },
+  { x: 15, y: 11, size: 3, delay: -12.4, duration: 15.8 },
+  { x: 21, y: 91, size: 5, delay: -7.1, duration: 16.4 },
+  { x: 35, y: 18, size: 4, delay: -1.6, duration: 11.2 },
+  { x: 42, y: 71, size: 3, delay: -9.9, duration: 14.2 },
+  { x: 55, y: 34, size: 4, delay: -5.2, duration: 12.9 },
+  { x: 66, y: 76, size: 5, delay: -13.1, duration: 17.2 },
+  { x: 71, y: 93, size: 3, delay: -3.8, duration: 10.8 },
+  { x: 85, y: 38, size: 4, delay: -11.6, duration: 15.4 },
+  { x: 98, y: 63, size: 5, delay: -6.4, duration: 13.2 },
 ] as const;
 
-export function SpaceBackdrop() {
+export function SpaceBackdrop({
+  pauseAmbientMotion = false,
+  variant = "shell",
+}: {
+  pauseAmbientMotion?: boolean;
+  variant?: "shell" | "universe";
+}) {
   const reducedMotion = useReducedMotion();
-  const initialViewRef = React.useRef(readUniverseView());
-  const ambientMotionPausedRef = React.useRef(
-    initialViewRef.current.mode === "detail" || initialViewRef.current.progress >= 0.18,
-  );
-  const [ambientMotionPaused, setAmbientMotionPaused] = React.useState(
-    ambientMotionPausedRef.current,
-  );
+  const ambientMotionPaused = Boolean(reducedMotion) || pauseAmbientMotion;
   const backdropRef = React.useRef<HTMLDivElement>(null);
   const cursorMeteorRef = React.useRef<HTMLSpanElement>(null);
-  const viewProgress = useMotionValue(initialViewRef.current.progress);
-  const springProgress = useSpring(viewProgress, {
-    stiffness: 92,
-    damping: 23,
-    mass: 1.05,
-    restDelta: 0.001,
-  });
-  const renderedProgress = reducedMotion ? viewProgress : springProgress;
-  const galaxyX = useTransform(renderedProgress, [0, 0.55, 1], ["0%", "12%", "36%"]);
-  const galaxyY = useTransform(renderedProgress, [0, 0.55, 1], ["0%", "-8%", "-24%"]);
-  const galaxyScale = useTransform(renderedProgress, [0, 0.55, 1], [1, 0.98, 0.9]);
-  const galaxyOpacity = useTransform(renderedProgress, [0, 0.55, 1], [1, 0.72, 0.16]);
+  const cursorPortalRootRef = React.useRef<HTMLDivElement | null>(null);
+  const universeDetailRef = React.useRef(false);
+  const universeVariantRef = React.useRef(false);
+  const [universePresentation, setUniversePresentation] =
+    React.useState<UniversePresentationMode>(readUniversePresentation);
+  const [cursorPortalRoot, setCursorPortalRoot] = React.useState<HTMLDivElement | null>(null);
+  const accumulationPresentation = variant === "universe"
+    && universePresentation === "accumulation";
+  const backdropMotionPaused = ambientMotionPaused || accumulationPresentation;
+  const universeBackdrop = variant === "universe";
 
   React.useEffect(() => {
-    const applyView = (view: UniverseViewState) => {
-      viewProgress.set(view.progress);
-      const shouldPauseAmbient = view.mode === "detail" || view.progress >= 0.18;
-      if (shouldPauseAmbient !== ambientMotionPausedRef.current) {
-        ambientMotionPausedRef.current = shouldPauseAmbient;
-        setAmbientMotionPaused(shouldPauseAmbient);
+    if (variant !== "universe") return;
+    const syncPresentation = (event: Event) => {
+      setUniversePresentation(
+        (event as CustomEvent<UniversePresentationMode>).detail,
+      );
+    };
+    setUniversePresentation(readUniversePresentation());
+    window.addEventListener(UNIVERSE_PRESENTATION_EVENT, syncPresentation);
+    return () => window.removeEventListener(
+      UNIVERSE_PRESENTATION_EVENT,
+      syncPresentation,
+    );
+  }, [variant]);
+
+  React.useEffect(() => {
+    if (variant !== "universe" || reducedMotion) {
+      cursorPortalRootRef.current = null;
+      setCursorPortalRoot(null);
+      return;
+    }
+
+    // The graph owns the full viewport and intentionally stops pointer
+    // propagation on labels. Keep the cursor trail in a top-level overlay so
+    // it remains visible above the transparent WebGL canvas and still receives
+    // capture-phase pointer movement over every surface.
+    const root = document.createElement("div");
+    root.className = "sag-space-cursor-layer";
+    root.dataset.universeView = "overview";
+    root.setAttribute("aria-hidden", "true");
+    document.body.appendChild(root);
+    cursorPortalRootRef.current = root;
+    setCursorPortalRoot(root);
+
+    return () => {
+      if (cursorPortalRootRef.current === root) cursorPortalRootRef.current = null;
+      setCursorPortalRoot((current) => (current === root ? null : current));
+      root.remove();
+    };
+  }, [reducedMotion, variant]);
+
+  React.useEffect(() => {
+    const backdrop = backdropRef.current;
+    if (!backdrop) return;
+
+    if (variant !== "universe") {
+      universeVariantRef.current = false;
+      universeDetailRef.current = false;
+      backdrop.dataset.universeView = "fixed";
+      backdrop.dataset.ambientMotion = backdropMotionPaused ? "paused" : "active";
+      return;
+    }
+
+    // AppShell keeps the scene mounted while switching normal/explore modes.
+    // A source-detail view can therefore be the last global view we saw when
+    // the user re-enters explore. Treat every new universe mount as its clean
+    // overview entrance; the scene will publish detail again when it actually
+    // flies into a source.
+    const enteringUniverse = !universeVariantRef.current;
+    universeVariantRef.current = true;
+    if (enteringUniverse) {
+      universeDetailRef.current = false;
+      backdrop.dataset.universeView = "overview";
+      backdrop.dataset.ambientMotion = backdropMotionPaused ? "paused" : "active";
+    }
+
+    const syncView = (view: UniverseViewState) => {
+      // The threshold is intentionally crossed once during the source dive.
+      // CSS owns the fade; React never re-renders on camera progress frames.
+      const detail = view.mode === "detail" || view.progress >= 0.12;
+      const nextView = detail ? "detail" : "overview";
+      if (
+        detail !== universeDetailRef.current
+        || backdrop.dataset.universeView !== nextView
+      ) {
+        universeDetailRef.current = detail;
+        backdrop.dataset.universeView = nextView;
       }
-      if (!backdropRef.current) return;
-      backdropRef.current.dataset.universeView = view.mode;
-      backdropRef.current.dataset.universeViewProgress = view.progress.toFixed(2);
+      if (cursorPortalRootRef.current) {
+        cursorPortalRootRef.current.dataset.universeView = nextView;
+      }
+      backdrop.dataset.ambientMotion = backdropMotionPaused || detail ? "paused" : "active";
+      if (detail && cursorMeteorRef.current) {
+        cursorMeteorRef.current.dataset.active = "false";
+      }
     };
     const handleView = (event: Event) => {
-      const view = (event as CustomEvent<UniverseViewState>).detail;
-      if (view) applyView(view);
+      syncView((event as CustomEvent<UniverseViewState>).detail);
     };
-    applyView(readUniverseView());
+
+    if (!enteringUniverse) syncView(readUniverseView());
     window.addEventListener(UNIVERSE_VIEW_EVENT, handleView);
     return () => window.removeEventListener(UNIVERSE_VIEW_EVENT, handleView);
-  }, [viewProgress]);
+  }, [backdropMotionPaused, variant]);
 
   React.useEffect(() => {
     if (reducedMotion || !cursorMeteorRef.current) return;
 
     const meteor = cursorMeteorRef.current;
-    const field = meteor.closest<HTMLElement>(".bg-space-field");
+    const field = backdropRef.current?.closest<HTMLElement>(".bg-space-field");
     if (!field) return;
 
     let hideTimer: number | undefined;
@@ -100,6 +179,7 @@ export function SpaceBackdrop() {
     let hasPreviousPoint = false;
     let previousX = 0;
     let previousY = 0;
+    let previousTime = 0;
     let angle = -0.35;
     let fieldBounds = field.getBoundingClientRect();
     let pendingFrame: {
@@ -136,32 +216,56 @@ export function SpaceBackdrop() {
       );
       if (meteor.dataset.active !== "true") meteor.dataset.active = "true";
       if (hideTimer) window.clearTimeout(hideTimer);
-      hideTimer = window.setTimeout(hideMeteor, 300);
+      hideTimer = window.setTimeout(hideMeteor, 210);
     };
 
     const handlePointerMove = (event: PointerEvent) => {
-      const target = event.target;
-      const insideExploreUniverse =
-        target instanceof Element
-        && target.closest("[data-universe-mode='explore']") !== null;
-      const isMeteorSurface = target === field || insideExploreUniverse;
+      const isInsideField =
+        event.clientX >= fieldBounds.left
+        && event.clientX <= fieldBounds.right
+        && event.clientY >= fieldBounds.top
+        && event.clientY <= fieldBounds.bottom;
 
-      if (event.pointerType !== "mouse" || !isMeteorSurface) {
+      if (
+        event.pointerType !== "mouse"
+        || event.buttons !== 0
+        || !isInsideField
+        || (variant === "universe" && universeDetailRef.current)
+      ) {
         hideMeteor();
         return;
       }
 
-      const x = event.clientX - fieldBounds.left;
-      const y = event.clientY - fieldBounds.top;
-      const deltaX = hasPreviousPoint ? x - previousX : 0;
-      const deltaY = hasPreviousPoint ? y - previousY : 0;
-      const speed = Math.hypot(deltaX, deltaY);
+      const x = cursorPortalRoot ? event.clientX : event.clientX - fieldBounds.left;
+      const y = cursorPortalRoot ? event.clientY : event.clientY - fieldBounds.top;
+      if (!hasPreviousPoint) {
+        previousX = x;
+        previousY = y;
+        previousTime = event.timeStamp;
+        hasPreviousPoint = true;
+        return;
+      }
+      const deltaX = x - previousX;
+      const deltaY = y - previousY;
+      const elapsed = Math.max(8, Math.min(50, event.timeStamp - previousTime || 16.67));
+      // Normalize to a 60 Hz frame so a high-polling mouse does not produce a
+      // shorter trail than the same physical gesture on a standard display.
+      const speed = Math.hypot(deltaX, deltaY) * (16.67 / elapsed);
 
-      if (speed > 0.4) angle = Math.atan2(deltaY, deltaX);
+      if (speed > 0.7) {
+        const nextAngle = Math.atan2(deltaY, deltaX);
+        const angleDelta = Math.atan2(
+          Math.sin(nextAngle - angle),
+          Math.cos(nextAngle - angle),
+        );
+        angle += angleDelta * 0.42;
+      }
 
       previousX = x;
       previousY = y;
-      hasPreviousPoint = true;
+      previousTime = event.timeStamp;
+
+      if (speed <= 0.7) return;
 
       pendingFrame = { x, y, speed, angle };
       if (animationFrame === undefined) {
@@ -172,48 +276,64 @@ export function SpaceBackdrop() {
     const resizeObserver = new ResizeObserver(measureField);
     resizeObserver.observe(field);
     window.addEventListener("resize", measureField, { passive: true });
-    field.addEventListener("pointermove", handlePointerMove);
+    // Capture before graph labels stop propagation. The loading shell and the
+    // explore graph then share one reliable cursor surface.
+    window.addEventListener("pointermove", handlePointerMove, {
+      capture: true,
+      passive: true,
+    });
     field.addEventListener("pointerleave", hideMeteor);
+    window.addEventListener("blur", hideMeteor);
+    document.addEventListener("visibilitychange", hideMeteor);
 
     return () => {
       resizeObserver.disconnect();
       window.removeEventListener("resize", measureField);
-      field.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointermove", handlePointerMove, true);
       field.removeEventListener("pointerleave", hideMeteor);
+      window.removeEventListener("blur", hideMeteor);
+      document.removeEventListener("visibilitychange", hideMeteor);
       if (animationFrame !== undefined) window.cancelAnimationFrame(animationFrame);
       if (hideTimer) window.clearTimeout(hideTimer);
     };
-  }, [reducedMotion]);
+  }, [cursorPortalRoot, reducedMotion, variant]);
 
   return (
     <div
       ref={backdropRef}
       className="sag-space-sparkles"
-      data-universe-view={initialViewRef.current.mode}
-      data-universe-view-progress={initialViewRef.current.progress.toFixed(2)}
+      data-space-variant={variant}
+      data-universe-view={variant === "universe" ? "overview" : "fixed"}
+      data-universe-presentation={variant === "universe" ? universePresentation : "fixed"}
+      data-ambient-motion={backdropMotionPaused ? "paused" : "active"}
       aria-hidden
     >
-      <SpaceParticles reducedMotion={Boolean(reducedMotion) || ambientMotionPaused} />
-      {!reducedMotion && (
-        <span ref={cursorMeteorRef} className="sag-space-cursor-meteor" data-active="false" />
+      <SpaceParticles
+        // In the universe the shared field is only a quiet, distant sky. The
+        // scene engine owns the sole moving/data-bearing nebula, so background
+        // particles never compete with source dust or timeline particles.
+        reducedMotion={universeBackdrop || backdropMotionPaused}
+        density={universeBackdrop ? 0.52 : 1}
+      />
+      {!reducedMotion && (cursorPortalRoot
+        ? createPortal(
+          <span ref={cursorMeteorRef} className="sag-space-cursor-meteor" data-active="false" />,
+          cursorPortalRoot,
+        )
+        : <span ref={cursorMeteorRef} className="sag-space-cursor-meteor" data-active="false" />)}
+      {!universeBackdrop && !accumulationPresentation && (
+        <>
+          <span className="sag-space-galaxy-orbit">
+            <ParticleGalaxy reducedMotion={ambientMotionPaused} />
+          </span>
+          <span className="sag-space-dust" />
+          <span className="sag-space-meteor sag-space-meteor--one" />
+          <span className="sag-space-meteor sag-space-meteor--two" />
+          <span className="sag-space-meteor sag-space-meteor--three" />
+          <span className="sag-space-meteor sag-space-meteor--four" />
+        </>
       )}
-      <motion.span
-        className="sag-space-galaxy-orbit"
-        style={{
-          x: galaxyX,
-          y: galaxyY,
-          scale: galaxyScale,
-          opacity: galaxyOpacity,
-        }}
-      >
-        <ParticleGalaxy reducedMotion={Boolean(reducedMotion) || ambientMotionPaused} />
-      </motion.span>
-      <span className="sag-space-dust" />
-      <span className="sag-space-meteor sag-space-meteor--one" />
-      <span className="sag-space-meteor sag-space-meteor--two" />
-      <span className="sag-space-meteor sag-space-meteor--three" />
-      <span className="sag-space-meteor sag-space-meteor--four" />
-      {SPARKLES.map((star) => (
+      {!universeBackdrop && SPARKLES.map((star) => (
         <span
           key={`${star.x}-${star.y}`}
           className="sag-space-sparkle"

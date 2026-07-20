@@ -64,7 +64,7 @@ interface SearchWorkspaceContextValue extends SearchWorkspaceState {
   toggleSource: (source: Source) => void;
   removeSource: (sourceId: string) => void;
   ensureSources: () => Promise<Source[]>;
-  ensureActivity: () => Promise<ActivityItem[]>;
+  ensureActivity: (sourceIds?: string[]) => Promise<ActivityItem[]>;
   run: (options?: SearchRunOptions) => Promise<SearchResponse | null>;
   removeHistory: (query: string) => void;
   clearHistory: () => void;
@@ -192,7 +192,12 @@ export function SearchProvider({
   const activeRequestRef = React.useRef<ActiveSearchRequest | null>(null);
   const sourcesLoadedRef = React.useRef(false);
   const sourcesPromiseRef = React.useRef<Promise<Source[]> | null>(null);
-  const activityPromiseRef = React.useRef<Promise<ActivityItem[]> | null>(null);
+  const activityPromiseRef = React.useRef<{
+    key: string;
+    promise: Promise<ActivityItem[]>;
+  } | null>(null);
+  const loadedActivityKeyRef = React.useRef<string | null>(null);
+  const requestedActivityKeyRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
     const history = readSearchHistory();
@@ -283,22 +288,44 @@ export function SearchProvider({
     return sourcesPromiseRef.current;
   }, []);
 
-  const ensureActivity = React.useCallback(async () => {
-    if (stateRef.current.activity !== null) return stateRef.current.activity;
-    if (!activityPromiseRef.current) {
-      activityPromiseRef.current = api
-        .getActivity()
+  const ensureActivity = React.useCallback(async (sourceIds?: string[]) => {
+    const normalizedSourceIds = [...new Set(
+      sourceIds?.map((sourceId) => sourceId.trim()).filter(Boolean) ?? [],
+    )].sort();
+    const key = normalizedSourceIds.join("\u0000");
+    if (
+      loadedActivityKeyRef.current === key
+      && stateRef.current.activity !== null
+    ) {
+      return stateRef.current.activity;
+    }
+    if (activityPromiseRef.current?.key === key) {
+      return activityPromiseRef.current.promise;
+    }
+
+    requestedActivityKeyRef.current = key;
+    setState((current) => (
+      loadedActivityKeyRef.current === key
+        ? current
+        : { ...current, activity: null }
+    ));
+    const promise = api
+        .getActivity(normalizedSourceIds.length ? normalizedSourceIds : undefined)
         .then((items) => items.filter((item) => item.type === "document"))
         .catch(() => [])
         .then((activity) => {
+          if (requestedActivityKeyRef.current !== key) return activity;
+          loadedActivityKeyRef.current = key;
           setState((current) => ({ ...current, activity }));
           return activity;
         })
         .finally(() => {
-          activityPromiseRef.current = null;
+          if (activityPromiseRef.current?.key === key) {
+            activityPromiseRef.current = null;
+          }
         });
-    }
-    return activityPromiseRef.current;
+    activityPromiseRef.current = { key, promise };
+    return promise;
   }, []);
 
   const run = React.useCallback(async (options: SearchRunOptions = {}) => {

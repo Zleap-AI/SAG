@@ -13,7 +13,7 @@ const CENTER_Y = LOGICAL_HEIGHT / 2;
 const MAX_RADIUS = 430;
 const FRAME_INTERVAL = 1000 / 24;
 const FULL_CIRCLE = Math.PI * 2;
-const PARTICLE_ALPHA_SCALE = 1.4;
+const PARTICLE_ALPHA_SCALE = 1.65;
 
 type Random = () => number;
 
@@ -129,9 +129,9 @@ function createHaloParticles(random: Random, count: number): GalaxyParticle[] {
 function createGalaxyParticles() {
   const random = seededRandom(0x6a11a7);
   return [
-    ...createHaloParticles(random, 260),
-    ...createArmParticles(random, 2240),
-    ...createCoreParticles(random, 320),
+    ...createHaloParticles(random, 520),
+    ...createArmParticles(random, 4480),
+    ...createCoreParticles(random, 640),
   ];
 }
 

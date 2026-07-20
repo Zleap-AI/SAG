@@ -50,6 +50,9 @@ def _event_refs_by_section(events: list[Any] | None) -> dict[tuple[str, str], li
             "summary": " ".join(str(_field(event, "summary") or "").split())[:800],
             "category": " ".join(str(_field(event, "category") or "").split())[:100],
         }
+        content = " ".join(str(_field(event, "content") or "").split())[:4000]
+        if content:
+            ref["content"] = content
         grouped.setdefault(key, []).append(ref)
     return grouped
 
@@ -307,7 +310,8 @@ def build_citations(
     `events`：`graph_for_sections` 返回的真实抽取事件；按
     `(source_config_id, chunk_id)` 关联，每条引用最多附带三个事件。
     对外的 `source_id` 一律指 **sag 信源 id**（可直接路由 / 取原文），不泄漏引擎内部 id。
-    `snippet` 仅是可定位的原文证据，不从分块正文推断或伪造事件摘要。
+    `event_refs[].content` 是抽取后的事项正文；`snippet` 仅用于原文定位，
+    不从分块正文推断或伪造事项正文。
     """
     citations = []
     event_refs = _event_refs_by_section(events)

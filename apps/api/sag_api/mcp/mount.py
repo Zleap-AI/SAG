@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs
 
 import jwt
+from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy import select
 
 from sag_api.core.db import SessionLocal
@@ -96,7 +97,13 @@ def attach_source_mcp(app: FastAPI) -> FastMCP:
     内层 FastMCP 的路由改到根 `/`，外层用 `Mount("/mcp")` 承接——避免 `/mcp` 内再套 `/mcp`
     的双重路径。外部宿主使用带斜杠的 `/mcp/`；`source_id` 仅用于可选的单源兼容模式。
     """
-    mcp = build_source_mcp(stateless_http=True)
+    # FastMCP 默认把 host=127.0.0.1 解释为“只接受 localhost Host”。
+    # 该 ASGI 应用实际挂在可通过局域网/反向代理访问的 FastAPI 下，并在外层强制
+    # Bearer 鉴权，因此关闭 SDK 的 localhost 专用 Host 白名单。
+    mcp = build_source_mcp(
+        stateless_http=True,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
     mcp.settings.streamable_http_path = "/"
     mcp_asgi = mcp.streamable_http_app()  # 惰性创建 session_manager
     app.mount("/mcp", ScopedKnowledgeMCP(app, mcp_asgi))

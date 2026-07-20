@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.db.models import Document, Source
@@ -20,9 +20,7 @@ from sag_api.schemas.insight import (
 async def list_entities(
     engine_manager: EngineManager, source: Source, *, types: list[str] | None = None, limit: int = 100
 ) -> list[EntityInfo]:
-    return await engine_manager.list_entities(
-        source.sag_source_config_id, source=source, types=types, limit=limit
-    )
+    return await engine_manager.list_entities(source.sag_source_config_id, source=source, types=types, limit=limit)
 
 
 async def get_source_graph(
@@ -33,14 +31,34 @@ async def get_source_graph(
     document_limit: int = 1_000,
     event_limit: int = 1_000,
     entity_limit: int = 1_000,
+    document_ids: list[str] | None = None,
 ) -> SourceGraphOut:
     """拼装 Web 文档与引擎事件/实体，按调用方给出的性能预算返回图谱。"""
+    scoped_document_ids = (
+        list(dict.fromkeys(document_id.strip() for document_id in document_ids if document_id.strip()))
+        if document_ids is not None
+        else None
+    )
+    document_scope = [Document.source_id == source.id]
+    if scoped_document_ids is not None:
+        document_scope.append(Document.id.in_(scoped_document_ids))
+
+    scoped_document_count, scoped_event_count = (
+        await session.execute(
+            select(
+                func.count(Document.id),
+                func.coalesce(func.sum(Document.event_count), 0),
+            ).where(*document_scope)
+        )
+    ).one()
+    scoped_document_count = int(scoped_document_count or 0)
+    scoped_event_count = int(scoped_event_count or 0)
     documents = list(
         (
             await session.execute(
                 select(Document)
-                .where(Document.source_id == source.id)
-                .order_by(Document.created_at.desc())
+                .where(*document_scope)
+                .order_by(Document.created_at.desc(), Document.id.desc())
                 .limit(document_limit)
             )
         )
@@ -48,14 +66,14 @@ async def get_source_graph(
         .all()
     )
     source_id_to_document_id = {document.sag_source_id: document.id for document in documents if document.sag_source_id}
-    document_event_count = sum(max(0, int(document.event_count or 0)) for document in documents)
+    shown_document_event_count = sum(max(0, int(document.event_count or 0)) for document in documents)
     graph = await engine_manager.source_graph(
         source.sag_source_config_id,
         list(source_id_to_document_id),
         source=source,
         event_limit=event_limit,
         entity_limit=entity_limit,
-        expected_event_count=document_event_count,
+        expected_event_count=shown_document_event_count,
     )
 
     document_nodes = [
@@ -130,12 +148,20 @@ async def get_source_graph(
         )
 
     counts = GraphCountsOut(
-        documents=max(source.document_count, len(document_nodes)),
+        documents=(
+            scoped_document_count
+            if scoped_document_ids is not None
+            else max(source.document_count, scoped_document_count, len(document_nodes))
+        ),
         # Document checkpoints advance while extraction is still running;
         # Source.event_count is committed only after the whole document. Use
         # the strongest available total so a live graph reports 3 / 73 rather
         # than claiming its current three-node slice is the entire dataset.
-        events=max(source.event_count, document_event_count, len(event_nodes)),
+        events=(
+            max(scoped_event_count, len(event_nodes))
+            if scoped_document_ids is not None
+            else max(source.event_count, scoped_event_count, len(event_nodes))
+        ),
         entities=max(graph.total_entities, len(entity_nodes)),
         shown_documents=len(document_nodes),
         shown_events=len(event_nodes),

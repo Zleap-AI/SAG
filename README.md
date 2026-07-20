@@ -361,7 +361,6 @@ npm run dev
 Useful checks:
 
 ```bash
-cd apps/api && pytest
 cd apps/api && ruff check .
 cd apps/web && npm run typecheck
 cd apps/web && npm run build

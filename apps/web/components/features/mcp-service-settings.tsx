@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api, ApiError } from "@/lib/api";
 import { getToken } from "@/lib/auth";
+import { SAG_KNOWLEDGE_MCP_SERVER_KEY } from "@/lib/mcp-server-key";
 import type { KnowledgeMcpDescriptor } from "@/lib/types";
 
 function httpConfig(descriptor: KnowledgeMcpDescriptor, token?: string | null) {
@@ -22,7 +23,7 @@ function httpConfig(descriptor: KnowledgeMcpDescriptor, token?: string | null) {
   if (token) headers.Authorization = `Bearer ${token}`;
   return {
     mcpServers: {
-      "SAG Knowledge": {
+      [SAG_KNOWLEDGE_MCP_SERVER_KEY]: {
         type: "http",
         url: descriptor.http.url,
         headers,
@@ -34,7 +35,7 @@ function httpConfig(descriptor: KnowledgeMcpDescriptor, token?: string | null) {
 function stdioConfig(descriptor: KnowledgeMcpDescriptor) {
   return {
     mcpServers: {
-      "SAG Knowledge": {
+      [SAG_KNOWLEDGE_MCP_SERVER_KEY]: {
         command: descriptor.stdio.command,
         args: descriptor.stdio.args,
       },
@@ -71,7 +72,7 @@ export function McpServiceSettings() {
       httpPreview: JSON.stringify(
         {
           mcpServers: {
-            "SAG Knowledge": {
+            [SAG_KNOWLEDGE_MCP_SERVER_KEY]: {
               type: "http",
               url: descriptor.http.url,
               headers: previewHeaders,

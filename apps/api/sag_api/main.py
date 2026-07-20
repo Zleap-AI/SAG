@@ -17,6 +17,7 @@ from sag_api.branding import PRODUCT_NAME
 from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal, dispose_db, init_db
 from sag_api.core.errors import ApiError
+from sag_api.core.litellm_policy import install_litellm_policy, uninstall_litellm_policy
 from sag_api.core.logging import RequestContextMiddleware, configure_logging, get_logger
 from sag_api.generation import LLMClient
 from sag_api.jobs import InProcessAsyncQueue
@@ -38,8 +39,7 @@ async def lifespan(app: FastAPI):
     configure_logging("DEBUG" if settings.debug else "INFO")
     if settings.environment == "prod" and settings.secret_key in _INSECURE_SECRETS:
         raise RuntimeError(
-            "生产环境禁止使用默认 SAG_SECRET_KEY。"
-            "请设置强随机值（≥32 字节），例如：openssl rand -hex 32"
+            "生产环境禁止使用默认 SAG_SECRET_KEY。请设置强随机值（≥32 字节），例如：openssl rand -hex 32"
         )
     os.makedirs(settings.data_dir, exist_ok=True)
     os.makedirs(settings.upload_dir, exist_ok=True)
@@ -57,6 +57,9 @@ async def lifespan(app: FastAPI):
     async with SessionLocal() as _session:
         await get_default_agent(_session)
 
+    # zleap-sag 内部也调用 LiteLLM；全局 pre-call policy 让它与 Muse 生成链
+    # 共享相同的 provider 参数，而不修改依赖包。
+    litellm_policy = install_litellm_policy(settings)
     app.state.engine_manager = EngineManager(settings)
     app.state.llm = LLMClient(settings)
     app.state.agent_runtime = AgentRuntime()
@@ -87,13 +90,16 @@ async def lifespan(app: FastAPI):
                     log.warning("MCP 会话管理器启动失败（/mcp 不可用）：%s", e)
             yield
     finally:
-        warmup_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await warmup_task
-        await app.state.agent_runtime.stop()
-        await app.state.job_queue.stop()
-        await app.state.engine_manager.aclose_all()
-        await dispose_db()
+        try:
+            warmup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await warmup_task
+            await app.state.agent_runtime.stop()
+            await app.state.job_queue.stop()
+            await app.state.engine_manager.aclose_all()
+            await dispose_db()
+        finally:
+            uninstall_litellm_policy(litellm_policy)
 
 
 async def _warmup_engines(engine_manager: EngineManager) -> None:
@@ -107,12 +113,14 @@ async def _warmup_engines(engine_manager: EngineManager) -> None:
 
         async with SessionLocal() as session:
             rows = (
-                await session.execute(
-                    select(Source)
-                    .order_by(Source.updated_at.desc())
-                    .limit(settings.engine_warmup_count)
+                (
+                    await session.execute(
+                        select(Source).order_by(Source.updated_at.desc()).limit(settings.engine_warmup_count)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         for source in rows:
             try:
                 await engine_manager.provision(source.sag_source_config_id, source)

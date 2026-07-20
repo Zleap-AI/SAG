@@ -6,9 +6,13 @@ import Particles, { ParticlesProvider } from "@tsparticles/react";
 import { loadSlim } from "@tsparticles/slim";
 import { useTheme } from "next-themes";
 
-const BASE_PARTICLE_COUNT = 104;
+const BASE_PARTICLE_COUNT = 264;
 
-function createParticleOptions(dark: boolean, reducedMotion: boolean): ISourceOptions {
+function createParticleOptions(
+  dark: boolean,
+  reducedMotion: boolean,
+  density = 1,
+): ISourceOptions {
   return {
     // In graph detail mode this layer is visual context only. A static first
     // frame avoids running a second particle loop behind the WebGL scene.
@@ -35,7 +39,7 @@ function createParticleOptions(dark: boolean, reducedMotion: boolean): ISourceOp
       },
       number: {
         density: { enable: true, height: 800, width: 1200 },
-        value: BASE_PARTICLE_COUNT,
+        value: Math.round(BASE_PARTICLE_COUNT * density),
       },
       opacity: {
         animation: {
@@ -45,7 +49,7 @@ function createParticleOptions(dark: boolean, reducedMotion: boolean): ISourceOp
           startValue: "random",
           sync: false,
         },
-        value: dark ? { min: 0.12, max: 0.68 } : { min: 0.12, max: 0.42 },
+        value: dark ? { min: 0.18, max: 0.82 } : { min: 0.14, max: 0.48 },
       },
       shape: { type: "circle" },
       size: {
@@ -62,13 +66,20 @@ function createParticleOptions(dark: boolean, reducedMotion: boolean): ISourceOp
   };
 }
 
-export function SpaceParticles({ reducedMotion = false }: { reducedMotion?: boolean }) {
+export function SpaceParticles({
+  reducedMotion = false,
+  density = 1,
+}: {
+  reducedMotion?: boolean;
+  /** Multiplies the sparse shell field for the immersive universe backdrop. */
+  density?: number;
+}) {
   const id = React.useId().replace(/:/g, "");
   const { resolvedTheme } = useTheme();
   const dark = resolvedTheme === "dark";
   const options = React.useMemo(
-    () => createParticleOptions(dark, reducedMotion),
-    [dark, reducedMotion],
+    () => createParticleOptions(dark, reducedMotion, density),
+    [dark, density, reducedMotion],
   );
   const mountedRef = React.useRef(false);
 
@@ -85,7 +96,14 @@ export function SpaceParticles({ reducedMotion = false }: { reducedMotion?: bool
     // If initialization finishes after unmount, tsparticles otherwise appends
     // its fallback canvas to document.body and keeps an orphan renderer alive.
     if (!mountedRef.current) container?.destroy();
-  }, []);
+    // `autoPlay: false` intentionally avoids a second animation loop behind
+    // the WebGL scene, but it also skips tsParticles' first draw. Paint one
+    // deterministic frame so the static deep-space star field remains
+    // visible, then leave the container paused.
+    if (mountedRef.current && reducedMotion && container) {
+      container.canvas.render.drawParticles({ factor: 0, value: 0 });
+    }
+  }, [reducedMotion]);
 
   return (
     <ParticlesProvider init={loadSlim}>

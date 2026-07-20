@@ -661,9 +661,8 @@
     "viewInternal": "View internal source: {title}",
     "viewOriginal": "View original",
     "unavailable": "Original unavailable",
-    "excerpt": "Quoted passage",
-    "collapseExcerpt": "Collapse quoted passage: {title}",
-    "expandExcerpt": "Expand quoted passage: {title}",
+    "collapseBody": "Collapse event body: {title}",
+    "expandBody": "Expand event body: {title}",
     "collapse": "Collapse",
     "expand": "Expand",
     "toggleAria": "{action} {total, plural, one {# reference} other {# references}}: {internal, plural, one {# internal source} other {# internal sources}} and {external, plural, one {# external reference} other {# external references}}",
@@ -766,9 +765,14 @@
     "history": "Search history",
     "recentActivity": "Recent activity",
     "results": "Search results",
+    "sortAria": "Result sort order",
+    "sortRelevance": "Relevance",
+    "sortTime": "Time (newest)",
+    "sortToggleHint": "Currently sorted by {current}; click to switch to {next}",
     "resultViewAria": "Results view",
     "listView": "List view",
     "graphView": "Graph view",
+    "viewToggleHint": "Currently in {current}; click to switch to {next}",
     "loadMoreFailed": "Failed to load more results: {error}",
     "retry": "Retry",
     "loading": "Loading…",
@@ -810,6 +814,14 @@
     "sourceLoadFailed": "Unable to load source graph",
     "retry": "Retry",
     "refresh": "Refresh graph",
+    "documentScope": "Document scope",
+    "documentFilterAria": "Filter graph documents",
+    "documentFilterTitle": "Use all documents or select one or more documents",
+    "allDocuments": "All documents",
+    "selectedDocuments": "{selected, number} / {total, number} selected",
+    "documentEvents": "{count, plural, one {# event} other {# events}}",
+    "noDocumentsSelected": "No documents selected",
+    "noDocumentsSelectedDescription": "Select one or more documents from the document scope.",
     "limitAria": "Node limit per type",
     "limitTitle": "Limit how many events and entities are shown for each type",
     "limitOption": "{value} per type",
@@ -868,6 +880,7 @@
       "backToWorkspace": "Back to mini workspace",
       "assistantSettings": "Assistant settings",
       "close": "Close mini workspace",
+      "returnToExplore": "Return to graph exploration",
       "resize": "Resize mini workspace"
     },
     "search": {
@@ -898,11 +911,15 @@
       "knowledgeNode": "Knowledge node",
       "citationTitle": "Citation details",
       "nodeTitle": "Node details",
+      "eventDetail": "Event details",
       "loadFailed": "Failed to load node details",
       "noCitationSource": "No original text is available for this citation.",
       "loading": "Loading node",
       "relatedNodes": "Related nodes",
       "sourceEvidence": "Source evidence",
+      "previousEvent": "Previous event",
+      "nextEvent": "Next event",
+      "eventPosition": "Event {current, number} of {total, number}",
       "unavailable": "Node details are temporarily unavailable"
     }
   },
@@ -984,7 +1001,7 @@
   },
   "UniverseScene": {
     "aria": "3D knowledge universe graph",
-    "keyboardInstructions": "Use the arrow keys to browse, Enter or Space to activate or lock, and Escape to clear focus. Drag to orbit and use the wheel for smooth zoom.",
+    "keyboardInstructions": "Use the arrow keys to browse, Enter or Space to activate or lock, and Escape to clear focus. Drag to orbit and use the wheel to zoom; inside a source timeline, the wheel also travels forward or back through time.",
     "keyboardStatus": "{label}. Item {index, number} of {total, number}.",
     "exploreSource": "Explore source {label}",
     "sourceStats": "{events, plural, one {# event} other {# events}} · {entities, plural, one {# entity} other {# entities}}",
@@ -992,6 +1009,9 @@
     "exploreNode": "Explore {kind}: {label}",
     "kinds": { "event": "event", "entity": "entity" },
     "relatedEvents": "{count, plural, one {# related event} other {# related events}} · {category}",
+    "continueExploring": "Continue exploring {progress}/{total}",
+    "explorationProgress": "Explored {progress}/{total}",
+    "explorationComplete": "Relationships shown {progress}/{total}",
     "extractedEvent": "Extracted event"
   },
   "KnowledgeUniverse": {
@@ -1007,11 +1027,11 @@
       "rowAria": "Loading progress for {label}",
       "complete": "The full time range has been explored; the current view is stable",
       "loading": "Prefetching adjacent times",
-      "clickContinue": "Choose Explore more in the inspector",
-      "browseContinue": "Use the controls below to continue through time",
+      "clickContinue": "Choose Explore more in the details panel",
+      "browseContinue": "Scroll to continue through time, or use the controls below for precise paging",
       "clickStart": "Choose a source to start exploring",
-      "browseStart": "Choose a source, then use the controls below to start exploring",
-      "title": "3D time exploration",
+      "browseStart": "Choose a source, then scroll to begin traveling through time",
+      "title": "4D knowledge universe exploration",
       "events": "Queried events / source total",
       "entities": "Resident entities / source total",
       "sourceComplete": "Finished exploring {source}’s timeline; queried {events, plural, one {# event} other {# events}} with {entities, plural, one {# entity} other {# entities}} currently resident"
@@ -1028,11 +1048,14 @@
       "eventEntitiesComplete": "All {count, plural, one {# entity linked to this event is} other {# entities linked to this event are}} visible.",
       "noEventEntities": "No related entities have been extracted for this event yet."
     },
+    "accumulation": {
+      "noNewEvidence": "This evidence is already present in the current graph; no new events were added."
+    },
     "timeline": {
       "loading": "Loading the adjacent page in time",
       "defaultTitle": "Knowledge timeline",
       "thisGalaxy": "this galaxy",
-      "windowReady": "Loaded {visible, plural, one {# time entry} other {# time entries}}; adjacent pages preload in the background",
+      "windowReady": "Loaded {visible, plural, one {# time record} other {# time records}}; adjacent pages preload in the background",
       "movedEarlier": "Moved into the next, earlier time range",
       "movedLater": "Returned to the previous, more recent time range",
       "explorationComplete": "Finished exploring the full timeline in {source}; it cannot advance further",
@@ -1075,36 +1098,38 @@
     "legend": { "entities": "Topic entities", "events": "Related events" },
     "searchLocked": {
       "label": "Explicit exploration",
-      "description": "The wheel only zooms the view. Lock a node, then choose Explore more in the inspector."
+      "description": "In search results, the wheel only zooms. Lock a node, then choose Explore more in the details panel."
     },
-    "inspector": {
-      "lockedNetwork": "Related network locked",
-      "blankToUnlock": "Click an empty area to unlock",
-      "viewSource": "View original details",
-      "ask": "Ask the astronaut",
-      "clear": "Clear selection",
-      "expanding": "Expanding the next group of relationships",
-      "remaining": "{count, plural, one {# relationship remains} other {# relationships remain}} to explore",
-      "clickExplore": "Choose Explore more to view related content",
-      "rangeStart": "Reached the beginning of the current time range",
-      "allVisible": "All related content is visible",
-      "none": "No relationships to explore",
-      "exploreMore": "Explore more"
+    "nodeActions": {
+      "viewDetails": "Details ›",
+      "exploreMore": "Explore more",
+      "askAi": "Ask AI"
     },
     "controls": {
       "currentResult": "Return to current result",
-      "normalMode": "Normal",
-      "previewMode": "Preview",
-      "normalModeHint": "View the current time range steadily · drag to orbit · wheel to zoom",
-      "previewModeHint": "Preview by temporal distance · use Previous and Next to move through time",
-      "cameraRestored": "Normal view restored. Drag to orbit and use the wheel to zoom.",
       "previousTimePage": "Return to the previous time range",
       "nextTimePage": "Explore the next time range",
       "timePosition": "{time}",
       "completedTimePosition": "{time} · Exploration complete",
       "partialTime": "{time} (some times are not specified)",
       "unknownTime": "Time not specified",
+      "countRange": "Items {from}\u2013{to} of {total}",
+      "countPosition": "Item {position} of {total}",
       "explorationComplete": "Exploration complete",
+      "home": "Go back",
+      "homeHint": "Return to this source's entrance, then to the knowledge universe",
+      "origin": "Return to this galaxy's origin",
+      "answerContext": "Incremental clue graph · {events, number} events · {entities, number} entities · {count, number} answer turns",
+      "searchContext": "Search result graph · exploration retained",
+      "evidenceContext": "Accumulated clues · {events, number} events · {entities, number} entities · {count, number} batches",
+      "returnToExplore": "Return to graph exploration",
+      "playTimeline": "Play timeline automatically",
+      "pauseTimeline": "Pause timeline playback",
+      "orderOlder": "Descending: newest → earlier",
+      "orderNewer": "Ascending: current → newer",
+      "reverse": "Descending",
+      "chronological": "Ascending",
+      "playbackComplete": "Playback finished in this direction",
       "overview": "Return to full universe",
       "reset": "Reset exploration and view",
       "refresh": "Refresh statistical contours"
@@ -1113,20 +1138,20 @@
   "GraphSettings": {
     "drawer": {
       "title": "Graph display settings",
-      "description": "Adjust node cards, entity types, and the time window independently. Changes apply to the current graph immediately."
+      "description": "One configuration serves temporal exploration and evidence accumulation. Changes apply immediately."
     },
     "cards": {
       "title": "Node cards",
-      "description": "These options control persistent cards only, not nodes or relationships. Hovering or clicking still reveals the focused node card.",
-      "event": {
-        "title": "Show event cards",
-        "description": "Show event summaries by default. Event stars remain available on hover and click when this is off.",
-        "aria": "Show event cards"
+      "description": "Cards affect readability only, never event, entity, or factual relationship presence.",
+      "enabled": {
+        "title": "Enable event and entity cards",
+        "description": "The complete star network remains when disabled. Hover or lock still reveals the focused relationship.",
+        "aria": "Enable event and entity cards"
       },
-      "entity": {
-        "title": "Show entity cards",
-        "description": "Show entity names by default. Entity glyphs remain available on hover and click when this is off.",
-        "aria": "Show entity cards"
+      "preview": {
+        "title": "Event cards shown",
+        "description": "Limits only the event cards expanded by default. The event window, entities, and factual links stay intact.",
+        "aria": "Number of event cards shown by default"
       }
     },
     "entityTypes": {
@@ -1138,21 +1163,35 @@
     },
     "window": {
       "title": "Exploration window",
-      "description": "Control visible time points separately from reusable cache capacity so long explorations stay bounded."
+      "description": "The window bounds the current graph. The cache stores data only, keeping long exploration bounded."
     },
-    "visibleEventBundles": {
-      "title": "Visible time window",
-      "description": "Cap visible time points. Each time point stays complete with its entities and enters or retires naturally at the edge.",
-      "current": "Configured upper limit",
-      "aria": "Visible time point count",
+    "eventWindow": {
+      "title": "Event window",
+      "description": "Bound events participating in the graph. Entities enter with events and old events retire naturally at the edge.",
+      "aria": "Event window size"
+    },
+    "cacheCapacity": {
+      "title": "Event cache",
+      "description": "Store loaded event, entity, and relationship data only. The oldest admission retires first at capacity.",
+      "aria": "Event cache capacity"
+    },
+    "temporal": {
+      "title": "Temporal exploration",
+      "description": "These affect timeline requests and preparation only, not the on-screen window.",
+      "page": {
+        "title": "Page size",
+        "description": "Events loaded in each timeline request.",
+        "aria": "Temporal exploration page size"
+      },
+      "prefetch": {
+        "title": "Prefetch before and after",
+        "description": "Pages prepared on each side of the current window. Requests remain serial.",
+        "aria": "Temporal exploration prefetch pages"
+      }
+    },
+    "value": {
+      "current": "Current",
       "recommended": "Recommended: {count, number}"
-    },
-    "cachedEventBundles": {
-      "title": "Timeline cache capacity",
-      "description": "This caps the memory used for earlier and later times. Adjacent times are prefetched as needed, and existing cache is reused first.",
-      "current": "Capacity on this device",
-      "aria": "Timeline cache capacity",
-      "runway": "Up to {count, number} time points reserved"
     },
     "reset": {
       "savedLocally": "Changes apply to the current graph immediately and are saved in this browser.",

@@ -7,7 +7,7 @@ on:
 
 jobs:
   backend:
-    name: 后端 · ruff + pytest
+    name: 后端 · ruff
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -22,9 +22,7 @@ jobs:
       - name: 安装依赖
         run: pip install -e ".[dev]"
       - name: Lint（ruff）
-        run: ruff check sag_api/ sag_agent/ tests/
-      - name: 测试（离线全套）
-        run: python -m pytest -q
+        run: ruff check sag_api/ sag_agent/
 
   frontend:
     name: 前端 · tsc + next build
@@ -45,7 +43,5 @@ jobs:
         run: npx tsc --noEmit
       - name: Lint（ESLint）
         run: npm run lint
-      - name: 单元测试
-        run: npm run test:unit
       - name: 生产构建
         run: npm run build

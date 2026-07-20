@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     document_extract_concurrency: int = Field(default=5, ge=1, le=50)  # 单文档 chunk 抽取并发
     document_chunk_max_tokens: int = Field(default=1_000, ge=100, le=100_000)
     document_chunk_mode: Literal["standard", "heading_strict"] = "standard"
+    # 上传文档已有独立的知识型过滤要求；默认关闭上游基于标题/摘要的严格过滤，
+    # 避免无摘要或标题缺失的书籍正文被误判为噪音。
+    document_strict_filtering: bool = False
     job_max_attempts: int = 3  # 可重试失败的最大尝试次数（含首次）
     engine_cache_size: int = 16  # 引擎槽 LRU 上限（超限逐出最久未用）
     engine_warmup_count: int = 4  # 启动时预热最近使用的信源引擎数
@@ -101,12 +104,12 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_model: str = _DEFAULT_LLM_PROVIDER.default_model
     llm_temperature: float = _DEFAULT_LLM_PROVIDER.default_temperature
-    llm_max_tokens: int = 2048
+    llm_max_tokens: int = 20_000
     llm_context_window: int = _DEFAULT_LLM_PROVIDER.default_context_window
     llm_timeout_ms: int = Field(default=60_000, ge=1_000, le=600_000)
     llm_max_retries: int = Field(default=2, ge=0, le=10)
     # 透传给 chat/completions 的额外请求体（JSON），如 {"enable_thinking": false}；
-    # 未配置时对 qwen 系模型自动关闭思考（思考模式会让决策/首 token 慢 10 倍以上）
+    # 未配置时对 qwen 系模型通过 LiteLLM reasoning_effort=none 统一关闭思考。
     llm_extra_body: dict | None = None
 
     # ── Embedding（OpenAI-compatible；仅 OpenAI provider 可复用生成配置）───────
@@ -140,7 +143,7 @@ class Settings(BaseSettings):
     # ── 知识宇宙 ──────────────────────────────────────────────────────────
     # 服务端统一下发景深门与场景预算，前端不再散落硬编码阈值。
     universe_manifest_source_limit: int = Field(default=256, ge=16, le=2048)
-    universe_timeline_event_page_size: int = Field(default=6, ge=2, le=6)
+    universe_timeline_event_page_size: int = Field(default=20, ge=10, le=50)
     # 时间线只返回事件的一屏事实投影；完整邻域由显式探索分页加载。
     universe_event_entity_limit: int = Field(default=8, ge=4, le=8)
     universe_lod_orbit_px: int = Field(default=72, ge=24, le=240)
@@ -148,12 +151,12 @@ class Settings(BaseSettings):
     universe_lod_deep_px: int = Field(default=360, ge=120, le=1200)
     universe_lod_hysteresis_px: int = Field(default=24, ge=4, le=120)
     universe_lod_debounce_ms: int = Field(default=220, ge=50, le=2000)
-    universe_proxy_budget_desktop: int = Field(default=3000, ge=256, le=3000)
-    universe_proxy_budget_mobile: int = Field(default=1200, ge=128, le=1200)
-    universe_node_budget_desktop: int = Field(default=240, ge=40, le=240)
-    universe_node_budget_mobile: int = Field(default=120, ge=40, le=120)
-    universe_edge_budget_desktop: int = Field(default=360, ge=64, le=360)
-    universe_edge_budget_mobile: int = Field(default=180, ge=64, le=180)
+    universe_proxy_budget_desktop: int = Field(default=15000, ge=256, le=16000)
+    universe_proxy_budget_mobile: int = Field(default=4000, ge=128, le=4800)
+    universe_node_budget_desktop: int = Field(default=700, ge=450, le=1200)
+    universe_node_budget_mobile: int = Field(default=520, ge=450, le=800)
+    universe_edge_budget_desktop: int = Field(default=1000, ge=600, le=1800)
+    universe_edge_budget_mobile: int = Field(default=720, ge=600, le=1200)
     universe_planet_radius_min: float = Field(default=42.0, ge=12.0, le=160.0)
     universe_planet_radius_max: float = Field(default=132.0, ge=48.0, le=360.0)
     universe_planet_radius_scale: float = Field(default=22.0, ge=2.0, le=80.0)

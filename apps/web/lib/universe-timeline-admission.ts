@@ -111,12 +111,19 @@ export function admitUniverseTimelinePage(
   const directionalCursor = page.request_direction === "older"
     ? page.page.older_cursor
     : page.page.newer_cursor;
-  const invalidContract = page.schema_version !== 2
+  const invalidContract = page.schema_version !== 3
     || !validOpaqueValue(page.source_id, 64)
     || !validOpaqueValue(page.source_revision, 128)
     || !validOpaqueValue(page.snapshot_id, 2048)
     || !validOpaqueValue(page.page_id, 128)
     || !validTimestamp(page.as_of)
+    || !Number.isInteger(page.total_events)
+    || page.total_events < 0
+    || page.bundles.some((bundle, index) =>
+      !Number.isInteger(bundle.ordinal)
+      || bundle.ordinal < 0
+      || bundle.ordinal >= page.total_events
+      || (index > 0 && bundle.ordinal <= page.bundles[index - 1].ordinal))
     || !["older", "newer"].includes(page.request_direction)
     || page.page.direction !== page.request_direction
     || !validNullableCursor(page.request_cursor)
@@ -154,6 +161,7 @@ export function admitUniverseTimelinePage(
     page.bundles.map((bundle) => ({
       id: bundle.bundle_id,
       origin: "timeline" as const,
+      ordinal: bundle.ordinal,
       epoch: page.epoch,
       source_id: page.source_id,
       nodes: [bundle.event, ...bundle.nodes],

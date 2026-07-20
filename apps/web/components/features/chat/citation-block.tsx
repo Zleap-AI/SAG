@@ -30,6 +30,72 @@ function CitationNumber({ children }: { children: React.ReactNode }) {
   );
 }
 
+function CitationBody({ body, title }: { body: string; title: string }) {
+  const t = useTranslations("Citations");
+  const [expanded, setExpanded] = React.useState(false);
+  const [overflowing, setOverflowing] = React.useState(false);
+  const bodyRef = React.useRef<HTMLParagraphElement>(null);
+  const bodyId = React.useId();
+
+  const measureOverflow = React.useCallback(() => {
+    const element = bodyRef.current;
+    if (!element || expanded) return;
+    setOverflowing(element.scrollHeight > element.clientHeight + 1);
+  }, [expanded]);
+
+  React.useLayoutEffect(() => {
+    measureOverflow();
+    const element = bodyRef.current;
+    if (!element || expanded) return;
+
+    const observer = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(measureOverflow);
+    observer?.observe(element);
+    window.addEventListener("resize", measureOverflow);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measureOverflow);
+    };
+  }, [body, expanded, measureOverflow]);
+
+  return (
+    <>
+      <p
+        ref={bodyRef}
+        id={bodyId}
+        className={cn(
+          "mt-1 whitespace-pre-wrap break-words text-[11px] leading-[1.65] text-muted-foreground",
+          !expanded && "line-clamp-3",
+        )}
+      >
+        {body}
+      </p>
+      {overflowing && (
+        <div className="mt-1.5 flex justify-end">
+          <button
+            type="button"
+            onClick={() => setExpanded((value) => !value)}
+            aria-expanded={expanded}
+            aria-controls={bodyId}
+            aria-label={expanded
+              ? t("collapseBody", { title })
+              : t("expandBody", { title })}
+            title={expanded ? t("collapse") : t("expand")}
+            className="inline-flex h-5 shrink-0 items-center gap-0.5 whitespace-nowrap rounded px-1 text-[10px] font-normal text-muted-foreground/55 outline-none transition-colors hover:bg-muted/40 hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {expanded ? t("collapse") : t("expand")}
+            <ChevronDown
+              className={cn("size-3 transition-transform", expanded && "rotate-180")}
+              aria-hidden="true"
+            />
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
 function CitationCard({
   citation,
   fallbackIndex,
@@ -42,13 +108,9 @@ function CitationCard({
   url?: string;
 }) {
   const t = useTranslations("Citations");
-  const [excerptExpanded, setExcerptExpanded] = React.useState(false);
-  const excerptId = React.useId();
   const copy = citationCopy(citation, fallbackIndex);
   const sourceActionClass =
     "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-muted/55 px-1.5 text-[10px] font-medium text-muted-foreground/85 outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-40";
-  const disclosureClass =
-    "inline-flex h-5 shrink-0 items-center gap-0.5 whitespace-nowrap rounded px-1 text-[10px] font-normal text-muted-foreground/55 outline-none transition-colors hover:bg-muted/40 hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring";
 
   return (
     <article className="px-2.5 py-2.5 transition-colors hover:bg-background/55">
@@ -86,46 +148,8 @@ function CitationCard({
             )}
           </div>
 
-          {copy.summary && (
-            <p className="mt-1 line-clamp-2 text-[11px] leading-[1.65] text-muted-foreground">
-              {copy.summary}
-            </p>
-          )}
-
-          {copy.excerpt && excerptExpanded && (
-            <div
-              id={excerptId}
-              className="mt-2 border-l-2 border-primary/15 pl-2.5 animate-in fade-in slide-in-from-top-1 duration-150"
-            >
-              <span className="text-[10px] font-medium text-muted-foreground/80">{t("excerpt")}</span>
-              <p
-                className="mt-0.5 whitespace-pre-wrap break-words text-[11px] leading-[1.7] text-muted-foreground"
-              >
-                {copy.excerpt}
-              </p>
-            </div>
-          )}
-
-          {copy.excerpt && (
-            <div className="mt-1.5 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setExcerptExpanded((value) => !value)}
-                aria-expanded={excerptExpanded}
-                aria-controls={excerptId}
-                aria-label={excerptExpanded
-                  ? t("collapseExcerpt", { title: copy.title })
-                  : t("expandExcerpt", { title: copy.title })}
-                title={excerptExpanded ? t("collapse") : t("expand")}
-                className={disclosureClass}
-              >
-                {excerptExpanded ? t("collapse") : t("expand")}
-                <ChevronDown
-                  className={cn("size-3 transition-transform", excerptExpanded && "rotate-180")}
-                  aria-hidden="true"
-                />
-              </button>
-            </div>
+          {copy.body && (
+            <CitationBody key={copy.body} body={copy.body} title={copy.title} />
           )}
         </div>
       </div>

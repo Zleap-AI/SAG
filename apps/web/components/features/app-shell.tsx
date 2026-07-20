@@ -46,6 +46,7 @@ import {
   UNIVERSE_ASK_EVENT,
   UNIVERSE_DETAIL_EVENT,
   dispatchUniverseActivation,
+  dispatchUniverseReset,
 } from "@/lib/universe-events";
 import { cn } from "@/lib/utils";
 import {
@@ -77,6 +78,7 @@ import { QuickModelSetupDialog } from "@/components/features/quick-model-setup-d
 import { SearchProvider } from "@/components/features/search/search-provider";
 import { SpaceBackdrop } from "@/components/features/space-backdrop";
 import { SiteHeader } from "@/components/features/site-header";
+import { ThemeToggle } from "@/components/features/theme-toggle";
 import { UniverseViewSettingsDrawer } from "@/components/features/universe-view-settings-drawer";
 import { Button } from "@/components/ui/button";
 import {
@@ -85,6 +87,7 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 const KnowledgeUniverse = dynamic(
   () =>
@@ -333,6 +336,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const nextSection = section
       ?? workspaceSectionFromPathname(pathname)
       ?? workspaceSection;
+    if (appMode !== "explore") {
+      // Entering from search/answer is a fresh visit to the universe home.
+      // Context results remain in their panels; the graph starts at overview
+      // and only enters a source after the user deliberately selects one.
+      dispatchUniverseReset("explore-home");
+    }
     setWorkspaceSection(nextSection);
     setAppMode("explore");
     persistAppMode(window.localStorage, "explore", nextSection);
@@ -367,7 +376,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [router]);
 
   React.useEffect(() => {
-    const revealDetail = () => enterExploreMode("search");
+    // A node click opens a detail preview inside the current exploration; it
+    // must not silently switch the workspace to search/cumulative mode.
+    const revealDetail = () => enterExploreMode();
     const revealAsk = () => enterExploreMode("answer");
     window.addEventListener(UNIVERSE_DETAIL_EVENT, revealDetail);
     window.addEventListener(UNIVERSE_ASK_EVENT, revealAsk);
@@ -645,7 +656,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   windowed && "place-items-center p-4",
                 )}
               >
-                <SpaceBackdrop />
+                <SpaceBackdrop variant={appMode === "explore" ? "universe" : "shell"} />
                 <KnowledgeUniverse interactive={appMode === "explore"} />
                 {appMode === "explore" && (
                   <motion.div
@@ -655,13 +666,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     className="fixed right-4 top-3 z-[45] flex items-center gap-2"
                     data-explore-controls="true"
                   >
+                    <ThemeToggle
+                      className="size-8 border border-border/60 bg-background/80 shadow-soft backdrop-blur-md hover:border-amber-300/40 hover:bg-amber-300/10 hover:text-amber-200"
+                    />
                     <UniverseViewSettingsDrawer
                       trigger={(
                         <Button
                           type="button"
                           variant="outline"
                           size="icon"
-                          className="size-8 border-border/60 bg-background/80 shadow-soft backdrop-blur-md hover:border-cyan-300/35 hover:bg-cyan-300/10 hover:text-cyan-100"
+                          className="size-8 border-border/60 bg-background/80 shadow-soft backdrop-blur-md hover:border-[#7ea6ff]/35 hover:bg-[#4f86ff]/10 hover:text-[#c8d9ff]"
                           aria-label={t("graphSettings")}
                           title={t("graphSettings")}
                           data-universe-settings-trigger="true"
@@ -729,7 +743,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   )}
                 </motion.div>
               </div>
-              <PetWithPreference character={petAgent} syncIdentity />
+              <TooltipProvider delayDuration={300}>
+                <PetWithPreference character={petAgent} syncIdentity />
+              </TooltipProvider>
             </DetailPanelProvider>
           </ConversationProvider>
         </KnowledgeProvider>

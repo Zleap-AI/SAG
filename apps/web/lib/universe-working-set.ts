@@ -6,8 +6,8 @@ import type {
 } from "./types";
 
 export const UNIVERSE_SCENE_BUDGET = {
-  desktop: { nodes: 240, edges: 360 },
-  mobile: { nodes: 120, edges: 180 },
+  desktop: { nodes: 700, edges: 1_000 },
+  mobile: { nodes: 520, edges: 720 },
 } as const;
 
 /**
@@ -18,8 +18,8 @@ export const UNIVERSE_SCENE_BUDGET = {
  * using the smaller scene budget because they have no virtual bundle window.
  */
 export const UNIVERSE_RESIDENT_BUDGET = {
-  desktop: { nodes: 1_152, edges: 1_152 },
-  mobile: { nodes: 480, edges: 480 },
+  desktop: { nodes: 10_000, edges: 12_000 },
+  mobile: { nodes: 10_000, edges: 12_000 },
 } as const;
 
 export interface UniverseWorkingNode extends UniverseActivationNode {
@@ -48,6 +48,12 @@ export interface UniverseWorkingSet {
 export interface UniverseWorkingBundle {
   id: string;
   origin: "timeline" | "expansion" | "activation";
+  /**
+   * Snapshot-stable position on the source's counting axis (0 = newest end).
+   * Present exactly for timeline bundles; the projection places the package at
+   * ordinal × axis-unit, so it must ride the bundle through the working set.
+   */
+  ordinal?: number;
   /** Canonical expansion anchor; absent for timeline/activation bundles. */
   anchor_key?: string;
   /**
@@ -73,6 +79,7 @@ export interface UniverseWorkingBundle {
 export interface UniverseAdmissionBundle {
   id: string;
   origin?: UniverseWorkingBundle["origin"];
+  ordinal?: number;
   anchor_key?: string;
   lineage_root_key?: string;
   request_cursor?: string | null;
@@ -583,6 +590,46 @@ export function replaceUniverseWorkingSet(
   return trimUniverseWorkingSet(replacement, budget);
 }
 
+/**
+ * Adds one contextual result to an existing graph without changing the graph
+ * epoch. Stable node identities let the renderer keep every existing node in
+ * place while newly discovered events and entities animate into the network.
+ *
+ * A later result wins when the same factual node/relation is returned again;
+ * accumulated facts remain event-bundle-aware and are evicted oldest-first
+ * only when the hard scene budget is reached.
+ */
+export function mergeUniverseWorkingSetActivation(
+  current: UniverseWorkingSet,
+  activation: UniverseActivation,
+  budget: { nodes: number; edges: number },
+  now = Date.now(),
+): UniverseWorkingSet {
+  const nodes = new Map(current.nodes.map((node) => [
+    universeNodeKey(node.kind, node.id, node.source_id),
+    node as UniverseActivationNode,
+  ]));
+  activation.nodes.forEach((node) => {
+    nodes.set(
+      universeNodeKey(node.kind, node.id, node.source_id),
+      node,
+    );
+  });
+  const relations = new Map(current.relations.map((relation) => [
+    universeRelationKey(relation),
+    relation,
+  ]));
+  activation.relations.forEach((relation) => {
+    relations.set(universeRelationKey(relation), relation);
+  });
+  return replaceUniverseWorkingSet({
+    ...activation,
+    epoch: current.epoch,
+    nodes: [...nodes.values()],
+    relations: [...relations.values()],
+  }, budget, now);
+}
+
 export function universeAnchorProgress(
   current: UniverseWorkingSet,
   kind: UniverseNodeKind,
@@ -693,6 +740,7 @@ export function admitUniverseBundle(
       && sameStringSet(existingBundle.relation_keys, bundleRelationKeys)
       && existingBundle.payload_fingerprint === payloadFingerprint
       && existingBundle.origin === (bundle.origin ?? "activation")
+      && existingBundle.ordinal === bundle.ordinal
       && existingBundle.anchor_key === bundle.anchor_key
       && existingBundle.lineage_root_key === bundle.lineage_root_key
       && existingBundle.request_cursor === bundle.request_cursor
@@ -731,6 +779,7 @@ export function admitUniverseBundle(
   candidate.bundles.set(bundle.id, {
     id: bundle.id,
     origin: bundle.origin ?? "activation",
+    ordinal: bundle.ordinal,
     anchor_key: bundle.anchor_key,
     lineage_root_key: bundle.lineage_root_key,
     request_cursor: bundle.request_cursor,

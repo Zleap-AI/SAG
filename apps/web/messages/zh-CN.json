@@ -661,9 +661,8 @@
     "viewInternal": "查看内部来源原文：{title}",
     "viewOriginal": "查看原文",
     "unavailable": "原文暂不可用",
-    "excerpt": "引用片段",
-    "collapseExcerpt": "收起引用片段：{title}",
-    "expandExcerpt": "展开引用片段：{title}",
+    "collapseBody": "收起事项正文：{title}",
+    "expandBody": "展开事项正文：{title}",
     "collapse": "收起",
     "expand": "展开",
     "toggleAria": "{action} {total, number} 条引用，其中内部来源 {internal, number} 条，外部引用 {external, number} 条",
@@ -766,9 +765,14 @@
     "history": "查询历史",
     "recentActivity": "最近动态",
     "results": "检索结果",
+    "sortAria": "结果排序",
+    "sortRelevance": "相关性",
+    "sortTime": "时间（最新）",
+    "sortToggleHint": "当前按{current}排序，点击切换为{next}",
     "resultViewAria": "结果视图",
     "listView": "列表视图",
     "graphView": "图谱视图",
+    "viewToggleHint": "当前为{current}，点击切换为{next}",
     "loadMoreFailed": "补充结果失败：{error}",
     "retry": "重试",
     "loading": "加载中…",
@@ -810,6 +814,14 @@
     "sourceLoadFailed": "无法加载信息源图谱",
     "retry": "重试",
     "refresh": "刷新图谱",
+    "documentScope": "文档范围",
+    "documentFilterAria": "筛选图谱文档",
+    "documentFilterTitle": "选择全部文档，或勾选一篇及多篇文档",
+    "allDocuments": "全部文档",
+    "selectedDocuments": "已选 {selected, number} / {total, number}",
+    "documentEvents": "{count, number} 事项",
+    "noDocumentsSelected": "尚未选择文档",
+    "noDocumentsSelectedDescription": "请从文档范围中勾选一篇或多篇文档。",
     "limitAria": "每类节点显示上限",
     "limitTitle": "控制事件和实体各自最多显示的数量",
     "limitOption": "每类 {value}",
@@ -868,6 +880,7 @@
       "backToWorkspace": "返回迷你工作台",
       "assistantSettings": "助手设置",
       "close": "关闭迷你面板",
+      "returnToExplore": "返回图谱探索",
       "resize": "调整迷你面板大小"
     },
     "search": {
@@ -898,11 +911,15 @@
       "knowledgeNode": "知识星点",
       "citationTitle": "引用详情",
       "nodeTitle": "星点详情",
+      "eventDetail": "事项详情",
       "loadFailed": "星点详情加载失败",
       "noCitationSource": "这条引用暂时没有可展示的原文。",
       "loading": "正在读取星点",
       "relatedNodes": "关联星点",
       "sourceEvidence": "原文证据",
+      "previousEvent": "上一事件",
+      "nextEvent": "下一事件",
+      "eventPosition": "第 {current, number} / {total, number} 个事件",
       "unavailable": "星点详情暂时不可用"
     }
   },
@@ -984,7 +1001,7 @@
   },
   "UniverseScene": {
     "aria": "知识宇宙 3D 图谱",
-    "keyboardInstructions": "按方向键浏览图谱，按 Enter 或空格打开或锁定当前项，按 Escape 清除焦点；拖动旋转视角，滚轮平滑缩放。",
+    "keyboardInstructions": "按方向键浏览图谱，按 Enter 或空格打开或锁定当前项，按 Escape 清除焦点；拖动旋转视角，滚轮平滑缩放；进入信息源时间线后，滚轮同时推进或回退时间。",
     "keyboardStatus": "{label} 第 {index, number} 个，共 {total, number} 个。",
     "exploreSource": "探索信息源 {label}",
     "sourceStats": "{events, number} 事件 · {entities, number} 实体",
@@ -992,6 +1009,9 @@
     "exploreNode": "探索{kind} {label}",
     "kinds": { "event": "事件", "entity": "实体" },
     "relatedEvents": "{count, number} 个关联事件 · {category}",
+    "continueExploring": "继续探索 {progress}/{total}",
+    "explorationProgress": "已探索 {progress}/{total}",
+    "explorationComplete": "关联已呈现 {progress}/{total}",
     "extractedEvent": "已抽取事件"
   },
   "KnowledgeUniverse": {
@@ -1008,10 +1028,10 @@
       "complete": "已探索完整个时间范围，当前视图保持稳定",
       "loading": "正在预取相邻时间",
       "clickContinue": "在详情中选择“探索更多”",
-      "browseContinue": "使用下方按钮继续探索时间",
+      "browseContinue": "滚动继续探索时间；也可使用下方按钮精确前进或回退",
       "clickStart": "选择信息源开始探索",
-      "browseStart": "选择信息源后，使用下方按钮开始探索",
-      "title": "3D 时间探索",
+      "browseStart": "选择信息源后，滚动进入时间探索",
+      "title": "4D知识宇宙探索",
       "events": "已查询事件 / 来源总量",
       "entities": "当前缓存实体 / 来源总量",
       "sourceComplete": "已完成 {source} 的全部时间轴探索；共查询 {events, number} 个事件，当前缓存 {entities, number} 个实体"
@@ -1028,11 +1048,14 @@
       "eventEntitiesComplete": "事件关联的 {count, number} 个实体已全部呈现",
       "noEventEntities": "这个事件暂未抽取到关联实体"
     },
+    "accumulation": {
+      "noNewEvidence": "这一批线索已在当前图谱中，没有新增事件"
+    },
     "timeline": {
       "loading": "正在加载相邻一页时间",
       "defaultTitle": "知识时间轴",
       "thisGalaxy": "这个星系",
-      "windowReady": "已载入 {visible, number} 条时间；相邻页会在后台预加载",
+      "windowReady": "已载入 {visible, number} 条时间记录；相邻页会在后台预加载",
       "movedEarlier": "已进入下一段更早时间",
       "movedLater": "已回到上一段较近时间",
       "explorationComplete": "已完成 {source} 的全部时间探索，不能再继续前进",
@@ -1075,36 +1098,38 @@
     "legend": { "entities": "主题实体", "events": "关联事件" },
     "searchLocked": {
       "label": "显式探索",
-      "description": "滚轮仅用于缩放视图；锁定节点后，可在详情中选择“探索更多”"
+      "description": "搜索结果中滚轮仅用于缩放；锁定节点后，可在详情中选择“探索更多”"
     },
-    "inspector": {
-      "lockedNetwork": "已锁定关联网络",
-      "blankToUnlock": "点击图谱空白处解除锁定",
-      "viewSource": "查看原文详情",
-      "ask": "向宇航员提问",
-      "clear": "取消选择",
-      "expanding": "正在拓展下一批关联",
-      "remaining": "还有 {count, number} 个关联可探索",
-      "clickExplore": "选择“探索更多”查看关联内容",
-      "rangeStart": "已到达当前时间范围的起点",
-      "allVisible": "关联内容已全部呈现",
-      "none": "暂无可探索的关联",
-      "exploreMore": "探索更多"
+    "nodeActions": {
+      "viewDetails": "详情 ›",
+      "exploreMore": "探索更多",
+      "askAi": "AI 问答"
     },
     "controls": {
       "currentResult": "回到当前结果",
-      "normalMode": "正常",
-      "previewMode": "预览",
-      "normalModeHint": "稳定查看当前时间范围 · 拖动旋转 · 滚轮缩放",
-      "previewModeHint": "按时间远近预览 · 使用前进、后退切换",
-      "cameraRestored": "已恢复正常视图；拖动旋转，滚轮缩放",
       "previousTimePage": "回到上一段时间",
       "nextTimePage": "探索下一段时间",
       "timePosition": "{time}",
       "completedTimePosition": "{time} · 探索完成",
       "partialTime": "{time}（部分时间未标注）",
       "unknownTime": "时间未标注",
+      "countRange": "第 {from}–{to} 条 · 共 {total} 条",
+      "countPosition": "第 {position} 条 · 共 {total} 条",
       "explorationComplete": "探索完成",
+      "home": "返回上一级",
+      "homeHint": "先回到当前信息源入口，再返回知识宇宙总览",
+      "origin": "快速回到当前星系原点",
+      "answerContext": "增量线索图谱 · {events, number} 事项 · {entities, number} 实体 · {count, number} 轮问答",
+      "searchContext": "搜索结果图谱 · 当前探索已保留",
+      "evidenceContext": "线索累积 · {events, number} 事项 · {entities, number} 实体 · {count, number} 批",
+      "returnToExplore": "返回图谱探索",
+      "playTimeline": "自动播放时间线",
+      "pauseTimeline": "暂停自动播放",
+      "orderOlder": "倒序：最新 → 更早",
+      "orderNewer": "正序：当前 → 更新",
+      "reverse": "倒序",
+      "chronological": "正序",
+      "playbackComplete": "当前方向已播放完成",
       "overview": "回到完整宇宙",
       "reset": "重置探索并归位",
       "refresh": "刷新统计轮廓"
@@ -1113,20 +1138,20 @@
   "GraphSettings": {
     "drawer": {
       "title": "图谱显示设置",
-      "description": "分别调整节点卡片、实体类型与时间窗口，设置会立即作用于当前图谱。"
+      "description": "一套配置同时作用于时空探索与线索累积，调整后立即生效。"
     },
     "cards": {
       "title": "节点卡片",
-      "description": "这里只控制常驻卡片，不改变节点或关系线；悬停、点击仍会显示当前节点卡片。",
-      "event": {
-        "title": "显示事件卡片",
-        "description": "默认显示事件摘要；关闭后仍保留事件星，悬停或点击时仍可查看。",
-        "aria": "显示事件卡片"
+      "description": "只控制可读卡片，不改变事件、实体和真实关系。",
+      "enabled": {
+        "title": "启用事件与实体卡片",
+        "description": "关闭后仍保留完整星点网络，悬停或锁定时仍可查看当前关系。",
+        "aria": "启用事件与实体卡片"
       },
-      "entity": {
-        "title": "显示实体卡片",
-        "description": "默认显示实体名称；关闭后仍保留实体图元，悬停或点击时仍可查看。",
-        "aria": "显示实体卡片"
+      "preview": {
+        "title": "事件卡片数量",
+        "description": "只限制画面中默认展开的事件卡片；事件窗口、实体和真实连线不受影响。",
+        "aria": "默认显示的事件卡片数量"
       }
     },
     "entityTypes": {
@@ -1138,21 +1163,35 @@
     },
     "window": {
       "title": "探索窗口",
-      "description": "分别控制画面中的时间点与可复用缓存容量，长时间探索仍保持有界。"
+      "description": "窗口决定当前构图规模，缓存只保存纯数据，海量探索仍保持有界。"
     },
-    "visibleEventBundles": {
-      "title": "可见时间窗口",
-      "description": "控制画面中可见时间点的数量上限；每个时间点会与其实体一起完整呈现，并从边缘自然进出。",
-      "current": "当前配置上限",
-      "aria": "可见时间点数量",
+    "eventWindow": {
+      "title": "事件窗口",
+      "description": "控制参与当前构图的事件数量；实体随事件完整进入，旧事件从边缘自然退出。",
+      "aria": "事件窗口数量"
+    },
+    "cacheCapacity": {
+      "title": "事件缓存",
+      "description": "保存已加载的事件、实体和关系纯数据；达到上限后按进入顺序淘汰最旧记录。",
+      "aria": "事件缓存容量"
+    },
+    "temporal": {
+      "title": "时空探索",
+      "description": "只影响信息源时间探索的网络分页和前后准备，不改变同屏窗口。",
+      "page": {
+        "title": "分页大小",
+        "description": "每次从时间线加载的事件数量。",
+        "aria": "时空探索分页大小"
+      },
+      "prefetch": {
+        "title": "前后预取",
+        "description": "当前窗口前后各提前准备的页数；请求始终串行。",
+        "aria": "时空探索前后预取页数"
+      }
+    },
+    "value": {
+      "current": "当前",
       "recommended": "推荐 {count, number}"
-    },
-    "cachedEventBundles": {
-      "title": "时间缓存容量",
-      "description": "这是前后时间数据的内存容量上限；系统会按需预加载相邻时间，并优先复用已有缓存。",
-      "current": "本设备容量上限",
-      "aria": "时间缓存容量",
-      "runway": "最多预留 {count, number} 个时间点"
     },
     "reset": {
       "savedLocally": "设置会立即同步到当前图谱，并保存在本浏览器。",

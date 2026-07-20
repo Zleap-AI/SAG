@@ -167,9 +167,69 @@
     --space-dust-cool: hsl(200 24% 78% / 0.018);
     --space-dust-warm: hsl(42 34% 82% / 0.028);
     --space-dust-secondary: hsl(330 20% 78% / 0.014);
-    --space-galaxy-opacity: 0.44;
+    --space-galaxy-opacity: 0.52;
     --space-cursor-meteor-core: hsl(44 96% 82% / 0.96);
     --space-cursor-meteor-tail: hsl(210 24% 88% / 0.48);
+  }
+
+  /* 探索模式：天空的星点交给 WebGL，底色保留一层静态的空间光场。
+     深色仍是官网式近黑深空；浅色沿用 loading 页的白灰底，只让日光成为轻微点缀。 */
+  .bg-space-field--void {
+    --space-bg: hsl(42 12% 96%);
+    background-color: var(--space-bg);
+    background-image:
+      radial-gradient(
+        ellipse at 53% 43%,
+        hsl(0 0% 100% / 0.78) 0%,
+        hsl(210 24% 98% / 0.42) 44%,
+        transparent 72%
+      ),
+      radial-gradient(
+        ellipse at 13% 22%,
+        hsl(43 68% 78% / 0.17) 0%,
+        transparent 44%
+      ),
+      radial-gradient(
+        ellipse at 8% 82%,
+        hsl(213 20% 72% / 0.12) 0%,
+        transparent 58%
+      ),
+      radial-gradient(
+        ellipse at 94% 14%,
+        hsl(210 20% 76% / 0.1) 0%,
+        transparent 56%
+      ),
+      linear-gradient(
+        132deg,
+        hsl(213 20% 76% / 0.14) 0%,
+        hsl(210 20% 98% / 0.08) 48%,
+        hsl(38 38% 82% / 0.16) 100%
+      );
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: cover;
+  }
+
+  /* 品牌深空：对齐官网首屏的近黑蓝底，让香槟金粒子有干净的舞台。 */
+  .dark .bg-space-field--void {
+    --space-bg: hsl(228 42% 4%);
+    background-image:
+      radial-gradient(
+        ellipse 74% 52% at 52% 45%,
+        hsl(198 38% 18% / 0.13) 0%,
+        transparent 70%
+      ),
+      radial-gradient(
+        ellipse 32% 28% at 51% 48%,
+        hsl(42 74% 54% / 0.075) 0%,
+        transparent 68%
+      ),
+      linear-gradient(136deg, hsl(228 42% 4%), hsl(232 30% 5%));
+  }
+
+  .bg-space-field--void::before,
+  .bg-space-field--void::after {
+    content: none;
   }
 
   .bg-space-field::before {
@@ -210,6 +270,83 @@
     z-index: 1;
     overflow: hidden;
     pointer-events: none;
+  }
+
+  .sag-space-sparkles[data-space-variant="universe"] {
+    /* The scene owns the only semantic nebula. This layer is a motionless,
+       distant sky — enough depth to avoid a flat black canvas, never another
+       foreground particle cloud. */
+    opacity: 0.5;
+    transition: opacity 360ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .sag-space-sparkles[data-space-variant="universe"]::before {
+    content: none;
+  }
+
+  .sag-space-sparkles[data-space-variant="universe"] .sag-space-particles {
+    animation: none;
+    opacity: 0.82;
+    transform: none;
+    will-change: auto;
+  }
+
+  .sag-space-sparkles[data-space-variant="universe"][data-universe-presentation="accumulation"] {
+    opacity: 0.72;
+  }
+
+  .sag-space-sparkles[data-space-variant="universe"][data-universe-presentation="accumulation"]::before {
+    content: none;
+    animation: none;
+  }
+
+  .sag-space-sparkles[data-space-variant="universe"][data-universe-presentation="accumulation"]
+    .sag-space-particles {
+    animation: none;
+    opacity: 0.58;
+    transform: none;
+    will-change: auto;
+  }
+
+  .sag-space-sparkles[data-space-variant="universe"][data-universe-presentation="accumulation"]
+    .sag-space-sparkle {
+    animation-play-state: paused;
+    opacity: 0.36;
+  }
+
+  .sag-space-cursor-layer {
+    --space-cursor-meteor-core: hsl(42 88% 48% / 0.96);
+    --space-cursor-meteor-tail: hsl(42 82% 62% / 0.56);
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    isolation: isolate;
+    pointer-events: none;
+  }
+
+  .dark .sag-space-cursor-layer {
+    --space-cursor-meteor-core: hsl(44 96% 82% / 0.98);
+    --space-cursor-meteor-tail: hsl(210 24% 88% / 0.58);
+  }
+
+  .sag-space-sparkles[data-space-variant="universe"][data-universe-view="detail"] {
+    /* Keep the far sky beneath the corridor, with the data particles carrying
+       every visible movement and transition. */
+    opacity: 0.38;
+  }
+
+  .sag-space-sparkles[data-space-variant="universe"][data-universe-view="detail"]::before,
+  .sag-space-sparkles[data-space-variant="universe"][data-universe-view="detail"] .sag-space-particles {
+    animation-play-state: paused;
+  }
+
+  .sag-space-sparkles[data-space-variant="universe"][data-universe-view="detail"]
+    :is(.sag-space-sparkle, .sag-space-meteor, .sag-space-cursor-meteor) {
+    opacity: 0 !important;
+  }
+
+  .sag-space-cursor-layer[data-universe-view="detail"] .sag-space-cursor-meteor {
+    opacity: 0 !important;
   }
 
   .sag-space-particles,
@@ -292,7 +429,7 @@
     display: block;
     width: 100%;
     height: 100%;
-    filter: saturate(0.9) brightness(1.12) contrast(1.08);
+    filter: saturate(0.94) brightness(1.2) contrast(1.08);
     opacity: var(--space-galaxy-opacity);
     transition: opacity 240ms ease;
   }
@@ -323,7 +460,13 @@
     z-index: 2;
     width: 86px;
     height: 1px;
-    background: linear-gradient(90deg, transparent, var(--space-sparkle));
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--space-sparkle) 78%,
+      hsl(45 100% 88% / 0.92)
+    );
+    box-shadow: 0 0 8px hsl(45 96% 68% / 0.42);
     opacity: 0;
     transform: rotate(var(--meteor-angle)) translateX(-140px);
     transform-origin: right center;
@@ -372,8 +515,13 @@
     z-index: 3;
   }
 
-  .sag-space-sparkles[data-universe-view="detail"]
+  .sag-space-sparkles[data-ambient-motion="paused"]
     :is(.sag-space-dust, .sag-space-meteor, .sag-space-sparkle) {
+    animation-play-state: paused;
+  }
+
+  .sag-space-sparkles[data-ambient-motion="paused"]::before,
+  .sag-space-sparkles[data-ambient-motion="paused"] .sag-space-particles {
     animation-play-state: paused;
   }
 
@@ -428,6 +576,30 @@
     }
   }
 
+  @keyframes sag-space-nebula-breathe {
+    0% {
+      opacity: 0.32;
+      transform: translate3d(-1.2%, 0.8%, 0) scale(0.94);
+    }
+    48% {
+      opacity: 0.58;
+      transform: translate3d(0.6%, -0.4%, 0) scale(1.01);
+    }
+    100% {
+      opacity: 0.42;
+      transform: translate3d(1.1%, 0.5%, 0) scale(0.98);
+    }
+  }
+
+  @keyframes sag-space-starfield-drift {
+    0% {
+      transform: translate3d(-0.35%, 0.2%, 0) scale(1.005);
+    }
+    100% {
+      transform: translate3d(0.35%, -0.25%, 0) scale(1.012);
+    }
+  }
+
   @keyframes sag-space-orbit-drift {
     to {
       transform: translate(-2.4%, 1.6%) rotate(20deg);
@@ -454,10 +626,10 @@
       transform: rotate(var(--meteor-angle)) translateX(-140px);
     }
     84% {
-      opacity: 0.08;
+      opacity: 0.12;
     }
     87% {
-      opacity: 0.66;
+      opacity: 0.82;
     }
     91% {
       opacity: 0;
@@ -2654,7 +2826,8 @@
     .sag-pet__thrusters > span::before,
     .sag-pet__thrusters > span::after,
     .sag-pet__pack-status,
-    .sag-pet__panel-light {
+    .sag-pet__panel-light,
+    .sag-knowledge-universe .sag-universe-graph {
       animation: none !important;
       transition: none !important;
     }
@@ -2666,14 +2839,80 @@
     .sag-space-meteor {
       opacity: 0;
     }
+
+    .sag-space-sparkles[data-space-variant="universe"] {
+      transition: none;
+    }
+
+    .sag-space-sparkles[data-space-variant="universe"]::before,
+    .sag-space-sparkles[data-space-variant="universe"] .sag-space-particles {
+      animation: none !important;
+    }
   }
 
   .sag-knowledge-universe {
     isolation: isolate;
+    --universe-brand-gold: #d6ae63;
+    --universe-source-accent: var(--universe-brand-gold);
+  }
+
+  .sag-knowledge-universe [data-universe-home-control] {
+    border-color: color-mix(in srgb, var(--universe-source-accent), transparent 68%);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--universe-source-accent), transparent 90%),
+      0 8px 24px rgb(15 23 42 / 0.14);
+  }
+
+  .sag-knowledge-universe [data-universe-home-control]:hover {
+    border-color: color-mix(in srgb, var(--universe-source-accent), transparent 42%);
+    background: color-mix(in srgb, var(--universe-source-accent), transparent 92%);
+  }
+
+  .sag-knowledge-universe [data-universe-home-control] svg {
+    color: color-mix(in srgb, var(--universe-source-accent), white 18%);
+    filter: drop-shadow(0 0 7px color-mix(in srgb, var(--universe-source-accent), transparent 34%));
+  }
+
+  .sag-knowledge-universe [data-universe-timeline-controls] {
+    border-color: color-mix(in srgb, var(--universe-source-accent), transparent 72%);
+  }
+
+  .sag-knowledge-universe [data-universe-timeline-controls] button:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--universe-source-accent), transparent 42%);
+    color: color-mix(in srgb, var(--universe-source-accent), white 18%);
+  }
+
+  .sag-knowledge-universe [data-universe-summary="true"] {
+    border-color: color-mix(in srgb, var(--universe-source-accent), transparent 78%);
   }
 
   .sag-universe-graph {
     z-index: 0;
+  }
+
+  .sag-knowledge-universe[data-universe-mode="explore"][data-universe-view="overview"]
+    .sag-universe-graph {
+    transform-origin: 50% 48%;
+    animation: sag-universe-overview-breathe 9.5s ease-in-out infinite;
+    will-change: transform, opacity;
+  }
+
+  @keyframes sag-universe-overview-breathe {
+    0%,
+    100% {
+      transform: scale(1);
+      opacity: 0.96;
+    }
+
+    48% {
+      transform: scale(1.014);
+      opacity: 1;
+    }
+
+    70% {
+      transform: scale(1.006);
+      opacity: 0.985;
+    }
   }
 
   .sag-universe-graph canvas {
@@ -2709,13 +2948,38 @@
     cursor: pointer;
   }
 
+  .sag-universe-node-label__primary,
+  .sag-universe-node-label__detail-action,
+  .sag-universe-node-label__action {
+    appearance: none;
+    margin: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+  }
+
+  .sag-universe-node-label__primary {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: stretch;
+    padding: 0;
+    text-align: left;
+    cursor: pointer;
+  }
+
   [data-universe-dragging-id]:not([data-universe-dragging-id=""])
     :is(.sag-nebula-label, .sag-universe-node-label) {
     pointer-events: none;
   }
 
   .sag-nebula-label:focus-visible,
-  .sag-universe-node-label:focus-visible {
+  .sag-universe-node-label:has(.sag-universe-node-label__primary:focus-visible),
+  .sag-universe-node-label__detail-action:focus-visible,
+  .sag-universe-node-label__action:focus-visible {
     outline: 2px solid hsl(var(--ring) / 0.72);
     outline-offset: 3px;
   }
@@ -2960,27 +3224,28 @@
     animation: none;
   }
 
+  /* 读事件是目的：面板更实、字号更大、对比更足——星幕上的文字必须一眼可读。 */
   .sag-universe-node-label {
-    --universe-card-eyebrow-opacity: 1;
-    --universe-card-summary-opacity: 1;
-    --universe-card-summary-y: 0px;
+    --universe-card-edge-blur: 0px;
     --universe-label-connector-length: 10px;
+    --universe-node-accent: #d6ae63;
     display: flex;
-    width: 216px;
-    height: 78px;
+    width: 232px;
+    height: 86px;
     flex-direction: column;
     align-items: stretch;
     justify-content: flex-start;
     padding: 9px 10px 9px 13px;
     overflow: visible;
-    border: 1px solid hsl(var(--border) / 0.58);
+    border: 1px solid hsl(var(--border) / 0.66);
     border-radius: 6px;
-    background: hsl(var(--background) / 0.82);
+    background: hsl(var(--background) / 0.9);
     box-shadow:
       inset 2px 0 0 rgb(244 201 95 / 0.72),
       0 8px 26px rgb(0 0 0 / 0.1),
       0 0 18px rgb(244 201 95 / 0.045);
-    color: hsl(var(--foreground) / 0.94);
+    color: hsl(var(--foreground) / 0.96);
+    filter: blur(var(--universe-card-edge-blur));
     text-align: left;
     backdrop-filter: blur(12px) saturate(118%);
     transition:
@@ -2989,6 +3254,7 @@
       border-color 160ms ease,
       background-color 160ms ease,
       box-shadow 160ms ease,
+      filter 120ms linear,
       opacity 160ms ease;
   }
 
@@ -3027,14 +3293,14 @@
 
   .sag-universe-node-label[data-kind="entity"] {
     box-shadow:
-      inset 2px 0 0 rgb(116 215 232 / 0.76),
+      inset 2px 0 0 color-mix(in srgb, var(--universe-node-accent), white 8%),
       0 8px 26px rgb(0 0 0 / 0.1),
-      0 0 18px rgb(116 215 232 / 0.05);
+      0 0 18px color-mix(in srgb, var(--universe-node-accent), transparent 92%);
   }
 
   .sag-universe-node-label[data-kind="entity"][data-compact="true"] {
-    width: 124px;
-    height: 26px;
+    width: 132px;
+    height: 28px;
     flex-direction: row;
     align-items: center;
     gap: 6px;
@@ -3042,11 +3308,18 @@
     border-color: hsl(var(--border) / 0.38);
     background: hsl(var(--background) / 0.62);
     box-shadow:
-      inset 2px 0 0 rgb(116 215 232 / 0.58),
+      inset 2px 0 0 color-mix(in srgb, var(--universe-node-accent), transparent 42%),
       0 4px 12px rgb(0 0 0 / 0.07),
-      0 0 10px rgb(116 215 232 / 0.035);
+      0 0 10px color-mix(in srgb, var(--universe-node-accent), transparent 94%);
     color: hsl(var(--foreground) / 0.86);
     backdrop-filter: blur(8px) saturate(108%);
+  }
+
+  .sag-universe-node-label[data-kind="entity"][data-compact="true"]
+    .sag-universe-node-label__primary {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
   }
 
   .sag-universe-node-label[data-kind="entity"][data-compact="true"]
@@ -3068,21 +3341,22 @@
     min-width: 0;
     margin: 0;
     overflow: hidden;
-    font-size: 10px;
-    line-height: 16px;
+    font-size: 11px;
+    line-height: 18px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .sag-universe-node-label[data-kind="entity"]::before {
-    background: rgb(116 215 232 / 0.44);
+    background: color-mix(in srgb, var(--universe-node-accent), transparent 56%);
   }
 
+  /* 展开只向外长一点：盒子在指针下方猛长会把 hover 顶掉，读着也晃。 */
   .sag-universe-node-label[data-expanded="true"] {
-    width: 244px;
-    height: 94px;
+    width: 252px;
+    height: 100px;
     border-color: hsl(var(--foreground) / 0.22);
-    background: hsl(var(--background) / 0.94);
+    background: hsl(var(--background) / 0.96);
     box-shadow:
       inset 2px 0 0 rgb(244 201 95 / 0.9),
       0 12px 34px rgb(0 0 0 / 0.14),
@@ -3091,23 +3365,142 @@
 
   .sag-universe-node-label[data-kind="entity"][data-expanded="true"] {
     box-shadow:
-      inset 2px 0 0 rgb(116 215 232 / 0.92),
+      inset 2px 0 0 color-mix(in srgb, var(--universe-node-accent), white 4%),
       0 12px 34px rgb(0 0 0 / 0.14),
-      0 0 24px rgb(116 215 232 / 0.08);
+      0 0 24px color-mix(in srgb, var(--universe-node-accent), transparent 88%);
+  }
+
+  .sag-universe-node-label[data-locked="true"] {
+    width: 264px;
+    height: 126px;
+    border-color: hsl(var(--foreground) / 0.28);
+    background: hsl(var(--background) / 0.97);
+    cursor: default;
+  }
+
+  .sag-universe-node-label__actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+    margin-top: 7px;
+    padding-top: 7px;
+    border-top: 1px solid hsl(var(--border) / 0.56);
+  }
+
+  .sag-universe-node-label__actions[hidden] {
+    display: none;
+  }
+
+  .sag-universe-node-label__detail-action {
+    position: absolute;
+    right: 9px;
+    top: 8px;
+    z-index: 1;
+    display: inline-flex;
+    min-height: 18px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    background: transparent;
+    color: rgb(253 224 133 / 0.98);
+    font-size: 10px;
+    font-weight: 650;
+    line-height: 1;
+    padding: 0 2px;
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      border-color 140ms ease,
+      background-color 140ms ease,
+      color 140ms ease,
+      opacity 140ms ease;
+  }
+
+  .sag-universe-node-label__detail-action:hover:not(:disabled) {
+    background: rgb(244 201 95 / 0.1);
+    color: rgb(255 237 176 / 1);
+  }
+
+  .sag-universe-node-label:has(
+      .sag-universe-node-label__detail-action:not([hidden])
+    )
+    .sag-universe-node-label__primary {
+    padding-right: 48px;
+  }
+
+  .sag-universe-node-label[data-kind="entity"]
+    .sag-universe-node-label__detail-action {
+    color: color-mix(in srgb, var(--universe-node-accent), white 24%);
+  }
+
+  .sag-universe-node-label[data-kind="entity"][data-compact="true"]
+    .sag-universe-node-label__detail-action {
+    right: 6px;
+    top: 5px;
+    min-height: 18px;
+    font-size: 9px;
+  }
+
+  .sag-universe-node-label[data-kind="entity"][data-compact="true"]:has(
+      .sag-universe-node-label__detail-action:not([hidden])
+    )
+    .sag-universe-node-label__primary {
+    padding-right: 42px;
+  }
+
+  .sag-universe-node-label__detail-action[hidden] {
+    display: none;
+  }
+
+  .sag-universe-node-label__action {
+    display: inline-flex;
+    min-width: 0;
+    min-height: 26px;
+    flex: 1 1 0;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid hsl(var(--border) / 0.68);
+    border-radius: 5px;
+    background: hsl(var(--muted) / 0.38);
+    color: hsl(var(--foreground) / 0.88);
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    transition:
+      border-color 140ms ease,
+      background-color 140ms ease,
+      color 140ms ease;
+  }
+
+  .sag-universe-node-label__action:hover:not(:disabled) {
+    border-color: rgb(244 201 95 / 0.58);
+    background: rgb(244 201 95 / 0.1);
+    color: rgb(253 224 133 / 0.98);
+  }
+
+  .sag-universe-node-label[data-kind="entity"]
+    .sag-universe-node-label__action:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--universe-node-accent), transparent 42%);
+    background: color-mix(in srgb, var(--universe-node-accent), transparent 90%);
+    color: color-mix(in srgb, var(--universe-node-accent), white 22%);
+  }
+
+  .sag-universe-node-label__action:disabled {
+    opacity: 0.44;
+    cursor: wait;
   }
 
   .sag-universe-node-label__eyebrow {
     display: flex;
-    min-height: 12px;
+    min-height: 13px;
     align-items: center;
     gap: 5px;
     overflow: hidden;
-    opacity: var(--universe-card-eyebrow-opacity);
-    color: hsl(var(--muted-foreground) / 0.82);
-    font-size: 9px;
-    line-height: 12px;
+    color: hsl(var(--muted-foreground) / 0.88);
+    font-size: 10px;
+    line-height: 13px;
     text-overflow: ellipsis;
-    transition: opacity 80ms linear;
     white-space: nowrap;
   }
 
@@ -3126,17 +3519,18 @@
   }
 
   .sag-universe-node-label[data-kind="entity"] .sag-universe-node-label__marker {
-    background: rgb(116 215 232 / 0.96);
-    box-shadow: 0 0 8px rgb(116 215 232 / 0.48);
+    background: color-mix(in srgb, var(--universe-node-accent), white 4%);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--universe-node-accent), transparent 52%);
   }
 
   .sag-universe-node-label strong {
     display: -webkit-box;
     margin-top: 3px;
     overflow: hidden;
-    font-size: 11px;
-    font-weight: 590;
-    line-height: 15px;
+    color: hsl(var(--foreground));
+    font-size: 12.5px;
+    font-weight: 620;
+    line-height: 17px;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 1;
   }
@@ -3145,16 +3539,46 @@
     display: -webkit-box;
     margin-top: 3px;
     overflow: hidden;
-    opacity: var(--universe-card-summary-opacity);
-    color: hsl(var(--muted-foreground) / 0.8);
-    font-size: 9px;
-    line-height: 13px;
-    transform: translateY(var(--universe-card-summary-y));
-    transition:
-      opacity 80ms linear,
-      transform 80ms linear;
+    color: hsl(var(--muted-foreground) / 0.92);
+    font-size: 10.5px;
+    line-height: 15px;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
+  }
+
+  .sag-universe-node-label__explore {
+    position: absolute;
+    left: 4px;
+    bottom: calc(100% + 6px);
+    display: inline-flex;
+    min-height: 20px;
+    align-items: center;
+    border: 1px solid rgb(244 201 95 / 0.34);
+    border-radius: 999px;
+    background: hsl(var(--background) / 0.88);
+    box-shadow:
+      0 6px 18px rgb(0 0 0 / 0.13),
+      0 0 14px rgb(244 201 95 / 0.08);
+    color: rgb(253 224 133 / 0.96);
+    font-size: 9px;
+    font-weight: 560;
+    line-height: 1;
+    padding: 0 8px;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+
+  .sag-universe-node-label[data-kind="entity"]
+    .sag-universe-node-label__explore {
+    border-color: color-mix(in srgb, var(--universe-node-accent), transparent 64%);
+    box-shadow:
+      0 6px 18px rgb(0 0 0 / 0.13),
+      0 0 14px color-mix(in srgb, var(--universe-node-accent), transparent 91%);
+    color: color-mix(in srgb, var(--universe-node-accent), white 22%);
+  }
+
+  .sag-universe-node-label__explore[hidden] {
+    display: none;
   }
 
   .sag-universe-node-label[data-expanded="true"] p {
@@ -3162,7 +3586,13 @@
   }
 
   [data-universe-reduced-motion="true"]
-    :is(.sag-universe-node-label__eyebrow, .sag-universe-node-label p) {
+    :is(
+      .sag-universe-node-label__eyebrow,
+      .sag-universe-node-label p,
+      .sag-universe-node-label__explore,
+      .sag-universe-node-label__detail-action,
+      .sag-universe-node-label__action
+    ) {
     transition: none;
   }
 
@@ -3196,6 +3626,16 @@
       width: 108px;
       height: 24px;
       padding: 3px 6px 3px 8px;
+    }
+
+    .sag-universe-node-label[data-locked="true"] {
+      width: 224px;
+      height: 112px;
+    }
+
+    .sag-universe-node-label__action {
+      min-height: 24px;
+      font-size: 9px;
     }
   }
 

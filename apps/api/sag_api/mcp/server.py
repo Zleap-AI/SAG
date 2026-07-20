@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, TypedDict
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
@@ -172,7 +173,11 @@ async def _document_in_scope(
     return (document, source) if source is not None else None
 
 
-def build_source_mcp(*, stateless_http: bool = False) -> FastMCP:
+def build_source_mcp(
+    *,
+    stateless_http: bool = False,
+    transport_security: TransportSecuritySettings | None = None,
+) -> FastMCP:
     """构造知识库 MCP server，具体作用域由 contextvar 在请求前注入。"""
     mcp = FastMCP(
         "sag-knowledge",
@@ -182,6 +187,7 @@ def build_source_mcp(*, stateless_http: bool = False) -> FastMCP:
             "read 和 get_chunk 获取可引用证据。回答请依据 search 返回的编号证据。"
         ),
         stateless_http=stateless_http,
+        transport_security=transport_security,
     )
 
     @mcp.tool(

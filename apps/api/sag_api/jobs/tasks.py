@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -113,6 +114,7 @@ async def process_document(
             on_checkpoint=on_checkpoint,
             should_pause=should_pause,
             max_concurrency=settings.document_extract_concurrency,
+            document_title=Path(document.filename).stem.strip(),
         )
         if outcome.paused:
             document.status = DocumentStatus.PAUSED

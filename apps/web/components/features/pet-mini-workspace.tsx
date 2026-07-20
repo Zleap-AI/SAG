@@ -6,6 +6,8 @@ import { usePathname } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
   CircleDot,
   FileText,
   Grip,
@@ -38,6 +40,7 @@ import {
   UNIVERSE_PATCH_EVENT,
   UNIVERSE_PATCH_RESET_EVENT,
   dispatchUniverseFocus,
+  dispatchUniverseResume,
   takePendingUniverseAsk,
   takePendingUniverseDetail,
   type UniverseAskTarget,
@@ -105,6 +108,7 @@ type MiniDetailTarget = UniverseDetailTarget | MiniCitationTarget | MiniDocument
 interface MiniDetailLabels {
   localKnowledge: string;
   knowledgeNode: string;
+  eventDetail: string;
 }
 
 const DEFAULT_MINI_PANEL_SIZE: MiniPanelSize = { width: 360, height: 470 };
@@ -199,6 +203,9 @@ function detailFromSearchResult(
   const section = supportingEvent
     ? result.sections.find((item) => item.chunk_id === supportingEvent.chunk_id) ?? null
     : null;
+  const eventDetail = event
+    ? section?.content?.trim() || event.summary
+    : "";
 
   return {
     id: target.id,
@@ -206,7 +213,7 @@ function detailFromSearchResult(
     source_id: supportingEvent?.source_id ?? sourceId,
     source_name: supportingEvent?.source_name ?? labels.localKnowledge,
     label: event?.title ?? entity?.name ?? labels.knowledgeNode,
-    description: event?.summary ?? entity?.description ?? "",
+    description: event ? eventDetail : entity?.description ?? "",
     category: event?.category ?? entity?.type ?? "",
     start_time: event?.start_time ?? null,
     evidence: section
@@ -286,11 +293,13 @@ export function PetMiniWorkspace({
   const detailLabels = React.useMemo<MiniDetailLabels>(() => ({
     localKnowledge: t("detail.localKnowledge"),
     knowledgeNode: t("detail.knowledgeNode"),
+    eventDetail: t("detail.eventDetail"),
   }), [t]);
   const pathname = usePathname();
   const conversationRuntime = useConversationRuntime();
   const {
     agent,
+    appMode,
     user,
     workspaceSection,
     enterExploreMode,
@@ -317,6 +326,23 @@ export function PetMiniWorkspace({
   const panelRef = React.useRef<HTMLDivElement>(null);
   const detailTarget = detailTrail[detailTrail.length - 1] ?? null;
   detailTargetRef.current = detailTarget;
+  const eventNavigation = React.useMemo(() => {
+    if (detailTarget?.kind !== "event" || !detailTarget.navigation?.items.length) {
+      return null;
+    }
+    const navigation = detailTarget.navigation;
+    const matchedIndex = navigation.items.findIndex((item) =>
+      item.id === detailTarget.id && item.source_id === detailTarget.source_id);
+    const index = matchedIndex >= 0
+      ? matchedIndex
+      : Math.min(Math.max(0, navigation.index), navigation.items.length - 1);
+    return {
+      index,
+      total: navigation.items.length,
+      previous: index > 0 ? index - 1 : null,
+      next: index < navigation.items.length - 1 ? index + 1 : null,
+    };
+  }, [detailTarget]);
   const miniPanelStorageKey = `sag:mini-workspace-size:${user?.id ?? "local"}`;
   const answerRun = answerSnapshot?.run ?? null;
   const answerBusy = answerRun !== null;
@@ -385,6 +411,19 @@ export function PetMiniWorkspace({
       });
     },
     [onPanelViewChange],
+  );
+
+  const openTimelineEvent = React.useCallback(
+    (index: number) => {
+      const current = detailTargetRef.current;
+      if (current?.kind !== "event" || !current.navigation?.items.length) return;
+      const item = current.navigation.items[index];
+      if (!item) return;
+      const navigation = { ...current.navigation, index };
+      dispatchUniverseFocus(item.kind, item.id, item.source_id, { lock: true });
+      openDetail({ ...item, navigation });
+    },
+    [openDetail],
   );
 
   const openSearchEvent = React.useCallback(
@@ -773,6 +812,13 @@ export function PetMiniWorkspace({
     if (workspaceSection !== "search") enterExploreMode("search");
   };
 
+  const returnToExploration = React.useCallback(() => {
+    setAnswerHistoryOpen(false);
+    setDetailTrail([]);
+    dispatchUniverseResume();
+    onClose();
+  }, [onClose]);
+
   const newAnswer = () => {
     if (answerBusy) return;
     observedRouteThreadRef.current = routeThreadId;
@@ -957,9 +1003,13 @@ export function PetMiniWorkspace({
           variant="ghost"
           size="icon"
           className="size-7"
-          onClick={onClose}
-          aria-label={t("controls.close")}
-          title={t("controls.close")}
+          onClick={appMode === "explore" ? returnToExploration : onClose}
+          aria-label={t(
+            appMode === "explore" ? "controls.returnToExplore" : "controls.close",
+          )}
+          title={t(
+            appMode === "explore" ? "controls.returnToExplore" : "controls.close",
+          )}
         >
           <X className="size-3.5" />
         </Button>
@@ -1172,16 +1222,17 @@ export function PetMiniWorkspace({
             </motion.div>
           </AnimatePresence>
         ) : (
-          <ScrollArea className="h-full">
-            <AnimatePresence mode="wait" initial={false}>
-              {detailTarget ? (
-                <motion.div
-                  key={`${detailTarget.kind}:${detailTarget.id}`}
-                  initial={{ opacity: 0, x: 10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -10 }}
-                  className="p-4"
-                >
+          <div className="flex h-full min-h-0 flex-col">
+            <ScrollArea className="min-h-0 flex-1">
+              <AnimatePresence mode="wait" initial={false}>
+                {detailTarget ? (
+                  <motion.div
+                    key={`${detailTarget.kind}:${detailTarget.id}`}
+                    initial={{ opacity: 0, x: 10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -10 }}
+                    className="p-4"
+                  >
                   {detailTarget.kind === "citation" ? (
                     <div className="space-y-4">
                       <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
@@ -1217,9 +1268,16 @@ export function PetMiniWorkspace({
                         </div>
                         <h2 className="mt-2 text-sm font-medium leading-5">{detail.label}</h2>
                         {detail.description && (
-                          <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-foreground/75">
-                            {detail.description}
-                          </p>
+                          <div className="mt-3">
+                            {detailTarget.kind === "event" && (
+                              <p className="text-[10px] font-medium tracking-wide text-muted-foreground/75">
+                                {detailLabels.eventDetail}
+                              </p>
+                            )}
+                            <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-foreground/75">
+                              {detail.description}
+                            </p>
+                          </div>
                         )}
                       </section>
 
@@ -1278,10 +1336,55 @@ export function PetMiniWorkspace({
                       {detailError || t("detail.unavailable")}
                     </div>
                   )}
-                </motion.div>
-              ) : null}
-            </AnimatePresence>
-          </ScrollArea>
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+            </ScrollArea>
+            {eventNavigation && (
+              <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-t px-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 gap-1 px-2 text-xs"
+                  disabled={eventNavigation.previous === null}
+                  onClick={() => {
+                    if (eventNavigation.previous !== null) {
+                      openTimelineEvent(eventNavigation.previous);
+                    }
+                  }}
+                  aria-label={t("detail.previousEvent")}
+                  title={t("detail.previousEvent")}
+                >
+                  <ChevronLeft className="size-3.5" />
+                  {t("detail.previousEvent")}
+                </Button>
+                <span className="whitespace-nowrap text-[10px] text-muted-foreground">
+                  {t("detail.eventPosition", {
+                    current: eventNavigation.index + 1,
+                    total: eventNavigation.total,
+                  })}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 gap-1 px-2 text-xs"
+                  disabled={eventNavigation.next === null}
+                  onClick={() => {
+                    if (eventNavigation.next !== null) {
+                      openTimelineEvent(eventNavigation.next);
+                    }
+                  }}
+                  aria-label={t("detail.nextEvent")}
+                  title={t("detail.nextEvent")}
+                >
+                  {t("detail.nextEvent")}
+                  <ChevronRight className="size-3.5" />
+                </Button>
+              </div>
+            )}
+          </div>
         )}
       </div>
 

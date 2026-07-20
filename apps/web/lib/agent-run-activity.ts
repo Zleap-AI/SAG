@@ -83,9 +83,11 @@ function normalizeEventRefs(value: unknown): CitationEventRef[] {
     if (!title) continue;
     const event: CitationEventRef = { title };
     const id = optionalText(raw.id)?.trim();
+    const content = optionalText(raw.content)?.trim();
     const summary = optionalText(raw.summary)?.trim();
     const category = optionalText(raw.category)?.trim();
     if (id) event.id = id;
+    if (content) event.content = content;
     if (summary) event.summary = summary;
     if (category) event.category = category;
     refs.push(event);

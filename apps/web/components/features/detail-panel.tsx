@@ -240,6 +240,7 @@ function OriginalDocumentPreview({ doc }: { doc: Doc }) {
 
   const [textMode, setTextMode] = React.useState<"md" | "raw">("md");
   const fileUrl = api.documentFileUrl(doc.source_id, doc.id);
+  const previewUrl = api.documentPreviewUrl(doc.source_id, doc.id);
 
   React.useEffect(() => {
     let alive = true;
@@ -247,7 +248,7 @@ function OriginalDocumentPreview({ doc }: { doc: Doc }) {
     setState({ phase: "loading" });
     (async () => {
       try {
-        const res = await fetch(fileUrl, {
+        const res = await fetch(previewUrl, {
           headers: {
             Authorization: `Bearer ${getToken() ?? ""}`,
             "Accept-Language": locale,
@@ -280,7 +281,7 @@ function OriginalDocumentPreview({ doc }: { doc: Doc }) {
       alive = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [doc.content_type, doc.id, doc.source_id, fileUrl, locale, t]);
+  }, [doc.content_type, doc.id, doc.source_id, locale, previewUrl, t]);
 
   async function download() {
     try {

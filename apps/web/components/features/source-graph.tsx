@@ -16,6 +16,7 @@ import {
 } from "d3-force";
 import {
   AlertTriangle,
+  ChevronDown,
   FileText,
   Network,
   RefreshCw,
@@ -25,7 +26,22 @@ import {
 } from "lucide-react";
 
 import { api, ApiError } from "@/lib/api";
-import type { Entity, Source, SourceGraphEvent, SourceGraphResponse } from "@/lib/types";
+import type {
+  Doc,
+  Entity,
+  Source,
+  SourceGraphEvent,
+  SourceGraphResponse,
+} from "@/lib/types";
+import {
+  ALL_SOURCE_GRAPH_DOCUMENTS,
+  normalizeSourceGraphDocumentScope,
+  setAllSourceGraphDocuments,
+  sourceGraphDocumentIds,
+  sourceGraphSelectedDocumentCount,
+  toggleSourceGraphDocument,
+  type SourceGraphDocumentScope,
+} from "@/lib/source-graph-document-scope";
 import { cn } from "@/lib/utils";
 import { useDetailPanel } from "@/components/features/detail-panel";
 import {
@@ -48,6 +64,14 @@ import {
   type GraphPoint,
 } from "@/components/features/graph-canvas";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Select,
   SelectContent,
@@ -87,7 +111,12 @@ interface GraphLabels {
 
 const KIND_META: Record<
   GraphKind,
-  { titleKey: "event" | "entity"; width: number; className: string; header: string }
+  {
+    titleKey: "event" | "entity";
+    width: number;
+    className: string;
+    header: string;
+  }
 > = {
   event: {
     titleKey: "event",
@@ -112,12 +141,18 @@ function GraphNode({ data, selected }: NodeProps) {
       className={cn(
         "relative cursor-grab overflow-hidden rounded-lg border bg-card shadow-soft transition-[box-shadow,border-color] hover:shadow-lift active:cursor-grabbing",
         meta.className,
-        selected && "ring-2 ring-primary/45 ring-offset-2 ring-offset-background",
+        selected &&
+          "ring-2 ring-primary/45 ring-offset-2 ring-offset-background",
       )}
       style={{ width: meta.width }}
     >
       <GraphHandles />
-      <div className={cn("flex items-center gap-1.5 px-2 py-1 text-[10px] font-medium", meta.header)}>
+      <div
+        className={cn(
+          "flex items-center gap-1.5 px-2 py-1 text-[10px] font-medium",
+          meta.header,
+        )}
+      >
         {node.kind === "event" ? (
           <Sparkles className="size-3 shrink-0" />
         ) : (
@@ -133,7 +168,10 @@ function GraphNode({ data, selected }: NodeProps) {
           {node.label}
         </div>
         {node.subtitle && (
-          <div className="mt-1 truncate text-[10px] text-muted-foreground" title={node.subtitle}>
+          <div
+            className="mt-1 truncate text-[10px] text-muted-foreground"
+            title={node.subtitle}
+          >
             {node.subtitle}
           </div>
         )}
@@ -145,7 +183,9 @@ function GraphNode({ data, selected }: NodeProps) {
 const nodeTypes = { sourceGraph: GraphNode };
 const DEFAULT_GRAPH_LIMIT = 1_000;
 const GRAPH_LIMIT_STORAGE_KEY = "sag:source-graph-limit";
-const GRAPH_LIMIT_OPTIONS = [100, 300, 600, 1_000, 2_000, 5_000, 10_000] as const;
+const GRAPH_LIMIT_OPTIONS = [
+  100, 300, 600, 1_000, 2_000, 5_000, 10_000,
+] as const;
 
 function makeNodes(
   slice: EventEntityGraphSlice,
@@ -161,14 +201,17 @@ function makeNodes(
       data: {
         kind: "event",
         label: event.title,
-        subtitle: event.category || (event.start_time ? labels.timedEvent : labels.extractedEvent),
+        subtitle:
+          event.category ||
+          (event.start_time ? labels.timedEvent : labels.extractedEvent),
         event,
       } satisfies GraphNodeData,
     })),
     ...slice.entities.map((entity) => ({
       id: eventEntityNodeId("entity", entity.id),
       type: "sourceGraph",
-      position: positions.get(eventEntityNodeId("entity", entity.id)) ?? fallback,
+      position:
+        positions.get(eventEntityNodeId("entity", entity.id)) ?? fallback,
       data: {
         kind: "entity",
         label: entity.name || labels.unnamedEntity,
@@ -211,7 +254,9 @@ function linkedEventPositions(
 ) {
   return slice.relations
     .filter((relation) => relation.entityId === entityId)
-    .map((relation) => positions.get(eventEntityNodeId("event", relation.eventId)))
+    .map((relation) =>
+      positions.get(eventEntityNodeId("event", relation.eventId)),
+    )
     .filter((position): position is GraphPoint => Boolean(position));
 }
 
@@ -232,11 +277,16 @@ function buildTreePositions(slice: EventEntityGraphSlice, locale: string) {
       return {
         entity,
         desiredX: linked.length
-          ? linked.reduce((sum, position) => sum + position.x, 0) / linked.length
+          ? linked.reduce((sum, position) => sum + position.x, 0) /
+            linked.length
           : 0,
       };
     })
-    .sort((a, b) => a.desiredX - b.desiredX || a.entity.name.localeCompare(b.entity.name, locale));
+    .sort(
+      (a, b) =>
+        a.desiredX - b.desiredX ||
+        a.entity.name.localeCompare(b.entity.name, locale),
+    );
   let previousX = -Infinity;
   entities.forEach(({ entity, desiredX }) => {
     const x = Math.max(desiredX, previousX + 174);
@@ -244,9 +294,12 @@ function buildTreePositions(slice: EventEntityGraphSlice, locale: string) {
     positions.set(eventEntityNodeId("entity", entity.id), { x, y: 310 });
   });
   if (entities.length > 0) {
-    const first = positions.get(eventEntityNodeId("entity", entities[0].entity.id))?.x ?? 0;
+    const first =
+      positions.get(eventEntityNodeId("entity", entities[0].entity.id))?.x ?? 0;
     const last =
-      positions.get(eventEntityNodeId("entity", entities[entities.length - 1].entity.id))?.x ?? 0;
+      positions.get(
+        eventEntityNodeId("entity", entities[entities.length - 1].entity.id),
+      )?.x ?? 0;
     const offset = (first + last) / 2;
     entities.forEach(({ entity }) => {
       const id = eventEntityNodeId("entity", entity.id);
@@ -266,7 +319,8 @@ function buildRadialPositions(slice: EventEntityGraphSlice, locale: string) {
   const tau = Math.PI * 2;
   const positions = new Map<string, GraphPoint>();
   const eventCount = slice.events.length;
-  const eventRadius = eventCount <= 1 ? 0 : Math.max(250, (eventCount * 220 * 1.16) / tau);
+  const eventRadius =
+    eventCount <= 1 ? 0 : Math.max(250, (eventCount * 220 * 1.16) / tau);
   const eventAngles = new Map<string, number>();
 
   slice.events.forEach((event, index) => {
@@ -292,7 +346,10 @@ function buildRadialPositions(slice: EventEntityGraphSlice, locale: string) {
         : -Math.PI / 2 + (index * tau) / Math.max(slice.entities.length, 1);
       return { entity, angle: normalizeAngle(desired) };
     })
-    .sort((a, b) => a.angle - b.angle || a.entity.name.localeCompare(b.entity.name, locale));
+    .sort(
+      (a, b) =>
+        a.angle - b.angle || a.entity.name.localeCompare(b.entity.name, locale),
+    );
 
   const minGap = Math.min(0.18, (tau * 0.88) / Math.max(entities.length, 1));
   let previousAngle = -Infinity;
@@ -300,7 +357,10 @@ function buildRadialPositions(slice: EventEntityGraphSlice, locale: string) {
     item.angle = Math.max(item.angle, previousAngle + minGap);
     previousAngle = item.angle;
   });
-  if (entities.length && entities[entities.length - 1].angle - entities[0].angle > tau - minGap) {
+  if (
+    entities.length &&
+    entities[entities.length - 1].angle - entities[0].angle > tau - minGap
+  ) {
     const start = entities[0].angle;
     entities.forEach((item, index) => {
       item.angle = start + (index * tau) / entities.length;
@@ -382,8 +442,14 @@ function buildNetwork(
       forceLink<SimNode, SimulationLinkDatum<SimNode>>(simLinks)
         .id((node) => node.id)
         .distance((link) => {
-          const source = typeof link.source === "object" ? link.source.id : String(link.source);
-          const target = typeof link.target === "object" ? link.target.id : String(link.target);
+          const source =
+            typeof link.source === "object"
+              ? link.source.id
+              : String(link.source);
+          const target =
+            typeof link.target === "object"
+              ? link.target.id
+              : String(link.target);
           return (
             164 +
             Math.min(
@@ -402,15 +468,21 @@ function buildNetwork(
     )
     .force(
       "collide",
-      forceCollide<SimNode>((node) => collisionRadius(node.kind)).strength(0.96).iterations(4),
+      forceCollide<SimNode>((node) => collisionRadius(node.kind))
+        .strength(0.96)
+        .iterations(4),
     )
     .force(
       "x",
-      forceX<SimNode>(0).strength((node) => (node.kind === "event" ? 0.028 : 0.018)),
+      forceX<SimNode>(0).strength((node) =>
+        node.kind === "event" ? 0.028 : 0.018,
+      ),
     )
     .force(
       "y",
-      forceY<SimNode>(0).strength((node) => (node.kind === "event" ? 0.028 : 0.018)),
+      forceY<SimNode>(0).strength((node) =>
+        node.kind === "event" ? 0.028 : 0.018,
+      ),
     )
     .stop();
   for (let index = 0; index < 340; index += 1) simulation.tick();
@@ -442,7 +514,9 @@ export function EventEntityGraph({
 }) {
   const t = useTranslations("SourceGraph");
   const locale = useLocale();
-  const [selection, setSelection] = React.useState<EventEntitySelection | null>(null);
+  const [selection, setSelection] = React.useState<EventEntitySelection | null>(
+    null,
+  );
   const [layout, setLayout] = React.useState<GraphLayout>("force");
 
   React.useEffect(() => {
@@ -461,12 +535,15 @@ export function EventEntityGraph({
   React.useEffect(() => setSelection(null), [graph]);
 
   const slice = React.useMemo(() => sliceEventEntityGraph(graph), [graph]);
-  const labels = React.useMemo<GraphLabels>(() => ({
-    timedEvent: t("timedEvent"),
-    extractedEvent: t("extractedEvent"),
-    unnamedEntity: t("unnamedEntity"),
-    uncategorized: t("uncategorized"),
-  }), [t]);
+  const labels = React.useMemo<GraphLabels>(
+    () => ({
+      timedEvent: t("timedEvent"),
+      extractedEvent: t("extractedEvent"),
+      unnamedEntity: t("unnamedEntity"),
+      uncategorized: t("uncategorized"),
+    }),
+    [t],
+  );
   const network = React.useMemo(
     () => buildNetwork(slice, layout, labels, locale),
     [labels, layout, locale, slice],
@@ -496,7 +573,8 @@ export function EventEntityGraph({
             { label: t("event"), className: "bg-amber-500" },
             {
               label: t("entity"),
-              className: "border border-dashed border-violet-500 bg-violet-500/20",
+              className:
+                "border border-dashed border-violet-500 bg-violet-500/20",
             },
           ]}
         >
@@ -547,7 +625,10 @@ export function EventEntityGraph({
       }}
     >
       {selection && (
-        <EventEntitySelectionCard selection={selection} onOpenEvent={onOpenEvent} />
+        <EventEntitySelectionCard
+          selection={selection}
+          onOpenEvent={onOpenEvent}
+        />
       )}
       {empty && (
         <div className="pointer-events-none absolute inset-x-12 bottom-5 z-10 mx-auto max-w-md rounded-lg border bg-card/95 px-4 py-3 text-center shadow-soft backdrop-blur-sm">
@@ -559,7 +640,9 @@ export function EventEntityGraph({
             )}
             {resolvedEmptyTitle}
           </div>
-          <p className="mt-1 text-[11px] text-muted-foreground">{resolvedEmptyDescription}</p>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {resolvedEmptyDescription}
+          </p>
         </div>
       )}
     </GraphCanvas>
@@ -568,10 +651,12 @@ export function EventEntityGraph({
 
 export function SourceGraph({
   source,
+  documents,
   refreshKey,
   mode = "2d",
 }: {
   source: Source;
+  documents: Doc[];
   refreshKey: string;
   mode?: "2d" | "3d";
 }) {
@@ -584,10 +669,35 @@ export function SourceGraph({
   const [refreshing, setRefreshing] = React.useState(false);
   const [graphLimit, setGraphLimit] = React.useState(DEFAULT_GRAPH_LIMIT);
   const [graphLimitReady, setGraphLimitReady] = React.useState(false);
+  const [documentScope, setDocumentScope] =
+    React.useState<SourceGraphDocumentScope>(ALL_SOURCE_GRAPH_DOCUMENTS);
+
+  const documentIds = React.useMemo(
+    () => sourceGraphDocumentIds(documentScope, documents),
+    [documentScope, documents],
+  );
+  const selectedDocumentCount = sourceGraphSelectedDocumentCount(
+    documentScope,
+    documents,
+  );
+  const allDocumentsSelected = documentIds === undefined;
+  const documentScopeKey =
+    documentIds === undefined ? "all" : `selected:${documentIds.join(",")}`;
+
+  React.useEffect(() => {
+    setDocumentScope(ALL_SOURCE_GRAPH_DOCUMENTS);
+  }, [source.id]);
+
+  React.useEffect(() => {
+    setDocumentScope((current) =>
+      normalizeSourceGraphDocumentScope(current, documents),
+    );
+  }, [documents]);
 
   React.useEffect(() => {
     const saved = Number(window.localStorage.getItem(GRAPH_LIMIT_STORAGE_KEY));
-    if (GRAPH_LIMIT_OPTIONS.some((value) => value === saved)) setGraphLimit(saved);
+    if (GRAPH_LIMIT_OPTIONS.some((value) => value === saved))
+      setGraphLimit(saved);
     setGraphLimitReady(true);
   }, []);
 
@@ -598,7 +708,11 @@ export function SourceGraph({
     setError("");
     setRefreshing(Boolean(graph));
     api
-      .getSourceGraph(source.id, graphLimit, controller.signal)
+      .getSourceGraph(source.id, {
+        limit: graphLimit,
+        documentIds,
+        signal: controller.signal,
+      })
       .then((response) => {
         if (!alive) return;
         setGraph(response);
@@ -616,7 +730,16 @@ export function SourceGraph({
     };
     // graph 不能加入依赖；刷新时保留旧画面，避免闪烁。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source.id, refreshKey, refreshVersion, graphLimit, graphLimitReady, t]);
+  }, [
+    source.id,
+    refreshKey,
+    refreshVersion,
+    graphLimit,
+    graphLimitReady,
+    documentIds,
+    documentScopeKey,
+    t,
+  ]);
 
   if (!graph && !error) {
     return (
@@ -633,7 +756,9 @@ export function SourceGraph({
     return (
       <div className="flex h-full min-h-0 flex-col items-center justify-center rounded-lg border border-dashed bg-card/40 px-6 text-center">
         <Network className="size-8 text-muted-foreground/60" />
-        <p className="mt-3 text-sm font-medium text-foreground">{t("sourceLoadFailed")}</p>
+        <p className="mt-3 text-sm font-medium text-foreground">
+          {t("sourceLoadFailed")}
+        </p>
         <p className="mt-1 text-xs text-muted-foreground">{error}</p>
         <Button
           variant="outline"
@@ -652,6 +777,86 @@ export function SourceGraph({
 
   const toolbarActions = (
     <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 max-w-[12rem] gap-1.5 bg-card/95 px-2 text-xs shadow-soft backdrop-blur-sm"
+            disabled={documents.length === 0}
+            aria-label={t("documentFilterAria")}
+            title={t("documentFilterTitle")}
+          >
+            <FileText className="size-3.5" />
+            <span className="truncate">
+              {allDocumentsSelected
+                ? t("allDocuments")
+                : t("selectedDocuments", {
+                    selected: selectedDocumentCount,
+                    total: documents.length,
+                  })}
+            </span>
+            <ChevronDown className="size-3 text-muted-foreground" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          className="max-h-[min(24rem,var(--radix-dropdown-menu-content-available-height))] w-72 overflow-y-auto"
+        >
+          <DropdownMenuLabel>{t("documentScope")}</DropdownMenuLabel>
+          <DropdownMenuCheckboxItem
+            checked={
+              allDocumentsSelected
+                ? true
+                : selectedDocumentCount > 0
+                  ? "indeterminate"
+                  : false
+            }
+            onCheckedChange={(checked) =>
+              setDocumentScope(setAllSourceGraphDocuments(checked === true))
+            }
+            onSelect={(event) => event.preventDefault()}
+          >
+            <span className="min-w-0 flex-1 truncate font-medium">
+              {t("allDocuments")}
+            </span>
+            <span className="text-[10px] tabular-nums text-muted-foreground">
+              {documents.length}
+            </span>
+          </DropdownMenuCheckboxItem>
+          <DropdownMenuSeparator />
+          {documents.map((document) => {
+            const checked =
+              allDocumentsSelected ||
+              documentIds?.includes(document.id) === true;
+            return (
+              <DropdownMenuCheckboxItem
+                key={document.id}
+                checked={checked}
+                onCheckedChange={(nextChecked) =>
+                  setDocumentScope((current) =>
+                    toggleSourceGraphDocument(
+                      current,
+                      documents,
+                      document.id,
+                      nextChecked === true,
+                    ),
+                  )
+                }
+                onSelect={(event) => event.preventDefault()}
+                title={document.filename}
+              >
+                <span className="min-w-0 flex-1 truncate">
+                  {document.filename}
+                </span>
+                <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                  {t("documentEvents", { count: document.event_count })}
+                </span>
+              </DropdownMenuCheckboxItem>
+            );
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
       <Select
         value={String(graphLimit)}
         onValueChange={(value) => {
@@ -700,9 +905,15 @@ export function SourceGraph({
   };
   const sharedProps = {
     graph,
-    refreshKey: `${refreshKey}-${refreshVersion}-${graphLimit}`,
+    refreshKey: `${refreshKey}-${refreshVersion}-${graphLimit}-${documentScopeKey}`,
     toolbarActions,
     onOpenEvent,
+    emptyTitle:
+      documentIds?.length === 0 ? t("noDocumentsSelected") : undefined,
+    emptyDescription:
+      documentIds?.length === 0
+        ? t("noDocumentsSelectedDescription")
+        : undefined,
   };
 
   if (mode === "3d") return <OrbitalEventEntityGraph {...sharedProps} />;

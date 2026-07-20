@@ -19,6 +19,7 @@ from sag_api.core.errors import (
     ValidationError,
 )
 from sag_api.parsing.mineru import MinerUClient
+from sag_api.parsing.text import TextDecodingError, is_plain_text_path, read_text_file
 
 ParseStateCallback = Callable[[dict[str, Any]], Awaitable[None]]
 _PARSE_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
@@ -145,7 +146,11 @@ async def _prepare_and_cache(
                 on_state=track_state,
             )
     else:
-        markdown = await _convert_with_markitdown(path)
+        markdown = (
+            await asyncio.to_thread(_convert_plain_text, path)
+            if is_plain_text_path(path)
+            else await _convert_with_markitdown(path)
+        )
 
     await asyncio.to_thread(_write_markdown, cache_path, markdown)
     if on_state:
@@ -298,8 +303,13 @@ def _write_fallback_marker(path: str) -> None:
 
 def _is_cached(path: str) -> bool:
     try:
-        return os.path.isfile(path) and os.path.getsize(path) > 0
-    except OSError:
+        if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+            return False
+        if not path.lower().endswith(".md"):
+            return True
+        with open(path, encoding="utf-8") as cached:
+            return _is_meaningful_markdown(cached.read(4096))
+    except (OSError, UnicodeError):
         return False
 
 
@@ -367,9 +377,32 @@ async def _convert_with_markitdown(path: str) -> str:
     except Exception as exc:  # noqa: BLE001 - 第三方转换器错误统一映射
         raise ValidationError(f"MarkItDown 解析失败：{exc}") from exc
     markdown = markdown.strip()
-    if not markdown:
-        raise ValidationError("MarkItDown 未从文件中解析出文本")
+    if not _is_meaningful_markdown(markdown):
+        raise ValidationError("MarkItDown 未从文件中解析出有效文本")
     return markdown + "\n"
+
+
+def _convert_plain_text(path: str) -> str:
+    try:
+        decoded = read_text_file(path)
+    except TextDecodingError as exc:
+        raise ValidationError(f"文本编码识别失败：{exc}") from exc
+    text = decoded.text.strip()
+    if not _is_meaningful_markdown(text):
+        raise ValidationError("文本文件中没有可解析的有效内容")
+    return text + "\n"
+
+
+def _is_meaningful_markdown(markdown: str) -> bool:
+    normalized = markdown.strip().casefold()
+    return bool(normalized) and normalized not in {
+        "none",
+        "null",
+        "undefined",
+        "nan",
+        "{}",
+        "[]",
+    }
 
 
 def _markitdown_sync(path: str) -> str:

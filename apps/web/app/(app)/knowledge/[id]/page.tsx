@@ -34,7 +34,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
@@ -175,8 +179,15 @@ export default function SourceDetailPage() {
             <TriangleAlert className="size-4" />
             <AlertTitle>{t("modelNotConfigured")}</AlertTitle>
             <AlertDescription>
-              {t("modelWarningBefore")}<strong>{t("eventExtraction")}</strong>{t("and")}<strong>{t("qa")}</strong>{t("modelWarningSettings")}
-              <Link href="/settings" className="font-medium underline underline-offset-2">
+              {t("modelWarningBefore")}
+              <strong>{t("eventExtraction")}</strong>
+              {t("and")}
+              <strong>{t("qa")}</strong>
+              {t("modelWarningSettings")}
+              <Link
+                href="/settings"
+                className="font-medium underline underline-offset-2"
+              >
                 {t("settings")}
               </Link>
               {t("modelWarningAfter")}
@@ -192,7 +203,9 @@ export default function SourceDetailPage() {
                 : contentView === "graph3d"
                   ? t("graph3d")
                   : t("graph2d")}{" "}
-              {documents ? t("parenthesizedCount", { count: documents.length }) : ""}
+              {documents
+                ? t("parenthesizedCount", { count: documents.length })
+                : ""}
             </h2>
             <ToggleGroup
               type="single"
@@ -243,9 +256,13 @@ export default function SourceDetailPage() {
             <div className="min-h-0 flex-1">
               <SourceGraph
                 source={source}
+                documents={documents}
                 mode={contentView === "graph3d" ? "3d" : "2d"}
                 refreshKey={documents
-                  .map((document) => `${document.id}:${document.status}:${document.event_count}`)
+                  .map(
+                    (document) =>
+                      `${document.id}:${document.status}:${document.event_count}`,
+                  )
                   .join("|")}
               />
             </div>
@@ -256,10 +273,13 @@ export default function SourceDetailPage() {
               description={t("emptyDocumentsDescription")}
             />
           ) : (
-            <DocumentList sourceId={id} documents={documents} onChange={refresh} />
+            <DocumentList
+              sourceId={id}
+              documents={documents}
+              onChange={refresh}
+            />
           )}
         </div>
-
       </div>
 
       <Dialog open={addOpen} onOpenChange={setAddOpen}>

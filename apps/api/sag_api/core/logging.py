@@ -32,9 +32,19 @@ def configure_logging(level: str = "INFO") -> None:
     root = logging.getLogger()
     root.setLevel(level)
     root.handlers = [handler]
-    # 降低第三方噪音
-    for noisy in ("httpx", "httpcore", "openai", "lancedb"):
+    # 降低第三方噪音，并禁止模型客户端在 DEBUG 模式输出完整提示词/正文。
+    for noisy in (
+        "httpx",
+        "httpcore",
+        "openai",
+        "lancedb",
+        "aiosqlite",
+        "LiteLLM",
+        "LiteLLM Router",
+        "LiteLLM Proxy",
+    ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    logging.getLogger("zleap.sag.ai.openai").setLevel(logging.INFO)
     _CONFIGURED = True
 
 

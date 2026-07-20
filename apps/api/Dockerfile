@@ -13,7 +13,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # 先装第三方依赖；业务代码变化不会让这一层失效。
-COPY pyproject.toml README.md ./
+COPY pyproject.toml ./
 RUN pip install --upgrade pip hatchling \
  && python -c 'import os, tomllib; p=tomllib.load(open("pyproject.toml", "rb")); deps=list(p["project"]["dependencies"]); deps += p["project"]["optional-dependencies"].get(os.environ.get("SAG_API_EXTRAS", ""), []); print("\n".join(deps))' > /tmp/requirements.txt \
  && pip install -r /tmp/requirements.txt
