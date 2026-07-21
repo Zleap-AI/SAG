@@ -2,7 +2,10 @@ import {
   access,
   cp,
   mkdir,
+  readdir,
   readFile,
+  readlink,
+  realpath,
   rename,
   rm,
   writeFile,
@@ -30,6 +33,50 @@ async function exists(value) {
   } catch {
     return false;
   }
+}
+
+function isWithin(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === ""
+    || (!path.isAbsolute(relative)
+      && relative !== ".."
+      && !relative.startsWith(`..${path.sep}`));
+}
+
+async function verifyContainedRelativeSymlinks(root) {
+  const canonicalRoot = await realpath(root);
+  const pending = [root];
+  let symlinkCount = 0;
+
+  while (pending.length > 0) {
+    const current = pending.pop();
+    const entries = await readdir(current, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        const linkTarget = await readlink(entryPath);
+        if (path.isAbsolute(linkTarget)) {
+          throw new Error(`Packaged backend contains an absolute symlink: ${entryPath} -> ${linkTarget}`);
+        }
+
+        let resolvedTarget;
+        try {
+          resolvedTarget = await realpath(entryPath);
+        } catch {
+          throw new Error(`Packaged backend contains a broken symlink: ${entryPath} -> ${linkTarget}`);
+        }
+        if (!isWithin(canonicalRoot, resolvedTarget)) {
+          throw new Error(`Packaged backend symlink escapes its root: ${entryPath} -> ${linkTarget}`);
+        }
+        symlinkCount += 1;
+      } else if (entry.isDirectory()) {
+        pending.push(entryPath);
+      }
+    }
+  }
+
+  return symlinkCount;
 }
 
 if (!(await exists(path.join(standaloneSource, "server.js")))) {
@@ -63,7 +110,15 @@ if (await exists(publicSource)) {
   await cp(publicSource, path.join(webTarget, "public"), { recursive: true });
 }
 await mkdir(backendTarget, { recursive: true });
-await cp(backendSource, path.join(backendTarget, "sag-api"), { recursive: true });
+const packagedBackend = path.join(backendTarget, "sag-api");
+// PyInstaller emits relative symlinks for shared libraries and, on the GitHub
+// macOS runner, Python.framework. Resolving those links while copying makes
+// them point outside the app bundle and causes codesign to reject the bundle.
+await cp(backendSource, packagedBackend, {
+  recursive: true,
+  verbatimSymlinks: true,
+});
+const backendSymlinkCount = await verifyContainedRelativeSymlinks(packagedBackend);
 
 const desktopPackage = JSON.parse(
   await readFile(path.join(desktopRoot, "package.json"), "utf8"),
@@ -95,4 +150,7 @@ await writeFile(
   "utf8",
 );
 
-console.log(`Prepared desktop resources in ${resourcesRoot}`);
+console.log(
+  `Prepared desktop resources in ${resourcesRoot} `
+  + `(verified ${backendSymlinkCount} backend symlinks)`,
+);
