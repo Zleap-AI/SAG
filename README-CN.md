@@ -12,6 +12,7 @@
   <a href="https://arxiv.org/abs/2606.15971"><img alt="论文" src="https://img.shields.io/badge/paper-arXiv%3A2606.15971-18181b" /></a>
   <a href="https://pypi.org/project/zleap-sag/"><img alt="PyPI" src="https://img.shields.io/pypi/v/zleap-sag?label=zleap--sag&color=18181b" /></a>
   <img alt="SAG 版本" src="https://img.shields.io/badge/SAG-v1.2.2-18181b" />
+  <a href="https://github.com/Zleap-AI/SAG/releases/latest"><img alt="桌面版发布" src="https://img.shields.io/github/v/release/Zleap-AI/SAG?label=desktop&color=18181b" /></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776ab" />
   <img alt="Node" src="https://img.shields.io/badge/Node-20%2B-339933" />
   <a href="LICENSE"><img alt="许可" src="https://img.shields.io/badge/license-MIT-18181b" /></a>
@@ -156,7 +157,18 @@ SAG 内部的语义路径和结构路径都是 SAG 自己检索管线的组成�
 
 ## 用户指南
 
-### 快速开始（Docker，推荐）
+### 桌面客户端（最省事）
+
+从 [GitHub Releases](https://github.com/Zleap-AI/SAG/releases/latest) 下载最新桌面安装包：
+
+| 平台 | 下载文件 | 更新方式 |
+| --- | --- | --- |
+| macOS 15+，Apple Silicon | `SAG-*-mac-arm64.dmg` | 已签名、公证，自动跟随稳定更新通道 |
+| Windows 10/11，x64 | `SAG-Setup-*-win-x64.exe` | 暂不签名，Windows 可能提示“未知发布者”；仍支持稳定自动更新 |
+
+桌面客户端已经包含 Web 工作台和本地知识后端，用户无需安装 Python、Node.js 或数据库。整包更新不会覆盖系统应用数据目录中的知识库与上传文件；每个 Release 同时提供 `SHA256SUMS.txt` 完整性校验。
+
+### 快速开始（Docker，自托管）
 
 准备 Docker Desktop，或 Docker Engine 与 Compose v2。
 
@@ -365,6 +377,10 @@ cd apps/api && ruff check .
 cd apps/web && npm run typecheck
 cd apps/web && npm run build
 ```
+
+### 桌面客户端
+
+Electron 客户端将同一套 Next.js 应用与本地 FastAPI 后端一起打包。桌面开发、分平台发布构建、签名、更新配置和数据目录见 [`apps/desktop/README.md`](apps/desktop/README.md)。
 
 ### 直接使用 `zleap-sag`
 

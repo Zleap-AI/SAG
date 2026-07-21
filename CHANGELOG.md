@@ -1,8 +1,10 @@
 # Changelog
 
-本项目遵循语义化版本。各版本 tag 均可在 [Releases](https://github.com/ilssn/sag/tags) 查看。
+本项目遵循语义化版本。各版本及安装包均可在 [Releases](https://github.com/Zleap-AI/SAG/releases) 查看。
 
 ## Unreleased
+- 新增 Electron 桌面客户端：macOS Apple Silicon 提供签名、公证安装包，Windows x64 暂以无签名安装包发布；两个平台均接入 GitHub Releases 稳定自动更新通道。
+- 新增公开发布流水线与一键版本脚本：完整 CI 通过后原生构建双平台产物、校验更新元数据并生成 SHA-256 校验文件。
 - 知识宇宙探索模式重构为「时间即飞行」：源内滚轮沿计数轴驱动相机（惯性、轴端墙、窗口
   fire-and-forget 跟随翻页，快速飞行按速度提前补页），拖拽/旋转与 pinch 缩放正交保留。
 - 探索轴改为快照稳定的**序数计数轴**：后端时间线 canonical 序补充叙事 rank tie-break，

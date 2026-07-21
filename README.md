@@ -12,6 +12,7 @@
   <a href="https://arxiv.org/abs/2606.15971"><img alt="Paper" src="https://img.shields.io/badge/paper-arXiv%3A2606.15971-18181b" /></a>
   <a href="https://pypi.org/project/zleap-sag/"><img alt="PyPI" src="https://img.shields.io/pypi/v/zleap-sag?label=zleap--sag&color=18181b" /></a>
   <img alt="SAG version" src="https://img.shields.io/badge/SAG-v1.2.2-18181b" />
+  <a href="https://github.com/Zleap-AI/SAG/releases/latest"><img alt="Desktop release" src="https://img.shields.io/github/v/release/Zleap-AI/SAG?label=desktop&color=18181b" /></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776ab" />
   <img alt="Node" src="https://img.shields.io/badge/Node-20%2B-339933" />
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-18181b" /></a>
@@ -156,7 +157,18 @@ See the [paper](https://arxiv.org/abs/2606.15971) and [SAG-Benchmark](https://gi
 
 ## User Guide
 
-### Quick start (Docker, recommended)
+### Desktop app (easiest)
+
+Download the latest desktop installer from [GitHub Releases](https://github.com/Zleap-AI/SAG/releases/latest):
+
+| Platform | Download | Update behavior |
+| --- | --- | --- |
+| macOS 15+, Apple Silicon | `SAG-*-mac-arm64.dmg` | Signed, notarized, and updated through the stable channel |
+| Windows 10/11, x64 | `SAG-Setup-*-win-x64.exe` | Unsigned for now; Windows may show an unknown-publisher warning; stable automatic updates remain supported |
+
+The desktop app bundles the Web workspace and local knowledge backend, so users do not need to install Python, Node.js, or a database. Application updates preserve the knowledge base and uploads in the operating system's application-data directory. Release checksums are published as `SHA256SUMS.txt`.
+
+### Quick start (Docker, self-hosted)
 
 Requirements: Docker Desktop, or Docker Engine with Compose v2.
 
@@ -365,6 +377,10 @@ cd apps/api && ruff check .
 cd apps/web && npm run typecheck
 cd apps/web && npm run build
 ```
+
+### Desktop client
+
+The Electron client packages the same Next.js application together with the local FastAPI backend. Desktop development, target-specific release builds, signing, update configuration, and data locations are documented in [`apps/desktop/README.md`](apps/desktop/README.md).
 
 ### Use `zleap-sag` directly
 
