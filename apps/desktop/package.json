@@ -1,0 +1,45 @@
+{
+  "name": "sag-desktop",
+  "productName": "SAG",
+  "version": "1.2.2",
+  "private": true,
+  "description": "SAG desktop client for macOS and Windows",
+  "author": "Zleap AI",
+  "license": "MIT",
+  "homepage": "https://github.com/Zleap-AI/SAG",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zleap-AI/SAG.git"
+  },
+  "main": "dist/main.js",
+  "packageManager": "npm@10.9.2",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "clean": "node ./scripts/clean.mjs",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run clean && tsc",
+    "dev": "npm run build && node ./scripts/dev.mjs",
+    "build:web": "node ./scripts/build-web.mjs",
+    "build:backend": "node ./scripts/build-backend.mjs",
+    "prepare:resources": "node ./scripts/prepare-resources.mjs",
+    "prepare:release": "npm run build && npm run build:web && npm run build:backend && npm run prepare:resources",
+    "package:dir": "npm run prepare:release && electron-builder --config electron-builder.config.cjs --dir",
+    "package:mac": "electron-builder --config electron-builder.config.cjs --mac --arm64 --publish never",
+    "package:win": "electron-builder --config electron-builder.config.cjs --win --x64 --publish never",
+    "dist": "npm run prepare:release && electron-builder --config electron-builder.config.cjs --publish never",
+    "dist:mac": "npm run prepare:release && npm run package:mac",
+    "dist:win": "npm run prepare:release && npm run package:win"
+  },
+  "dependencies": {
+    "electron-log": "^5.4.4",
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.3",
+    "typescript": "^7.0.2"
+  }
+}

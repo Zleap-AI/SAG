@@ -33,6 +33,9 @@ postgres = ["asyncpg>=0.29", "zleap-sag[postgres]>=0.7.1"]
 dev = [
     "ruff>=0.5",
 ]
+desktop = [
+    "pyinstaller>=6.16,<7",
+]
 
 [build-system]
 requires = ["hatchling"]

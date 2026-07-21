@@ -26,6 +26,13 @@ out/
 npm-debug.log*
 *.tsbuildinfo
 
+# Desktop packaging
+apps/desktop/build/
+apps/desktop/dist/
+apps/desktop/release/
+apps/api/build/pyinstaller/
+apps/api/dist/desktop/
+
 # Env & secrets
 .env
 .env.local

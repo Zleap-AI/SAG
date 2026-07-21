@@ -1,0 +1,306 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-release-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Release quality gates
+    if: github.repository == 'Zleap-AI/SAG'
+    uses: ./.github/workflows/ci.yml
+
+  metadata:
+    name: Verify desktop build metadata
+    if: github.repository == 'Zleap-AI/SAG'
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Verify release or signing-check metadata
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            test "$(git cat-file -t "$GITHUB_REF_NAME")" = "tag" || {
+              echo "::error::Release tags must be annotated and immutable."
+              exit 1
+            }
+            git fetch origin "+refs/heads/main:refs/remotes/origin/main"
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+              echo "::error::Release tag must point to a commit contained in public/main."
+              exit 1
+            }
+            node scripts/release-public.mjs --verify "$GITHUB_REF_NAME"
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            test "$GITHUB_REF" = "refs/heads/main" || {
+              echo "::error::Manual signing checks must run from public/main."
+              exit 1
+            }
+            version=$(node -p "require('./apps/desktop/package.json').version")
+            node scripts/release-public.mjs --verify "v$version"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+          fi
+
+  macos:
+    name: macOS 15 · Apple Silicon · signed + notarized
+    if: github.repository == 'Zleap-AI/SAG'
+    needs: [quality, metadata]
+    runs-on: macos-15
+    timeout-minutes: 120
+    environment: desktop-release
+    env:
+      SAG_NOTARIZE: "true"
+      SAG_UPDATE_GITHUB_REPOSITORY: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require signing and notarization credentials
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for name in APPLE_CERTIFICATE_BASE64 APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            test -n "${!name}" || {
+              echo "::error::Missing desktop-release secret: $name"
+              exit 1
+            }
+          done
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            apps/web/package-lock.json
+            apps/desktop/package-lock.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+      - name: Verify native Apple Silicon toolchain
+        shell: bash
+        run: |
+          test "$(uname -m)" = "arm64" || {
+            echo "::error::macOS release runner must be arm64."
+            exit 1
+          }
+          test "$(node -p 'process.arch')" = "arm64" || {
+            echo "::error::Node.js must be arm64."
+            exit 1
+          }
+          python -c 'import platform; raise SystemExit(0 if platform.machine() == "arm64" else "Python must be arm64")'
+      - name: Install Web dependencies
+        working-directory: apps/web
+        run: npm ci
+      - name: Install desktop dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Install frozen backend dependencies
+        working-directory: apps/api
+        run: uv sync --frozen --extra desktop
+      - name: Prepare macOS release payload without signing credentials
+        working-directory: apps/desktop
+        run: npm run prepare:release
+      - name: Build signed and notarized macOS release
+        working-directory: apps/desktop
+        env:
+          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run package:mac
+      - name: Verify macOS installer and update metadata
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          shopt -s nullglob
+          dmgs=(apps/desktop/release/*.dmg)
+          zips=(apps/desktop/release/*.zip)
+          blockmaps=(apps/desktop/release/*.blockmap)
+          test "${#dmgs[@]}" -ge 1 || { echo "::error::Missing macOS DMG"; exit 1; }
+          test "${#zips[@]}" -ge 1 || { echo "::error::Missing macOS ZIP"; exit 1; }
+          test "${#blockmaps[@]}" -ge 2 || { echo "::error::Missing macOS blockmaps"; exit 1; }
+          codesign --verify --deep --strict --verbose=2 apps/desktop/release/mac-arm64/SAG.app
+          xcrun stapler validate apps/desktop/release/mac-arm64/SAG.app
+          test -s apps/desktop/release/latest-mac.yml || { echo "::error::Missing latest-mac.yml"; exit 1; }
+          grep -F "version: $RELEASE_VERSION" apps/desktop/release/latest-mac.yml > /dev/null || {
+            echo "::error::latest-mac.yml does not describe $RELEASE_VERSION"
+            exit 1
+          }
+      - name: Upload macOS release payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-macos-arm64
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/latest-mac.yml
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  windows:
+    name: Windows 2025 · x64 · unsigned
+    if: github.repository == 'Zleap-AI/SAG'
+    needs: [quality, metadata]
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      SAG_UPDATE_GITHUB_REPOSITORY: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            apps/web/package-lock.json
+            apps/desktop/package-lock.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+      - name: Install Web dependencies
+        working-directory: apps/web
+        run: npm ci
+      - name: Install desktop dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Install frozen backend dependencies
+        working-directory: apps/api
+        run: uv sync --frozen --extra desktop
+      - name: Prepare Windows release payload
+        working-directory: apps/desktop
+        run: npm run prepare:release
+      - name: Build unsigned Windows release
+        working-directory: apps/desktop
+        run: npm run package:win
+      - name: Verify Windows installer and update metadata
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          $installers = @(Get-ChildItem apps/desktop/release/*.exe -ErrorAction SilentlyContinue)
+          $blockmaps = @(Get-ChildItem apps/desktop/release/*.blockmap -ErrorAction SilentlyContinue)
+          if ($installers.Count -lt 1) { throw "Missing Windows installer" }
+          if ($blockmaps.Count -lt 1) { throw "Missing Windows blockmap" }
+          foreach ($installer in $installers) {
+            $signature = Get-AuthenticodeSignature $installer.FullName
+            if ($signature.Status -ne "NotSigned") {
+              throw "Windows installer must remain unsigned for now: $($installer.Name) is $($signature.Status)"
+            }
+          }
+          $metadata = "apps/desktop/release/latest.yml"
+          if (-not (Test-Path $metadata -PathType Leaf)) { throw "Missing latest.yml" }
+          if (-not (Select-String -Path $metadata -SimpleMatch "version: $env:RELEASE_VERSION" -Quiet)) {
+            throw "latest.yml does not describe $env:RELEASE_VERSION"
+          }
+      - name: Upload Windows release payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-windows-x64
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/latest.yml
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  publish:
+    name: Publish immutable GitHub Release
+    if: github.repository == 'Zleap-AI/SAG' && github.event_name == 'push'
+    needs: [metadata, macos, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Revalidate immutable newest release tag
+        shell: bash
+        run: node scripts/release-public.mjs --verify-latest "$GITHUB_REF_NAME" "$GITHUB_SHA"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify release payload and write checksums
+        shell: bash
+        run: |
+          for pattern in "*.dmg" "*.zip" "*.exe" "*.blockmap"; do
+            compgen -G "release-assets/$pattern" > /dev/null || {
+              echo "::error::Missing release artifact: $pattern"
+              exit 1
+            }
+          done
+          for metadata in latest-mac.yml latest.yml; do
+            test -s "release-assets/$metadata" || {
+              echo "::error::Missing update metadata: $metadata"
+              exit 1
+            }
+            grep -F "version: ${{ needs.metadata.outputs.version }}" "release-assets/$metadata" > /dev/null || {
+              echo "::error::$metadata does not describe ${{ needs.metadata.outputs.version }}"
+              exit 1
+            }
+          done
+          test "$(find release-assets -maxdepth 1 -type f -name '*.blockmap' | wc -l | tr -d ' ')" -ge 3 || {
+            echo "::error::Expected DMG, ZIP, and NSIS blockmaps"
+            exit 1
+          }
+          (
+            cd release-assets
+            find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 \
+              | sort -z \
+              | xargs -0 sha256sum
+          ) > release-assets/SHA256SUMS.txt
+      - name: Build release notes
+        shell: bash
+        run: |
+          printf '%s\n\n' \
+            '## Downloads' \
+            '- **macOS Apple Silicon:** download the `.dmg` installer.' \
+            '- **Windows x64:** download the `Setup.exe` installer. It is currently unsigned, so Windows may show an unknown-publisher warning.' \
+            '- Existing desktop installations receive this release through the stable automatic-update channel.' \
+            '' \
+            '## Changes' > release-notes.md
+          node scripts/release-public.mjs --notes "$GITHUB_REF_NAME" >> release-notes.md
+          printf '\nChecksums are provided in `SHA256SUMS.txt`.\n' >> release-notes.md
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --latest \
+            --title "SAG $GITHUB_REF_NAME" \
+            --notes-file release-notes.md

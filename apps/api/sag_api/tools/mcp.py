@@ -92,7 +92,7 @@ def _content_to_text(result: Any) -> str:
 
 def _plain_value(value: Any) -> Any:
     """Convert Pydantic-like structured content into JSON-shaped values."""
-    if isinstance(value, (dict, list, tuple, str, int, float, bool)) or value is None:
+    if isinstance(value, dict | list | tuple | str | int | float | bool) or value is None:
         return value
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
@@ -146,7 +146,7 @@ def _short_snippet(value: Any) -> str:
     except (TypeError, ValueError):
         pass
     else:
-        if isinstance(parsed, (dict, list)):
+        if isinstance(parsed, dict | list):
             return ""
 
     if len(snippet) <= _SNIPPET_MAX_LENGTH:
@@ -202,7 +202,7 @@ def _external_references(result: Any) -> list[dict[str, str]]:
                     continue
                 walk(child)
             return
-        if isinstance(value, (list, tuple)):
+        if isinstance(value, list | tuple):
             for item in value:
                 walk(item)
             return
@@ -230,7 +230,7 @@ def _external_references(result: Any) -> list[dict[str, str]]:
                 parsed = json.loads(candidate)
             except (TypeError, ValueError):
                 continue
-            if index == 0 and isinstance(parsed, (dict, list)):
+            if index == 0 and isinstance(parsed, dict | list):
                 full_text_is_json = True
             walk(parsed)
         if not full_text_is_json:
