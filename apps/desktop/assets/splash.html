@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SAG</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        background: #09090b;
+        color: #fafafa;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        -webkit-app-region: drag;
+      }
+
+      main {
+        display: grid;
+        justify-items: center;
+        gap: 18px;
+      }
+
+      .mark {
+        display: block;
+        width: 64px;
+        height: 64px;
+        border: 1px solid #3f3f46;
+        border-radius: 18px;
+        background: #111827;
+        box-shadow: 0 18px 50px rgb(0 0 0 / 38%);
+      }
+
+      .copy {
+        display: grid;
+        justify-items: center;
+        gap: 7px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 17px;
+        letter-spacing: 0.02em;
+      }
+
+      p {
+        margin: 0;
+        color: #a1a1aa;
+        font-size: 12px;
+      }
+
+      .loader {
+        width: 112px;
+        height: 2px;
+        overflow: hidden;
+        border-radius: 99px;
+        background: #27272a;
+      }
+
+      .loader::after {
+        content: "";
+        display: block;
+        width: 46%;
+        height: 100%;
+        border-radius: inherit;
+        background: #fafafa;
+        animation: loading 1.15s ease-in-out infinite alternate;
+      }
+
+      @keyframes loading {
+        from {
+          transform: translateX(-95%);
+        }
+        to {
+          transform: translateX(215%);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .loader::after {
+          animation-duration: 2.4s;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img class="mark" src="./icon-master.png" alt="" aria-hidden="true" />
+      <div class="copy">
+        <h1>正在启动 SAG</h1>
+        <p>准备本地知识工作台</p>
+      </div>
+      <div class="loader" aria-label="启动中"></div>
+    </main>
+  </body>
+</html>
