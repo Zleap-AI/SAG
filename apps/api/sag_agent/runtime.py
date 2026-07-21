@@ -419,7 +419,7 @@ class AgentRuntime:
                     else "run_failed"
                 ),
                 message=str(exc) or exc.__class__.__name__,
-                retryable=not isinstance(exc, (ValueError, TypeError, MaxTurnsExceeded)),
+                retryable=not isinstance(exc, ValueError | TypeError | MaxTurnsExceeded),
             )
             result = RunResult(
                 run_id=ctx.run_id,

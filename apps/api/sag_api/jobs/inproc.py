@@ -35,7 +35,7 @@ def _now() -> datetime:
 
 def _is_retryable(exc: Exception) -> bool:
     """瞬时故障（限流/超时/上游暂不可用）可重试；输入/配置类错误不重试。"""
-    return isinstance(exc, (ServiceUnavailableError, UpstreamError))
+    return isinstance(exc, ServiceUnavailableError | UpstreamError)
 
 
 class InProcessAsyncQueue(JobQueue):
