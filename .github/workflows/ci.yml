@@ -7,8 +7,22 @@ on:
   workflow_call:
 
 jobs:
+  release-safety:
+    name: 发布流程 · 安全回归
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: 测试公开仓标签发布边界
+        run: node --test scripts/tests/release-public.test.mjs
+      - name: 测试内部快照导出边界
+        if: ${{ hashFiles('scripts/tests/public-port.test.mjs') != '' }}
+        run: node --test scripts/tests/public-export-policy.test.mjs scripts/tests/public-port.test.mjs
+
   backend:
-    name: 后端 · ruff
+    name: 后端 · ruff + pytest
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -23,7 +37,9 @@ jobs:
       - name: 安装依赖
         run: pip install -e ".[dev]"
       - name: Lint（ruff）
-        run: ruff check sag_api/ sag_agent/
+        run: ruff check sag_api/ sag_agent/ tests/
+      - name: 测试（离线全套）
+        run: python -m pytest -q
 
   frontend:
     name: 前端 · tsc + next build
@@ -44,5 +60,7 @@ jobs:
         run: npx tsc --noEmit
       - name: Lint（ESLint）
         run: npm run lint
+      - name: 单元测试
+        run: npm run test:unit
       - name: 生产构建
         run: npm run build

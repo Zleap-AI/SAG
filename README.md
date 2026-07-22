@@ -26,9 +26,18 @@
 
 https://github.com/user-attachments/assets/9bb618e9-fef8-4d07-8a30-3f7d83beb0ff
 
+## Community
+
+Scan the QR code to join our WeChat community and connect with maintainers and other users.
+
+<p align="center">
+  <img src="docs/assets/readme/wechat-community-qr.png" alt="SAG WeChat community QR code" width="220" />
+</p>
+
 ## Contents
 
 <p align="center">
+  <a href="#community">Community</a> ·
   <a href="#project">Project</a> ·
   <a href="#technology">Technology</a> ·
   <a href="#user-guide">User Guide</a> ·
@@ -330,6 +339,7 @@ SAG has a separated Next.js frontend and FastAPI backend. The backend is a refer
 ```text
 apps/
 ├── web/                    Next.js 15 + React 19 product UI
+├── desktop/                Electron shell, packaging, and local runtime lifecycle
 └── api/
     ├── sag_api/
     │   ├── api/v1/         FastAPI HTTP routes and serialization
@@ -373,6 +383,7 @@ npm run dev
 Useful checks:
 
 ```bash
+cd apps/api && pytest
 cd apps/api && ruff check .
 cd apps/web && npm run typecheck
 cd apps/web && npm run build

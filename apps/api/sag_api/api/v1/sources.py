@@ -128,7 +128,10 @@ async def mcp_descriptor(
             "transport": "streamable-http",
             "url": f"{base}/mcp/?source_id={source.id}",
             "headers": {"Authorization": "Bearer <SAG_TOKEN>"},
-            "note": "在支持 HTTP 传输的 MCP 宿主中填此 URL，并在 Authorization 头携带 Bearer <token>。",
+            "note": (
+                "在支持 Streamable HTTP MCP 的宿主中填此 URL；"
+                "Dify 配置可使用 transport=streamable_http，并在 Authorization 头携带 Bearer <token>。"
+            ),
         },
         "stdio": {
             "command": "python",

@@ -24,6 +24,15 @@ def _field(value: Any, name: str) -> Any:
     return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
 
 
+def _iso_datetime(value: Any) -> str:
+    if value is None:
+        return ""
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return str(isoformat()).strip()
+    return str(value).strip()
+
+
 def _event_refs_by_section(events: list[Any] | None) -> dict[tuple[str, str], list[dict[str, str]]]:
     """Index traceable extracted events by source config and chunk.
 
@@ -50,6 +59,9 @@ def _event_refs_by_section(events: list[Any] | None) -> dict[tuple[str, str], li
             "summary": " ".join(str(_field(event, "summary") or "").split())[:800],
             "category": " ".join(str(_field(event, "category") or "").split())[:100],
         }
+        start_time = _iso_datetime(_field(event, "start_time"))
+        if start_time:
+            ref["start_time"] = start_time
         content = " ".join(str(_field(event, "content") or "").split())[:4000]
         if content:
             ref["content"] = content

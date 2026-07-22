@@ -349,7 +349,7 @@ def _find_task_id(payload: Any) -> str | None:
     if isinstance(payload, dict):
         for key in ("task_id", "taskId", "request_id", "id"):
             value = payload.get(key)
-            if isinstance(value, str | int) and str(value).strip():
+            if isinstance(value, (str, int)) and str(value).strip():
                 return str(value).strip()
         for key in ("data", "result", "task"):
             if key in payload:
@@ -432,7 +432,7 @@ def _find_http_url(payload: Any, *, preferred: tuple[str, ...]) -> str | None:
         # 继续进入对象/数组寻找嵌套的目标键，但不把诸如输入 pdf_url 之类
         # 的任意字符串误判为解析结果。
         for value in payload.values():
-            if isinstance(value, dict | list):
+            if isinstance(value, (dict, list)):
                 found = _find_http_url(value, preferred=preferred)
                 if found:
                     return found
@@ -451,7 +451,7 @@ def _find_markdown(payload: Any) -> str | None:
             if isinstance(value, str) and _looks_like_markdown(value):
                 return value.strip()
         for value in payload.values():
-            if isinstance(value, dict | list):
+            if isinstance(value, (dict, list)):
                 found = _find_markdown(value)
                 if found:
                     return found
@@ -486,10 +486,10 @@ def _find_error_message(payload: Any) -> str | None:
 def _find_key_string(payload: Any, key: str) -> str | None:
     if isinstance(payload, dict):
         value = payload.get(key)
-        if isinstance(value, str | int | float) and str(value).strip():
+        if isinstance(value, (str, int, float)) and str(value).strip():
             return str(value).strip()
         for child in payload.values():
-            if isinstance(child, dict | list):
+            if isinstance(child, (dict, list)):
                 found = _find_key_string(child, key)
                 if found:
                     return found
@@ -505,10 +505,10 @@ def _find_nested_string(payload: Any, keys: tuple[str, ...]) -> str | None:
     if isinstance(payload, dict):
         for key in keys:
             value = payload.get(key)
-            if isinstance(value, str | int | float) and str(value).strip():
+            if isinstance(value, (str, int, float)) and str(value).strip():
                 return str(value).strip()
         for value in payload.values():
-            if isinstance(value, dict | list):
+            if isinstance(value, (dict, list)):
                 found = _find_nested_string(value, keys)
                 if found:
                     return found

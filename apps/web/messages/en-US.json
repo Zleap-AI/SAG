@@ -836,7 +836,9 @@
       "fallbackHeading": "Source excerpt",
       "loadFailed": "Failed to load source text",
       "from": "From {source}",
-      "source": "source"
+      "source": "source",
+      "eventDetail": "Event details",
+      "sourceEvidence": "Source evidence"
     },
     "original": {
       "title": "Original file preview",

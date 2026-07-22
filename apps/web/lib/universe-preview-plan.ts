@@ -28,6 +28,103 @@ export interface UniversePreviewPlanInput {
   entitySafetyMax: number;
 }
 
+export interface UniverseAccumulationCardViewSample {
+  projectedZ: number;
+  screenX: number;
+  screenY: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  safeCenterX: number;
+  safeCenterY: number;
+  cameraDistance: number;
+  blockedByOverlay?: boolean;
+}
+
+export interface UniverseViewpointCardCandidate {
+  id: string;
+  score: number;
+  x: number;
+  y: number;
+}
+
+export interface UniverseViewpointCardSelection {
+  maxCount: number;
+  horizontalGap: number;
+  verticalGap: number;
+}
+
+/**
+ * Ranks only stars that are actually facing the current reading viewport.
+ * The reading centre leads the order; camera distance breaks ties toward the
+ * foreground without flattening the surrounding 3D graph.
+ */
+export function universeAccumulationCardViewScore(
+  sample: UniverseAccumulationCardViewSample,
+) {
+  const values = [
+    sample.projectedZ,
+    sample.screenX,
+    sample.screenY,
+    sample.viewportWidth,
+    sample.viewportHeight,
+    sample.safeCenterX,
+    sample.safeCenterY,
+    sample.cameraDistance,
+  ];
+  if (
+    sample.blockedByOverlay
+    || values.some((value) => !Number.isFinite(value))
+    || sample.projectedZ <= -1
+    || sample.projectedZ >= 1
+    || sample.viewportWidth <= 0
+    || sample.viewportHeight <= 0
+    || sample.screenX < 56
+    || sample.screenX > sample.viewportWidth - 56
+    || sample.screenY < 64
+    || sample.screenY > sample.viewportHeight - 52
+  ) return undefined;
+
+  const horizontal = (sample.screenX - sample.safeCenterX)
+    / Math.max(1, sample.viewportWidth / 2);
+  const vertical = (sample.screenY - sample.safeCenterY)
+    / Math.max(1, sample.viewportHeight / 2);
+  const centerDistance = Math.hypot(horizontal, vertical);
+  if (centerDistance > 0.68) return undefined;
+  return centerDistance * 720 + Math.max(0, sample.cameraDistance) * 0.35;
+}
+
+/** Greedily opens the clearest cards while preserving screen-space breathing room. */
+export function selectUniverseViewpointCardIds(
+  candidates: readonly UniverseViewpointCardCandidate[],
+  selection: UniverseViewpointCardSelection,
+) {
+  const limit = boundedInteger(selection.maxCount, 0, candidates.length);
+  const horizontalGap = Number.isFinite(selection.horizontalGap)
+    ? Math.max(0, selection.horizontalGap)
+    : 0;
+  const verticalGap = Number.isFinite(selection.verticalGap)
+    ? Math.max(0, selection.verticalGap)
+    : 0;
+  const selected: UniverseViewpointCardCandidate[] = [];
+  const seen = new Set<string>();
+  for (const candidate of [...candidates].sort((left, right) =>
+    left.score - right.score || left.id.localeCompare(right.id))) {
+    if (
+      selected.length >= limit
+      || seen.has(candidate.id)
+      || !Number.isFinite(candidate.score)
+      || !Number.isFinite(candidate.x)
+      || !Number.isFinite(candidate.y)
+      || selected.some((item) =>
+        Math.abs(item.x - candidate.x) < horizontalGap
+        && Math.abs(item.y - candidate.y) < verticalGap)
+    ) continue;
+    selected.push(candidate);
+    seen.add(candidate.id);
+  }
+  return selected.map((candidate) => candidate.id);
+}
+
 function boundedInteger(value: number, min: number, max: number) {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.floor(value)));

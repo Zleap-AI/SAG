@@ -43,6 +43,8 @@ apps/api/dist/desktop/
 .idea/
 .vscode/
 *.log
+.public-sync-reports/
+/output/
 
 # skill installer output (npx skills add)
 .agents/

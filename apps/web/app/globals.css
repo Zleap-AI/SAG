@@ -705,6 +705,18 @@
     transition: none;
   }
 
+  .sag-pet-head-avatar .sag-pet__bubble::before {
+    left: 16%;
+    top: 12%;
+    width: 25%;
+    height: 11%;
+    border-top-width: 1px;
+  }
+
+  .sag-pet-head-avatar .sag-pet__bubble::after {
+    inset: 6%;
+  }
+
   .sag-full-loader__avatar {
     filter: drop-shadow(0 12px 14px hsl(var(--foreground) / 0.09));
     animation: sag-full-loader-float 3.2s ease-in-out infinite;

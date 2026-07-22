@@ -16,8 +16,12 @@ import {
 } from "@/lib/universe-keyboard-navigation";
 import {
   planUniversePreviewCards,
+  selectUniverseViewpointCardIds,
+  universeAccumulationCardViewScore,
   universeCardApertureBucket,
+  type UniverseViewpointCardCandidate,
 } from "@/lib/universe-preview-plan";
+import { projectUniverseAccumulationTopology } from "@/lib/universe-scene-projection";
 import {
   UNIVERSE_VIEW_LIMITS,
   type UniverseViewPreferences,
@@ -30,7 +34,10 @@ import {
   universeVisualDetailProgress,
   type UniverseNodeEmergence,
 } from "@/lib/universe-presentation";
-import { planUniverseSceneDelta } from "@/lib/universe-scene-transition";
+import {
+  planUniverseSceneDelivery,
+  planUniverseSceneDelta,
+} from "@/lib/universe-scene-transition";
 import {
   UNIVERSE_TEMPORAL_AXIS_FAR_LATERAL_SPREAD,
   UNIVERSE_TEMPORAL_AXIS_NEAR_LATERAL_SPREAD,
@@ -188,6 +195,14 @@ interface SceneLabel {
   element: HTMLElement;
   primary?: HTMLButtonElement;
   actionButtons?: HTMLButtonElement[];
+}
+
+interface AccumulationCardViewContext {
+  camera: THREE.Camera;
+  width: number;
+  height: number;
+  safeCenter: { x: number; y: number };
+  panelRect: { left: number; top: number; right: number; bottom: number } | null;
 }
 
 interface SceneCallbacks {
@@ -1033,6 +1048,8 @@ export class UniverseForceSceneEngine {
   private projectionEdge = new THREE.Vector3();
   private adjacency = new Map<string, Set<string>>();
   private visibleEdgeIds = new Set<string>();
+  /** Entities currently disclosed by event cards in the accumulation aperture. */
+  private accumulationDisclosedEntityIds = new Set<string>();
   private sourceHits: SearchSourceHit[] = [];
   private selectedId: string | null = null;
   private lockedId: string | null = null;
@@ -1134,6 +1151,7 @@ export class UniverseForceSceneEngine {
   private visualDetailTarget = 0;
   private strategy: UniverseSceneStrategy = "exploration";
   private strategyChangedSinceData = false;
+  private explorationRestorePending = false;
   private reportedViewSourceId: string | null = null;
   private requestedSourceId: string | null = null;
   private overviewRequested = true;
@@ -1276,11 +1294,11 @@ export class UniverseForceSceneEngine {
       })
       .onEngineTick(() => {
         this.syncFrozenNodeCoordinates();
-        this.updateLabels(performance.now());
+        this.updateViewLabels(performance.now());
       })
       .onEngineStop(() => {
         this.syncFrozenNodeCoordinates();
-        this.updateLabels(performance.now(), true);
+        this.updateViewLabels(performance.now(), true);
       });
 
     const renderer = this.graph.renderer();
@@ -1543,6 +1561,17 @@ export class UniverseForceSceneEngine {
     this.policy = policy;
     const resetLayoutForStrategy = this.strategyChangedSinceData;
     this.strategyChangedSinceData = false;
+    const restoringExploration = this.explorationRestorePending
+      && this.strategy === "exploration";
+    this.explorationRestorePending = false;
+    const projectedTopology = this.strategy === "accumulation"
+      ? projectUniverseAccumulationTopology(data.nodes, data.links)
+      : { nodes: data.nodes, links: data.links, orphanEntityIds: [] };
+    const sceneNodes = projectedTopology.nodes;
+    const sceneLinks = projectedTopology.links;
+    this.host.dataset.universePrunedOrphanEntityCount = String(
+      projectedTopology.orphanEntityIds.length,
+    );
     const epochChanged = data.epoch !== this.dataEpoch;
     const nextWindowRevision = data.windowRevision ?? 0;
     const windowChanged = !epochChanged
@@ -1569,7 +1598,13 @@ export class UniverseForceSceneEngine {
       // second time after the replacement entrance resolves its motion promise.
       this.cancelTimelineTransition(true);
     }
-    const animateTimelineWindow = windowChanged && this.timelineJourney.enabled;
+    const delivery = planUniverseSceneDelivery({
+      strategyBoundary: resetLayoutForStrategy,
+      restoringExploration,
+      windowChanged,
+      timelineJourneyEnabled: this.timelineJourney.enabled,
+    });
+    const animateTimelineWindow = delivery.animateTimelineWindow;
     this.dataWindowRevision = nextWindowRevision;
     this.host.dataset.universeWindowRevision = String(nextWindowRevision);
     const nextFlight = data.temporalFlight ?? null;
@@ -1599,6 +1634,7 @@ export class UniverseForceSceneEngine {
     } else if (
       nextFlight
       && windowChanged
+      && !delivery.stableRestore
       && !this.flightOwnWindowChange
       && this.sourceNavigationPhase !== "origin"
       && this.sourceNavigationPhase !== "returning"
@@ -1661,7 +1697,7 @@ export class UniverseForceSceneEngine {
       : this.nodes;
     const persistentAnchor = oldNodes.get(this.lockedId ?? this.selectedId ?? "");
     const nextNodes = new Map<string, ForceNode>();
-    const sceneNodesById = new Map(data.nodes.map((node) => [node.id, node]));
+    const sceneNodesById = new Map(sceneNodes.map((node) => [node.id, node]));
     const nodeDelta = planUniverseSceneDelta(oldNodes.keys(), sceneNodesById.keys());
     this.host.dataset.universeRetainedNodeCount = String(nodeDelta.retainedIds.length);
     this.host.dataset.universeEnteringNodeDelta = String(nodeDelta.enteringIds.length);
@@ -1673,7 +1709,7 @@ export class UniverseForceSceneEngine {
       if (id === this.selectedId) return 2;
       return oldNodes.get(id)?.kind === "event" ? 1 : 0;
     };
-    data.links.forEach((link) => {
+    sceneLinks.forEach((link) => {
       if (!relationNeighbors.has(link.source)) relationNeighbors.set(link.source, new Set());
       if (!relationNeighbors.has(link.target)) relationNeighbors.set(link.target, new Set());
       relationNeighbors.get(link.source)?.add(link.target);
@@ -1695,7 +1731,7 @@ export class UniverseForceSceneEngine {
       }
     });
     const sourceScenes = new Map(
-      data.nodes
+      sceneNodes
         .filter((node) => node.kind === "source")
         .map((node) => [node.sourceId, node]),
     );
@@ -1734,7 +1770,7 @@ export class UniverseForceSceneEngine {
     }
     const entryOrderById = new Map<string, number>();
     const entrantCountBySource = new Map<string, number>();
-    const entrants = data.nodes
+    const entrants = sceneNodes
       .filter((node) => node.kind !== "source" && !oldNodes.has(node.id))
       .sort((left, right) => {
         const sourceOrder = left.sourceId.localeCompare(right.sourceId);
@@ -1897,7 +1933,7 @@ export class UniverseForceSceneEngine {
     this.host.dataset.universePlacementCount = String(entrants.length);
     this.host.dataset.universePlacementMs = (performance.now() - placementStartedAt).toFixed(2);
 
-    data.nodes.forEach((sceneNode) => {
+    sceneNodes.forEach((sceneNode) => {
       const existing = oldNodes.get(sceneNode.id);
       const sourceScene = sourceScenes.get(sceneNode.sourceId);
       const currentSource = currentSources.get(sceneNode.sourceId)
@@ -1990,7 +2026,10 @@ export class UniverseForceSceneEngine {
       if (arc.lengthSq() < 0.0001) arc.set(-travelDirection.y, travelDirection.x, 0.24);
       arc.normalize().multiplyScalar(Math.min(16, 4 + travel.length() * 0.075));
       const timelineMotion = timelineMotionFor(sceneNode, desired);
-      const entry = animateTimelineWindow || sceneNode.kind === "source" || this.reducedMotion
+      const entry = !delivery.animateEntrants
+        || animateTimelineWindow
+        || sceneNode.kind === "source"
+        || this.reducedMotion
         ? undefined
         : {
             startedAt: entryNow + Math.min(
@@ -2175,7 +2214,7 @@ export class UniverseForceSceneEngine {
 
     const previousLinks = this.links;
     const oldLinks = new Map(previousLinks.map((link) => [link.id, link]));
-    const nextLinks = data.links
+    const nextLinks = sceneLinks
       .filter((link) => nextNodes.has(link.source) && nextNodes.has(link.target) && !link.virtual)
       .map((sceneLink) => {
         const existing = oldLinks.get(sceneLink.id);
@@ -2271,8 +2310,8 @@ export class UniverseForceSceneEngine {
     this.host.dataset.universeHighlightedRelations = "0";
     this.host.dataset.universeRelationAnchor = "";
     this.host.dataset.universeEngine = "3d-force-graph";
-    this.host.dataset.universeNodeCount = String(data.nodes.length);
-    this.host.dataset.universeLinkCount = String(data.links.length);
+    this.host.dataset.universeNodeCount = String(sceneNodes.length);
+    this.host.dataset.universeLinkCount = String(sceneLinks.length);
     this.host.dataset.universeEventStarCount = String(
       [...nextNodes.values()].filter((node) => node.kind === "event").length,
     );
@@ -2288,7 +2327,11 @@ export class UniverseForceSceneEngine {
     if (this.timelineMotionPhase === "entering" && timelineMovingCount === 0) {
       this.finishTimelineMotionPhase();
     }
-    if (
+    if (!delivery.autoFocus) {
+      // The retained camera is applied immediately after this delivery. Any
+      // automatic framing here would race it and make the restored graph jump.
+      this.didInitialFocus = true;
+    } else if (
       !this.paused
       && this.strategy === "accumulation"
       && topologyChanged
@@ -2337,6 +2380,10 @@ export class UniverseForceSceneEngine {
 
   focusOverview() {
     this.frameOverview(760, false);
+  }
+
+  prepareExplorationRestore() {
+    this.explorationRestorePending = true;
   }
 
   captureExplorationView(): UniverseSceneExplorationView | null {
@@ -2388,7 +2435,10 @@ export class UniverseForceSceneEngine {
     this.host.dataset.universeDetailLatched = view.sourceId ?? "";
     this.host.dataset.universeDetailMix = this.visualDetailMix.toFixed(2);
     this.host.dataset.universeDetailTarget = this.visualDetailTarget.toFixed(2);
-    const duration = this.reducedMotion ? 0 : 420;
+    // Snapshot restoration is identity-preserving state recovery. Animating
+    // from the accumulation camera exposes an invalid intermediate frame and
+    // can race source auto-focus, so commit the retained pose atomically.
+    const duration = 0;
     this.graph.cameraPosition(view.camera, view.target, duration);
     this.updateVisualLayout(performance.now(), true, false);
     this.rebuildLabels();
@@ -3301,7 +3351,7 @@ export class UniverseForceSceneEngine {
     if (this.dataReady) {
       this.syncFrozenNodeCoordinates();
       this.updateLinkVisuals();
-      this.updateLabels(performance.now(), true);
+      this.updateViewLabels(performance.now(), true);
     }
   }
 
@@ -4069,9 +4119,13 @@ export class UniverseForceSceneEngine {
         else if (neighbors?.has(node.id)) opacity = transientHover ? 0.76 : 0.92;
         else if (node.kind === "source" && anchor?.sourceId === node.sourceId) {
           opacity = transientHover ? 0.28 : 0.38;
-        } else opacity = transientHover
-          ? this.strategy === "accumulation" ? 0.38 : 0.12
-          : 0.18;
+        } else opacity = transientHover ? 0.12 : 0.18;
+      } else if (
+        this.strategy === "accumulation"
+        && node.kind === "entity"
+        && !this.accumulationDisclosedEntityIds.has(node.id)
+      ) {
+        opacity = 0;
       }
       const overviewSourceHovered = node.kind === "source"
         && this.visualDetailMix < 0.5
@@ -4144,7 +4198,7 @@ export class UniverseForceSceneEngine {
     if (!anchorId || node.kind === "source") return 1;
     if (node.id === anchorId) return 1;
     if (this.adjacency.get(anchorId)?.has(node.id)) return 0.76;
-    return this.strategy === "accumulation" ? 0.42 : 0.16;
+    return 0.16;
   }
 
   private updateObjectOpacities() {
@@ -5102,6 +5156,14 @@ export class UniverseForceSceneEngine {
     if (!link.visible) {
       return { color: this.darkTheme ? "#5b747a" : "#70898e", opacity: 0 };
     }
+    if (
+      this.strategy === "accumulation"
+      && !this.labelFocusId()
+      && [source, target].some((node) =>
+        node?.kind === "entity" && !this.accumulationDisclosedEntityIds.has(node.id))
+    ) {
+      return { color: this.darkTheme ? "#5b747a" : "#70898e", opacity: 0 };
+    }
     if (link.highlighted) {
       return {
         color: this.darkTheme ? "#b5f2fb" : "#0b6677",
@@ -5293,9 +5355,105 @@ export class UniverseForceSceneEngine {
       / Math.max(1, config.unitsPerEvent);
   }
 
+  private accumulationCardViewContext(): AccumulationCardViewContext {
+    const panelRect = this.miniPanelRect();
+    return {
+      camera: this.graph.camera(),
+      width: Math.max(1, this.host.clientWidth),
+      height: Math.max(1, this.host.clientHeight),
+      safeCenter: this.safeViewportCenter(panelRect),
+      panelRect,
+    };
+  }
+
+  private accumulationViewpointCandidate(
+    node: ForceNode,
+    context: AccumulationCardViewContext,
+  ): UniverseViewpointCardCandidate | undefined {
+    const projected = this.projectionPoint
+      .set(node.x, node.y, node.z)
+      .project(context.camera);
+    const screen = this.graph.graph2ScreenCoords(node.x, node.y, node.z);
+    const panel = context.panelRect;
+    const blockedByOverlay = panel
+      ? screen.y > panel.top - 112
+        && screen.y < panel.bottom + 112
+        && ((panel.left + panel.right) / 2 >= context.width / 2
+          ? screen.x > panel.left - 280
+          : screen.x < panel.right + 280)
+      : false;
+    const score = universeAccumulationCardViewScore({
+      projectedZ: projected.z,
+      screenX: screen.x,
+      screenY: screen.y,
+      viewportWidth: context.width,
+      viewportHeight: context.height,
+      safeCenterX: context.safeCenter.x,
+      safeCenterY: context.safeCenter.y,
+      cameraDistance: context.camera.position.distanceTo(node),
+      blockedByOverlay,
+    });
+    return score === undefined ? undefined : {
+      id: node.id,
+      score,
+      x: screen.x,
+      y: screen.y,
+    };
+  }
+
+  private accumulationCardViewDistance(
+    node: ForceNode,
+    context: AccumulationCardViewContext,
+  ) {
+    return this.accumulationViewpointCandidate(node, context)?.score;
+  }
+
+  private accumulationEventCardIds(context: AccumulationCardViewContext) {
+    const candidates = [...this.nodes.values()].flatMap((node) => {
+      if (
+        node.kind !== "event"
+        || node.sceneNode.state !== "active"
+        || node.timelineRetiring
+      ) return [];
+      const candidate = this.accumulationViewpointCandidate(node, context);
+      return candidate ? [candidate] : [];
+    });
+    return selectUniverseViewpointCardIds(candidates, {
+      maxCount: this.viewPreferences.eventCardPreviewCount,
+      horizontalGap: context.width < 768 ? 176 : 218,
+      verticalGap: context.width < 768 ? 84 : 108,
+    });
+  }
+
+  private accumulationEntityCardIds(
+    eventIds: readonly string[],
+  ) {
+    const entityIds = new Set<string>();
+    eventIds.forEach((eventId) => {
+      [...(this.adjacency.get(eventId) ?? [])].forEach((id) => {
+        const node = this.nodes.get(id);
+        if (
+          node?.kind === "entity"
+          && node.sceneNode.state === "active"
+          && !node.timelineRetiring
+        ) entityIds.add(id);
+      });
+    });
+    return [...entityIds];
+  }
+
   private cardApertureKey() {
+    if (this.strategy === "accumulation") {
+      const focusId = this.labelFocusId();
+      if (focusId) return `accumulation:focus:${focusId}`;
+      if (!this.viewPreferences.cardsEnabled) return "accumulation:cards-off";
+      const context = this.accumulationCardViewContext();
+      const eventIds = this.accumulationEventCardIds(context);
+      const entityIds = this.accumulationEntityCardIds(eventIds);
+      return `accumulation:view:${eventIds.join(",")}|${entityIds.join(",")}`;
+    }
     const config = this.flightConfig;
-    if (!config || this.strategy !== "exploration") return null;
+    if (!config) return null;
     return [
       config.sourceId,
       universeCardApertureBucket(
@@ -5303,6 +5461,15 @@ export class UniverseForceSceneEngine {
         config.unitsPerEvent,
       ),
     ].join(":");
+  }
+
+  private updateViewLabels(now: number, force = false) {
+    if (this.cardApertureKey() !== this.renderedCardApertureKey) {
+      this.rebuildLabels();
+      if (this.strategy === "accumulation") this.applyHighlight();
+      return;
+    }
+    this.updateLabels(now, force);
   }
 
   private rebuildLabels() {
@@ -5327,6 +5494,20 @@ export class UniverseForceSceneEngine {
     const labelSourceId = focusId
       ? this.nodes.get(focusId)?.sourceId ?? this.visualSourceId
       : this.visualSourceId;
+    const accumulationView = this.strategy === "accumulation" && !focusId
+      ? this.accumulationCardViewContext()
+      : null;
+    const accumulationEventIds = accumulationView
+      ? new Set(this.accumulationEventCardIds(accumulationView))
+      : null;
+    const accumulationEntityIds = accumulationView
+      ? new Set(this.accumulationEntityCardIds([...(accumulationEventIds ?? [])]))
+      : null;
+    if (accumulationEntityIds) {
+      this.accumulationDisclosedEntityIds = new Set(accumulationEntityIds);
+    } else if (this.strategy !== "accumulation") {
+      this.accumulationDisclosedEntityIds.clear();
+    }
     this.renderedLabelFocusId = focusId;
     this.host.dataset.universeLabelFocus = focusId ?? "";
     this.host.dataset.universeLabelNeighborCount = String(focusNeighbors?.size ?? 0);
@@ -5380,13 +5561,23 @@ export class UniverseForceSceneEngine {
         .filter((node) =>
           this.strategy === "accumulation" || node.sourceId === labelSourceId)
         .sort(prioritize)
-        .map((node) => ({
-          id: node.id,
-          kind: node.kind,
-          sourceId: node.sourceId,
-          active: node.sceneNode.state === "active",
-          viewDistance: this.timelineViewDistance(node),
-        })),
+        .map((node) => {
+          const accumulationViewDistance = accumulationView
+            ? this.accumulationCardViewDistance(node, accumulationView)
+            : undefined;
+          return {
+            id: node.id,
+            kind: node.kind,
+            sourceId: node.sourceId,
+            active: node.sceneNode.state === "active"
+              && (!accumulationView || Boolean(
+                node.kind === "event"
+                  ? accumulationEventIds?.has(node.id)
+                  : accumulationEntityIds?.has(node.id)
+              )),
+            viewDistance: accumulationViewDistance ?? this.timelineViewDistance(node),
+          };
+        }),
       adjacency: this.adjacency,
       sourceId: labelSourceId,
       includeAllSources: this.strategy === "accumulation",
@@ -5410,6 +5601,21 @@ export class UniverseForceSceneEngine {
     );
     this.host.dataset.universeHiddenRelatedEntityCount = String(
       previewPlan.hiddenRelatedEntityCount,
+    );
+    this.host.dataset.universeAccumulationCardMode = this.strategy === "accumulation"
+      ? "viewpoint"
+      : "timeline";
+    this.host.dataset.universeAccumulationCardLimit = this.strategy === "accumulation"
+      ? String(this.viewPreferences.eventCardPreviewCount)
+      : "";
+    this.host.dataset.universeAccumulationEventCardCount = String(
+      accumulationEventIds?.size ?? 0,
+    );
+    this.host.dataset.universeAccumulationEntityCardCount = String(
+      accumulationEntityIds?.size ?? 0,
+    );
+    this.host.dataset.universeAccumulationDisclosedEntityGlyphCount = String(
+      this.accumulationDisclosedEntityIds.size,
     );
 
     sources.forEach((node) => {
@@ -6063,13 +6269,11 @@ export class UniverseForceSceneEngine {
       const isOpenPlacement = (candidate: LabelRect) =>
         insideViewport(candidate) && !overlapsFixedOverlay(candidate);
       const naturalRect = candidates.find(isOpenPlacement);
-      // Exploration is composed around a central temporal corridor. If an
-      // ordinary card no longer has a natural in-frame placement, its lifecycle
-      // has reached the edge and it should dissolve — never teleport to a
-      // clamped viewport border. Accumulation and an explicit focus keep a
-      // dependable fallback because their controls/actions must stay reachable.
-      const allowClampedPlacement =
-        this.strategy === "accumulation" || requiredFocusCard;
+      // Ordinary cards in both modes share the same lifecycle: if no natural
+      // placement remains, dissolve back to the star instead of teleporting to
+      // a clamped viewport border. Explicit focus alone keeps a dependable
+      // fallback because its controls/actions must stay reachable.
+      const allowClampedPlacement = requiredFocusCard;
       const rect = naturalRect
         ?? (allowClampedPlacement
           ? clampedCandidates.find((candidate) => !overlapsFixedOverlay(candidate))
@@ -6178,14 +6382,14 @@ export class UniverseForceSceneEngine {
     return { left, top, right, bottom };
   }
 
-  private safeViewportCenter() {
+  private safeViewportCenter(panelRect = this.miniPanelRect()) {
     const width = Math.max(1, this.host.clientWidth);
     const height = Math.max(1, this.host.clientHeight);
     let left = 24;
     let right = width - 72;
     let top = 68;
     let bottom = height - 54;
-    const panels = [this.miniPanelRect()]
+    const panels = [panelRect]
       .filter((panel): panel is NonNullable<typeof panel> => panel !== null);
     panels.forEach((panel) => {
       const panelCenterX = (panel.left + panel.right) / 2;
@@ -6631,7 +6835,7 @@ export class UniverseForceSceneEngine {
     const parallaxMoving = this.updatePointerParallax();
     this.updateVisualLayout(now);
     const nebulaAnimating = this.updateNebulaAnimation(now);
-    this.updateLabels(now);
+    this.updateViewLabels(now);
     this.evaluateLod(now);
     if (
       entering
@@ -6782,11 +6986,7 @@ export class UniverseForceSceneEngine {
       this.updateTemporalPresence();
       this.updateVisualLayout(now);
       this.updateNodeMorphScales(now);
-      if (this.cardApertureKey() !== this.renderedCardApertureKey) {
-        this.rebuildLabels();
-      } else {
-        this.updateLabels(now);
-      }
+      this.updateViewLabels(now);
       this.evaluateLod(now);
     }
     // Cards duck while the camera streaks past and re-expand once it settles.
@@ -7002,7 +7202,7 @@ export class UniverseForceSceneEngine {
     this.cameraCalmUntil = now + NEBULA_GESTURE_CALM_MS;
     this.updateVisualLayout(now);
     this.updateNodeMorphScales(now);
-    this.updateLabels(now);
+    this.updateViewLabels(now);
     this.evaluateLod(now);
   };
 

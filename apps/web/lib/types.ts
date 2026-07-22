@@ -71,6 +71,7 @@ export interface CitationEventRef {
   /** Retained for persisted data and non-visual consumers; never used as event body. */
   summary?: string | null;
   category?: string | null;
+  start_time?: string | null;
 }
 
 export interface Citation {

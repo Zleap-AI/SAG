@@ -21,7 +21,10 @@ import {
 } from "lucide-react";
 
 import { api, ApiError } from "@/lib/api";
-import { stripCitationTransportTokens } from "@/lib/citation-presentation";
+import {
+  cleanCitationText,
+  stripCitationTransportTokens,
+} from "@/lib/citation-presentation";
 import type { ConversationMessage } from "@/lib/conversation-runtime";
 import { formatDate } from "@/lib/format";
 import type { PetAgent } from "@/lib/pet-agent";
@@ -268,6 +271,86 @@ function detailFromGraphPatch(
 
 function universeDetailKey(kind: "event" | "entity", id: string, sourceId: string) {
   return `${sourceId}:${kind}:${id}`;
+}
+
+function MiniCitationDetail({ citation }: { citation: Citation }) {
+  const locale = useLocale();
+  const t = useTranslations("PetMini");
+  const { timezone } = useApp();
+  const event = React.useMemo(
+    () => (citation.event_refs ?? []).find((item) => cleanCitationText(item.title)),
+    [citation.event_refs],
+  );
+  const eventTitle = cleanCitationText(event?.title);
+  const eventBody = cleanCitationText(event?.content);
+  const eventCategory = cleanCitationText(event?.category);
+  const eventTime = event?.start_time
+    ? formatDate(event.start_time, timezone, { dateStyle: "medium" }, locale)
+    : "";
+  const sourceName = citation.source_name || t("detail.localKnowledge");
+  const evidenceText = stripCitationTransportTokens(citation.snippet)
+    || t("detail.noCitationSource");
+
+  if (event && eventTitle) {
+    return (
+      <div className="space-y-3">
+        <section className="rounded-lg border border-amber-500/20 bg-amber-500/[0.07] p-3 shadow-sm dark:border-amber-300/20 dark:bg-amber-300/[0.07]">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+            <span className="min-w-0 truncate">{sourceName}</span>
+            {eventCategory && (
+              <span className="rounded bg-background/70 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-200">
+                {eventCategory}
+              </span>
+            )}
+            {eventTime && <span>{eventTime}</span>}
+          </div>
+          <h2 className="mt-2 text-sm font-medium leading-5">{eventTitle}</h2>
+          {eventBody && (
+            <div className="mt-3">
+              <p className="text-[10px] font-medium tracking-wide text-muted-foreground/75">
+                {t("detail.eventDetail")}
+              </p>
+              <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-foreground/75">
+                {eventBody}
+              </p>
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-lg border bg-background/75 p-3 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-[11px] font-medium text-muted-foreground">
+              {t("detail.sourceEvidence")}
+            </h3>
+            <span className="min-w-0 truncate text-[10px] text-muted-foreground/70">
+              {sourceName}
+            </span>
+          </div>
+          {citation.heading && (
+            <p className="mt-2 text-xs font-medium">{citation.heading}</p>
+          )}
+          <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-5 text-foreground/70">
+            {evidenceText}
+          </p>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <section className="rounded-lg border bg-background/75 p-3 shadow-sm">
+      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        <FileText className="size-3.5" />
+        <span className="min-w-0 flex-1 truncate">{sourceName}</span>
+      </div>
+      {citation.heading && (
+        <h2 className="mt-3 text-sm font-medium leading-5">{citation.heading}</h2>
+      )}
+      <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-5 text-foreground/75">
+        {evidenceText}
+      </p>
+    </section>
+  );
 }
 
 export function PetMiniWorkspace({
@@ -1234,23 +1317,7 @@ export function PetMiniWorkspace({
                     className="p-4"
                   >
                   {detailTarget.kind === "citation" ? (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                        <FileText className="size-3.5" />
-                        <span className="min-w-0 flex-1 truncate">
-                          {detailTarget.citation.source_name || t("detail.localKnowledge")}
-                        </span>
-                      </div>
-                      {detailTarget.citation.heading && (
-                        <h2 className="text-sm font-medium leading-5">
-                          {detailTarget.citation.heading}
-                        </h2>
-                      )}
-                      <p className="whitespace-pre-wrap text-xs leading-5 text-foreground/75">
-                        {stripCitationTransportTokens(detailTarget.citation.snippet)
-                          || t("detail.noCitationSource")}
-                      </p>
-                    </div>
+                    <MiniCitationDetail citation={detailTarget.citation} />
                   ) : detailLoading && !detail ? (
                     <div className="flex h-52 items-center justify-center gap-2 text-xs text-muted-foreground">
                       <Loader2 className="size-4 animate-spin" />
@@ -1258,12 +1325,24 @@ export function PetMiniWorkspace({
                     </div>
                   ) : detail ? (
                     <div className="space-y-5">
-                      <section>
+                      <section
+                        className={cn(
+                          detailTarget.kind === "event"
+                            ? "rounded-lg border border-amber-500/20 bg-amber-500/[0.07] p-3 shadow-sm dark:border-amber-300/20 dark:bg-amber-300/[0.07]"
+                            : "",
+                        )}
+                      >
                         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
                           <span>{detail.source_name || t("detail.localKnowledge")}</span>
-                          {detail.category && <span>· {detail.category}</span>}
+                          {detail.category && detailTarget.kind === "event" ? (
+                            <span className="rounded bg-background/70 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-200">
+                              {detail.category}
+                            </span>
+                          ) : detail.category ? (
+                            <span>· {detail.category}</span>
+                          ) : null}
                           {detail.start_time && (
-                            <span>· {formatDate(detail.start_time, timezone, { dateStyle: "medium" }, locale)}</span>
+                            <span>{formatDate(detail.start_time, timezone, { dateStyle: "medium" }, locale)}</span>
                           )}
                         </div>
                         <h2 className="mt-2 text-sm font-medium leading-5">{detail.label}</h2>
@@ -1313,7 +1392,7 @@ export function PetMiniWorkspace({
                       )}
 
                       {detail.evidence && (
-                        <section className="border-t pt-4">
+                        <section className="rounded-lg border bg-background/75 p-3 shadow-sm">
                           <div className="flex items-center justify-between gap-3">
                             <h3 className="text-[11px] font-medium text-muted-foreground">
                               {t("detail.sourceEvidence")}

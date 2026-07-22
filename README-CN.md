@@ -26,9 +26,18 @@
 
 https://github.com/user-attachments/assets/cae70570-3885-490f-9126-dea23dcb369c
 
+## 社区交流
+
+扫描下方二维码加入微信交流群，与项目维护者和其他用户一起交流。
+
+<p align="center">
+  <img src="docs/assets/readme/wechat-community-qr.png" alt="SAG 微信交流群二维码" width="220" />
+</p>
+
 ## 目录
 
 <p align="center">
+  <a href="#社区交流">社区交流</a> ·
   <a href="#项目介绍">项目介绍</a> ·
   <a href="#技术原理">技术原理</a> ·
   <a href="#用户指南">用户指南</a> ·
@@ -330,6 +339,7 @@ SAG 采用 Next.js 前端与 FastAPI 后端分离的架构。后端是基于公�
 ```text
 apps/
 ├── web/                    Next.js 15 + React 19 产品前端
+├── desktop/                Electron 桌面壳、打包与本地运行时生命周期
 └── api/
     ├── sag_api/
     │   ├── api/v1/         FastAPI HTTP 路由与序列化
@@ -373,6 +383,7 @@ npm run dev
 常用检查：
 
 ```bash
+cd apps/api && pytest
 cd apps/api && ruff check .
 cd apps/web && npm run typecheck
 cd apps/web && npm run build

@@ -16,8 +16,9 @@ import {
 
 import { api, ApiError } from "@/lib/api";
 import { getToken } from "@/lib/auth";
-import type { Doc } from "@/lib/types";
-import { formatBytes, formatTokenCount, relativeTime } from "@/lib/format";
+import type { CitationEventRef, Doc } from "@/lib/types";
+import { formatBytes, formatDate, formatTokenCount, relativeTime } from "@/lib/format";
+import { cleanCitationText, stripCitationTransportTokens } from "@/lib/citation-presentation";
 import { cn } from "@/lib/utils";
 import { MarkdownContent } from "@/components/features/markdown-content";
 import { useApp } from "@/components/features/app-shell";
@@ -38,7 +39,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 /** 详情面板目标：引用/搜索结果的原文分块，或知识库文档（含原始文件预览）。 */
 export type DetailTarget =
-  | { kind: "chunk"; sourceId: string; chunkId: string; heading?: string; sourceName?: string }
+  | {
+      kind: "chunk";
+      sourceId: string;
+      chunkId: string;
+      heading?: string;
+      sourceName?: string;
+      eventRefs?: CitationEventRef[];
+    }
   | { kind: "document"; sourceId: string; documentId: string; title?: string };
 
 interface PanelCtx {
@@ -174,10 +182,23 @@ function ChunkView({
   target: Extract<DetailTarget, { kind: "chunk" }>;
 }) {
   const t = useTranslations("DetailPanel");
+  const locale = useLocale();
+  const { timezone } = useApp();
   const [content, setContent] = React.useState<string | null>(null);
   const [meta, setMeta] = React.useState<{ heading: string; sourceName: string } | null>(null);
   const [mode, setMode] = React.useState<"md" | "raw">("md");
   const [error, setError] = React.useState("");
+  const citationEvent = React.useMemo(
+    () =>
+      (target.eventRefs ?? []).find((event) => cleanCitationText(event.title)),
+    [target.eventRefs],
+  );
+  const eventTitle = cleanCitationText(citationEvent?.title);
+  const eventBody = cleanCitationText(citationEvent?.content);
+  const eventCategory = cleanCitationText(citationEvent?.category);
+  const eventTime = citationEvent?.start_time
+    ? formatDate(citationEvent.start_time, timezone, { dateStyle: "medium" }, locale)
+    : "";
 
   React.useEffect(() => {
     let alive = true;
@@ -204,6 +225,62 @@ function ChunkView({
       <div className="flex flex-col gap-2">
         <Skeleton className="h-5 w-2/3" />
         <Skeleton className="h-32" />
+      </div>
+    );
+  }
+  if (citationEvent && eventTitle) {
+    const evidenceHeading = meta?.heading || target.heading || t("chunk.fallbackHeading");
+    const evidenceSource = meta?.sourceName ?? target.sourceName ?? t("chunk.source");
+    return (
+      <div className="flex min-w-0 flex-col gap-5">
+        <section className="rounded-lg border border-amber-500/20 bg-amber-500/[0.07] p-3.5 shadow-sm dark:border-amber-300/20 dark:bg-amber-300/[0.07]">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <Link
+              href={`/knowledge/${target.sourceId}`}
+              className="min-w-0 truncate hover:text-foreground"
+            >
+              {evidenceSource}
+            </Link>
+            {eventCategory && (
+              <span className="rounded bg-background/70 px-1.5 py-0.5 text-[11px] text-amber-700 dark:text-amber-200">
+                {eventCategory}
+              </span>
+            )}
+            {eventTime && <span>{eventTime}</span>}
+          </div>
+          <h3 className="mt-2 font-display text-base font-medium leading-6">
+            {eventTitle}
+          </h3>
+          {eventBody && (
+            <div className="mt-3">
+              <p className="text-[11px] font-medium tracking-wide text-muted-foreground/75">
+                {t("chunk.eventDetail")}
+              </p>
+              <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-foreground/75">
+                {eventBody}
+              </p>
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-lg border bg-background/75 p-3.5 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h4 className="text-xs font-medium text-muted-foreground">
+                {t("chunk.sourceEvidence")}
+              </h4>
+              {evidenceHeading && (
+                <p className="mt-1 truncate text-sm font-medium text-foreground">
+                  {evidenceHeading}
+                </p>
+              )}
+            </div>
+            <RenderModeToggle mode={mode} onChange={setMode} />
+          </div>
+          <div className="mt-3">
+            <TextBody text={stripCitationTransportTokens(content)} mode={mode} />
+          </div>
+        </section>
       </div>
     );
   }
