@@ -132,7 +132,10 @@ async def knowledge_mcp_descriptor(
             "transport": "streamable-http",
             "url": f"{base}/mcp/",
             "headers": {"Authorization": "Bearer <SAG_TOKEN>"},
-            "note": "默认开放全部信源；可在 URL 添加 ?source_id=<id> 临时限定单个信源。",
+            "note": (
+                "默认开放全部信源；Dify 等宿主请使用 streamable_http/Streamable HTTP 传输，"
+                "可在 URL 添加 ?source_id=<id> 临时限定单个信源。"
+            ),
         },
         "stdio": {
             "command": "python",

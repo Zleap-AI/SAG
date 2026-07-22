@@ -21,10 +21,12 @@ import type { KnowledgeMcpDescriptor } from "@/lib/types";
 function httpConfig(descriptor: KnowledgeMcpDescriptor, token?: string | null) {
   const headers = { ...descriptor.http.headers };
   if (token) headers.Authorization = `Bearer ${token}`;
+  const transport = descriptor.http.transport.replace("-", "_");
   return {
     mcpServers: {
       [SAG_KNOWLEDGE_MCP_SERVER_KEY]: {
         type: "http",
+        transport,
         url: descriptor.http.url,
         headers,
       },
@@ -68,12 +70,14 @@ export function McpServiceSettings() {
       ...descriptor.http.headers,
       Authorization: "Bearer <SAG_TOKEN>",
     };
+    const transport = descriptor.http.transport.replace("-", "_");
     return {
       httpPreview: JSON.stringify(
         {
           mcpServers: {
             [SAG_KNOWLEDGE_MCP_SERVER_KEY]: {
               type: "http",
+              transport,
               url: descriptor.http.url,
               headers: previewHeaders,
             },

@@ -8,9 +8,19 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const publicRemote = process.env.SAG_PUBLIC_REMOTE || "origin";
-const publicRepository = process.env.SAG_PUBLIC_REPOSITORY || "Zleap-AI/SAG";
-const releaseBranch = process.env.SAG_RELEASE_BRANCH || "main";
+const publicRemote = "origin";
+const publicRepository = "Zleap-AI/SAG";
+const releaseBranch = "main";
+const releaseTagger = Object.freeze({
+  name: "Zleap-AI Release",
+  email: "Zleap-Admin@users.noreply.github.com",
+});
+const unsupportedTargetOverrides = [
+  "SAG_PUBLIC_REMOTE",
+  "SAG_PUBLIC_REPOSITORY",
+  "SAG_RELEASE_BRANCH",
+  "SAG_PUBLIC_ALLOW_LOCAL_REMOTE",
+];
 const releaseFiles = [
   "CHANGELOG.md",
   "README.md",
@@ -27,10 +37,15 @@ function fail(message) {
   process.exit(1);
 }
 
-function run(command, args, { capture = false, allowFailure = false } = {}) {
+function run(command, args, {
+  capture = false,
+  allowFailure = false,
+  env = process.env,
+} = {}) {
   const result = spawnSync(command, args, {
     cwd: repoRoot,
     encoding: "utf8",
+    env,
     stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
   });
   if (result.error) fail(`${command} failed: ${result.error.message}`);
@@ -178,14 +193,69 @@ function updateChangelog(version) {
   );
 }
 
+function resolveGitHubSshAlias(host) {
+  const result = run("ssh", ["-G", host], { capture: true, allowFailure: true });
+  if (result.status !== 0) return null;
+  const settings = new Map(
+    result.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim().split(/\s+/, 2))
+      .filter(([key, value]) => key && value),
+  );
+  if (settings.get("hostname")?.toLowerCase() !== "github.com"
+    || settings.get("user") !== "git"
+    || settings.get("identitiesonly") !== "yes") {
+    return null;
+  }
+  return "github.com";
+}
+
 function remoteMatchesRepository(remoteUrl) {
-  const normalized = remoteUrl.replace(/\/$/, "").replace(/\.git$/, "");
-  return normalized.endsWith(`/${publicRepository}`) || normalized.endsWith(`:${publicRepository}`);
+  const normalized = remoteUrl.trim().replace(/\/$/, "").replace(/\.git$/, "");
+  if (process.env.SAG_RELEASE_TEST_MODE === "1"
+    && (path.isAbsolute(normalized) || normalized.startsWith("file://"))) {
+    return normalized.endsWith(`/${publicRepository}`);
+  }
+
+  const scp = /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(normalized);
+  if (scp && !normalized.includes("://")) {
+    const host = scp[1].toLowerCase();
+    const effectiveHost = host === "github.com" ? host : resolveGitHubSshAlias(host);
+    return effectiveHost === "github.com"
+      && scp[2].replace(/^\//, "").toLowerCase() === publicRepository.toLowerCase();
+  }
+  try {
+    const parsed = new URL(normalized);
+    const host = parsed.hostname.toLowerCase();
+    const effectiveHost = parsed.protocol === "ssh:" && host !== "github.com"
+      ? resolveGitHubSshAlias(host)
+      : host;
+    return ["https:", "ssh:"].includes(parsed.protocol)
+      && effectiveHost === "github.com"
+      && parsed.pathname.replace(/^\//, "").toLowerCase() === publicRepository.toLowerCase();
+  } catch {
+    return false;
+  }
 }
 
 function assertPublicRemote() {
-  const fetchUrl = gitOutput(["remote", "get-url", publicRemote]);
-  const pushUrl = gitOutput(["remote", "get-url", "--push", publicRemote]);
+  const overrides = unsupportedTargetOverrides.filter((name) => process.env[name]);
+  if (overrides.length) {
+    fail(
+      `release target is fixed at ${publicRemote} ${publicRepository} ${releaseBranch}; remove unsupported environment overrides: ${overrides.join(", ")}`,
+    );
+  }
+
+  const fetchUrls = gitLines(["remote", "get-url", "--all", publicRemote]);
+  const pushUrls = gitLines(["remote", "get-url", "--push", "--all", publicRemote]);
+  if (fetchUrls.length !== 1) {
+    fail(`${publicRemote} must have exactly one fetch URL; found ${fetchUrls.length}`);
+  }
+  if (pushUrls.length !== 1) {
+    fail(`${publicRemote} must have exactly one push URL; found ${pushUrls.length}`);
+  }
+  const [fetchUrl] = fetchUrls;
+  const [pushUrl] = pushUrls;
   for (const [kind, remoteUrl] of [["fetch", fetchUrl], ["push", pushUrl]]) {
     if (!remoteMatchesRepository(remoteUrl)) {
       fail(`${publicRemote} ${kind} URL points to ${remoteUrl}; expected ${publicRepository}`);
@@ -205,56 +275,135 @@ function assertPublicHistory(remoteBranchRef) {
   }
 }
 
-function stableTagsMergedInto(ref) {
-  return gitLines(["tag", "--merged", ref, "--list", "v*.*.*", "--sort=-version:refname"])
-    .filter((tag) => /^v\d+\.\d+\.\d+$/.test(tag));
+function assertCommitContainedInPublicHistory(commit, remoteBranchRef) {
+  if (git(["merge-base", "--is-ancestor", commit, remoteBranchRef], { allowFailure: true }).status !== 0) {
+    fail(`${commit} is not contained in ${publicRemote}/${releaseBranch}`);
+  }
+  const commitRoots = gitLines(["rev-list", "--max-parents=0", commit]).sort();
+  const remoteRoots = gitLines(["rev-list", "--max-parents=0", remoteBranchRef]).sort();
+  if (commitRoots.join("\n") !== remoteRoots.join("\n")) {
+    fail(`${commit} contains roots outside the public repository`);
+  }
 }
 
-function highestStableTag(ref) {
-  return stableTagsMergedInto(ref)[0] || null;
+function assertHeadExactlyMatches(remoteBranchRef, action) {
+  const headCommit = gitOutput(["rev-parse", "HEAD^{commit}"]);
+  const remoteCommit = gitOutput(["rev-parse", `${remoteBranchRef}^{commit}`]);
+  if (headCommit !== remoteCommit) {
+    fail(
+      `local HEAD ${headCommit} must exactly match ${publicRemote}/${releaseBranch} ${remoteCommit} before ${action}`,
+    );
+  }
+  return remoteCommit;
 }
 
-async function confirmRelease(tag, remoteUrl, assumeYes) {
+function localTagExists(tag) {
+  return git(["show-ref", "--verify", "--quiet", `refs/tags/${tag}`], { allowFailure: true }).status === 0;
+}
+
+function remoteTagExists(tag) {
+  return Boolean(gitOutput(["ls-remote", "--tags", publicRemote, `refs/tags/${tag}`]));
+}
+
+function releaseTagEnvironment() {
+  return {
+    ...process.env,
+    GIT_AUTHOR_NAME: releaseTagger.name,
+    GIT_AUTHOR_EMAIL: releaseTagger.email,
+    GIT_COMMITTER_NAME: releaseTagger.name,
+    GIT_COMMITTER_EMAIL: releaseTagger.email,
+  };
+}
+
+function assertLocalAnnotatedTag(tag, expectedCommit) {
+  if (gitOutput(["cat-file", "-t", tag]) !== "tag") {
+    fail(`local ${tag} must be an annotated tag`);
+  }
+  const tagCommit = gitOutput(["rev-parse", `${tag}^{commit}`]);
+  if (tagCommit !== expectedCommit) {
+    fail(`local ${tag} points to ${tagCommit}, expected public main ${expectedCommit}`);
+  }
+  const [taggerName, rawTaggerEmail = ""] = gitOutput([
+    "for-each-ref",
+    "--format=%(taggername)%00%(taggeremail)",
+    `refs/tags/${tag}`,
+  ]).split("\0");
+  const taggerEmail = rawTaggerEmail.replace(/^<|>$/g, "");
+  if (taggerName !== releaseTagger.name || taggerEmail !== releaseTagger.email) {
+    fail(
+      `local ${tag} tagger must be ${releaseTagger.name} <${releaseTagger.email}>`,
+    );
+  }
+}
+
+function ensureLocalAnnotatedTag(tag, expectedCommit) {
+  if (localTagExists(tag)) {
+    assertLocalAnnotatedTag(tag, expectedCommit);
+    return;
+  }
+  git(["tag", "-a", tag, expectedCommit, "-m", `SAG ${tag}`], {
+    env: releaseTagEnvironment(),
+  });
+  assertLocalAnnotatedTag(tag, expectedCommit);
+}
+
+function fetchPublicState() {
+  const remoteUrl = assertPublicRemote();
+  const remoteBranchRef = `refs/remotes/${publicRemote}/${releaseBranch}`;
+  git([
+    "fetch",
+    "--prune",
+    "--force",
+    "--no-tags",
+    publicRemote,
+    `+refs/heads/${releaseBranch}:${remoteBranchRef}`,
+  ]);
+  if (git(["show-ref", "--verify", "--quiet", remoteBranchRef], { allowFailure: true }).status !== 0) {
+    fail(`missing ${publicRemote}/${releaseBranch} after fetch`);
+  }
+  return { remoteUrl, remoteBranchRef };
+}
+
+function remoteStableTags() {
+  const output = gitOutput([
+    "ls-remote",
+    "--tags",
+    "--refs",
+    publicRemote,
+    "refs/tags/v*.*.*",
+  ]);
+  const tags = output
+    ? output
+      .split(/\r?\n/)
+      .map((line) => line.split(/\s+/)[1]?.replace(/^refs\/tags\//, ""))
+      .filter((tag) => /^v\d+\.\d+\.\d+$/.test(tag || ""))
+    : [];
+  return [...new Set(tags)]
+    .sort((left, right) => compareVersions(normalizeVersion(right), normalizeVersion(left)));
+}
+
+function highestStableTag() {
+  return remoteStableTags()[0] || null;
+}
+
+async function confirmAction(tag, remoteUrl, action, assumeYes) {
   if (assumeYes) return;
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+  if (process.env.SAG_RELEASE_TEST_MODE !== "1"
+    && (!process.stdin.isTTY || !process.stdout.isTTY)) {
     fail("interactive confirmation is unavailable; pass --yes to confirm explicitly");
   }
   console.log(`\nRelease plan:`);
-  console.log(`  source: ${releaseBranch} at ${gitOutput(["rev-parse", "--short", "HEAD"])}`);
+  console.log(`  source: ${gitOutput(["branch", "--show-current"])} at ${gitOutput(["rev-parse", "--short", "HEAD"])}`);
   console.log(`  target: ${publicRemote} (${remoteUrl})`);
   console.log(`  tag:    ${tag}`);
-  console.log("  action: bump versions, commit, create an annotated tag, and atomically push main + tag");
+  console.log(`  action: ${action}`);
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
   const answer = await prompt.question(`\nType ${tag} to continue: `);
   prompt.close();
   if (answer.trim() !== tag) fail("release cancelled");
 }
 
-async function prepareRelease(rawVersion, flags) {
-  const version = normalizeVersion(rawVersion);
-  const tag = `v${version}`;
-  const dryRun = flags.has("--dry-run");
-  const noPush = flags.has("--no-push");
-  const assumeYes = flags.has("--yes");
-
-  const status = gitOutput(["status", "--porcelain=v1", "--untracked-files=all"]);
-  if (status) fail("working tree must be clean before preparing a release");
-  const branch = gitOutput(["branch", "--show-current"]);
-  if (branch !== releaseBranch) fail(`release from ${releaseBranch}, not ${branch || "detached HEAD"}`);
-
-  const remoteUrl = assertPublicRemote();
-
-  git(["fetch", "--prune", publicRemote]);
-  git(["fetch", publicRemote, "--tags"]);
-  const remoteBranchRef = `refs/remotes/${publicRemote}/${releaseBranch}`;
-  if (git(["show-ref", "--verify", "--quiet", remoteBranchRef], { allowFailure: true }).status !== 0) {
-    fail(`missing ${publicRemote}/${releaseBranch} after fetch`);
-  }
-  assertPublicHistory(remoteBranchRef);
-  if (git(["show-ref", "--verify", "--quiet", `refs/tags/${tag}`], { allowFailure: true }).status === 0) {
-    fail(`tag ${tag} already exists`);
-  }
-
+function currentReleaseVersion() {
   const desktopVersion = normalizeVersion(readJson("apps/desktop/package.json").version);
   const webVersion = normalizeVersion(readJson("apps/web/package.json").version);
   if (desktopVersion !== webVersion) fail(`desktop ${desktopVersion} and web ${webVersion} versions differ`);
@@ -262,45 +411,107 @@ async function prepareRelease(rawVersion, flags) {
   if (desktopVersion !== backendVersion) {
     fail(`desktop ${desktopVersion} and backend ${backendVersion} versions differ`);
   }
-  if (compareVersions(version, desktopVersion) <= 0) {
-    fail(`new version ${version} must be greater than current version ${desktopVersion}`);
+  return desktopVersion;
+}
+
+function assertPreparedVersion(version) {
+  const currentVersion = currentReleaseVersion();
+  if (currentVersion !== version) {
+    fail(`public main metadata is v${currentVersion}, expected prepared version v${version}`);
   }
-  const latestPublicTag = highestStableTag(remoteBranchRef);
+  assertReleaseMetadata(version);
+  const latestPublicTag = highestStableTag();
   if (latestPublicTag && compareVersions(version, normalizeVersion(latestPublicTag)) <= 0) {
-    fail(`new version ${version} must be greater than latest public tag ${latestPublicTag}`);
+    fail(`prepared version ${version} must be greater than latest public tag ${latestPublicTag}`);
   }
+}
 
-  if (dryRun) {
-    console.log(`release: preflight passed; v${desktopVersion} can advance to ${tag} on ${publicRemote}/${releaseBranch}`);
-    return;
-  }
-
-  await confirmRelease(tag, remoteUrl, assumeYes);
+function writeReleaseFiles(currentVersion, version) {
   bumpJsonVersion("apps/desktop/package.json", version);
   bumpJsonVersion("apps/desktop/package-lock.json", version, { lockfile: true });
   bumpJsonVersion("apps/web/package.json", version);
   bumpJsonVersion("apps/web/package-lock.json", version, { lockfile: true });
-  bumpApiVersion(desktopVersion, version);
-  replaceVersionBadge("README.md", desktopVersion, version);
-  replaceVersionBadge("README-CN.md", desktopVersion, version);
+  bumpApiVersion(currentVersion, version);
+  replaceVersionBadge("README.md", currentVersion, version);
+  replaceVersionBadge("README-CN.md", currentVersion, version);
   updateChangelog(version);
   assertReleaseMetadata(version);
-  git(["diff", "--check"]);
-  git(["diff", "--stat", "--", ...releaseFiles]);
-  git(["add", "--", ...releaseFiles]);
-  git(["commit", "-m", `release: ${tag}`]);
-  git(["tag", "-a", tag, "-m", `SAG ${tag}`]);
+}
 
-  if (noPush) {
-    console.log(`release: created local ${tag}; push it with the release commit when ready`);
+function assertCleanAttachedHead({ requireReleaseBranch = false } = {}) {
+  const status = gitOutput(["status", "--porcelain=v1", "--untracked-files=all"]);
+  if (status) fail("working tree must be clean for remote release operations");
+  const branch = gitOutput(["branch", "--show-current"]);
+  if (!branch) fail("release operations require an attached branch, not detached HEAD");
+  if (requireReleaseBranch && branch !== releaseBranch) {
+    fail(`release from ${releaseBranch}, not ${branch}`);
+  }
+  return branch;
+}
+
+function validatePreparedTagState(version, tag, expectedRemoteCommit = null) {
+  assertCleanAttachedHead({ requireReleaseBranch: true });
+  const { remoteUrl, remoteBranchRef } = fetchPublicState();
+  const remoteCommit = assertHeadExactlyMatches(remoteBranchRef, "publishing a release tag");
+  if (expectedRemoteCommit && remoteCommit !== expectedRemoteCommit) {
+    fail(
+      `${publicRemote}/${releaseBranch} changed after confirmation: expected ${expectedRemoteCommit}, found ${remoteCommit}`,
+    );
+  }
+  assertPublicHistory(remoteBranchRef);
+  if (remoteTagExists(tag)) fail(`tag ${tag} already exists on ${publicRemote}`);
+  assertPreparedVersion(version);
+  if (localTagExists(tag)) assertLocalAnnotatedTag(tag, remoteCommit);
+  return { remoteUrl, remoteCommit };
+}
+
+async function prepareReleaseMetadata(rawVersion, flags) {
+  const version = normalizeVersion(rawVersion);
+  const tag = `v${version}`;
+  const dryRun = flags.has("--dry-run");
+  const currentVersion = currentReleaseVersion();
+  if (localTagExists(tag)) fail(`tag ${tag} already exists locally`);
+  if (compareVersions(version, currentVersion) <= 0) {
+    fail(`new version ${version} must be greater than current version ${currentVersion}`);
+  }
+
+  if (dryRun) {
+    console.log(`release: local preparation preflight passed; v${currentVersion} can advance to ${tag}`);
     return;
   }
 
+  writeReleaseFiles(currentVersion, version);
+  git(["diff", "--check", "--", ...releaseFiles]);
+  git(["diff", "--stat", "--", ...releaseFiles]);
+  console.log(
+    `release: prepared local metadata for ${tag}; no files were staged or committed, and no remote or tag was touched`,
+  );
+}
+
+async function publishPreparedTag(rawVersion, flags) {
+  const version = normalizeVersion(rawVersion);
+  const tag = `v${version}`;
+  const dryRun = flags.has("--dry-run");
+  const assumeYes = flags.has("--yes");
+
+  const { remoteUrl, remoteCommit } = validatePreparedTagState(version, tag);
+
+  if (dryRun) {
+    console.log(`release: tag-only preflight passed; ${tag} will point exactly to ${publicRemote}/${releaseBranch} at ${remoteCommit}`);
+    return;
+  }
+
+  await confirmAction(
+    tag,
+    remoteUrl,
+    `create an annotated tag at exact ${publicRemote}/${releaseBranch} ${remoteCommit} and push the tag only`,
+    assumeYes,
+  );
+  const finalState = validatePreparedTagState(version, tag, remoteCommit);
+  ensureLocalAnnotatedTag(tag, finalState.remoteCommit);
   git([
     "push",
-    "--atomic",
     publicRemote,
-    `HEAD:refs/heads/${releaseBranch}`,
     `refs/tags/${tag}:refs/tags/${tag}`,
   ]);
   console.log(`release: pushed ${tag}; follow https://github.com/${publicRepository}/actions`);
@@ -314,22 +525,14 @@ function verifyLatestRelease(rawTag, expectedSha) {
     fail(`expected a Git commit SHA, received ${expectedSha || "nothing"}`);
   }
 
-  assertPublicRemote();
-  const remoteBranchRef = `refs/remotes/${publicRemote}/${releaseBranch}`;
-  git(["fetch", "--prune", "--force", publicRemote, `+refs/heads/${releaseBranch}:${remoteBranchRef}`]);
+  const { remoteBranchRef } = fetchPublicState();
   git(["fetch", "--force", publicRemote, `+refs/tags/${tag}:refs/tags/${tag}`]);
-  git(["fetch", "--force", publicRemote, "--tags"]);
 
-  if (gitOutput(["cat-file", "-t", tag]) !== "tag") {
-    fail(`${tag} must remain an annotated tag`);
-  }
   const tagCommit = gitOutput(["rev-parse", `${tag}^{commit}`]);
   const expectedCommit = gitOutput(["rev-parse", `${expectedSha}^{commit}`]);
-  if (tagCommit !== expectedCommit) {
-    fail(`${tag} moved during the build; expected ${expectedCommit}, found ${tagCommit}`);
-  }
-  assertPublicHistory(remoteBranchRef);
-  const latestPublicTag = highestStableTag(remoteBranchRef);
+  assertLocalAnnotatedTag(tag, expectedCommit);
+  assertCommitContainedInPublicHistory(tagCommit, remoteBranchRef);
+  const latestPublicTag = highestStableTag();
   if (latestPublicTag !== tag) {
     fail(`${tag} is no longer the newest stable tag on ${publicRemote}/${releaseBranch}; found ${latestPublicTag || "none"}`);
   }
@@ -345,12 +548,22 @@ if (args[0] === "--verify") {
   process.stdout.write(releaseNotes(normalizeVersion(args[1])));
 } else if (args[0] === "--verify-latest") {
   verifyLatestRelease(args[1], args[2]);
-} else {
-  const versionArg = args.find((argument) => !argument.startsWith("--"));
-  const flags = new Set(args.filter((argument) => argument.startsWith("--")));
-  const supportedFlags = new Set(["--dry-run", "--no-push", "--yes"]);
+} else if (args[0] === "--prepare") {
+  const flags = new Set(args.slice(2));
+  const supportedFlags = new Set(["--dry-run"]);
   for (const flag of flags) {
-    if (!supportedFlags.has(flag)) fail(`unknown flag ${flag}`);
+    if (!supportedFlags.has(flag)) fail(`unknown --prepare flag ${flag}`);
   }
-  await prepareRelease(versionArg, flags);
+  await prepareReleaseMetadata(args[1], flags);
+} else if (args[0] === "--tag-only") {
+  const flags = new Set(args.slice(2));
+  const supportedFlags = new Set(["--dry-run", "--yes"]);
+  for (const flag of flags) {
+    if (!supportedFlags.has(flag)) fail(`unknown --tag-only flag ${flag}`);
+  }
+  await publishPreparedTag(args[1], flags);
+} else {
+  fail(
+    "positional release mode and --no-push were removed; use --prepare VERSION in a reviewed public PR, then --tag-only VERSION after merge",
+  );
 }

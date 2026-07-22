@@ -22,6 +22,7 @@ from sag_api.core.logging import RequestContextMiddleware, configure_logging, ge
 from sag_api.generation import LLMClient
 from sag_api.jobs import InProcessAsyncQueue
 from sag_api.sag import EngineManager
+from sag_api.sag.compat import install_zleap_sag_extract_compat
 
 log = get_logger("app")
 
@@ -59,6 +60,7 @@ async def lifespan(app: FastAPI):
 
     # zleap-sag 内部也调用 LiteLLM；全局 pre-call policy 让它与 Muse 生成链
     # 共享相同的 provider 参数，而不修改依赖包。
+    install_zleap_sag_extract_compat()
     litellm_policy = install_litellm_policy(settings)
     app.state.engine_manager = EngineManager(settings)
     app.state.llm = LLMClient(settings)

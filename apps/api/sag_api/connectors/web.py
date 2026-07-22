@@ -118,7 +118,7 @@ class WebConnector(Connector):
             async with httpx.AsyncClient(
                 timeout=_TIMEOUT,
                 follow_redirects=True,
-                headers={"User-Agent": "sag-bot/0.1 (+https://github.com/ilssn/sag)"},
+                headers={"User-Agent": "sag-bot/0.1 (+https://github.com/Zleap-AI/SAG)"},
             ) as client:
                 resp = await client.get(doc.external_id)
                 resp.raise_for_status()

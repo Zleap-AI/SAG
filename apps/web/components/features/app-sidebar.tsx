@@ -55,9 +55,6 @@ function Brand() {
       <SidebarMenuItem>
         <SidebarMenuButton size="lg" className="h-14" asChild>
           <Link href="/chat">
-            <div className="flex aspect-square size-10 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-primary/85 text-primary-foreground">
-              <span className="text-base font-semibold">S</span>
-            </div>
             <div className="grid flex-1 text-left leading-tight">
               <span className="truncate text-base font-semibold">{PRODUCT_NAME}</span>
               <span className="truncate text-xs text-muted-foreground">{t("brandTagline")}</span>

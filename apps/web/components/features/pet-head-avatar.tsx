@@ -45,6 +45,7 @@ export function PetHeadAvatar({
       className={cn("sag-pet-head-avatar shrink-0", config.className, className)}
       style={style}
     >
+      <span className="sag-pet__bubble" aria-hidden />
       <span className="sag-pet__helmet">
         <span className="sag-pet__antenna" />
         <span className="sag-pet__visor">

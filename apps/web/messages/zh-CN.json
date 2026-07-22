@@ -836,7 +836,9 @@
       "fallbackHeading": "原文片段",
       "loadFailed": "原文加载失败",
       "from": "出自 {source}",
-      "source": "信源"
+      "source": "信源",
+      "eventDetail": "事项详情",
+      "sourceEvidence": "原文证据"
     },
     "original": {
       "title": "原始文件预览",

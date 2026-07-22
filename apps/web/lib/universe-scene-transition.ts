@@ -5,6 +5,36 @@ export interface UniverseSceneDeltaPlan {
   topologyChanged: boolean;
 }
 
+export interface UniverseSceneDeliveryPlan {
+  stableRestore: boolean;
+  animateTimelineWindow: boolean;
+  animateEntrants: boolean;
+  autoFocus: boolean;
+}
+
+/**
+ * A retained exploration is a restoration, not a new scene entrance. The
+ * strategy boundary still rebuilds WebGL objects to keep coordinate systems
+ * isolated, but the rebuilt objects must land directly at their canonical
+ * positions and wait for the retained camera to be restored.
+ */
+export function planUniverseSceneDelivery(input: {
+  strategyBoundary: boolean;
+  restoringExploration: boolean;
+  windowChanged: boolean;
+  timelineJourneyEnabled: boolean;
+}): UniverseSceneDeliveryPlan {
+  const stableRestore = input.strategyBoundary && input.restoringExploration;
+  return {
+    stableRestore,
+    animateTimelineWindow: !stableRestore
+      && input.windowChanged
+      && input.timelineJourneyEnabled,
+    animateEntrants: !stableRestore,
+    autoFocus: !stableRestore,
+  };
+}
+
 /**
  * Stable identity diff used by the WebGL scene. Retained ids are deliberately
  * separated from entrants so an ordinary window step can never reset the

@@ -1238,6 +1238,7 @@ export function KnowledgeUniverse({
       resetScene(epochRef.current + 1);
       return;
     }
+    if (snapshot.view) graphRef.current?.prepareExplorationRestore();
     retainedExplorationRef.current = null;
     resetAccumulationKernel(false);
     expandAbortRef.current?.abort();
@@ -3728,7 +3729,10 @@ export function KnowledgeUniverse({
               onClick={requestSourceBack}
               disabled={!browseSessionSourceId && !working.nodes.length}
             >
-              <ChevronLeft className="size-4 transition-transform group-hover:-translate-x-0.5" />
+              <span className="relative grid size-4 place-items-center" aria-hidden="true">
+                <Orbit className="size-4 transition-colors" />
+                <span className="absolute size-1 rounded-full bg-amber-200 shadow-[0_0_7px_rgb(253_230_138_/_0.9)]" />
+              </span>
             </Button>
           )}
           <div

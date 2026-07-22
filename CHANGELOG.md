@@ -3,6 +3,7 @@
 本项目遵循语义化版本。各版本及安装包均可在 [Releases](https://github.com/Zleap-AI/SAG/releases) 查看。
 
 ## Unreleased
+
 - 新增 Electron 桌面客户端：macOS Apple Silicon 提供签名、公证安装包，Windows x64 暂以无签名安装包发布；两个平台均接入 GitHub Releases 稳定自动更新通道。
 - 新增公开发布流水线与一键版本脚本：完整 CI 通过后原生构建双平台产物、校验更新元数据并生成 SHA-256 校验文件。
 - 知识宇宙探索模式重构为「时间即飞行」：源内滚轮沿计数轴驱动相机（惯性、轴端墙、窗口
@@ -21,7 +22,6 @@
 - 文档上传先统一转为 Markdown：PDF 可使用 302.AI MinerU 2.5，未配置或 MinerU 失败时自动回退本地 MarkItDown，其他文件默认走 MarkItDown。
 - 302.AI 首次一键配置复用同一个 Key 启用 LLM、Embedding 与 MinerU；设置页新增文档解析配置。
 - MinerU 任务状态与解析结果可续跑、可缓存，避免后台重试或并发重新处理造成重复计费。
-
 ## v1.2.2 · 2026-07-09
 - 修复 v1.2.1 的 `ModelConfigPatch` 类型错误；门禁改为完整运行并取真实退出码。
 

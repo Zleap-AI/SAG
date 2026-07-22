@@ -1,0 +1,18 @@
+# Default ownership keeps every public change within maintainer review.
+* @Zleap-Admin
+
+# Security-sensitive automation and release boundaries.
+/.github/ @Zleap-Admin
+/scripts/release-public.mjs @Zleap-Admin
+/Makefile @Zleap-Admin
+/CHANGELOG.md @Zleap-Admin
+
+# Dependency, packaging, signing, and updater configuration.
+/apps/api/pyproject.toml @Zleap-Admin
+/apps/api/uv.lock @Zleap-Admin
+/apps/web/package.json @Zleap-Admin
+/apps/web/package-lock.json @Zleap-Admin
+/apps/desktop/package.json @Zleap-Admin
+/apps/desktop/package-lock.json @Zleap-Admin
+/apps/desktop/electron-builder.config.cjs @Zleap-Admin
+/apps/desktop/src/updater.ts @Zleap-Admin

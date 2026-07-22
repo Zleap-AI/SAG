@@ -1,0 +1,46 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  xmlns:xlink="http://www.w3.org/1999/xlink"
+  width="1024"
+  height="1024"
+  viewBox="0 0 96 96"
+  role="img"
+  aria-labelledby="title desc"
+  shape-rendering="geometricPrecision"
+>
+  <title id="title">Clean open taiji logo</title>
+  <desc id="desc">
+    Two open taiji curves spiral around one solid central sphere, without side
+    nodes or satellite circles.
+  </desc>
+
+  <rect width="96" height="96" fill="#fff" />
+
+  <defs>
+    <!-- One taiji half: a sharp outer tail flows into a broad rounded belly,
+         then curls inward and resolves as a second tapered tip. -->
+    <path
+      id="taiji-clean-half"
+      fill="#000"
+      d="M 55 14
+         C 35 16 21 27 18 42
+         C 15 58 26 71 40 72
+         C 52 73 61 66 66 57
+         C 55 67 43 67 34 61
+         C 24 54 23 43 28 33
+         C 34 22 43 16 55 14
+         Z"
+    />
+  </defs>
+
+  <!-- Both sides come from one source curve for exact 180-degree symmetry. -->
+  <use href="#taiji-clean-half" xlink:href="#taiji-clean-half" />
+  <use
+    href="#taiji-clean-half"
+    xlink:href="#taiji-clean-half"
+    transform="rotate(180 48 48)"
+  />
+
+  <!-- The only ball retained in the mark. -->
+  <circle cx="48" cy="48" r="11.5" fill="#000" />
+</svg>

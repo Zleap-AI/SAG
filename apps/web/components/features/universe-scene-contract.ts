@@ -129,6 +129,8 @@ export type UniverseSceneUnavailableReason =
   | "context-lost";
 
 export interface UniverseSceneHandle {
+  /** Marks the next exploration delivery as a retained, stable restoration. */
+  prepareExplorationRestore: () => void;
   captureExplorationView: () => UniverseSceneExplorationView | null;
   restoreExplorationView: (view: UniverseSceneExplorationView) => void;
   focusOverview: () => void;

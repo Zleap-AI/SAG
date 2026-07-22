@@ -1,0 +1,53 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="890"
+  height="870"
+  viewBox="0 0 89 87"
+  role="img"
+  aria-labelledby="title desc"
+  shape-rendering="geometricPrecision"
+>
+  <title id="title">Refined monochrome orbit icon</title>
+  <desc id="desc">
+    A refined rotationally symmetric orbit icon with two hollow nodes and a
+    solid center separated from its outer outline by a narrow white keyline.
+  </desc>
+
+  <rect width="89" height="87" fill="#fff" />
+
+  <!-- Lighter annular strokes create more negative space. Their free ends
+       narrow into integrated directional tapers instead of attached arrows. -->
+  <g fill="#000">
+    <path
+      d="M 51.2 24.75
+         L 47.75 22.60
+         A 21.15 21.15 0 0 0 29.04 57.93
+         L 31.45 55.67
+         A 17.85 17.85 0 0 1 47.25 25.86
+         Z"
+    />
+    <path
+      d="M 59.96 29.08
+         A 21.15 21.15 0 0 1 41.25 64.40
+         L 37.8 62.25
+         L 41.75 61.14
+         A 17.85 17.85 0 0 0 57.55 31.33
+         Z"
+    />
+  </g>
+
+  <!-- Reduced hollow nodes remain exact 180-degree rotations of each other. -->
+  <g fill="#000">
+    <circle cx="59.5" cy="29.5" r="4.7" />
+    <circle cx="29.5" cy="57.5" r="4.7" />
+  </g>
+  <g fill="#fff">
+    <circle cx="59.5" cy="29.5" r="1.8" />
+    <circle cx="29.5" cy="57.5" r="1.8" />
+  </g>
+
+  <!-- Solid core + separate outline: all-black mass, white keyline, black rim. -->
+  <circle cx="44.5" cy="43.5" r="7.75" fill="#000" />
+  <circle cx="44.5" cy="43.5" r="6.2" fill="#fff" />
+  <circle cx="44.5" cy="43.5" r="5" fill="#000" />
+</svg>

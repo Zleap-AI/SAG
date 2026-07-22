@@ -337,6 +337,7 @@ export const UniverseScene = React.forwardRef<UniverseSceneHandle, UniverseScene
     React.useImperativeHandle(
       forwardedRef,
       () => ({
+        prepareExplorationRestore: () => engineRef.current?.prepareExplorationRestore(),
         captureExplorationView: () => engineRef.current?.captureExplorationView() ?? null,
         restoreExplorationView: (view) => engineRef.current?.restoreExplorationView(view),
         focusOverview: () => engineRef.current?.focusOverview(),

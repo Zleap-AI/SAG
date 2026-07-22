@@ -329,6 +329,7 @@ export function ConversationPanel({
         chunkId: citation.chunk_id,
         heading: citation.heading ?? undefined,
         sourceName: citation.source_name ?? undefined,
+        eventRefs: citation.event_refs,
       });
     },
     [detailPanel, onCitationClick],
