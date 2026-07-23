@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { useLocale, useTranslations } from "next-intl";
 import { usePathname, useRouter } from "next/navigation";
@@ -53,9 +54,18 @@ function Brand() {
   return (
     <SidebarMenu>
       <SidebarMenuItem>
-        <SidebarMenuButton size="lg" className="h-14" asChild>
+        <SidebarMenuButton size="lg" className="h-14 gap-2.5" tooltip={PRODUCT_NAME} asChild>
           <Link href="/chat">
-            <div className="grid flex-1 text-left leading-tight">
+            <Image
+              src="/sag-icon.png"
+              alt=""
+              width={32}
+              height={32}
+              priority
+              aria-hidden="true"
+              className="size-8 shrink-0 rounded-[9px] shadow-sm ring-1 ring-black/10 dark:ring-white/10"
+            />
+            <div className="grid flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
               <span className="truncate text-base font-semibold">{PRODUCT_NAME}</span>
               <span className="truncate text-xs text-muted-foreground">{t("brandTagline")}</span>
             </div>

@@ -139,6 +139,7 @@ function createMainWindow(webUrl: string): BrowserWindow {
     minHeight: 640,
     show: false,
     backgroundColor: "#09090b",
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       nodeIntegration: false,
@@ -147,6 +148,7 @@ function createMainWindow(webUrl: string): BrowserWindow {
       webSecurity: true,
     },
   });
+  if (app.isPackaged) window.setMenu(null);
   installNavigationPolicy(window);
   window.once("ready-to-show", () => {
     splashWindow?.close();
