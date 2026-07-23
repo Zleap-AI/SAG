@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://arxiv.org/abs/2606.15971"><img alt="Paper" src="https://img.shields.io/badge/paper-arXiv%3A2606.15971-18181b" /></a>
   <a href="https://pypi.org/project/zleap-sag/"><img alt="PyPI" src="https://img.shields.io/pypi/v/zleap-sag?label=zleap--sag&color=18181b" /></a>
-  <img alt="SAG version" src="https://img.shields.io/badge/SAG-v1.3.0-18181b" />
+  <img alt="SAG version" src="https://img.shields.io/badge/SAG-v1.4.0-18181b" />
   <a href="https://github.com/Zleap-AI/SAG/releases/latest"><img alt="Desktop release" src="https://img.shields.io/github/v/release/Zleap-AI/SAG?label=desktop&color=18181b" /></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776ab" />
   <img alt="Node" src="https://img.shields.io/badge/Node-20%2B-339933" />
@@ -25,14 +25,6 @@
 </p>
 
 https://github.com/user-attachments/assets/9bb618e9-fef8-4d07-8a30-3f7d83beb0ff
-
-## Community
-
-Scan the QR code to join our WeChat community and connect with maintainers and other users.
-
-<p align="center">
-  <img src="docs/assets/readme/wechat-community-qr.png" alt="SAG WeChat community QR code" width="220" />
-</p>
 
 ## Contents
 
@@ -597,3 +589,22 @@ Set real `SAG_CORS_ORIGINS` and `NEXT_PUBLIC_API_BASE` values before server depl
 - Paper reproduction: [Zleap-AI/SAG-Benchmark](https://github.com/Zleap-AI/SAG-Benchmark)
 
 SAG is released under the [MIT License](LICENSE).
+
+---
+
+<a id="community"></a>
+
+## Community
+
+Join the SAG community on Discord or WeChat to connect with maintainers and other users.
+
+<table align="center">
+  <tr>
+    <th>Discord</th>
+    <th>WeChat</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/assets/readme/discord-community-qr.jpg" alt="SAG Discord community QR code" width="220" /></td>
+    <td align="center"><img src="docs/assets/readme/wechat-community-qr.png" alt="SAG WeChat community QR code" width="220" /></td>
+  </tr>
+</table>
