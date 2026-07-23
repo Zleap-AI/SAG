@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://arxiv.org/abs/2606.15971"><img alt="论文" src="https://img.shields.io/badge/paper-arXiv%3A2606.15971-18181b" /></a>
   <a href="https://pypi.org/project/zleap-sag/"><img alt="PyPI" src="https://img.shields.io/pypi/v/zleap-sag?label=zleap--sag&color=18181b" /></a>
-  <img alt="SAG 版本" src="https://img.shields.io/badge/SAG-v1.3.0-18181b" />
+  <img alt="SAG 版本" src="https://img.shields.io/badge/SAG-v1.4.0-18181b" />
   <a href="https://github.com/Zleap-AI/SAG/releases/latest"><img alt="桌面版发布" src="https://img.shields.io/github/v/release/Zleap-AI/SAG?label=desktop&color=18181b" /></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776ab" />
   <img alt="Node" src="https://img.shields.io/badge/Node-20%2B-339933" />
@@ -25,14 +25,6 @@
 </p>
 
 https://github.com/user-attachments/assets/cae70570-3885-490f-9126-dea23dcb369c
-
-## 社区交流
-
-扫描下方二维码加入微信交流群，与项目维护者和其他用户一起交流。
-
-<p align="center">
-  <img src="docs/assets/readme/wechat-community-qr.png" alt="SAG 微信交流群二维码" width="220" />
-</p>
 
 ## 目录
 
@@ -597,3 +589,22 @@ docker compose -f compose.yaml -f compose.postgres.yaml up -d --build
 - 论文复现：[Zleap-AI/SAG-Benchmark](https://github.com/Zleap-AI/SAG-Benchmark)
 
 SAG 使用 [MIT License](LICENSE)。
+
+---
+
+<a id="社区交流"></a>
+
+## 社区交流
+
+通过 Discord 或微信加入 SAG 社区，与项目维护者和其他用户交流。
+
+<table align="center">
+  <tr>
+    <th>Discord</th>
+    <th>微信</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/assets/readme/discord-community-qr.jpg" alt="SAG Discord 社区二维码" width="220" /></td>
+    <td align="center"><img src="docs/assets/readme/wechat-community-qr.png" alt="SAG 微信交流群二维码" width="220" /></td>
+  </tr>
+</table>
