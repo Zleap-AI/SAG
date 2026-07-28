@@ -41,6 +41,50 @@ jobs:
       - name: 测试（离线全套）
         run: python -m pytest -q
 
+  backend-postgres-e2e:
+    name: 后端 · PostgreSQL E2E
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: sag
+          POSTGRES_PASSWORD: sag-e2e-password
+          POSTGRES_DB: sag_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sag -d sag_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      SAG_E2E_POSTGRES: "1"
+      SAG_ENVIRONMENT: prod
+      SAG_SECRET_KEY: postgres-e2e-secret-key-at-least-32-bytes
+      SAG_DATABASE_URL: postgresql+asyncpg://sag:sag-e2e-password@127.0.0.1:5432/sag_e2e
+      SAG_SAG_RELATIONAL_PROVIDER: postgres
+      SAG_SAG_VECTOR_PROVIDER: pgvector
+      SAG_SAG_PG_HOST: 127.0.0.1
+      SAG_SAG_PG_PORT: "5432"
+      SAG_SAG_PG_USER: sag
+      SAG_SAG_PG_PASSWORD: sag-e2e-password
+      SAG_SAG_PG_DATABASE: sag_e2e
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/api/pyproject.toml
+      - name: 安装 PostgreSQL E2E 依赖
+        run: pip install -e ".[dev,postgres]"
+      - name: 测试全新 PostgreSQL 引擎初始化
+        run: python -m pytest -q -s tests/test_postgres_schema_e2e.py
+
   frontend:
     name: 前端 · tsc + next build
     runs-on: ubuntu-latest

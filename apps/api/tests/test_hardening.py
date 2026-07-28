@@ -144,6 +144,36 @@ async def test_job_retry_backoff(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_engine_schema_bootstrap_retries_after_failure():
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from sag_api.core.config import settings
+    from sag_api.core.errors import UpstreamError
+    from sag_api.sag.engine_manager import EngineManager
+
+    class SchemaEngine:
+        def __init__(self):
+            self.calls = 0
+
+        async def init_schema(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise SQLAlchemyError("ddl unavailable")
+
+    manager = EngineManager(settings)
+    engine = SchemaEngine()
+
+    with pytest.raises(UpstreamError):
+        await manager._ensure_engine_schema(engine)
+    assert manager._schema_ready is False
+
+    await manager._ensure_engine_schema(engine)
+    await manager._ensure_engine_schema(engine)
+    assert manager._schema_ready is True
+    assert engine.calls == 2
+
+
+@pytest.mark.asyncio
 async def test_engine_lru_eviction():
     """超出缓存上限逐出最久未用；持锁的槽不被逐出。"""
     from sag_api.core.config import settings

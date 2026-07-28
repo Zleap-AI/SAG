@@ -209,6 +209,7 @@ class EngineManager:
         self._create_lock = asyncio.Lock()
         self._lifecycle_gate = _EngineLifecycleGate()
         self._cache_size = max(1, settings.engine_cache_size)
+        self._schema_ready = False
         self._universe_indexes_ready = False
 
     async def _ensure_universe_query_indexes(self) -> None:
@@ -339,6 +340,22 @@ class EngineManager:
             overrides = source.config.get("engine")
         return build_engine_config(self._settings, overrides=overrides)
 
+    async def _ensure_engine_schema(self, engine: DataEngine) -> None:
+        if self._schema_ready:
+            return
+
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from sag_api.core.errors import UpstreamError
+
+        try:
+            with map_sag_errors():
+                await engine.init_schema()
+        except SQLAlchemyError as error:
+            log.exception("知识引擎数据库结构初始化失败")
+            raise UpstreamError("信源引擎初始化失败，请稍后重试") from error
+        self._schema_ready = True
+
     async def _ensure_source_config(
         self,
         source_config_id: str,
@@ -403,6 +420,7 @@ class EngineManager:
                     with map_sag_errors():
                         await engine.start()
                     try:
+                        await self._ensure_engine_schema(engine)
                         await self._ensure_source_config(source_config_id, source)
                         await self._ensure_universe_query_indexes()
                     except Exception:
