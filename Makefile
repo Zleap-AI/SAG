@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help dev api web install install-api install-web test build release release-dry-run compose-config compose-up compose-ps compose-logs compose-down compose-up-postgres compose-down-postgres
+.PHONY: help dev api web install install-api install-web test build setup-dify release release-dry-run compose-config compose-up compose-ps compose-logs compose-down compose-up-postgres compose-down-postgres
 
 help: ## 显示可用命令
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -27,6 +27,9 @@ test: ## 运行后端与 Agent Core 测试
 
 build: ## 构建前端产物
 	cd apps/web && npm run build
+
+setup-dify: ## 生成并保存可选的 Dify 外部知识库 API Key
+	python3 scripts/setup_dify.py
 
 release: ## 为已审核的 public/main 创建并推送稳定版 tag
 	@test -n "$(VERSION)" || (echo "VERSION 必填，例如：make release VERSION=1.4.0" && exit 1)

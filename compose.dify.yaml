@@ -1,0 +1,14 @@
+# 仅在需要把 SAG 作为 Dify 外部知识库时叠加此文件。
+# 使用：DIFY_NETWORK_NAME=docker_default docker compose -f compose.yaml -f compose.dify.yaml up -d --build
+services:
+  api:
+    networks:
+      default: {}
+      dify:
+        aliases:
+          - sag
+
+networks:
+  dify:
+    external: true
+    name: ${DIFY_NETWORK_NAME:-docker_default}

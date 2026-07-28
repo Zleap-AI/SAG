@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000"])
     # 关闭后仅允许首个用户注册（部署引导），其余返回 403
     allow_registration: bool = True
+    # Dify 外部知识库调用的专用服务密钥；未配置时兼容端点拒绝服务。
+    dify_api_key: str | None = None
 
     # ── sag 元数据库 ───────────────────────────────────────────────────
     database_url: str = "sqlite+aiosqlite:///./.data/sag.db"
