@@ -76,14 +76,21 @@ docker compose up -d --force-recreate api ssrf_proxy
 
 ## 4. 查找 SAG Source ID
 
-打开 SAG 的目标信源页面，地址格式为：
+打开 SAG 的目标信源页面，可在信源详情页名称下方找到 **信源 ID** 并一键复制；
+也可以在知识库最外层的卡片视图或列表视图直接复制每个信源的 ID。
+
+SAG Web UI 中的“信源 ID”就是 API 字段 `source_id`（知识库信源 ID）。将 SAG
+接入 Dify 外部知识库时，Dify 的 `knowledge_id`（Knowledge ID）应填写这个
+完整值。
+
+目标信源页面的地址格式为：
 
 ```text
 http://localhost:3000/knowledge/<SOURCE_ID>
 ```
 
-最后一段 `<SOURCE_ID>` 就是 Dify 要填写的 Knowledge ID。也可以使用带 SAG
-用户 JWT 的 `GET /api/v1/sources` 查询信源列表及其 `id`。
+最后一段 `<SOURCE_ID>` 同样是该信源 ID。也可以使用带 SAG 用户 JWT 的
+`GET /api/v1/sources` 查询信源列表及其 `id`。
 
 ## 5. 在 Dify 创建外部知识库
 
