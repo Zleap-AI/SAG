@@ -5,6 +5,7 @@ from sag_api.api.v1 import (
     agents,
     attachments,
     auth,
+    dify,
     documents,
     insights,
     jobs,
@@ -18,6 +19,7 @@ from sag_api.api.v1 import (
 api_router = APIRouter(prefix="/api/v1")
 for _module in (
     auth,
+    dify,
     sources,
     documents,
     insights,

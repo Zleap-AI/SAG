@@ -16,6 +16,8 @@ services:
       SAG_SECRET_KEY: ${SAG_SECRET_KEY:-dev-insecure-secret-change-me-in-production-0123456789}
       SAG_CORS_ORIGINS: ${SAG_CORS_ORIGINS:-http://localhost:3000}
       SAG_ALLOW_REGISTRATION: ${SAG_ALLOW_REGISTRATION:-false}
+      # 可选 Dify 外部知识库兼容端点；留空时端点拒绝服务。
+      SAG_DIFY_API_KEY: ${SAG_DIFY_API_KEY:-}
       # 四个斜杠表示容器内绝对路径 /data/sag.db。
       SAG_DATABASE_URL: sqlite+aiosqlite:////data/sag.db
       SAG_DATA_DIR: /data/engine

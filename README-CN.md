@@ -276,6 +276,12 @@ curl -s http://localhost:8000/api/v1/openai/<AGENT_ID>/chat/completions \
 
 返回标准 `chat.completion`，并额外提供 `sag.citations` 引用字段；标准客户端会忽略未知字段。设置 `"stream": true` 后以 SSE 分块返回。
 
+### 作为 Dify 外部知识库
+
+SAG 可以通过专用兼容端点接入 Dify 的“连接外部知识库”，无需修改 Dify
+源码。密钥、Docker 网络、Source ID 与控制台配置步骤见
+[`docs/dify-integration.md`](docs/dify-integration.md)。
+
 ### 运行与更新
 
 ```bash
