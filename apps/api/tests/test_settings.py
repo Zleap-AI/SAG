@@ -179,7 +179,7 @@ async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatc
                 assert body["llm_provider"] == "openai"
                 assert "mineru_api_key" not in body and body["mineru_api_key_set"] is False
                 assert body["effective_document_parser"] == "markitdown"
-                assert body["document_extract_concurrency"] == 5
+                assert body["document_extract_concurrency"] == 30
                 assert body["document_chunk_max_tokens"] == 1_000
                 assert body["document_chunk_mode"] == "standard"
                 assert body["llm_timeout_ms"] == 60_000

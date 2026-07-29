@@ -123,7 +123,12 @@
     "extracting": "抽取中",
     "paused": "已暂停",
     "ready": "就绪",
-    "failed": "失败"
+    "failed": "失败",
+    "requeueing": "正在重新加入队列",
+    "pausing": "正在停止",
+    "resuming": "正在继续",
+    "deleting": "正在删除",
+    "waitingRetry": "等待后台重试"
   },
   "AppSidebar": {
     "brandTagline": "知识库 Agent",
@@ -220,10 +225,13 @@
     "unsupportedType": "{name}：不支持的文件类型",
     "fileFailed": "{name}：{error}",
     "uploadFailed": "上传失败",
-    "uploaded": "已上传 {count, number} 个文件，正在后台处理",
-    "uploading": "上传中…",
+    "uploaded": "已完成 {count, number} 个文件上传，已进入后台处理",
+    "uploading": "正在上传文件…",
+    "uploadProgress": "文件上传进度",
     "prompt": "拖拽文件到此处，或点击选择",
-    "support": "支持 Markdown / 文本 / PDF 等 · 单文件 ≤ {maxMb, number}MB"
+    "support": "支持 Markdown / 文本 / PDF 等 · 单文件 ≤ {maxMb, number}MB",
+    "concurrencyHint": "多文档后台解析与抽取较慢？可调整分片并发数。",
+    "concurrencyAction": "前往知识库配置"
   },
   "SyncPanel": {
     "started": "已开始同步，SAG 正在后台抓取网页",
@@ -368,7 +376,7 @@
     "extractionSettings": "抽取设置",
     "extractionDescription": "控制单篇文档的事件与实体抽取速度。",
     "concurrency": "单文档抽取并发",
-    "concurrencyDescription": "每篇文档同时抽取的分块数，默认 5。",
+    "concurrencyDescription": "每篇文档同时抽取的分块数，默认 30。",
     "retrievalDescription": "控制知识召回方式和信息抽取语言。",
     "retrievalRules": "检索规则",
     "retrievalRulesDescription": "调整策略、召回条数和语言。",
@@ -467,8 +475,11 @@
     "avatar": "头像字符",
     "avatarDescription": "支持 @_@、AI、单字或 emoji。",
     "name": "助手名称",
-    "petAlwaysOn": "助手常驻",
-    "petAlwaysOnDescription": "开启后，助手在正常模式中仍然显示；关闭后，只在探索模式中出现。",
+    "petVisibility": "悬浮助手显示方式",
+    "petVisibilityDescription": "控制悬浮助手在哪些模式中显示；完全隐藏后可在此处恢复。",
+    "petVisibilityAlways": "始终显示",
+    "petVisibilityExplore": "仅探索模式",
+    "petVisibilityHidden": "完全隐藏",
     "greeting": "开场白",
     "greetingDescription": "新对话开始时的第一句话。",
     "systemPrompt": "系统提示",
@@ -965,7 +976,13 @@
       "answer": "问答",
       "knowledge": "知识库",
       "settings": "设置",
-      "actions": "动作"
+      "actions": "动作",
+      "hide": "关闭悬浮助手"
+    },
+    "hide": {
+      "title": "关闭悬浮助手？",
+      "description": "隐藏后，助手在所有模式中都不再显示。你可以前往“设置 → 助手 → 默认助手 → 悬浮助手显示方式”恢复。",
+      "confirm": "隐藏助手"
     }
   },
   "PetAppearance": {

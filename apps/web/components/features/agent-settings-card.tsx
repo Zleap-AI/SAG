@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { api, ApiError } from "@/lib/api";
 import { MAX_AVATAR_CHARS, normalizeAvatar } from "@/lib/avatar";
 import { DEFAULT_AGENT_AVATAR, DEFAULT_AGENT_NAME } from "@/lib/branding";
+import type { PetPresence } from "@/lib/app-initialization";
 import { usePetPresence } from "@/lib/pet-preferences";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/components/features/app-shell";
@@ -18,7 +19,13 @@ import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
-import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
 /** 助手设定 —— 默认 agent 的名字 / 头像 / 开场白 / 系统提示。 */
@@ -115,19 +122,24 @@ export function AgentSettingsCard({ compact = false }: { compact?: boolean }) {
           </div>
         </SettingsRow>
         <SettingsRow
-          title={t("petAlwaysOn")}
-          description={t("petAlwaysOnDescription")}
+          title={t("petVisibility")}
+          description={t("petVisibilityDescription")}
           layout={compact ? "stacked" : "inline"}
           contentClassName={compact ? "flex justify-end" : "self-end sm:self-auto"}
         >
-          <Switch
-            type="button"
-            checked={petPresence === "always"}
-            onCheckedChange={(checked) =>
-              setPetPresence(checked ? "always" : "explore-only")
-            }
-            aria-label={t("petAlwaysOn")}
-          />
+          <Select
+            value={petPresence}
+            onValueChange={(value) => setPetPresence(value as PetPresence)}
+          >
+            <SelectTrigger className="w-44" aria-label={t("petVisibility")}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="always">{t("petVisibilityAlways")}</SelectItem>
+              <SelectItem value="explore-only">{t("petVisibilityExplore")}</SelectItem>
+              <SelectItem value="hidden">{t("petVisibilityHidden")}</SelectItem>
+            </SelectContent>
+          </Select>
         </SettingsRow>
         <SettingsRow title={t("greeting")} description={t("greetingDescription")}>
           <Field>

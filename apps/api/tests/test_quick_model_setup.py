@@ -121,7 +121,7 @@ async def test_302_quick_model_setup(monkeypatch: pytest.MonkeyPatch):
                     "mineru_base_url": "https://api.302ai.cn",
                     "mineru_version": "2.5",
                     "mineru_api_key_set": True,
-                    "document_extract_concurrency": 5,
+                    "document_extract_concurrency": 30,
                     "search_strategy": "vector",
                     "search_top_k": 8,
                     "sag_language": "zh",

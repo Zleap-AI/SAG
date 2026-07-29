@@ -16,7 +16,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sag_api.core.config import settings
 from sag_api.core.errors import ServiceUnavailableError, UpstreamError
 from sag_api.core.logging import get_logger
-from sag_api.enums import JobStatus, JobType
+from sag_api.db.models import Document
+from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs.control import JobPaused
 from sag_api.jobs.queue import JobQueue
 from sag_api.jobs.tasks import TASK_HANDLERS
@@ -36,6 +37,17 @@ def _now() -> datetime:
 def _is_retryable(exc: Exception) -> bool:
     """瞬时故障（限流/超时/上游暂不可用）可重试；输入/配置类错误不重试。"""
     return isinstance(exc, (ServiceUnavailableError, UpstreamError))
+
+
+async def _mark_document_waiting_retry(session, job) -> None:
+    """Keep a retryable document active without discarding its checkpoint."""
+    if not job.document_id:
+        return
+    document = await session.get(Document, job.document_id)
+    if document is None:
+        return
+    document.status = DocumentStatus.PENDING
+    document.error = None
 
 
 class InProcessAsyncQueue(JobQueue):
@@ -234,6 +246,7 @@ class InProcessAsyncQueue(JobQueue):
                         job.status = JobStatus.QUEUED
                         job.progress = 0.0
                         job.error = f"第 {attempts} 次失败，将重试：{msg}"
+                        await _mark_document_waiting_retry(session, job)
                         delay = _BACKOFF_BASE_SECONDS**attempts
                         self._schedule_retry(job_id, delay)
                         log.warning(

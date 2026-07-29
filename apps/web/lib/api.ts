@@ -542,15 +542,15 @@ export const api = {
     });
   },
   reprocessDocument: (sid: string, did: string) =>
-    request(`/api/v1/sources/${sid}/documents/${did}/reprocess`, {
+    request<BackgroundJob>(`/api/v1/sources/${sid}/documents/${did}/reprocess`, {
       method: "POST",
     }),
   pauseDocument: (sid: string, did: string) =>
-    request(`/api/v1/sources/${sid}/documents/${did}/pause`, {
+    request<BackgroundJob>(`/api/v1/sources/${sid}/documents/${did}/pause`, {
       method: "POST",
     }),
   resumeDocument: (sid: string, did: string) =>
-    request(`/api/v1/sources/${sid}/documents/${did}/resume`, {
+    request<BackgroundJob>(`/api/v1/sources/${sid}/documents/${did}/resume`, {
       method: "POST",
     }),
   deleteDocument: (sid: string, did: string) =>

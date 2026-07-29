@@ -51,7 +51,14 @@ export default function SourceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { capabilities } = useApp();
-  const { source, documents, refresh, notFound } = useSourceContent(id);
+  const {
+    source,
+    documents,
+    documentActivities,
+    refresh,
+    mutateDocument,
+    notFound,
+  } = useSourceContent(id);
   const [contentView, setContentView] = React.useState<ContentView>("list");
   const graphViewActive = contentView !== "list";
 
@@ -281,7 +288,8 @@ export default function SourceDetailPage() {
             <DocumentList
               sourceId={id}
               documents={documents}
-              onChange={refresh}
+              activities={documentActivities}
+              onAction={mutateDocument}
             />
           )}
         </div>
