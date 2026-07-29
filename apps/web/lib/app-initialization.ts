@@ -4,7 +4,7 @@ import {
 } from "./workspace";
 
 export type AppMode = "normal" | "explore";
-export type PetPresence = "explore-only" | "always";
+export type PetPresence = "explore-only" | "always" | "hidden";
 export type ThemePreference = "light" | "dark" | "system";
 
 export const APP_INITIALIZATION_DEFAULTS = Object.freeze({
@@ -152,7 +152,7 @@ export function readInitialPetPresence(
   storage: InitializationStorage | null | undefined,
 ): PetPresence {
   const saved = safelyRead(storage, APP_INITIALIZATION_STORAGE_KEYS.petPresence);
-  if (saved === "always" || saved === "explore-only") return saved;
+  if (saved === "always" || saved === "explore-only" || saved === "hidden") return saved;
   const legacyEnabled = safelyRead(
     storage,
     APP_INITIALIZATION_STORAGE_KEYS.legacyPetEnabled,
@@ -172,6 +172,7 @@ export function persistPetPresence(
 }
 
 export function shouldShowPet(mode: AppMode, presence: PetPresence) {
+  if (presence === "hidden") return false;
   return mode === "explore" || presence === "always";
 }
 

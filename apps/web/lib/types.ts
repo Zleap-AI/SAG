@@ -615,7 +615,7 @@ export interface UniverseTimelineSlice {
 export interface BackgroundJob {
   id: string;
   type: string;
-  status: "queued" | "running" | "succeeded" | "failed";
+  status: "queued" | "running" | "succeeded" | "failed" | "paused";
   source_id: string | null;
   document_id: string | null;
   progress: number;

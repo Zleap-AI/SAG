@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     upload_dir: str = "./.data/uploads"  # 上传原始文件落盘
     max_upload_mb: int = 25  # 单文件上传上限
     job_concurrency: int = 2  # 后台处理并发
-    document_extract_concurrency: int = Field(default=5, ge=1, le=50)  # 单文档 chunk 抽取并发
+    document_extract_concurrency: int = Field(default=30, ge=1, le=50)  # 单文档 chunk 抽取并发
     document_chunk_max_tokens: int = Field(default=1_000, ge=100, le=100_000)
     document_chunk_mode: Literal["standard", "heading_strict"] = "standard"
     # 上传文档已有独立的知识型过滤要求；默认关闭上游基于标题/摘要的严格过滤，

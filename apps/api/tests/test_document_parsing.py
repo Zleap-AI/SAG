@@ -406,7 +406,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
         filename="original.pdf",
         storage_path="/uploads/original.pdf",
         status=None,
-        error=None,
+        error="previous attempt failed",
         chunk_count=0,
         event_count=0,
         progress=0,
@@ -435,6 +435,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
             pass
 
     prepared_calls: list[str] = []
+    stage_errors: list[tuple[str, str | None]] = []
 
     async def fake_prepare(path, settings, *, state=None, on_state=None):
         prepared_calls.append(path)
@@ -460,6 +461,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
             assert max_concurrency == tasks.settings.document_extract_concurrency
             assert document_title == "original"
             await on_stage("loading")
+            stage_errors.append(("loading", document.error))
             await on_checkpoint(
                 ProcessCheckpoint(
                     source_id="engine-doc",
@@ -471,6 +473,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
                 )
             )
             await on_stage("extracting")
+            stage_errors.append(("extracting", document.error))
             return ProcessOutcome(
                 source_id="engine-doc",
                 chunk_count=2,
@@ -485,6 +488,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
     await tasks.process_document(FakeSession(), job, engine_manager=engine)
 
     assert prepared_calls == ["/uploads/original.pdf"]
+    assert stage_errors == [("loading", None), ("extracting", None)]
     assert engine.seen_path.endswith(".md")
     assert document.status.value == "ready"
     assert document.chunk_count == 2 and document.event_count == 1

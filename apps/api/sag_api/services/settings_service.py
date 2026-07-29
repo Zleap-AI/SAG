@@ -74,7 +74,7 @@ QUICK_SETUP_302 = {
     "document_parser": "auto",
     "mineru_base_url": "https://api.302ai.cn",
     "mineru_version": "2.5",
-    "document_extract_concurrency": 5,
+    "document_extract_concurrency": 30,
     "document_chunk_max_tokens": 1_000,
     "document_chunk_mode": "standard",
     "search_strategy": "vector",
