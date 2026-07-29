@@ -14,6 +14,7 @@ from typing import Any
 from sag_api.core.config import Settings
 
 _COMPLETION_CALL_TYPES = {"completion", "acompletion"}
+_DEEPSEEK_V4_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro"}
 
 
 def _thinking_override(extra_body: object) -> bool | None:
@@ -34,6 +35,11 @@ def _is_openai_route(model: str, settings: Settings) -> bool:
     if "/" in model:
         return model.split("/", 1)[0].casefold() == "openai"
     return settings.llm_provider == "openai"
+
+
+def _is_deepseek_v4(model: str) -> bool:
+    model_id = model.rsplit("/", 1)[-1].casefold()
+    return model_id in _DEEPSEEK_V4_MODELS
 
 
 def _with_allowed_openai_param(request: dict[str, Any], name: str) -> None:
@@ -66,6 +72,11 @@ def apply_litellm_completion_policy(
         normalized["extra_body"] = dict(settings.llm_extra_body)
 
     model = str(normalized.get("model") or settings.routed_llm_model)
+    if normalized.get("tools") and _is_deepseek_v4(model):
+        extra_body = dict(normalized.get("extra_body") or {})
+        extra_body["thinking"] = {"type": "disabled"}
+        normalized["extra_body"] = extra_body
+
     thinking = _thinking_override(normalized.get("extra_body"))
     if "reasoning_effort" not in normalized:
         if thinking is False or (thinking is None and "qwen" in model.casefold()):
