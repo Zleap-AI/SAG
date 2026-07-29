@@ -10,6 +10,10 @@ import { api } from "@/lib/api";
 import type { ConversationMessage } from "@/lib/conversation-runtime";
 import { parsePetDraft, PET_DRAFT_EVENT, PET_DRAFT_KEY } from "@/lib/pet-events";
 import { formatTokenCount, relativeTime } from "@/lib/format";
+import {
+  isComposerCompositionKeyEvent,
+  shouldSubmitAfterEnter,
+} from "@/lib/composer-keyboard";
 import type { Citation, Source } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { copyText } from "@/lib/clipboard";
@@ -208,6 +212,9 @@ export function ConversationPanel({
   const docRef = React.useRef<HTMLInputElement>(null);
   const fileRef = React.useRef<HTMLInputElement>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const composingRef = React.useRef(false);
+  const compositionCommitGuardRef = React.useRef(false);
+  const compositionCommitGuardTimerRef = React.useRef<number | null>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const bottomRef = React.useRef<HTMLDivElement>(null);
   const lastScrollAt = React.useRef(0);
@@ -577,12 +584,77 @@ export function ConversationPanel({
       toast.error(error instanceof Error ? error.message : t("approvalFailed"));
     }
   }
-  function onKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      send();
+
+  function startComposition() {
+    composingRef.current = true;
+    compositionCommitGuardRef.current = false;
+    if (compositionCommitGuardTimerRef.current) {
+      window.clearTimeout(compositionCommitGuardTimerRef.current);
+      compositionCommitGuardTimerRef.current = null;
     }
   }
+
+  function endComposition() {
+    composingRef.current = false;
+    compositionCommitGuardRef.current = true;
+    if (compositionCommitGuardTimerRef.current) {
+      window.clearTimeout(compositionCommitGuardTimerRef.current);
+    }
+    compositionCommitGuardTimerRef.current = window.setTimeout(() => {
+      compositionCommitGuardRef.current = false;
+      compositionCommitGuardTimerRef.current = null;
+    }, 30);
+  }
+
+  function isComposingKeyEvent(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    return isComposerCompositionKeyEvent(e, {
+      composing: composingRef.current,
+      commitGuard: compositionCommitGuardRef.current,
+    });
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      const valueBefore = e.currentTarget.value;
+      window.requestAnimationFrame(() => {
+        const valueAfter = textareaRef.current?.value;
+        if (valueAfter === undefined) return;
+        if (shouldSubmitAfterEnter(valueBefore, valueAfter)) send(valueAfter);
+      });
+    }
+  }
+
+  React.useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    const onKeyDownCapture = (event: KeyboardEvent) => {
+      if (
+        isComposerCompositionKeyEvent(
+          { key: event.key, nativeEvent: event },
+          {
+            composing: composingRef.current,
+            commitGuard: compositionCommitGuardRef.current,
+          },
+        )
+      ) {
+        // 保留输入法的默认确认行为，同时阻止事件冒泡到 React 的发送处理。
+        event.stopPropagation();
+      }
+    };
+
+    textarea.addEventListener("compositionstart", startComposition);
+    textarea.addEventListener("compositionend", endComposition);
+    textarea.addEventListener("keydown", onKeyDownCapture, true);
+    return () => {
+      textarea.removeEventListener("compositionstart", startComposition);
+      textarea.removeEventListener("compositionend", endComposition);
+      textarea.removeEventListener("keydown", onKeyDownCapture, true);
+      if (compositionCommitGuardTimerRef.current) {
+        window.clearTimeout(compositionCommitGuardTimerRef.current);
+      }
+    };
+  }, []);
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -761,6 +833,8 @@ export function ConversationPanel({
                 }
               }}
               onKeyDown={(e) => {
+                if (isComposingKeyEvent(e)) return;
+
                 if (mentionOpen) {
                   if (e.key === "ArrowDown") {
                     e.preventDefault();
