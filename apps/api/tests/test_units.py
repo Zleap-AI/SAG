@@ -116,6 +116,103 @@ def test_litellm_policy_preserves_explicit_reasoning_and_allowed_params():
     assert request["allowed_openai_params"] == ["seed", "reasoning_effort"]
 
 
+@pytest.mark.parametrize("tool_choice", ["none", "required", None])
+@pytest.mark.parametrize(
+    ("base_url", "model"),
+    [
+        ("https://api.deepseek.com", "deepseek-v4-flash"),
+        ("https://api.deepseek.com", "deepseek-v4-pro"),
+        ("https://openai-compatible.example.com/v1", "deepseek/deepseek-v4-flash"),
+    ],
+)
+def test_deepseek_v4_disables_thinking_for_every_agent_tool_turn(tool_choice, base_url, model):
+    configured = Settings(
+        _env_file=None,
+        llm_provider="openai",
+        llm_base_url=base_url,
+        llm_api_key="provider-key",
+        llm_model=model,
+    )
+    raw = {
+        "model": configured.routed_llm_model,
+        "messages": [],
+        "tools": [{"type": "function", "function": {"name": "search_context"}}],
+    }
+    if tool_choice is not None:
+        raw["tool_choice"] = tool_choice
+
+    request = apply_litellm_completion_policy(configured, raw)
+
+    assert request["extra_body"]["thinking"] == {"type": "disabled"}
+    if tool_choice is None:
+        assert "tool_choice" not in request
+    else:
+        assert request["tool_choice"] == tool_choice
+
+
+def test_deepseek_v4_plain_completion_keeps_provider_default_thinking():
+    configured = Settings(
+        _env_file=None,
+        llm_provider="openai",
+        llm_base_url="https://api.deepseek.com",
+        llm_api_key="provider-key",
+        llm_model="deepseek-v4-pro",
+    )
+
+    request = apply_litellm_completion_policy(
+        configured,
+        {"model": configured.routed_llm_model, "messages": []},
+    )
+
+    assert "extra_body" not in request
+
+
+def test_deepseek_v4_tool_policy_preserves_other_extra_body_fields():
+    configured = Settings(
+        _env_file=None,
+        llm_provider="openai",
+        llm_base_url="https://api.deepseek.com",
+        llm_api_key="provider-key",
+        llm_model="deepseek-v4-flash",
+        llm_extra_body={"user_id": "sag-local"},
+    )
+
+    request = apply_litellm_completion_policy(
+        configured,
+        {
+            "model": configured.routed_llm_model,
+            "messages": [],
+            "tools": [{"type": "function", "function": {"name": "search_context"}}],
+            "tool_choice": "required",
+        },
+    )
+
+    assert request["extra_body"] == {
+        "user_id": "sag-local",
+        "thinking": {"type": "disabled"},
+    }
+
+
+def test_non_deepseek_openai_compatible_tool_request_is_unchanged():
+    configured = Settings(
+        _env_file=None,
+        llm_provider="openai",
+        llm_base_url="https://openai-compatible.example.com/v1",
+        llm_api_key="provider-key",
+        llm_model="custom-model",
+    )
+    raw = {
+        "model": configured.routed_llm_model,
+        "messages": [],
+        "tools": [{"type": "function", "function": {"name": "search_context"}}],
+        "tool_choice": "required",
+    }
+
+    request = apply_litellm_completion_policy(configured, raw)
+
+    assert request == raw
+
+
 @pytest.mark.asyncio
 async def test_installed_litellm_policy_covers_dependency_owned_calls():
     import litellm
@@ -196,6 +293,61 @@ async def test_llm_timeout_and_retries_reach_unified_client(monkeypatch):
     assert engine.llm.model == "openai/qwen3.6-flash"
     assert engine.llm.timeout == 45
     assert engine.llm.max_retries == 3
+
+
+@pytest.mark.asyncio
+async def test_deepseek_v4_agent_turn_sends_non_thinking_tool_request(monkeypatch):
+    from sag_agent import AgentMessage, CancellationToken, ModelRequest
+    from sag_api.generation import llm as generation_llm
+
+    class EmptyStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+        async def aclose(self):
+            return None
+
+    seen: dict = {}
+
+    async def fake_completion(**kwargs):
+        seen.update(kwargs)
+        return EmptyStream()
+
+    monkeypatch.setattr(generation_llm, "_litellm_completion", fake_completion)
+    client = generation_llm.LLMClient(
+        Settings(
+            _env_file=None,
+            llm_provider="openai",
+            llm_base_url="https://api.deepseek.com",
+            llm_api_key="provider-key",
+            llm_model="deepseek-v4-flash",
+        )
+    )
+    request = ModelRequest(
+        messages=(AgentMessage(role="user", content="你好"),),
+        tools=(
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_context",
+                    "description": "search",
+                    "parameters": {"type": "object"},
+                },
+            },
+        ),
+        tool_choice="none",
+        turn=1,
+    )
+
+    chunks = [chunk async for chunk in client.stream_turn(request, CancellationToken())]
+
+    assert chunks == []
+    assert seen["model"] == "openai/deepseek-v4-flash"
+    assert seen["tool_choice"] == "none"
+    assert seen["extra_body"]["thinking"] == {"type": "disabled"}
 
 
 @pytest.mark.asyncio
