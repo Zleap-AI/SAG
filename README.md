@@ -276,6 +276,10 @@ curl -s http://localhost:8000/api/v1/openai/<AGENT_ID>/chat/completions \
 
 The response is a standard `chat.completion` with an additional `sag.citations` field; standard clients ignore unknown fields. Set `"stream": true` to receive SSE chunks.
 
+### Use SAG as a Dify external knowledge base
+
+SAG can connect to Dify's **Connect to an External Knowledge Base** feature through a dedicated compatibility endpoint, with no Dify source-code changes. For the API key, Docker network, Source ID, and Dify console configuration, see [`docs/dify-integration.en.md`](docs/dify-integration.en.md).
+
 ### Operate and update
 
 ```bash
