@@ -271,7 +271,7 @@ sag auth login                   # 隐藏输入 JWT
 sag agent connect claude-code
 ```
 
-CLI **不会**把 JWT 写入 Agent 配置文件，可用时优先保存到操作系统凭据存储，且只会删除自己创建的 MCP 条目。任何写入操作都可以用 `--dry-run` 预览。完整命令参考见 [SAG CLI 说明文档](https://www.npmjs.com/package/@zleap-ai/sag-cli)。
+CLI **不会**把 JWT 写入 Agent 配置文件，可用时优先保存到操作系统凭据存储，且只会删除自己创建的 MCP 条目。任何写入操作都可以用 `--dry-run` 预览。完整使用指南见 [SAG CLI 使用指南](docs/sag-cli.md)。
 
 #### 可选：Agent Skill
 

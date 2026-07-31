@@ -271,7 +271,7 @@ sag auth login                   # prompts for JWT (hidden input)
 sag agent connect claude-code
 ```
 
-The CLI **never** writes your JWT into an Agent's config file, stores tokens in the OS keychain when available, and only removes MCP entries it created itself. Preview any write with `--dry-run`. Full command reference: see the [SAG CLI README](https://www.npmjs.com/package/@zleap-ai/sag-cli).
+The CLI **never** writes your JWT into an Agent's config file, stores tokens in the OS keychain when available, and only removes MCP entries it created itself. Preview any write with `--dry-run`. Full guide: [SAG CLI User Guide](docs/sag-cli.en.md).
 
 #### Optional: Agent Skill
 
