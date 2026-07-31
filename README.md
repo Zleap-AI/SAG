@@ -46,7 +46,7 @@ https://github.com/user-attachments/assets/9bb618e9-fef8-4d07-8a30-3f7d83beb0ff
 
 **July 31, 2026**
 
-Published the official command-line client [`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli). One command (`sag agent connect codex | claude-code`) mounts the SAG Knowledge MCP into Codex or Claude Code — no JWT copy-paste, no hand-edited config files. The MCP guide below now leads with the CLI.
+Published the official command-line client [`@zleap-ai/sag-cli`](docs/sag-cli.en.md). One command (`sag agent connect codex | claude-code`) mounts the SAG Knowledge MCP into Codex or Claude Code — no JWT copy-paste, no hand-edited config files. The MCP guide below now leads with the CLI.
 
 **July 14, 2026**
 
@@ -249,7 +249,7 @@ The recommended path is two steps: **CLI** mounts the MCP, **Skill** teaches the
 
 #### Step 1: mount MCP with the CLI
 
-[`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli) is the official command-line client. It auto-discovers your local Docker SAG container, verifies the MCP works, and wires it into Codex or Claude Code — for the local Docker path no JWT is needed.
+[`@zleap-ai/sag-cli`](docs/sag-cli.en.md) is the official command-line client. It auto-discovers your local Docker SAG container, verifies the MCP works, and wires it into Codex or Claude Code — for the local Docker path no JWT is needed.
 
 Install (Node.js ≥ 20.19):
 
@@ -279,7 +279,7 @@ The CLI **never** writes your JWT into an Agent's config file, stores tokens in 
 
 #### Step 2: install the Skill
 
-The Skill ships in [`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli). Copy it into your Agent's skills directory:
+The Skill ships in [`@zleap-ai/sag-cli`](docs/sag-cli.en.md). Copy it into your Agent's skills directory:
 
 ```bash
 # Claude Code
