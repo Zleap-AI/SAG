@@ -241,9 +241,9 @@ PDF 在 MinerU 配置完整时优先使用 MinerU；未配置或解析失败时�
 
 ### MCP 指南
 
-最快的接入方式是 **SAG CLI**：一条命令把 SAG 知识库 MCP 挂载进 Codex 或 Claude Code，不用复制 JWT、不用手改任何配置文件。
+推荐路径分两步：**CLI** 挂载 MCP，**Skill** 教会 Agent 怎么高效探索。二者组合即可开箱即用，不需要手改任何配置文件。
 
-#### 推荐：用 SAG CLI 挂载 MCP
+#### 第一步：用 CLI 挂载 MCP
 
 [`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli) 是 SAG 的官方命令行客户端。它会自动发现本机 Docker SAG 容器，验证 MCP 可用，并把它接入 Codex 或 Claude Code —— 本机 Docker 路径全程不需要 JWT。
 
@@ -273,9 +273,9 @@ sag agent connect claude-code
 
 CLI **不会**把 JWT 写入 Agent 配置文件，可用时优先保存到操作系统凭据存储，且只会删除自己创建的 MCP 条目。任何写入操作都可以用 `--dry-run` 预览。完整命令参考见 [SAG CLI 说明文档](https://www.npmjs.com/package/@zleap-ai/sag-cli)。
 
-#### 可选：Agent Skill
+#### 第二步：安装 Skill
 
-除了 MCP 本身，SAG 还提供官方 Skill（[`skills/sag/`](skills/sag/)），教 Agent 如何**用好** SAG —— 先调 `list_sources`，再沿 `list_documents → outline → search/grep → get_chunk/read` 的探索漏斗定位并引用知识。Skill 与 MCP 是互补关系，如果希望 Agent 更懂得在合适步骤挑合适工具，就把它也复制过去：
+SAG 提供官方 Skill（[`skills/sag/`](skills/sag/)），教 Agent 如何**高效探索** SAG —— 何时先调 `list_sources`、如何沿 `list_documents → outline → search/grep → get_chunk/read` 漏斗定位知识、怎样用 `[n]` 编号准确标注引用。Skill 把 MCP 连接变成顺滑的知识探索体验。
 
 ```bash
 # Claude Code

@@ -241,9 +241,9 @@ Switch a source from list view to graph view to inspect the events, entities, an
 
 ### MCP guide
 
-The fastest path is the **SAG CLI**: one command mounts the SAG Knowledge MCP into Codex or Claude Code — no JWT copy-paste, no hand-edited config files.
+The recommended path is two steps: **CLI** mounts the MCP, **Skill** teaches the Agent how to explore it. Together they give you a complete knowledge retrieval setup with zero hand-edited config.
 
-#### Recommended: mount MCP with the SAG CLI
+#### Step 1: mount MCP with the CLI
 
 [`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli) is the official command-line client. It auto-discovers your local Docker SAG container, verifies the MCP works, and wires it into Codex or Claude Code — for the local Docker path no JWT is needed.
 
@@ -273,9 +273,9 @@ sag agent connect claude-code
 
 The CLI **never** writes your JWT into an Agent's config file, stores tokens in the OS keychain when available, and only removes MCP entries it created itself. Preview any write with `--dry-run`. Full command reference: see the [SAG CLI README](https://www.npmjs.com/package/@zleap-ai/sag-cli).
 
-#### Optional: Agent Skill
+#### Step 2: install the Skill
 
-Alongside the MCP, SAG ships an official Skill in [`skills/sag/`](skills/sag/) that teaches an Agent *how* to explore SAG well — call `list_sources` first, then follow the `list_documents → outline → search/grep → get_chunk/read` funnel. It complements the MCP; install it if you want the Agent to reach for the right tool in the right order.
+SAG ships an official Skill in [`skills/sag/`](skills/sag/) that teaches the Agent *how* to explore SAG efficiently — when to call `list_sources` first, how to follow the `list_documents → outline → search/grep → get_chunk/read` exploration funnel, and how to cite sources correctly with `[n]` references. The Skill is what turns the MCP connection into a smooth exploration experience.
 
 ```bash
 # Claude Code
