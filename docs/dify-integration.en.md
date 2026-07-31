@@ -1,121 +1,173 @@
 # Use SAG as a Dify External Knowledge Base
 
-SAG implements Dify's external knowledge base retrieval protocol. SAG continues to handle document upload, parsing, chunking, embeddings, and event–entity extraction. At application runtime, Dify only asks SAG for retrieval evidence. This integration is entirely optional: it does not replace or change any other knowledge base capability in either Dify or SAG.
+Dify calls SAG only for retrieval evidence at runtime. Uploading, parsing, chunking, and embedding remain in SAG.
 
-## Prerequisites
+~~~text
+Dify API → SSRF Proxy → sag:8000 on the Docker network → SAG /api/v1/dify/retrieval
+~~~
 
-- Both SAG and Dify are running with Docker Compose.
-- Documents in the target SAG source have finished processing.
-- Dify containers can reach the SAG API over a shared Docker network.
-- This integration follows SAG's single-user boundary: one Dify external knowledge base is bound to one SAG source.
+One Dify external knowledge base maps to one SAG source (source.id).
 
-## 1. Initialize the SAG Dify API key
+## 1. Configure SAG
 
-From the root of the SAG repository, run:
+Set these values in the SAG repository root .env file:
 
-```bash
-make setup-dify
-```
+~~~dotenv
+# Dedicated key for Dify. Dify must use the same value.
+SAG_DIFY_API_KEY=replace-with-a-strong-random-key
 
-The command generates a cryptographically strong key, stores it in the Git-ignored root `.env` file, and prints:
+# Dify-only retrieval strategy:
+# vector (default): low latency; no SAG internal LLM reranking.
+# multi: entity expansion plus SAG internal LLM reranking; higher latency.
+SAG_DIFY_SEARCH_STRATEGY=vector
+~~~
 
-```text
-Endpoint: http://sag:8000/api/v1/dify
-API Key: <generated key>
-```
+This setting affects the Dify endpoint only. It does not change the retrieval strategy in SAG Web.
 
-An existing non-empty `SAG_DIFY_API_KEY` is never overwritten. If you do not run this command or configure the key manually, the Dify-compatible endpoint returns `503`. SAG's default startup and all other functionality remain unaffected.
+### Verify: values reached the API container
 
-## 2. Connect the SAG API to Dify's Docker network
+~~~bash
+docker exec sag-api-1 sh -lc 'python - <<'"'"'PY'"'"'
+import os
+print("dify_key_configured=", bool(os.getenv("SAG_DIFY_API_KEY")))
+print("dify_search_strategy=", os.getenv("SAG_DIFY_SEARCH_STRATEGY"))
+PY'
+~~~
 
-First, identify Dify's Docker network from Dify's `docker` directory:
+Expected output:
 
-```bash
-docker compose ps
+~~~text
+dify_key_configured= True
+dify_search_strategy= vector
+~~~
+
+## 2. Attach SAG API to the Dify Docker network
+
+Find the Dify network name:
+
+~~~bash
 docker network ls
-```
+~~~
 
-When started from the default directory name, Dify commonly uses `docker_default`. From the SAG repository root, start SAG with the optional Compose override:
+The default is usually docker_default. From the SAG repository root:
 
-```bash
+~~~bash
 DIFY_NETWORK_NAME=docker_default \
-docker compose -f compose.yaml -f compose.dify.yaml up -d --build
-```
+docker compose -f compose.yaml -f compose.dify.yaml up -d --build --force-recreate --no-deps api
+~~~
 
-This adds only SAG's `api` service to the selected network and gives it the network alias `sag`. Do not expose the Dify-compatible endpoint directly to the public internet.
+This rebuilds only SAG API; it does not stop SAG Web, Dify, or databases.
 
-## 3. Configure Dify's container access policy
+### Verify: network and health
 
-Dify sends external knowledge base requests through its SSRF Proxy. Add the following settings to Dify's `docker/.env`:
+~~~bash
+docker inspect sag-api-1 \
+  --format '{{range $name, $network := .NetworkSettings.Networks}}{{println $name}}{{end}}'
 
-```dotenv
+docker run --rm --network docker_default busybox:latest \
+  wget -S -O - -T 10 http://sag:8000/api/v1/system/ready
+~~~
+
+The network output must include sag_default and docker_default. The health request must return HTTP 200 and:
+
+~~~json
+{"status":"ready","db":true}
+~~~
+
+sag:8000 is a Docker-internal address. Use docker ps to find the host port.
+
+## 3. Configure Dify SSRF access
+
+Edit Dify docker/.env:
+
+~~~dotenv
 SSRF_PROXY_ALLOW_PRIVATE_DOMAINS=sag
 SSRF_DEFAULT_TIME_OUT=30
 SSRF_DEFAULT_READ_TIME_OUT=30
-```
+~~~
 
-Both `SSRF_DEFAULT_TIME_OUT` and `SSRF_DEFAULT_READ_TIME_OUT` must exceed SAG's per-source retrieval timeout and leave room for network overhead. Dify applies the read timeout independently, so increasing only the overall timeout can still cause a request to be interrupted after the default five seconds.
+- SSRF_PROXY_ALLOW_PRIVATE_DOMAINS permits the private Docker hostname sag.
+- SSRF_DEFAULT_TIME_OUT is the maximum total request time in seconds.
+- SSRF_DEFAULT_READ_TIME_OUT is the maximum response-read time after connecting.
 
-With the default `multi → vector` fallback enabled, one request can consume up to two consecutive per-source timeouts. Set both Dify timeouts to more than `2 × SAG_SEARCH_SOURCE_TIMEOUT + network overhead`. For example, when SAG's default per-source timeout is 12 seconds, 30 seconds is appropriate. If it is increased to 45 seconds, configure Dify for at least 100 seconds.
+Thirty seconds is normally enough for vector. When using multi, increase both values according to SAG's per-source timeout and LLM response time.
 
-Recreate the relevant Dify services for the configuration to take effect:
+Recreate the related Dify services from its docker directory:
 
-```bash
+~~~bash
 docker compose up -d --force-recreate api ssrf_proxy
-```
+~~~
 
-These changes apply only to your Dify deployment; no Dify source-code changes are required.
+### Verify: Dify received the settings
 
-## 4. Find the SAG Source ID
+~~~bash
+docker exec docker-ssrf_proxy-1 sh -lc \
+  'env | grep "^SSRF_PROXY_ALLOW_PRIVATE_DOMAINS="'
 
-Open the target source in SAG. Its URL follows this pattern:
+docker exec docker-api-1 sh -lc \
+  'env | grep -E "^(SSRF_DEFAULT_TIME_OUT|SSRF_DEFAULT_READ_TIME_OUT)="'
+~~~
 
-```text
-http://localhost:3000/knowledge/<SOURCE_ID>
-```
+Expected output:
 
-The final segment, `<SOURCE_ID>`, is the Knowledge ID to enter in Dify. You can also call `GET /api/v1/sources` with a SAG user JWT to retrieve sources and their `id` values.
+~~~text
+SSRF_PROXY_ALLOW_PRIVATE_DOMAINS=sag
+SSRF_DEFAULT_TIME_OUT=30
+SSRF_DEFAULT_READ_TIME_OUT=30
+~~~
 
-## 5. Create the external knowledge base in Dify
+## 4. Bind a source in Dify
 
-1. Go to **Knowledge → Create Knowledge Base → Connect to an External Knowledge Base**.
-2. Create an external knowledge API:
-   - **Name:** for example, `SAG`
-   - **Endpoint:** `http://sag:8000/api/v1/dify`
-   - **API Key:** the key printed by `make setup-dify`
-3. Create the external knowledge base and enter the target SAG `source.id` as the **Knowledge ID**.
-4. Run Dify's retrieval test, or add a Knowledge Retrieval node to an application to verify the results and citations.
+1. Prepare a processed source in SAG Web and copy its complete source.id.
+2. In Dify, open **Knowledge → Connect to an External Knowledge Base** and create an external API:
+   - Endpoint: http://sag:8000/api/v1/dify
+   - API Key: the complete SAG_DIFY_API_KEY value
+3. Create the external knowledge base and set Knowledge ID to the complete source.id.
 
-Dify automatically appends `/retrieval` to the Endpoint. Do not include `/retrieval` in the Endpoint yourself, and do not mistakenly use HTTPS for the container-internal HTTP address.
+Do not append /retrieval; Dify does it automatically. Do not use localhost or HTTPS.
 
-## Retrieval protocol
+### Verify: endpoint authentication
 
-Dify ultimately calls:
+From the SAG repository root:
 
-```http
-POST /api/v1/dify/retrieval
-Authorization: Bearer <SAG_DIFY_API_KEY>
-Content-Type: application/json
-```
+~~~bash
+KEY=$(sed -n 's/^SAG_DIFY_API_KEY=//p' .env)
 
-Example request:
+curl -i -sS -X POST \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  http://127.0.0.1:8001/api/v1/dify/retrieval \
+  -d '{"knowledge_id":"","query":""}'
+~~~
 
-```json
+Expect HTTP 200 and:
+
+~~~json
+{"records":[]}
+~~~
+
+Replace 8001 with the host port shown for SAG API by docker ps. If Dify displays an SSRF error but ssrf_proxy shows HIER_DIRECT/... TCP_MISS/403, first verify that Dify's saved API key matches SAG .env.
+
+## 5. Verify the strategy
+
+Run a Dify hit test. Each returned record includes metadata such as:
+
+~~~json
 {
-  "knowledge_id": "<SAG_SOURCE_ID>",
-  "query": "What is the identifier for the Stellar Project?",
-  "retrieval_setting": {
-    "top_k": 5,
-    "score_threshold": 0.3
-  }
+  "retrieval_strategy": "vector",
+  "fallback_used": false
 }
-```
+~~~
 
-The compatible endpoint always uses SAG's `multi` retrieval strategy and retains SAG's existing fallback to `vector` when a source retrieval times out, fails, or returns no results. Each returned `record` includes `source_id`, `source_name`, `chunk_id`, `heading`, and `document_id` for citation traceability in Dify.
+- `retrieval_strategy` is the strategy actually used. When a `multi` request is downgraded inside SAG (timeout, failure, or empty result), this appears as `vector`.
+- `fallback_used` is `true` when `multi` fell back to `vector`.
 
-## Current limitations
+## Strategy reference
 
-- The initial release does not support `metadata_condition`. Requests that include it return `422`; it is never silently ignored.
-- One Dify external knowledge base can be bound to only one SAG `source.id`.
-- SAG is currently a single-user product. Do not treat this endpoint as a cross-tenant knowledge-isolation boundary.
-- This endpoint supplies retrieval evidence only. It does not upload, update, or delete SAG documents from Dify.
+| Strategy | SAG internal LLM | Latency | Best for |
+| --- | --- | --- | --- |
+| vector (default) | No LLM reranking | Low | Normal low-latency Dify Q&A |
+| multi | Entity extraction and reranking use SAG's configured LLM | High | Higher-recall cases that can accept longer waits |
+
+Dify's application LLM still produces the final natural-language answer. This setting controls only the evidence retrieved by SAG.
+

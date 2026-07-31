@@ -70,13 +70,20 @@ async def retrieval(
         )
 
     source = await get_source(session, knowledge_id)
+    strategy = settings.dify_search_strategy
     outcome = await retrieve_relevant_sections(
         engine_manager,
         [source],
         query,
-        strategy="multi",
+        strategy=strategy,
         top_k=body.retrieval_setting.top_k,
     )
+    effective_strategy = str(
+        outcome.stats.get("effective_strategy")
+        or outcome.stats.get("strategy")
+        or strategy
+    )
+    fallback_used = bool(outcome.stats.get("fallback_used", False))
     records = [
         DifyRetrievalRecord(
             content=section.content,
@@ -92,6 +99,8 @@ async def retrieval(
                 "source_name": source.name,
                 "chunk_id": section.chunk_id or "",
                 "heading": section.heading,
+                "retrieval_strategy": effective_strategy,
+                "fallback_used": fallback_used,
             },
         )
         for section in outcome.sections
