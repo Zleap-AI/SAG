@@ -44,6 +44,10 @@ https://github.com/user-attachments/assets/9bb618e9-fef8-4d07-8a30-3f7d83beb0ff
 
 ### Changelog
 
+**July 31, 2026**
+
+Published the official command-line client [`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli). One command (`sag agent connect codex | claude-code`) mounts the SAG Knowledge MCP into Codex or Claude Code — no JWT copy-paste, no hand-edited config files. The MCP guide below now leads with the CLI.
+
 **July 14, 2026**
 
 Released a completely new version built on the `zleap-sag` package, featuring an entirely redesigned UI. The previous version has been archived in the `v1` branch and is no longer maintained.
@@ -241,9 +245,9 @@ Switch a source from list view to graph view to inspect the events, entities, an
 
 ### MCP guide
 
-The fastest path is the **SAG CLI**: one command mounts the SAG Knowledge MCP into Codex or Claude Code — no JWT copy-paste, no hand-edited config files.
+The recommended path is two steps: **CLI** mounts the MCP, **Skill** teaches the Agent how to explore it. Together they give you a complete knowledge retrieval setup with zero hand-edited config.
 
-#### Recommended: mount MCP with the SAG CLI
+#### Step 1: mount MCP with the CLI
 
 [`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli) is the official command-line client. It auto-discovers your local Docker SAG container, verifies the MCP works, and wires it into Codex or Claude Code — for the local Docker path no JWT is needed.
 
@@ -271,18 +275,20 @@ sag auth login                   # prompts for JWT (hidden input)
 sag agent connect claude-code
 ```
 
-The CLI **never** writes your JWT into an Agent's config file, stores tokens in the OS keychain when available, and only removes MCP entries it created itself. Preview any write with `--dry-run`. Full command reference: see the [SAG CLI README](https://www.npmjs.com/package/@zleap-ai/sag-cli).
+The CLI **never** writes your JWT into an Agent's config file, stores tokens in the OS keychain when available, and only removes MCP entries it created itself. Preview any write with `--dry-run`. Full guide: [SAG CLI User Guide](docs/sag-cli.en.md).
 
-#### Optional: Agent Skill
+#### Step 2: install the Skill
 
-Alongside the MCP, SAG ships an official Skill in [`skills/sag/`](skills/sag/) that teaches an Agent *how* to explore SAG well — call `list_sources` first, then follow the `list_documents → outline → search/grep → get_chunk/read` funnel. It complements the MCP; install it if you want the Agent to reach for the right tool in the right order.
+The Skill ships in [`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli). Copy it into your Agent's skills directory:
 
 ```bash
 # Claude Code
-cp -R skills/sag ~/.claude/skills/sag-knowledge
+SKILL_SRC="$(npm root -g)/@zleap-ai/sag-cli"
+cp -r "$SKILL_SRC/sag-knowledge" ~/.claude/skills/
 
 # Codex
-cp -R skills/sag ~/.codex/skills/sag-knowledge
+SKILL_SRC="$(npm root -g)/@zleap-ai/sag-cli"
+cp -r "$SKILL_SRC/sag-knowledge" ~/.codex/skills/
 ```
 
 #### Manual mounting (fallback)
@@ -378,7 +384,6 @@ apps/
     │   ├── services/       Application/domain orchestration
     │   └── tools/          Built-in and remote MCP Agent tools
     └── sag_agent/          Framework-independent Agent runtime core
-skills/sag/                 Agent Skill for exploring SAG through MCP
 deploy/                     Deployment initialization assets
 docs/assets/readme/         README screenshots and diagrams
 ```

@@ -4,7 +4,9 @@
 
 ## Unreleased
 
+- 官方命令行客户端 [`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli) 首次发布：一条命令即可把 SAG 知识库 MCP 挂载进 Codex 或 Claude Code；本机 Docker 免 Token，远程实例 `sag auth login` 后接入，全程不需要手改 Agent MCP 配置。
 - 用户指南「MCP 指南」重构为以 **SAG CLI** 为主的三段式接入指引：**推荐**用 `@zleap-ai/sag-cli` 一条命令挂载 Codex / Claude Code MCP（本机 Docker 免 Token；远程实例 `sag auth login` 后接入），**可选** Skill 教 Agent 用好 SAG，**备选**保留原有手动复制 MCP 配置流程；中英文 README 同步更新。
+- Skill 文件（`SKILL.md` + `references/`）从 SAG 仓库迁移至 `@zleap-ai/sag-cli`，随 npm 包发布；SAG README 第二步更新为从 CLI 包复制安装。
 
 ## v1.4.0 · 2026-07-23
 
