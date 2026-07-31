@@ -241,11 +241,41 @@ PDF 在 MinerU 配置完整时优先使用 MinerU；未配置或解析失败时�
 
 ### MCP 指南
 
-#### 作为 Agent Skill（Claude Code / Codex 等）
+最快的接入方式是 **SAG CLI**：一条命令把 SAG 知识库 MCP 挂载进 Codex 或 Claude Code，不用复制 JWT、不用手改任何配置文件。
 
-SAG 提供官方 Skill（[`skills/sag/`](skills/sag/)），教 Agent 使用 8 个只读 MCP 工具：先通过 `list_sources` 确认可访问范围，再沿 `list_documents → outline → search/grep → get_chunk/read` 的探索漏斗定位并引用知识。
+#### 推荐：用 SAG CLI 挂载 MCP
 
-复制该目录到 Agent 的 skills 目录即可启用：
+[`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli) 是 SAG 的官方命令行客户端。它会自动发现本机 Docker SAG 容器，验证 MCP 可用，并把它接入 Codex 或 Claude Code —— 本机 Docker 路径全程不需要 JWT。
+
+安装（Node.js ≥ 20.19）：
+
+```bash
+npm install --global @zleap-ai/sag-cli
+```
+
+一条命令接入 MCP：
+
+```bash
+sag mcp test                     # 验证 SAG MCP 可用
+sag agent connect codex          # 挂载进 Codex
+sag agent connect claude-code    # 或挂载进 Claude Code
+sag agent status                 # 查看当前接入状态
+```
+
+接入远程 SAG 实例（本机没有 Docker）时，从 **设置 → 集成** 复制 JWT 并先登录：
+
+```bash
+sag profile add prod https://sag.example.com
+sag profile use prod
+sag auth login                   # 隐藏输入 JWT
+sag agent connect claude-code
+```
+
+CLI **不会**把 JWT 写入 Agent 配置文件，可用时优先保存到操作系统凭据存储，且只会删除自己创建的 MCP 条目。任何写入操作都可以用 `--dry-run` 预览。完整命令参考见 [SAG CLI 说明文档](https://www.npmjs.com/package/@zleap-ai/sag-cli)。
+
+#### 可选：Agent Skill
+
+除了 MCP 本身，SAG 还提供官方 Skill（[`skills/sag/`](skills/sag/)），教 Agent 如何**用好** SAG —— 先调 `list_sources`，再沿 `list_documents → outline → search/grep → get_chunk/read` 的探索漏斗定位并引用知识。Skill 与 MCP 是互补关系，如果希望 Agent 更懂得在合适步骤挑合适工具，就把它也复制过去：
 
 ```bash
 # Claude Code
@@ -255,9 +285,9 @@ cp -R skills/sag ~/.claude/skills/sag-knowledge
 cp -R skills/sag ~/.codex/skills/sag-knowledge
 ```
 
-#### Agent 直接挂载 MCP
+#### 手动挂载（备选）
 
-不安装 Skill 也可以直接挂载。在 SAG 中打开 **设置 → 集成 → 知识库 MCP**，选择 HTTP 或本地命令并复制完整配置。复制的 HTTP 配置会自动带入当前 JWT，默认开放全部信源，也可以通过 `source_id` 限定范围。
+不方便安装 CLI 时，可以在 SAG 中打开 **设置 → 集成 → 知识库 MCP**，选择 HTTP 或本地命令，把完整配置复制粘贴到 Agent 的 MCP 配置文件里。HTTP 配置已自动带入当前 JWT，默认开放全部信源，也可以通过 `source_id` 限定范围。
 
 <p align="center">
   <img src="docs/assets/readme/product-mcp.png" alt="SAG 知识库 MCP 集成设置" width="940" />
