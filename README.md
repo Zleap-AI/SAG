@@ -284,11 +284,11 @@ The Skill ships in [`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai
 ```bash
 # Claude Code
 SKILL_SRC="$(npm root -g)/@zleap-ai/sag-cli"
-cp -r "$SKILL_SRC/sag-knowledge" ~/.claude/skills/
+cp -r "$SKILL_SRC/skill" ~/.claude/skills/sag-knowledge
 
 # Codex
 SKILL_SRC="$(npm root -g)/@zleap-ai/sag-cli"
-cp -r "$SKILL_SRC/sag-knowledge" ~/.codex/skills/
+cp -r "$SKILL_SRC/skill" ~/.codex/skills/sag-knowledge
 ```
 
 #### Manual mounting (fallback)
