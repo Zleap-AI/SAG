@@ -44,6 +44,10 @@ https://github.com/user-attachments/assets/cae70570-3885-490f-9126-dea23dcb369c
 
 ### 更新日志
 
+**2026 年 7 月 31 日**
+
+发布 SAG 官方命令行客户端 [`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli)。一条命令（`sag agent connect codex | claude-code`）即可把 SAG 知识库 MCP 挂载进 Codex 或 Claude Code，不再需要复制 JWT 或手改配置文件。下方「MCP 指南」已改以 CLI 为主要接入路径。
+
 **2026 年 7 月 14 日**
 
 发布了基于 `zleap-sag` 包的全新版本，并采用全新 UI。原版本已归档至 `v1` 分支，不再维护。
@@ -241,9 +245,9 @@ PDF 在 MinerU 配置完整时优先使用 MinerU；未配置或解析失败时�
 
 ### MCP 指南
 
-最快的接入方式是 **SAG CLI**：一条命令把 SAG 知识库 MCP 挂载进 Codex 或 Claude Code，不用复制 JWT、不用手改任何配置文件。
+推荐路径分两步：**CLI** 挂载 MCP，**Skill** 教会 Agent 怎么高效探索。二者组合即可开箱即用，不需要手改任何配置文件。
 
-#### 推荐：用 SAG CLI 挂载 MCP
+#### 第一步：用 CLI 挂载 MCP
 
 [`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli) 是 SAG 的官方命令行客户端。它会自动发现本机 Docker SAG 容器，验证 MCP 可用，并把它接入 Codex 或 Claude Code —— 本机 Docker 路径全程不需要 JWT。
 
@@ -271,18 +275,20 @@ sag auth login                   # 隐藏输入 JWT
 sag agent connect claude-code
 ```
 
-CLI **不会**把 JWT 写入 Agent 配置文件，可用时优先保存到操作系统凭据存储，且只会删除自己创建的 MCP 条目。任何写入操作都可以用 `--dry-run` 预览。完整命令参考见 [SAG CLI 说明文档](https://www.npmjs.com/package/@zleap-ai/sag-cli)。
+CLI **不会**把 JWT 写入 Agent 配置文件，可用时优先保存到操作系统凭据存储，且只会删除自己创建的 MCP 条目。任何写入操作都可以用 `--dry-run` 预览。完整使用指南见 [SAG CLI 使用指南](docs/sag-cli.md)。
 
-#### 可选：Agent Skill
+#### 第二步：安装 Skill
 
-除了 MCP 本身，SAG 还提供官方 Skill（[`skills/sag/`](skills/sag/)），教 Agent 如何**用好** SAG —— 先调 `list_sources`，再沿 `list_documents → outline → search/grep → get_chunk/read` 的探索漏斗定位并引用知识。Skill 与 MCP 是互补关系，如果希望 Agent 更懂得在合适步骤挑合适工具，就把它也复制过去：
+Skill 随 [`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli) 发布，复制到 Agent 的 skills 目录即可：
 
 ```bash
 # Claude Code
-cp -R skills/sag ~/.claude/skills/sag-knowledge
+SKILL_SRC="$(npm root -g)/@zleap-ai/sag-cli"
+cp -r "$SKILL_SRC/skill" ~/.claude/skills/sag-knowledge
 
 # Codex
-cp -R skills/sag ~/.codex/skills/sag-knowledge
+SKILL_SRC="$(npm root -g)/@zleap-ai/sag-cli"
+cp -r "$SKILL_SRC/skill" ~/.codex/skills/sag-knowledge
 ```
 
 #### 手动挂载（备选）
@@ -380,7 +386,6 @@ apps/
     │   ├── services/       应用与领域编排
     │   └── tools/          内置工具与远端 MCP Agent 工具
     └── sag_agent/          与框架无关的 Agent Runtime Core
-skills/sag/                 通过 MCP 探索 SAG 的 Agent Skill
 deploy/                     部署初始化资源
 docs/assets/readme/         README 配图与示意图
 ```
