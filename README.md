@@ -241,11 +241,41 @@ Switch a source from list view to graph view to inspect the events, entities, an
 
 ### MCP guide
 
-#### Use as an Agent Skill (Claude Code, Codex, and others)
+The fastest path is the **SAG CLI**: one command mounts the SAG Knowledge MCP into Codex or Claude Code — no JWT copy-paste, no hand-edited config files.
 
-SAG ships an official Skill in [`skills/sag/`](skills/sag/). It teaches an Agent to use eight read-only MCP tools: call `list_sources` to confirm the accessible scope, then follow the `list_documents → outline → search/grep → get_chunk/read` exploration funnel to locate and cite knowledge.
+#### Recommended: mount MCP with the SAG CLI
 
-Copy the directory into your Agent's skills directory:
+[`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli) is the official command-line client. It auto-discovers your local Docker SAG container, verifies the MCP works, and wires it into Codex or Claude Code — for the local Docker path no JWT is needed.
+
+Install (Node.js ≥ 20.19):
+
+```bash
+npm install --global @zleap-ai/sag-cli
+```
+
+Wire the MCP in one command:
+
+```bash
+sag mcp test                     # verify the SAG MCP is reachable
+sag agent connect codex          # mount into Codex
+sag agent connect claude-code    # or mount into Claude Code
+sag agent status                 # see what's wired
+```
+
+For a remote SAG instance (no local Docker), grab a JWT from **Settings → Integrations** and log in first:
+
+```bash
+sag profile add prod https://sag.example.com
+sag profile use prod
+sag auth login                   # prompts for JWT (hidden input)
+sag agent connect claude-code
+```
+
+The CLI **never** writes your JWT into an Agent's config file, stores tokens in the OS keychain when available, and only removes MCP entries it created itself. Preview any write with `--dry-run`. Full command reference: see the [SAG CLI README](https://www.npmjs.com/package/@zleap-ai/sag-cli).
+
+#### Optional: Agent Skill
+
+Alongside the MCP, SAG ships an official Skill in [`skills/sag/`](skills/sag/) that teaches an Agent *how* to explore SAG well — call `list_sources` first, then follow the `list_documents → outline → search/grep → get_chunk/read` funnel. It complements the MCP; install it if you want the Agent to reach for the right tool in the right order.
 
 ```bash
 # Claude Code
@@ -255,9 +285,9 @@ cp -R skills/sag ~/.claude/skills/sag-knowledge
 cp -R skills/sag ~/.codex/skills/sag-knowledge
 ```
 
-#### Mount MCP directly in an Agent
+#### Manual mounting (fallback)
 
-The Skill is optional. In SAG, open **Settings → Integrations → Knowledge MCP**, select HTTP or local command, and copy the complete configuration. The copied HTTP configuration includes the current JWT, exposes all sources by default, and can be scoped with `source_id`.
+If you can't install the CLI, open **Settings → Integrations → Knowledge MCP** in SAG, pick HTTP or local command, and paste the copied block into your Agent's MCP config file yourself. The HTTP snippet already includes the current JWT and exposes all sources by default; scope it with `source_id` when needed.
 
 <p align="center">
   <img src="docs/assets/readme/product-mcp.png" alt="SAG Knowledge MCP integration settings" width="940" />

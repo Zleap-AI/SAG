@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- 用户指南「MCP 指南」重构为以 **SAG CLI** 为主的三段式接入指引：**推荐**用 `@zleap-ai/sag-cli` 一条命令挂载 Codex / Claude Code MCP（本机 Docker 免 Token；远程实例 `sag auth login` 后接入），**可选** Skill 教 Agent 用好 SAG，**备选**保留原有手动复制 MCP 配置流程；中英文 README 同步更新。
+
 ## v1.4.0 · 2026-07-23
 
 - 开源版本已基于 `zleap-sag` 全新重构并采用全新 UI；旧版源码归档于 `v1` 分支，不再维护。
