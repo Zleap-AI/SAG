@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     allow_registration: bool = True
     # Dify 外部知识库调用的专用服务密钥；未配置时兼容端点拒绝服务。
     dify_api_key: str | None = None
+    # Dify 检索默认优先低延迟向量召回；可显式设为 multi 启用实体扩展与 LLM 精排。
+    dify_search_strategy: SearchStrategy = "vector"
 
     # ── sag 元数据库 ───────────────────────────────────────────────────
     database_url: str = "sqlite+aiosqlite:///./.data/sag.db"

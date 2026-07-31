@@ -205,6 +205,9 @@ async def test_search_many_caps_candidates_and_concurrency(monkeypatch):
         "sources_requested": 5,
         "source_limit_applied": True,
         "candidates": 0,
+        "requested_strategy": "multi",
+        "effective_strategy": "multi",
+        "fallback_used": False,
     }
 
 

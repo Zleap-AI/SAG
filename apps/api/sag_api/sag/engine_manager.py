@@ -653,7 +653,16 @@ class EngineManager:
         try:
             outcome = await self._search_raw(source_config_id, query, source=source, strategy=strategy, top_k=top_k)
             if outcome.sections or strategy == "vector" or not self._settings.search_fallback_vector:
-                return outcome
+                return SearchOutcome(
+                    query=outcome.query,
+                    sections=outcome.sections,
+                    stats={
+                        **outcome.stats,
+                        "requested_strategy": strategy,
+                        "effective_strategy": strategy,
+                        "fallback_used": False,
+                    },
+                )
             log.info("精确检索空结果，回退快速检索 source_config_id=%s", source_config_id)
         except TimeoutError:
             if strategy == "vector" or not self._settings.search_fallback_vector:
@@ -673,7 +682,17 @@ class EngineManager:
                 strategy,
                 getattr(e, "message", None) or e,
             )
-        return await self._search_raw(source_config_id, query, source=source, strategy="vector", top_k=top_k)
+        outcome = await self._search_raw(source_config_id, query, source=source, strategy="vector", top_k=top_k)
+        return SearchOutcome(
+            query=outcome.query,
+            sections=outcome.sections,
+            stats={
+                **outcome.stats,
+                "requested_strategy": strategy,
+                "effective_strategy": "vector",
+                "fallback_used": True,
+            },
+        )
 
     async def search_many(
         self,
@@ -760,6 +779,22 @@ class EngineManager:
                 "sources_requested": requested_sources,
                 "source_limit_applied": requested_sources > len(targets),
                 "candidates": len(best) + len(loose),
+                "requested_strategy": strategy,
+                "effective_strategy": next(
+                    (
+                        outcome.stats.get("effective_strategy", strategy)
+                        for result in results
+                        if result is not None
+                        for _, outcome in [result]
+                    ),
+                    strategy,
+                ),
+                "fallback_used": any(
+                    bool(outcome.stats.get("fallback_used"))
+                    for result in results
+                    if result is not None
+                    for _, outcome in [result]
+                ),
             },
         )
 

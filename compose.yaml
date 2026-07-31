@@ -18,6 +18,8 @@ services:
       SAG_ALLOW_REGISTRATION: ${SAG_ALLOW_REGISTRATION:-false}
       # 可选 Dify 外部知识库兼容端点；留空时端点拒绝服务。
       SAG_DIFY_API_KEY: ${SAG_DIFY_API_KEY:-}
+      # Dify 专用检索策略；默认 vector 以降低外部知识库请求延迟。
+      SAG_DIFY_SEARCH_STRATEGY: ${SAG_DIFY_SEARCH_STRATEGY:-vector}
       # 四个斜杠表示容器内绝对路径 /data/sag.db。
       SAG_DATABASE_URL: sqlite+aiosqlite:////data/sag.db
       SAG_DATA_DIR: /data/engine
