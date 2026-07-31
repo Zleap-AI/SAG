@@ -46,7 +46,7 @@ https://github.com/user-attachments/assets/cae70570-3885-490f-9126-dea23dcb369c
 
 **2026 年 7 月 31 日**
 
-发布 SAG 官方命令行客户端 [`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli)。一条命令（`sag agent connect codex | claude-code`）即可把 SAG 知识库 MCP 挂载进 Codex 或 Claude Code，不再需要复制 JWT 或手改配置文件。下方「MCP 指南」已改以 CLI 为主要接入路径。
+发布 SAG 官方命令行客户端 [`@zleap-ai/sag-cli`](docs/sag-cli.md)。一条命令（`sag agent connect codex | claude-code`）即可把 SAG 知识库 MCP 挂载进 Codex 或 Claude Code，不再需要复制 JWT 或手改配置文件。下方「MCP 指南」已改以 CLI 为主要接入路径。
 
 **2026 年 7 月 14 日**
 
@@ -249,7 +249,7 @@ PDF 在 MinerU 配置完整时优先使用 MinerU；未配置或解析失败时�
 
 #### 第一步：用 CLI 挂载 MCP
 
-[`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli) 是 SAG 的官方命令行客户端。它会自动发现本机 Docker SAG 容器，验证 MCP 可用，并把它接入 Codex 或 Claude Code —— 本机 Docker 路径全程不需要 JWT。
+[`@zleap-ai/sag-cli`](docs/sag-cli.md) 是 SAG 的官方命令行客户端。它会自动发现本机 Docker SAG 容器，验证 MCP 可用，并把它接入 Codex 或 Claude Code —— 本机 Docker 路径全程不需要 JWT。
 
 安装（Node.js ≥ 20.19）：
 
@@ -279,7 +279,7 @@ CLI **不会**把 JWT 写入 Agent 配置文件，可用时优先保存到操作
 
 #### 第二步：安装 Skill
 
-Skill 随 [`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli) 发布，复制到 Agent 的 skills 目录即可：
+Skill 随 [`@zleap-ai/sag-cli`](docs/sag-cli.md) 发布，复制到 Agent 的 skills 目录即可：
 
 ```bash
 # Claude Code
