@@ -14,7 +14,7 @@ function job(workflow, name) {
   return match[1];
 }
 
-test("dedicated fnOS branch CI and immutable candidate tag gate release writes", async () => {
+test("dedicated fnOS branch push builds candidates without publishing Git tags", async () => {
   const [workflow, ci] = await Promise.all([
     readFile(workflowPath, "utf8"),
     readFile(ciPath, "utf8"),
@@ -22,21 +22,23 @@ test("dedicated fnOS branch CI and immutable candidate tag gate release writes",
   const candidate = job(workflow, "candidate");
 
   assert.match(ci, /branches: \[main, dev, fnos\/develop\]/);
-  assert.match(workflow, /push:\n    tags:\n      - "fnos-candidate-\*"/);
-  assert.doesNotMatch(workflow, /workflow_dispatch|refs\/heads\/main|\binputs\./);
+  assert.match(workflow, /push:\n    branches: \[fnos\/develop\]/);
+  assert.match(workflow, /paths:/);
+  assert.match(workflow, /"\.github\/workflows\/fnos-release\.yml"/);
+  assert.match(workflow, /"scripts\/release-fnos\.mjs"/);
+  assert.doesNotMatch(workflow, /push:\n    tags:|expected_tag=|GITHUB_REF_TYPE" = "tag"|workflow_dispatch|refs\/heads\/main|\binputs\./);
   assert.match(workflow, /concurrency:\n  group: fnos-candidate-\$\{\{ github\.repository \}\}\n  cancel-in-progress: false/);
   assert.match(candidate, /git ls-remote --heads origin fnos\/develop/);
   assert.doesNotMatch(candidate, /test "\$version" = "1\.[0-9]+\.[0-9]+-fnos\.\d+"/);
   assert.match(candidate, /case "\$version" in\n            1\.\[0-9\]\*\.\[0-9\]\*-fnos\.\[0-9\]\*\) ;;/);
-  assert.match(candidate, /expected_tag="fnos-candidate-\$\{version\}-\$\{GITHUB_SHA:0:12\}"/);
-  assert.match(candidate, /test "\$GITHUB_REF_NAME" = "\$expected_tag"/);
+  assert.match(candidate, /test "\$GITHUB_REF_TYPE" = "branch"/);
+  assert.match(candidate, /test "\$GITHUB_REF_NAME" = "fnos\/develop"/);
   assert.match(candidate, /test "\$GITHUB_SHA" = "\$remote_revision"/);
   assert.match(candidate, /revision: \$\{\{ steps\.metadata\.outputs\.revision \}\}/);
   assert.match(job(workflow, "quality"), /needs: candidate/);
 
   for (const name of [
     "gateway-security",
-    "local-amd64-smoke",
     "staging",
     "inspect-staging",
     "smoke-staging",
@@ -62,7 +64,6 @@ test("fnOS release workflow pins actions and scopes package permissions", async 
   assert.doesNotMatch(workflow, /^permissions:\n(?:.*\n)*?  packages:/m);
   assert.doesNotMatch(job(workflow, "candidate"), /packages:/);
   assert.doesNotMatch(job(workflow, "quality"), /packages: write/);
-  assert.doesNotMatch(job(workflow, "local-amd64-smoke"), /packages: write/);
   assert.match(job(workflow, "inspect-staging"), /permissions:\n      contents: read\n      packages: read/);
   assert.match(job(workflow, "smoke-staging"), /permissions:\n      contents: read\n      packages: read/);
   assert.match(job(workflow, "anonymous-postcheck"), /permissions:\n      contents: read/);
@@ -120,17 +121,15 @@ test("fnOS release workflow invokes the executable digest handoff and promotion 
   assert.match(workflow, /concurrency:\n  group: fnos-candidate-/);
 });
 
-test("amd64 smoke starts the API in no-auth single-user mode", async () => {
+test("candidate staging does not duplicate a local amd64 build and retains exact-digest smoke", async () => {
   const workflow = await readFile(workflowPath, "utf8");
-  const smoke = job(workflow, "local-amd64-smoke");
+  const staging = job(workflow, "staging");
+  const smoke = job(workflow, "smoke-staging");
 
-  assert.match(smoke, /--env SAG_AUTH_MODE=single_user/);
-  const sessionSecret = /--env SAG_SECRET_KEY=([a-f0-9]{64})/.exec(smoke)?.[1];
-  assert.ok(sessionSecret);
-  assert.doesNotMatch(smoke, /SAG_AUTH_BOOTSTRAP_TOKEN|bootstrap_token|password_status/);
-  assert.match(smoke, /\/api\/v1\/auth\/session/);
-  assert.match(smoke, /test "\$initialized_status" = 201/);
-  assert.match(smoke, /test "\$anonymous_status" = 200/);
+  assert.doesNotMatch(workflow, /local-amd64-smoke/);
+  assert.match(staging, /cache-from: type=gha,scope=\$\{\{ matrix\.cache_scope \}\}/);
+  assert.match(staging, /cache-to: type=gha,mode=max,scope=\$\{\{ matrix\.cache_scope \}\}/);
+  assert.match(smoke, /smoke-fnos-release-images\.mjs smoke/);
 });
 
 test("gateway scan gates publication with a checksum-pinned Trivy binary and exact reviewed digest", async () => {
@@ -156,5 +155,5 @@ test("gateway scan gates publication with a checksum-pinned Trivy binary and exa
   assert.match(gateway, /--scanner-exit-code "\$trivy_status"/);
   assert.match(gateway, /test "\$trivy_status" -eq 0/);
   assert.match(gateway, /if: \$\{\{ always\(\) \}\}/);
-  assert.match(staging, /needs: \[candidate, local-amd64-smoke, gateway-security\]/);
+  assert.match(staging, /needs: \[candidate, gateway-security\]/);
 });
