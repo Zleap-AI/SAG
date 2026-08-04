@@ -21,13 +21,13 @@ test("dedicated fnOS branch CI and immutable candidate tag gate release writes",
   ]);
   const candidate = job(workflow, "candidate");
 
-  assert.match(ci, /branches: \[main, dev, feat\/fnos-docker-app\]/);
+  assert.match(ci, /branches: \[main, dev, fnos\/develop\]/);
   assert.match(workflow, /push:\n    tags:\n      - "fnos-candidate-\*"/);
   assert.doesNotMatch(workflow, /workflow_dispatch|refs\/heads\/main|\binputs\./);
   assert.match(workflow, /concurrency:\n  group: fnos-candidate-\$\{\{ github\.repository \}\}\n  cancel-in-progress: false/);
-  assert.match(candidate, /git ls-remote --heads origin feat\/fnos-docker-app/);
-  assert.doesNotMatch(candidate, /test "\$version" = "1\.4\.0-fnos\.\d+"/);
-  assert.match(candidate, /case "\$version" in\n            1\.4\.0-fnos\.\[0-9\]\*\) ;;/);
+  assert.match(candidate, /git ls-remote --heads origin fnos\/develop/);
+  assert.doesNotMatch(candidate, /test "\$version" = "1\.[0-9]+\.[0-9]+-fnos\.\d+"/);
+  assert.match(candidate, /case "\$version" in\n            1\.\[0-9\]\*\.\[0-9\]\*-fnos\.\[0-9\]\*\) ;;/);
   assert.match(candidate, /expected_tag="fnos-candidate-\$\{version\}-\$\{GITHUB_SHA:0:12\}"/);
   assert.match(candidate, /test "\$GITHUB_REF_NAME" = "\$expected_tag"/);
   assert.match(candidate, /test "\$GITHUB_SHA" = "\$remote_revision"/);
@@ -91,8 +91,8 @@ test("promotion requires an exact captured-digest runtime smoke", async () => {
   const promote = job(workflow, "promote");
 
   assert.match(smoke, /needs: \[candidate, inspect-staging\]/);
-  assert.match(smoke, /API_IMAGE: ghcr\.io\/luoshuai990529\/sag-api@\$\{\{ needs\.inspect-staging\.outputs\.api_digest \}\}/);
-  assert.match(smoke, /WEB_IMAGE: ghcr\.io\/luoshuai990529\/sag-web@\$\{\{ needs\.inspect-staging\.outputs\.web_digest \}\}/);
+  assert.match(smoke, /API_IMAGE: ghcr\.io\/zleap-ai\/sag-api@\$\{\{ needs\.inspect-staging\.outputs\.api_digest \}\}/);
+  assert.match(smoke, /WEB_IMAGE: ghcr\.io\/zleap-ai\/sag-web@\$\{\{ needs\.inspect-staging\.outputs\.web_digest \}\}/);
   assert.match(smoke, /smoke-fnos-release-images\.mjs smoke/);
   assert.match(smoke, /if: \$\{\{ always\(\) \}\}/);
   assert.match(smoke, /smoke-fnos-release-images\.mjs cleanup/);

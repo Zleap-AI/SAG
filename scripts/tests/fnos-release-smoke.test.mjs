@@ -10,8 +10,8 @@ const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const smoke = path.join(repoRoot, "scripts/smoke-fnos-release-images.mjs");
 const apiDigest = `sha256:${"a".repeat(64)}`;
 const webDigest = `sha256:${"b".repeat(64)}`;
-const apiImage = `ghcr.io/luoshuai990529/sag-api@${apiDigest}`;
-const webImage = `ghcr.io/luoshuai990529/sag-web@${webDigest}`;
+const apiImage = `ghcr.io/zleap-ai/sag-api@${apiDigest}`;
+const webImage = `ghcr.io/zleap-ai/sag-web@${webDigest}`;
 
 async function fakeTools(t, {
   setupStatus = "201",
