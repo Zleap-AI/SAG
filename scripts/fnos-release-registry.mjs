@@ -126,12 +126,11 @@ function promote(options) {
   const apiImage = requireOption(options, "api_image");
   const webImage = requireOption(options, "web_image");
   const candidateVersion = requireOption(options, "candidate_version");
-  const commitTag = requireOption(options, "commit_tag");
   const apiDigest = requireDigest(requireOption(options, "api_digest"), "api digest");
   const webDigest = requireDigest(requireOption(options, "web_digest"), "web digest");
   const finalTags = [
-    [apiImage, candidateVersion, apiDigest], [apiImage, commitTag, apiDigest],
-    [webImage, candidateVersion, webDigest], [webImage, commitTag, webDigest],
+    [apiImage, candidateVersion, apiDigest],
+    [webImage, candidateVersion, webDigest],
   ];
   for (const [image, tag, digest] of finalTags) reconcile(options, image, tag, digest);
   for (const [image, tag, digest] of finalTags) {

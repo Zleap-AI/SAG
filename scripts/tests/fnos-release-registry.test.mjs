@@ -16,7 +16,6 @@ const web = "ghcr.io/zleap-ai/sag-web";
 const manifestText = readFileSync(path.join(repoRoot, "packages/fnos/sag/manifest"), "utf8");
 const version = manifestText.match(/^version\s*=\s*(\S+)\s*$/m)?.[1];
 if (!version) throw new Error("packages/fnos/sag/manifest is missing a version line");
-const commit = "sha-0123456789abcdef";
 
 async function fakeDocker(t, state = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "sag-fnos-release-registry-"));
@@ -78,7 +77,7 @@ async function stateOf(statePath) {
 }
 
 function promoteArgs(docker) {
-  return ["promote", "--docker", docker, "--api-image", api, "--web-image", web, "--candidate-version", version, "--commit-tag", commit, "--api-digest", digestA, "--web-digest", digestB];
+  return ["promote", "--docker", docker, "--api-image", api, "--web-image", web, "--candidate-version", version, "--api-digest", digestA, "--web-digest", digestB];
 }
 
 function verifyPublicArgs(docker) {
@@ -99,23 +98,23 @@ test("staging verification emits only a digest despite docker pull stdout and wr
   assert.deepEqual(JSON.parse(await readFile(artifact, "utf8")), { api_digest: digestA, web_digest: digestB });
 });
 
-test("promotion accepts Buildx canonical absent tags and creates all four in deterministic order then postchecks", async (t) => {
+test("promotion creates only the two user-facing version tags and postchecks them", async (t) => {
   const fake = await fakeDocker(t);
   const result = run(promoteArgs(fake.executable), fake.env);
   assert.equal(result.status, 0, result.stderr);
   const state = await stateOf(fake.statePath);
-  const expected = [`${api}:${version}`, `${api}:${commit}`, `${web}:${version}`, `${web}:${commit}`];
+  const expected = [`${api}:${version}`, `${web}:${version}`];
   assert.deepEqual(state.log.filter((args) => args.slice(0, 4).join(" ") === "buildx imagetools create --tag").map((args) => args[4]), expected);
   assert.deepEqual(Object.fromEntries(expected.map((ref) => [ref, state.refs[ref]])), {
-    [`${api}:${version}`]: digestA, [`${api}:${commit}`]: digestA,
-    [`${web}:${version}`]: digestB, [`${web}:${commit}`]: digestB,
+    [`${api}:${version}`]: digestA,
+    [`${web}:${version}`]: digestB,
   });
   const inspections = state.log.filter((args) => args.slice(0, 5).join(" ") === "buildx imagetools inspect --format {{.Manifest.Digest}}").map((args) => args[5]);
-  assert.deepEqual(inspections.slice(-4), expected);
+  assert.deepEqual(inspections.slice(-2), expected);
 });
 
 test("promotion accepts existing matching tags without rewriting them", async (t) => {
-  const refs = { [`${api}:${version}`]: digestA, [`${api}:${commit}`]: digestA, [`${web}:${version}`]: digestB, [`${web}:${commit}`]: digestB };
+  const refs = { [`${api}:${version}`]: digestA, [`${web}:${version}`]: digestB };
   const fake = await fakeDocker(t, { refs });
   const result = run(promoteArgs(fake.executable), fake.env);
   assert.equal(result.status, 0, result.stderr);
@@ -146,11 +145,11 @@ for (const message of [
 }
 
 test("partial promotion retry fills only absent references", async (t) => {
-  const fake = await fakeDocker(t, { refs: { [`${api}:${version}`]: digestA, [`${api}:${commit}`]: digestA, [`${web}:${version}`]: digestB } });
+  const fake = await fakeDocker(t, { refs: { [`${api}:${version}`]: digestA } });
   const result = run(promoteArgs(fake.executable), fake.env);
   assert.equal(result.status, 0, result.stderr);
   const creates = (await stateOf(fake.statePath)).log.filter((args) => args.slice(0, 4).join(" ") === "buildx imagetools create --tag");
-  assert.deepEqual(creates.map((args) => args[4]), [`${web}:${commit}`]);
+  assert.deepEqual(creates.map((args) => args[4]), [`${web}:${version}`]);
 });
 
 test("anonymous verification checks candidate tags and exact multi-platform digests", async (t) => {
