@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const summarizer = path.join(repoRoot, "scripts/summarize-fnos-gateway-scan.mjs");
-const reference = "ghcr.1ms.run/luoshuai990529/sag-gateway:1.4.0-fnos.8@sha256:758f0377a23257333a8957eb5d1f67ccc4b84dfc8a5c3f939e440b087076453c";
+const reference = "ghcr.io/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:758f0377a23257333a8957eb5d1f67ccc4b84dfc8a5c3f939e440b087076453c";
 const expectedTarget = `${reference} (alpine 3.24.1)`;
 
 function validPackage(overrides = {}) {

@@ -7,8 +7,8 @@ import { validateChannelImages } from "./fnos-registry-channel.mjs";
 
 const revisionPattern = /^[a-f0-9]{40}$/;
 const sha256Pattern = /^[a-f0-9]{64}$/;
-const versionPattern = /^1\.4\.0-fnos\.\d+$/;
-const workflowUrlPattern = /^https:\/\/github\.com\/luoshuai990529\/SAG\/actions\/runs\/\d+$/;
+const versionPattern = /^1\.\d+\.\d+-fnos\.\d+$/;
+const workflowUrlPattern = /^https:\/\/github\.com\/Zleap-AI\/SAG\/actions\/runs\/\d+$/;
 
 function fail(message) {
   throw new Error(`fnos-release-manifest: ${message}`);
@@ -31,7 +31,7 @@ export function validateReleaseManifest(value) {
   if (manifest.schema_version !== 1) fail("schema_version must be 1");
   if (manifest.appname !== "sag") fail("appname must be sag");
   if (typeof manifest.version !== "string" || !versionPattern.test(manifest.version)) {
-    fail("version must match 1.4.0-fnos.<number>");
+    fail("version must match <major>.<minor>.<patch>-fnos.<number>");
   }
   if (typeof manifest.revision !== "string" || !revisionPattern.test(manifest.revision)) {
     fail("revision must be a lowercase 40-character commit SHA");

@@ -9,14 +9,14 @@ import {
 
 const digest = "sha256:758f0377a23257333a8957eb5d1f67ccc4b84dfc8a5c3f939e440b087076453c";
 const revision = "ccdab6c99ae2e2fc53a144dc68d6b8f44163adf2";
-const reference = `ghcr.1ms.run/luoshuai990529/sag-gateway:1.4.0-fnos.8@${digest}`;
+const reference = `ghcr.io/zleap-ai/sag-gateway:1.4.0-fnos.8@${digest}`;
 const expectedTarget = `${reference} (alpine 3.24.1)`;
 
 function reviewedPolicy(overrides = {}) {
   return {
     schemaVersion: 1,
     image: {
-      repository: "ghcr.1ms.run/luoshuai990529/sag-gateway",
+      repository: "ghcr.io/zleap-ai/sag-gateway",
       tag: "1.4.0-fnos.8",
       upstreamTag: "1.30.4-alpine",
       indexDigest: digest,
@@ -97,7 +97,7 @@ test("rejects an arbitrary Nginx digest that was not reviewed", () => {
   assert.throws(
     () => validateGatewayImageReference(
       reviewedPolicy(),
-      `ghcr.1ms.run/luoshuai990529/sag-gateway:1.4.0-fnos.8@sha256:${"f".repeat(64)}`,
+      `ghcr.io/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:${"f".repeat(64)}`,
     ),
     /reviewed gateway reference/i,
   );

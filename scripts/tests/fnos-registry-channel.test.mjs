@@ -8,14 +8,14 @@ const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const script = path.join(repoRoot, "scripts/fnos-registry-channel.mjs");
 const digest = `sha256:${"a".repeat(64)}`;
 
-function run(channel, api = `ghcr.1ms.run/luoshuai990529/sag-api@${digest}`, prefix) {
+function run(channel, api = `ghcr.io/zleap-ai/sag-api@${digest}`, prefix) {
   return spawnSync(process.execPath, [
     script,
     "validate",
     "--channel", channel,
     "--api-image", api,
-    "--web-image", `ghcr.1ms.run/luoshuai990529/sag-web@${digest}`,
-    "--gateway-image", `ghcr.1ms.run/luoshuai990529/sag-gateway:1.4.0-fnos.8@${digest}`,
+    "--web-image", `ghcr.io/zleap-ai/sag-web@${digest}`,
+    "--gateway-image", `ghcr.io/zleap-ai/sag-gateway:1.4.0-fnos.8@${digest}`,
     ...(prefix ? ["--cn-repository-prefix", prefix] : []),
   ], { cwd: repoRoot, encoding: "utf8" });
 }
@@ -29,6 +29,17 @@ test("global channel rejects an arbitrary registry even with a digest", () => {
   const result = run("global", `registry.example/sag-api@${digest}`);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /global.*api|approved/i);
+});
+
+test("global channel rejects legacy personal and proxy registry references", () => {
+  for (const image of [
+    `ghcr.io/luoshuai990529/sag-api@${digest}`,
+    `ghcr.1ms.run/luoshuai990529/sag-api@${digest}`,
+  ]) {
+    const result = run("global", image);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /global.*api|approved/i);
+  }
 });
 
 test("cn channel rejects publication until an approved repository prefix is supplied", () => {

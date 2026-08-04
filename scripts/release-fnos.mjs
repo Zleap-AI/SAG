@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { validateChannelConfiguration, validateChannelImages } from "./fnos-registry-channel.mjs";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-const versionPattern = /^1\.4\.0-fnos\.\d+$/;
+const versionPattern = /^1\.\d+\.\d+-fnos\.\d+$/;
 const releaseBranch = process.env.FNOS_RELEASE_BRANCH ?? "fnos/develop";
 const releaseRepository = process.env.FNOS_RELEASE_REPOSITORY ?? "Zleap-AI/SAG";
 
@@ -56,7 +56,7 @@ async function prepare(options) {
   const candidateRunId = requireOption(options, "candidate_run_id");
   const cnRepositoryPrefix = options.cn_repository_prefix;
   const output = path.resolve(requireOption(options, "output"));
-  if (!versionPattern.test(version)) fail("--version must match 1.4.0-fnos.<number>");
+  if (!versionPattern.test(version)) fail("--version must match <major>.<minor>.<patch>-fnos.<number>");
   if (channel !== "global" && channel !== "cn") fail("--channel must be global or cn");
   validateChannelConfiguration({ channel, cnRepositoryPrefix });
   if (!/^\d+$/.test(candidateRunId)) fail("--candidate-run-id must be numeric");
