@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { validateChannelConfiguration, validateChannelImages } from "./fnos-registry-channel.mjs";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-const versionPattern = /^1\.4\.0-fnos\.\d+$/;
+const versionPattern = /^1\.\d+\.\d+-fnos\.\d+$/;
 const releaseBranch = process.env.FNOS_RELEASE_BRANCH ?? "fnos/develop";
 const releaseRepository = process.env.FNOS_RELEASE_REPOSITORY ?? "Zleap-AI/SAG";
 
@@ -50,22 +50,43 @@ function readPackageVersion() {
   return match[1];
 }
 
+function assertReleaseRevision() {
+  const revision = git("rev-parse", "HEAD");
+  const branch = git("branch", "--show-current");
+  const remoteRef = `origin/${releaseBranch}`;
+  const remote = spawnSync("git", ["rev-parse", "--verify", remoteRef], { cwd: repoRoot, encoding: "utf8" });
+  if (remote.status === 0) {
+    if (remote.stdout.trim() !== revision) fail(`HEAD must match ${remoteRef}`);
+    return revision;
+  }
+  if (branch !== releaseBranch) fail(`must run from ${releaseBranch} or its detached remote revision`);
+  return revision;
+}
+
+function buildMetadata() {
+  const builtAtUtc = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  return {
+    build_id: builtAtUtc.replace(/[-:T]/g, "").replace("Z", "Z").replace(/(\d{8})(\d{6}Z)$/, "$1.$2"),
+    built_at_utc: builtAtUtc,
+    source_branch: releaseBranch,
+  };
+}
+
 async function prepare(options) {
   const version = requireOption(options, "version");
   const channel = requireOption(options, "channel");
   const candidateRunId = requireOption(options, "candidate_run_id");
   const cnRepositoryPrefix = options.cn_repository_prefix;
   const output = path.resolve(requireOption(options, "output"));
-  if (!versionPattern.test(version)) fail("--version must match 1.4.0-fnos.<number>");
+  if (!versionPattern.test(version)) fail("--version must match <major>.<minor>.<patch>-fnos.<number>");
   if (channel !== "global" && channel !== "cn") fail("--channel must be global or cn");
   validateChannelConfiguration({ channel, cnRepositoryPrefix });
   if (!/^\d+$/.test(candidateRunId)) fail("--candidate-run-id must be numeric");
-  if (git("branch", "--show-current") !== releaseBranch) fail(`must run from ${releaseBranch}`);
+  const revision = assertReleaseRevision();
   if (git("status", "--porcelain", "--untracked-files=no") !== "") fail("tracked worktree changes must be committed before release prepare");
   if (readPackageVersion() !== version) fail("--version must match packages/fnos/sag/manifest");
   if (existsSync(output)) fail("--output must not already exist");
   await mkdir(path.dirname(output), { recursive: true });
-  const revision = git("rev-parse", "HEAD");
   const releaseInput = {
     schema_version: 1,
     appname: "sag",
@@ -73,6 +94,7 @@ async function prepare(options) {
     channel,
     ...(channel === "cn" ? { cn_repository_prefix: cnRepositoryPrefix } : {}),
     revision,
+    ...buildMetadata(),
     candidate_tag: `fnos-candidate-${version}-${revision.slice(0, 12)}`,
     candidate_workflow: {
       run_id: candidateRunId,

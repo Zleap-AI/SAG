@@ -1,5 +1,5 @@
 appname               = sag
-version               = 1.4.0-fnos.8
+version               = 1.5.0-fnos.1
 display_name          = SAG知识库
 desc                  = Self-hosted AI knowledge base and research workspace
 platform              = all

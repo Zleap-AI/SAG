@@ -82,7 +82,7 @@ export function validateGatewayPolicy(policy, now = new Date()) {
   invariant(policy.schemaVersion === 1, "schemaVersion must be 1");
 
   const { image, requiredPlatforms, review, vulnerabilityGate } = policy;
-  invariant(image?.repository === "ghcr.1ms.run/luoshuai990529/sag-gateway", "repository must be ghcr.1ms.run/luoshuai990529/sag-gateway");
+  invariant(image?.repository === "ghcr.1ms.run/zleap-ai/sag-gateway", "repository must be ghcr.1ms.run/zleap-ai/sag-gateway");
   invariant(typeof image.tag === "string" && image.tag.length > 0, "tag is required");
   invariant(typeof image.upstreamTag === "string" && image.upstreamTag.length > 0, "upstreamTag is required");
   invariant(digestPattern.test(image.indexDigest), "indexDigest must be an exact lowercase sha256 digest");

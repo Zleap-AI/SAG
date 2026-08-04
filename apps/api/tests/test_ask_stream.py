@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -106,12 +107,28 @@ class WebSearchFixtureTool(HostTool):
 
 async def _setup(c):
     r = await c.post(
-        "/api/v1/auth/register", json={"email": f"stream{id(c)}@t.com", "password": "password123"}
+        "/api/v1/auth/register",
+        json={"email": f"stream-{uuid4().hex}@t.com", "password": "password123"},
     )
+    assert r.status_code == 201, r.text
     H = {"Authorization": f"Bearer {r.json()['access_token']}"}
     a = (await c.get("/api/v1/agents/default", headers=H)).json()
     th = (await c.post(f"/api/v1/agents/{a['id']}/threads", headers=H, json={})).json()
     return H, a, th
+
+
+@pytest.mark.asyncio
+async def test_setup_uses_distinct_registration_credentials_for_each_call():
+    """共享测试数据库时，初始化辅助函数不能依赖可复用的对象 id。"""
+    from sag_api.main import app
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://t", timeout=60) as c:
+            first, _, _ = await _setup(c)
+            second, _, _ = await _setup(c)
+
+    assert first != second
 
 
 def test_ask_request_web_switch_defaults_off_and_accepts_legacy_field():

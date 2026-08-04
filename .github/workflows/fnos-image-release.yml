@@ -15,7 +15,7 @@ permissions:
 jobs:
   candidate:
     name: Verify reviewed candidate metadata
-    if: github.repository == 'luoshuai990529/SAG'
+    if: github.repository == 'Zleap-AI/SAG'
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.metadata.outputs.version }}
@@ -31,22 +31,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$GITHUB_REPOSITORY" = "luoshuai990529/SAG"
+          test "$GITHUB_REPOSITORY" = "Zleap-AI/SAG"
           test "$GITHUB_REF_TYPE" = "tag"
           test "$GITHUB_SHA" = "$(git rev-parse HEAD)"
           tag_revision="$(git rev-list -n 1 "${GITHUB_REF_NAME}^{commit}")"
           test "$GITHUB_SHA" = "$tag_revision"
-          remote_line="$(git ls-remote --heads origin feat/fnos-docker-app)"
+          remote_line="$(git ls-remote --heads origin fnos/develop)"
           read -r remote_revision remote_ref extra <<<"$remote_line"
           test -n "$remote_revision"
-          test "$remote_ref" = "refs/heads/feat/fnos-docker-app"
+          test "$remote_ref" = "refs/heads/fnos/develop"
           test -z "${extra:-}"
           test "$GITHUB_SHA" = "$remote_revision"
           appname=$(awk -F= '/^appname[[:space:]]*=/{gsub(/[[:space:]]/, "", $2); print $2}' packages/fnos/sag/manifest)
           version=$(awk -F= '/^version[[:space:]]*=/{gsub(/[[:space:]]/, "", $2); print $2}' packages/fnos/sag/manifest)
           test "$appname" = "sag"
           case "$version" in
-            1.4.0-fnos.[0-9]*) ;;
+            1.[0-9]*.[0-9]*-fnos.[0-9]*) ;;
             *) exit 1 ;;
           esac
           expected_tag="fnos-candidate-${version}-${GITHUB_SHA:0:12}"
@@ -215,11 +215,11 @@ jobs:
         include:
           - name: API
             context: ./apps/api
-            image: ghcr.io/luoshuai990529/sag-api
+            image: ghcr.io/zleap-ai/sag-api
             build_args: ""
           - name: Web
             context: ./apps/web
-            image: ghcr.io/luoshuai990529/sag-web
+            image: ghcr.io/zleap-ai/sag-web
             build_args: NEXT_PUBLIC_API_BASE=/
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -273,8 +273,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          api_digest="$(node scripts/fnos-release-registry.mjs verify-staging --docker docker --image ghcr.io/luoshuai990529/sag-api --staging-tag "$STAGING_TAG" --revision "$CANDIDATE_REVISION" --version "$CANDIDATE_VERSION")"
-          web_digest="$(node scripts/fnos-release-registry.mjs verify-staging --docker docker --image ghcr.io/luoshuai990529/sag-web --staging-tag "$STAGING_TAG" --revision "$CANDIDATE_REVISION" --version "$CANDIDATE_VERSION")"
+          api_digest="$(node scripts/fnos-release-registry.mjs verify-staging --docker docker --image ghcr.io/zleap-ai/sag-api --staging-tag "$STAGING_TAG" --revision "$CANDIDATE_REVISION" --version "$CANDIDATE_VERSION")"
+          web_digest="$(node scripts/fnos-release-registry.mjs verify-staging --docker docker --image ghcr.io/zleap-ai/sag-web --staging-tag "$STAGING_TAG" --revision "$CANDIDATE_REVISION" --version "$CANDIDATE_VERSION")"
           node scripts/fnos-release-registry.mjs write-handoff --api-digest "$api_digest" --web-digest "$web_digest" --github-output "$GITHUB_OUTPUT" --artifact verified-digests.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -295,8 +295,8 @@ jobs:
       contents: read
       packages: read
     env:
-      API_IMAGE: ghcr.io/luoshuai990529/sag-api@${{ needs.inspect-staging.outputs.api_digest }}
-      WEB_IMAGE: ghcr.io/luoshuai990529/sag-web@${{ needs.inspect-staging.outputs.web_digest }}
+      API_IMAGE: ghcr.io/zleap-ai/sag-api@${{ needs.inspect-staging.outputs.api_digest }}
+      WEB_IMAGE: ghcr.io/zleap-ai/sag-web@${{ needs.inspect-staging.outputs.web_digest }}
       SMOKE_SCOPE: release-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -344,7 +344,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/fnos-release-registry.mjs promote --docker docker --api-image ghcr.io/luoshuai990529/sag-api --web-image ghcr.io/luoshuai990529/sag-web --candidate-version "$CANDIDATE_VERSION" --commit-tag "$COMMIT_TAG" --api-digest "$API_DIGEST" --web-digest "$WEB_DIGEST"
+          node scripts/fnos-release-registry.mjs promote --docker docker --api-image ghcr.io/zleap-ai/sag-api --web-image ghcr.io/zleap-ai/sag-web --candidate-version "$CANDIDATE_VERSION" --commit-tag "$COMMIT_TAG" --api-digest "$API_DIGEST" --web-digest "$WEB_DIGEST"
 
   anonymous-postcheck:
     name: Verify public candidate tags and exact digests anonymously
@@ -367,8 +367,8 @@ jobs:
           set -euo pipefail
           node scripts/fnos-release-registry.mjs verify-public \
             --docker docker \
-            --api-image ghcr.io/luoshuai990529/sag-api \
-            --web-image ghcr.io/luoshuai990529/sag-web \
+            --api-image ghcr.io/zleap-ai/sag-api \
+            --web-image ghcr.io/zleap-ai/sag-web \
             --candidate-version "$CANDIDATE_VERSION" \
             --api-digest "$API_DIGEST" \
             --web-digest "$WEB_DIGEST"

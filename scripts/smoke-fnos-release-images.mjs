@@ -9,8 +9,8 @@ import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 
 const digest = "sha256:[a-f0-9]{64}";
-const apiReference = new RegExp(`^ghcr\\.io/luoshuai990529/sag-api@${digest}$`);
-const webReference = new RegExp(`^ghcr\\.io/luoshuai990529/sag-web@${digest}$`);
+const apiReference = new RegExp(`^ghcr\\.io/zleap-ai/sag-api@${digest}$`);
+const webReference = new RegExp(`^ghcr\\.io/zleap-ai/sag-web@${digest}$`);
 const staticAssetProbe = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
