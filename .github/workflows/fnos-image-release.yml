@@ -1,21 +1,21 @@
-name: fnOS Candidate Images
+name: fnOS Delivery internals
 
 on:
-  push:
-    branches: [fnos/develop]
-    paths:
-      - ".github/workflows/fnos-image-release.yml"
-      - ".github/workflows/fnos-release.yml"
-      - "apps/api/**"
-      - "apps/web/**"
-      - "packages/fnos/**"
-      - "scripts/fnos-*.mjs"
-      - "scripts/release-fnos.mjs"
-      - "scripts/validate-fnos-release.mjs"
-      - "scripts/smoke-fnos-release-images.mjs"
+  workflow_call:
+    inputs:
+      revision:
+        required: true
+        type: string
+    outputs:
+      api_digest:
+        value: ${{ jobs.inspect-staging.outputs.api_digest }}
+      web_digest:
+        value: ${{ jobs.inspect-staging.outputs.web_digest }}
+      gateway:
+        value: ${{ jobs.gateway-security.outputs.gateway }}
 
 concurrency:
-  group: fnos-candidate-${{ github.repository }}
+  group: fnos-delivery-images-${{ inputs.revision }}
   cancel-in-progress: false
 
 permissions:
@@ -33,23 +33,21 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.revision }}
           fetch-depth: 0
       - id: metadata
-        name: Verify repository, branch, manifest, and dedicated branch HEAD
+        name: Verify repository, revision, manifest, and dedicated branch HEAD
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = "Zleap-AI/SAG"
-          test "$GITHUB_REF_TYPE" = "branch"
-          test "$GITHUB_REF_NAME" = "fnos/develop"
-          test "$GITHUB_SHA" = "$(git rev-parse HEAD)"
+          test "${{ inputs.revision }}" = "$(git rev-parse HEAD)"
           remote_line="$(git ls-remote --heads origin fnos/develop)"
           read -r remote_revision remote_ref extra <<<"$remote_line"
           test -n "$remote_revision"
           test "$remote_ref" = "refs/heads/fnos/develop"
           test -z "${extra:-}"
-          test "$GITHUB_SHA" = "$remote_revision"
+          test "${{ inputs.revision }}" = "$remote_revision"
           appname=$(awk -F= '/^appname[[:space:]]*=/{gsub(/[[:space:]]/, "", $2); print $2}' packages/fnos/sag/manifest)
           version=$(awk -F= '/^version[[:space:]]*=/{gsub(/[[:space:]]/, "", $2); print $2}' packages/fnos/sag/manifest)
           test "$appname" = "sag"
@@ -58,8 +56,9 @@ jobs:
             *) exit 1 ;;
           esac
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
-          printf 'revision=%s\n' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
-          printf 'staging_tag=staging-fnos-%s-%s-%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          revision="${{ inputs.revision }}"
+          printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
+          printf 'staging_tag=staging-fnos-%s-%s-%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "${revision:0:12}" >> "$GITHUB_OUTPUT"
 
   quality:
     needs: candidate
@@ -73,6 +72,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    outputs:
+      gateway: ${{ steps.policy.outputs.gateway }}
     env:
       TRIVY_VERSION: "0.70.0"
       TRIVY_SHA256: "8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9"
@@ -81,12 +82,14 @@ jobs:
         with:
           ref: ${{ needs.candidate.outputs.revision }}
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
-      - name: Verify reviewed policy and raw OCI index
+      - id: policy
+        name: Verify reviewed policy and raw OCI index
         shell: bash
         run: |
           set -euo pipefail
           gateway_image="$(node scripts/fnos-gateway-policy.mjs verify --docker docker)"
           printf 'GATEWAY_IMAGE=%s\n' "$gateway_image" >> "$GITHUB_ENV"
+          printf 'gateway=%s\n' "$gateway_image" >> "$GITHUB_OUTPUT"
       - name: Install checksum-pinned Trivy
         shell: bash
         run: |
