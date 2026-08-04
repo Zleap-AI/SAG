@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,11 +14,6 @@ async function cleanCheckout(root, { detached = false } = {}) {
   const clone = path.join(root, "repository");
   const cloned = spawnSync("git", ["clone", "--no-hardlinks", repoRoot, clone], { encoding: "utf8" });
   assert.equal(cloned.status, 0, cloned.stderr);
-  await cp(script, path.join(clone, "scripts", "release-fnos.mjs"));
-  const staged = spawnSync("git", ["add", "scripts/release-fnos.mjs"], { cwd: clone, encoding: "utf8" });
-  assert.equal(staged.status, 0, staged.stderr);
-  const committed = spawnSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "test release script"], { cwd: clone, encoding: "utf8" });
-  assert.equal(committed.status, 0, committed.stderr);
   const remoteBranch = spawnSync("git", ["update-ref", "refs/remotes/origin/fnos/develop", "HEAD"], { cwd: clone, encoding: "utf8" });
   assert.equal(remoteBranch.status, 0, remoteBranch.stderr);
   const currentBranch = spawnSync("git", ["branch", "--show-current"], { cwd: clone, encoding: "utf8" }).stdout.trim();
