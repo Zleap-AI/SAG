@@ -42,3 +42,12 @@ test("fnOS release never publishes a dry-run package and only creates public ass
   assert.match(workflow, /fnos-release-manifest\.mjs validate/);
   assert.doesNotMatch(workflow, /upload-artifact/);
 });
+
+test("fnOS package output is created only by the package command", async () => {
+  const workflow = await readFile(workflowPath, "utf8");
+
+  assert.doesNotMatch(workflow, /mkdir -p release/);
+  assert.match(workflow, /--output release-input\.json/);
+  assert.match(workflow, /candidate-evidence\.json/);
+  assert.match(workflow, /--output release/);
+});

@@ -133,18 +133,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p release
           node scripts/release-fnos.mjs prepare \
             --version "$CANDIDATE_VERSION" \
             --channel global \
             --candidate-run-id "$CANDIDATE_RUN_ID" \
-            --output release/release-input.json
-          cat > release/candidate-evidence.json <<EOF
+            --output release-input.json
+          cat > candidate-evidence.json <<EOF
           {"api":"ghcr.1ms.run/zleap-ai/sag-api@${API_DIGEST}","web":"ghcr.1ms.run/zleap-ai/sag-web@${WEB_DIGEST}","gateway":"${GATEWAY_IMAGE}"}
           EOF
           node scripts/release-fnos.mjs package \
-            --input release/release-input.json \
-            --candidate-evidence release/candidate-evidence.json \
+            --input release-input.json \
+            --candidate-evidence candidate-evidence.json \
             --output release
           node scripts/fnos-release-manifest.mjs validate --input release/release-manifest.json
   publish-release:
@@ -182,18 +181,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p release
           node scripts/release-fnos.mjs prepare \
             --version "$CANDIDATE_VERSION" \
             --channel global \
             --candidate-run-id "$CANDIDATE_RUN_ID" \
-            --output release/release-input.json
-          cat > release/candidate-evidence.json <<EOF
+            --output release-input.json
+          cat > candidate-evidence.json <<EOF
           {"api":"ghcr.1ms.run/zleap-ai/sag-api@${API_DIGEST}","web":"ghcr.1ms.run/zleap-ai/sag-web@${WEB_DIGEST}","gateway":"${GATEWAY_IMAGE}"}
           EOF
           node scripts/release-fnos.mjs package \
-            --input release/release-input.json \
-            --candidate-evidence release/candidate-evidence.json \
+            --input release-input.json \
+            --candidate-evidence candidate-evidence.json \
             --output release
       - name: Create immutable GitHub Release assets
         env:
