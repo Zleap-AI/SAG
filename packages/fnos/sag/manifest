@@ -1,0 +1,14 @@
+appname               = sag
+version               = 1.4.0-fnos.8
+display_name          = SAG知识库
+desc                  = Self-hosted AI knowledge base and research workspace
+platform              = all
+os_min_version        = 1.2.0302
+source                = thirdparty
+maintainer            = Zleap AI
+distributor           = Zleap AI
+service_port          = 3080
+checkport             = true
+ctl_stop              = true
+desktop_uidir         = ui
+desktop_applaunchname = sag.Application

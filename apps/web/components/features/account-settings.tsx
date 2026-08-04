@@ -1,7 +1,7 @@
 "use client";
 
-import { LogOut } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { LogOut } from "lucide-react";
 
 import { useApp } from "@/components/features/app-shell";
 import { ArchivedThreadsCard } from "@/components/features/archived-threads-card";

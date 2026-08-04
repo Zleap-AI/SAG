@@ -58,6 +58,11 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 # 已存在的表需要补的新列（dev 轻量增量迁移；生产用 Alembic）。
 # create_all 只建新表、不改旧表，故对演进列做幂等 ADD COLUMN。
 _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
+    "users": {
+        "password_initialized": "BOOLEAN NOT NULL DEFAULT 0",
+        "auth_version": "INTEGER NOT NULL DEFAULT 0",
+        "auth_singleton": "INTEGER",
+    },
     "agents": {"is_default": "BOOLEAN NOT NULL DEFAULT 0"},
     "documents": {
         "progress": "INTEGER NOT NULL DEFAULT 0",
@@ -76,9 +81,31 @@ _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
 # idempotent for local/embedded upgrades; production deployments can express
 # the same DDL in their migration runner.
 _INDEX_UPGRADES = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_auth_singleton ON users (auth_singleton)",
     "CREATE INDEX IF NOT EXISTS ix_messages_thread_created_id ON messages (thread_id, created_at, id)",
     "CREATE INDEX IF NOT EXISTS ix_documents_source_sag_source ON documents (source_id, sag_source_id)",
 )
+
+
+async def _ensure_password_auth_singleton() -> None:
+    """Safely claim an existing sole user without deleting ambiguous legacy data."""
+    if settings.auth_mode != "password":
+        return
+    async with engine.begin() as conn:
+        rows = (
+            await conn.exec_driver_sql(
+                "SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 2"
+            )
+        ).all()
+        if len(rows) > 1:
+            raise RuntimeError(
+                "密码模式检测到多个旧用户；为保护数据未自动选择 owner，请先离线处理"
+            )
+        if rows:
+            await conn.exec_driver_sql(
+                "UPDATE users SET auth_singleton = 1 WHERE id = ?",
+                (rows[0][0],),
+            )
 
 
 async def _ensure_columns() -> None:
@@ -113,6 +140,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await _ensure_columns()
+    await _ensure_password_auth_singleton()
     await _ensure_indexes()
 
 

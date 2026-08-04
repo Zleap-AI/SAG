@@ -1,0 +1,10 @@
+{
+  "docker-project": {
+    "projects": [
+      {
+        "name": "sag",
+        "path": "docker"
+      }
+    ]
+  }
+}

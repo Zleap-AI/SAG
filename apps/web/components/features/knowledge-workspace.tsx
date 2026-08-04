@@ -25,6 +25,7 @@ import { useKnowledgeWorkspace } from "@/components/features/knowledge-provider"
 import { KnowledgeSourceWorkspace } from "@/components/features/knowledge-source-workspace";
 import { PageHeader } from "@/components/features/page-header";
 import { SourceCard } from "@/components/features/source-card";
+import { SourceIdCopy } from "@/components/features/source-id-copy";
 import { SourceCreateForm } from "@/components/features/source-create-form";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -34,35 +35,45 @@ import styles from "./knowledge-workspace.module.css";
 type View = "grid" | "list";
 type KnowledgeWorkspaceVariant = "normal" | "compact";
 
-function SourceRow({ source, first }: { source: Source; first: boolean }) {
+export function SourceRow({ source, first }: { source: Source; first: boolean }) {
   const t = useTranslations("Knowledge");
   const locale = useLocale();
   const { timezone } = useApp();
   return (
-    <Link
-      href={`/knowledge/${source.id}`}
+    <div
       className={cn(
-        "flex items-center gap-3 px-4 py-3 text-sm outline-none transition-colors hover:bg-muted/50 focus-visible:bg-muted/60",
+        "group/source relative flex items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/50 focus-within:bg-muted/60",
         !first && "border-t",
       )}
     >
-      <div className="grid size-9 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
+      <Link
+        href={`/knowledge/${source.id}`}
+        className="absolute inset-0 z-0 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        aria-label={source.name}
+      >
+        <span className="sr-only">{source.name}</span>
+      </Link>
+      <div className="pointer-events-none relative z-10 grid size-9 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
         <Layers className="size-4" />
       </div>
-      <div className="min-w-0 flex-1">
+      <div className="pointer-events-none relative z-10 min-w-0 flex-1">
         <div className="truncate font-medium">{source.name}</div>
         {source.description && (
           <div className="truncate text-xs text-muted-foreground">{source.description}</div>
         )}
       </div>
-      <div className="hidden shrink-0 items-center gap-4 text-xs tabular-nums text-muted-foreground sm:flex">
+      <SourceIdCopy
+        sourceId={source.id}
+        className="pointer-events-auto relative z-20 w-48 min-w-28 shrink sm:w-56"
+      />
+      <div className="pointer-events-none relative z-10 hidden shrink-0 items-center gap-4 text-xs tabular-nums text-muted-foreground sm:flex">
         <span>{t("documentsCount", { count: source.document_count })}</span>
         <span>{t("chunksCount", { count: source.chunk_count })}</span>
         <span>{t("eventsCount", { count: source.event_count })}</span>
         <span>{relativeTime(source.updated_at, timezone, locale)}</span>
       </div>
-      <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-    </Link>
+      <ChevronRight className="pointer-events-none relative z-10 size-4 shrink-0 text-muted-foreground" />
+    </div>
   );
 }
 

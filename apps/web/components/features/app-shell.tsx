@@ -10,7 +10,6 @@ import { motion } from "motion/react";
 import { toast } from "sonner";
 
 import { api, ApiError } from "@/lib/api";
-import { clearToken, getToken } from "@/lib/auth";
 import {
   APP_INITIALIZATION_DEFAULTS,
   dismissQuickModelSetup,
@@ -168,7 +167,7 @@ interface AppCtx {
   enterExploreMode: (section?: WorkspaceSection) => void;
   exitExploreMode: () => void;
   openSettings: (tab?: SettingsTab, section?: string) => void;
-  logout: () => void;
+  logout: () => Promise<void>;
   refreshCapabilities: () => Promise<void>;
   timezone: string;
   updateTimezone: (timezone: string) => Promise<void>;
@@ -195,7 +194,7 @@ const AppContext = React.createContext<AppCtx>({
   enterExploreMode: () => {},
   exitExploreMode: () => {},
   openSettings: () => {},
-  logout: () => {},
+  logout: async () => {},
   refreshCapabilities: async () => {},
   timezone: DEFAULT_TIME_ZONE,
   updateTimezone: async () => {},
@@ -533,10 +532,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     let alive = true;
     (async () => {
-      if (!getToken()) {
-        router.replace("/login");
-        return;
-      }
       try {
         const [u, c, a, setup] = await Promise.all([
           api.me(),
@@ -556,7 +551,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         loadThreadLimit(a, SIDEBAR_THREADS_PAGE_SIZE).catch(() => {});
       } catch (e) {
         if (e instanceof ApiError && e.status === 401) {
-          clearToken();
           router.replace("/login");
           return;
         }
@@ -586,10 +580,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [enterExploreMode]);
 
-  const logout = React.useCallback(() => {
-    clearToken();
-    router.replace("/login");
-  }, [router]);
+  const logout = React.useCallback(async () => {
+    try {
+      await api.resetSingleUser();
+      router.replace("/login");
+    } catch {
+      toast.error(t("logoutFailed"));
+    }
+  }, [router, t]);
 
   if (loading) return <FullLoader />;
   if (!user || !agent) return null;

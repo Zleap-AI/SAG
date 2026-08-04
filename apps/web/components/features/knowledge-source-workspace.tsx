@@ -35,10 +35,12 @@ export function KnowledgeSourceWorkspace({
   const {
     source,
     documents,
+    documentActivities,
     error,
     notFound,
     refreshing,
     refresh,
+    mutateDocument,
   } = useSourceContent(sourceId, active);
   const [screen, setScreen] = React.useState<SourceScreen>(initialScreen);
   const [documentId, setDocumentId] = React.useState<string | null>(null);
@@ -234,7 +236,8 @@ export function KnowledgeSourceWorkspace({
               <DocumentList
                 sourceId={sourceId}
                 documents={documents}
-                onChange={() => void refresh()}
+                activities={documentActivities}
+                onAction={mutateDocument}
                 variant="compact"
                 onOpenDocument={(document) => setDocumentId(document.id)}
               />

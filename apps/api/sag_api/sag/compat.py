@@ -14,6 +14,42 @@ from sag_api.core.logging import get_logger
 log = get_logger("sag.compat")
 
 
+def _llm_model_name(client: Any) -> str:
+    current = client
+    while current is not None:
+        model = getattr(getattr(current, "config", None), "model", None)
+        if isinstance(model, str) and model:
+            return model
+        current = getattr(current, "client", None)
+    return ""
+
+
+def _uses_deepseek(client: Any) -> bool:
+    return "deepseek" in _llm_model_name(client).rsplit("/", 1)[-1].casefold()
+
+
+def _is_json_schema_response_format_unsupported(error: Exception) -> bool:
+    """Only downgrade the known structured-output capability rejection."""
+    message = str(error).casefold()
+    return "response_format" in message and (
+        "unavailable" in message or "not support" in message or "unsupported" in message
+    )
+
+
+def _validate_response_schema(result: Any, schema: dict[str, Any]) -> None:
+    """Keep local validation when the provider only guarantees a JSON object."""
+    try:
+        import jsonschema
+    except ImportError:
+        expected_type = schema.get("type")
+        if expected_type == "object" and not isinstance(result, dict):
+            raise ValueError("响应类型不符合Schema: 期望 object") from None
+        if expected_type == "array" and not isinstance(result, list):
+            raise ValueError("响应类型不符合Schema: 期望 array") from None
+        return
+    jsonschema.validate(instance=result, schema=schema)
+
+
 def _without_required_field(node: dict[str, Any], field: str) -> bool:
     required = node.get("required")
     if not isinstance(required, list) or field not in required:
@@ -106,7 +142,27 @@ def install_zleap_sag_extract_compat() -> None:
         active_schema = schema
         if _looks_like_extract_response_schema(schema):
             active_schema = _relax_extract_schema(schema)
-        result = await current(self, messages, active_schema)
+        if _uses_deepseek(self.llm_client):
+            log.info("DeepSeek 固定使用 response_format=json_object")
+            result = await self.llm_client.chat_with_schema(
+                messages,
+                response_schema=None,
+                response_format={"type": "json_object"},
+            )
+            _validate_response_schema(result, active_schema)
+        else:
+            try:
+                result = await current(self, messages, active_schema)
+            except Exception as error:
+                if not _is_json_schema_response_format_unsupported(error):
+                    raise
+                log.warning("模型不支持 response_format=json_schema，降级为 json_object")
+                result = await self.llm_client.chat_with_schema(
+                    messages,
+                    response_schema=None,
+                    response_format={"type": "json_object"},
+                )
+                _validate_response_schema(result, active_schema)
         repaired = _repair_extract_response(result)
         if repaired:
             log.info("已兼容补齐 zleap-sag 事项抽取响应字段：%s", ", ".join(sorted(repaired)))

@@ -1,0 +1,123 @@
+name: sag
+
+x-sag-api-image: &sag-api-image "__SAG_API_IMAGE__"
+x-sag-lifecycle: &sag-lifecycle
+  profiles: ["lifecycle"]
+  image: *sag-api-image
+  entrypoint: ["python"]
+  user: "0:0"
+  network_mode: none
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  cap_add:
+    - DAC_OVERRIDE
+
+services:
+  api:
+    image: *sag-api-image
+    container_name: sag-api
+    env_file:
+      - "${TRIM_PKGETC}/sag.env"
+    environment:
+      SAG_ENVIRONMENT: prod
+      SAG_DEBUG: "false"
+      SAG_AUTH_MODE: single_user
+      SAG_CORS_ORIGINS: ""
+      SAG_ALLOW_REGISTRATION: "false"
+      SAG_DATABASE_URL: sqlite+aiosqlite:////data/sag.db
+      SAG_DATA_DIR: /data/engine
+      SAG_UPLOAD_DIR: /data/uploads
+      SAG_SAG_VECTOR_PROVIDER: lancedb
+      SAG_SAG_LANGUAGE: "${SAG_SAG_LANGUAGE:-zh}"
+      SAG_LLM_PROVIDER: "${SAG_LLM_PROVIDER:-openai}"
+      SAG_LLM_BASE_URL: "${SAG_LLM_BASE_URL-https://api.302ai.cn/v1}"
+      SAG_LLM_API_KEY: "${SAG_LLM_API_KEY:-}"
+      SAG_LLM_MODEL: "${SAG_LLM_MODEL:-qwen3.6-flash}"
+      SAG_LLM_MAX_TOKENS: "${SAG_LLM_MAX_TOKENS:-20000}"
+      SAG_LLM_TIMEOUT_MS: "${SAG_LLM_TIMEOUT_MS:-60000}"
+      SAG_LLM_MAX_RETRIES: "${SAG_LLM_MAX_RETRIES:-2}"
+      SAG_EMBEDDING_MODEL: "${SAG_EMBEDDING_MODEL:-bge-large-en-v1.5}"
+      SAG_EMBEDDING_BASE_URL: "${SAG_EMBEDDING_BASE_URL:-https://api.302ai.cn/v1}"
+      SAG_EMBEDDING_API_KEY: "${SAG_EMBEDDING_API_KEY:-}"
+      SAG_DOCUMENT_PARSER: "${SAG_DOCUMENT_PARSER:-auto}"
+      SAG_MINERU_BASE_URL: "${SAG_MINERU_BASE_URL:-https://api.302ai.cn}"
+      SAG_MINERU_API_KEY: "${SAG_MINERU_API_KEY:-}"
+      SAG_MINERU_VERSION: "${SAG_MINERU_VERSION:-2.5}"
+      SAG_JOB_CONCURRENCY: "1"
+      SAG_DOCUMENT_EXTRACT_CONCURRENCY: "2"
+      SAG_ENGINE_CACHE_SIZE: "4"
+      SAG_ENGINE_WARMUP_COUNT: "1"
+    volumes:
+      - "${TRIM_PKGVAR}/data:/data"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request,sys;
+          sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/system/ready').status==200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  lifecycle-size:
+    <<: *sag-lifecycle
+    volumes:
+      - "${TRIM_PKGVAR}/data:/data:ro"
+      - "${TRIM_APPDEST}/docker/lifecycle.py:/opt/sag-lifecycle.py:ro"
+
+  lifecycle-backup:
+    <<: *sag-lifecycle
+    volumes:
+      - "${TRIM_PKGVAR}/data:/data:ro"
+      - "${TRIM_PKGVAR}/backup:/backup"
+      - "${TRIM_APPDEST}/docker/lifecycle.py:/opt/sag-lifecycle.py:ro"
+
+  lifecycle-delete:
+    <<: *sag-lifecycle
+    volumes:
+      - "${TRIM_PKGVAR}/data:/data"
+      - "${TRIM_APPDEST}/docker/lifecycle.py:/opt/sag-lifecycle.py:ro"
+
+  web:
+    image: "__SAG_WEB_IMAGE__"
+    container_name: sag-web
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://localhost:3000').then(r => process.exit(r.status < 500 ? 0 : 1)).catch(() => process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  gateway:
+    image: "__SAG_NGINX_IMAGE__"
+    container_name: sag-gateway
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    ports:
+      - "${TRIM_SERVICE_PORT}:80"
+    volumes:
+      - "${TRIM_APPDEST}/docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped

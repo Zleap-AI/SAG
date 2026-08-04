@@ -16,7 +16,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sag_api.core.config import settings
 from sag_api.core.errors import ServiceUnavailableError, UpstreamError
 from sag_api.core.logging import get_logger
-from sag_api.enums import JobStatus, JobType
+from sag_api.db.models import Document
+from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs.control import JobPaused
 from sag_api.jobs.queue import JobQueue
 from sag_api.jobs.tasks import TASK_HANDLERS
@@ -27,6 +28,8 @@ log = get_logger("jobs")
 # 退避基数（秒）：第 n 次重试等待 base**n。测试可 monkeypatch 缩短。
 _BACKOFF_BASE_SECONDS = 2.0
 _RECOVERY_LOCK_RETRIES = 4
+_STOP_GRACE_SECONDS = 5.0
+_STOP_CANCEL_SECONDS = 1.0
 
 
 def _now() -> datetime:
@@ -36,6 +39,17 @@ def _now() -> datetime:
 def _is_retryable(exc: Exception) -> bool:
     """瞬时故障（限流/超时/上游暂不可用）可重试；输入/配置类错误不重试。"""
     return isinstance(exc, (ServiceUnavailableError, UpstreamError))
+
+
+async def _mark_document_waiting_retry(session, job) -> None:
+    """Keep a retryable document active without discarding its checkpoint."""
+    if not job.document_id:
+        return
+    document = await session.get(Document, job.document_id)
+    if document is None:
+        return
+    document.status = DocumentStatus.PENDING
+    document.error = None
 
 
 class InProcessAsyncQueue(JobQueue):
@@ -51,15 +65,19 @@ class InProcessAsyncQueue(JobQueue):
         self._concurrency = concurrency
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._workers: list[asyncio.Task] = []
+        self._active_workers: set[asyncio.Task] = set()
         self._retry_tasks: set[asyncio.Task] = set()
         self._universe_user_locks: dict[str, asyncio.Lock] = {}
         self._started = False
+        self._stopping = False
 
     async def enqueue(self, job_id: str) -> None:
         await self._queue.put(job_id)
 
     def _schedule_retry(self, job_id: str, delay: float) -> None:
         """退避后重新入队（不阻塞 worker）。"""
+        if self._stopping:
+            return
 
         async def _later() -> None:
             try:
@@ -76,6 +94,7 @@ class InProcessAsyncQueue(JobQueue):
         if self._started:
             return
         self._started = True
+        self._stopping = False
         try:
             # Recover before workers begin consuming so a failed startup cannot
             # leave detached workers holding database sessions.
@@ -90,20 +109,66 @@ class InProcessAsyncQueue(JobQueue):
         log.info("任务队列已启动（并发=%d）", self._concurrency)
 
     async def stop(self) -> None:
+        self._stopping = True
         retry_tasks = list(self._retry_tasks)
         for t in retry_tasks:
             t.cancel()
         if retry_tasks:
             await asyncio.gather(*retry_tasks, return_exceptions=True)
         self._retry_tasks.clear()
-        for w in self._workers:
+
+        workers = list(self._workers)
+        active_workers = {worker for worker in self._active_workers if not worker.done()}
+        idle_workers = [worker for worker in workers if worker not in active_workers]
+        for w in idle_workers:
             w.cancel()
-        for w in self._workers:
+        if idle_workers:
+            await asyncio.gather(*idle_workers, return_exceptions=True)
+
+        if active_workers:
+            _, pending = await asyncio.wait(
+                active_workers,
+                timeout=_STOP_GRACE_SECONDS,
+            )
+            if pending:
+                log.warning(
+                    "任务队列优雅停机超时（%.1fs），取消 %d 个仍在执行的任务",
+                    _STOP_GRACE_SECONDS,
+                    len(pending),
+                )
+                for worker in pending:
+                    worker.cancel()
+                stopped, live = await asyncio.wait(
+                    pending,
+                    timeout=_STOP_CANCEL_SECONDS,
+                )
+                if stopped:
+                    await asyncio.gather(*stopped, return_exceptions=True)
+                if live:
+                    # Fail before clearing worker state. The lifespan cleanup
+                    # sequence must not dispose shared engines or SQLite pools
+                    # underneath a task that ignored cancellation; the
+                    # container runtime remains the final termination boundary.
+                    log.error(
+                        "任务队列取消回收超时（%.1fs），仍有 %d 个 worker 未停止",
+                        _STOP_CANCEL_SECONDS,
+                        len(live),
+                    )
+                    raise RuntimeError(
+                        f"{len(live)} worker(s) did not stop after cancellation"
+                    )
+
+        # 不在停机阶段继续消费积压任务；数据库里的 QUEUED 记录会在下次启动时恢复。
+        while True:
             try:
-                await w
-            except asyncio.CancelledError:
-                pass
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            else:
+                self._queue.task_done()
+
         self._workers.clear()
+        self._active_workers.clear()
         self._universe_user_locks.clear()
         self._started = False
 
@@ -137,8 +202,14 @@ class InProcessAsyncQueue(JobQueue):
             log.info("恢复 %d 个未完成任务", len(rows))
 
     async def _worker_loop(self, idx: int) -> None:
-        while True:
+        while not self._stopping:
             job_id = await self._queue.get()
+            if self._stopping:
+                self._queue.task_done()
+                return
+            worker = asyncio.current_task()
+            if worker is not None:
+                self._active_workers.add(worker)
             try:
                 await self._run(job_id)
             except asyncio.CancelledError:
@@ -146,6 +217,8 @@ class InProcessAsyncQueue(JobQueue):
             except Exception:  # noqa: BLE001
                 log.exception("worker#%d 处理 job=%s 异常", idx, job_id)
             finally:
+                if worker is not None:
+                    self._active_workers.discard(worker)
                 self._queue.task_done()
 
     async def _run(self, job_id: str) -> None:
@@ -234,6 +307,7 @@ class InProcessAsyncQueue(JobQueue):
                         job.status = JobStatus.QUEUED
                         job.progress = 0.0
                         job.error = f"第 {attempts} 次失败，将重试：{msg}"
+                        await _mark_document_waiting_retry(session, job)
                         delay = _BACKOFF_BASE_SECONDS**attempts
                         self._schedule_retry(job_id, delay)
                         log.warning(

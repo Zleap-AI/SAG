@@ -18,6 +18,7 @@ from sag_api.core.errors import (
     ServiceUnavailableError,
     UpstreamError,
 )
+from sag_api.enums import DocumentStatus
 from sag_api.parsing import service
 from sag_api.parsing.mineru import MinerUClient, _assert_public_host, _interpret_poll_payload
 from sag_api.parsing.service import PreparedDocument
@@ -406,7 +407,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
         filename="original.pdf",
         storage_path="/uploads/original.pdf",
         status=None,
-        error=None,
+        error="previous attempt failed",
         chunk_count=0,
         event_count=0,
         progress=0,
@@ -435,6 +436,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
             pass
 
     prepared_calls: list[str] = []
+    stage_errors: list[tuple[str, str | None]] = []
 
     async def fake_prepare(path, settings, *, state=None, on_state=None):
         prepared_calls.append(path)
@@ -460,6 +462,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
             assert max_concurrency == tasks.settings.document_extract_concurrency
             assert document_title == "original"
             await on_stage("loading")
+            stage_errors.append(("loading", document.error))
             await on_checkpoint(
                 ProcessCheckpoint(
                     source_id="engine-doc",
@@ -471,6 +474,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
                 )
             )
             await on_stage("extracting")
+            stage_errors.append(("extracting", document.error))
             return ProcessOutcome(
                 source_id="engine-doc",
                 chunk_count=2,
@@ -485,6 +489,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
     await tasks.process_document(FakeSession(), job, engine_manager=engine)
 
     assert prepared_calls == ["/uploads/original.pdf"]
+    assert stage_errors == [("loading", None), ("extracting", None)]
     assert engine.seen_path.endswith(".md")
     assert document.status.value == "ready"
     assert document.chunk_count == 2 and document.event_count == 1
@@ -803,6 +808,38 @@ def test_mineru_pending_and_nested_failure_payloads_are_not_misclassified():
     }
     assert _interpret_poll_payload(nested_failure, "task-1") == ("failed", "bad pdf")
     assert _interpret_poll_payload("A0202", "task-1")[0] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_retryable_document_returns_to_pending_without_losing_checkpoint():
+    from sag_api.jobs import inproc
+
+    document = SimpleNamespace(
+        status=DocumentStatus.FAILED,
+        error="upstream timeout",
+        progress=64,
+        chunk_count=12,
+        event_count=7,
+        token_usage=9_000,
+        sag_source_id="derived-source",
+    )
+
+    class FakeSession:
+        async def get(self, _model, document_id):
+            assert document_id == "document-1"
+            return document
+
+    await inproc._mark_document_waiting_retry(
+        FakeSession(), SimpleNamespace(document_id="document-1")
+    )
+
+    assert document.status == DocumentStatus.PENDING
+    assert document.error is None
+    assert document.progress == 64
+    assert document.chunk_count == 12
+    assert document.event_count == 7
+    assert document.token_usage == 9_000
+    assert document.sag_source_id == "derived-source"
 
 
 @pytest.mark.asyncio

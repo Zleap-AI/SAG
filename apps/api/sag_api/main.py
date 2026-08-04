@@ -7,6 +7,8 @@ import os
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -35,13 +37,29 @@ _INSECURE_SECRETS = {
 }
 
 
+async def _shutdown_runtime(app: FastAPI) -> None:
+    """Stop components in dependency order without disposing under a live queue worker."""
+    await app.state.agent_runtime.stop()
+    await app.state.job_queue.stop()
+    await app.state.engine_manager.aclose_all()
+    await dispose_db()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging("DEBUG" if settings.debug else "INFO")
-    if settings.environment == "prod" and settings.secret_key in _INSECURE_SECRETS:
+    if settings.environment == "prod" and (
+        settings.secret_key in _INSECURE_SECRETS or len(settings.secret_key.encode("utf-8")) < 32
+    ):
         raise RuntimeError(
-            "生产环境禁止使用默认 SAG_SECRET_KEY。请设置强随机值（≥32 字节），例如：openssl rand -hex 32"
+            "生产环境的 SAG_SECRET_KEY 必须是强随机值（≥32 字节），例如：openssl rand -hex 32"
         )
+    if settings.environment == "prod" and settings.auth_mode == "password":
+        bootstrap_token = settings.auth_bootstrap_token.get_secret_value()
+        if len(bootstrap_token.encode("utf-8")) < 32:
+            raise RuntimeError("生产密码认证需要独立的强随机 SAG_AUTH_BOOTSTRAP_TOKEN（≥32 字节）")
+        if bootstrap_token == settings.secret_key:
+            raise RuntimeError("SAG_SECRET_KEY 与 SAG_AUTH_BOOTSTRAP_TOKEN 必须彼此独立")
     os.makedirs(settings.data_dir, exist_ok=True)
     os.makedirs(settings.upload_dir, exist_ok=True)
 
@@ -96,10 +114,7 @@ async def lifespan(app: FastAPI):
             warmup_task.cancel()
             with suppress(asyncio.CancelledError):
                 await warmup_task
-            await app.state.agent_runtime.stop()
-            await app.state.job_queue.stop()
-            await app.state.engine_manager.aclose_all()
-            await dispose_db()
+            await _shutdown_runtime(app)
         finally:
             uninstall_litellm_policy(litellm_policy)
 
@@ -172,6 +187,26 @@ def create_app() -> FastAPI:
             status_code=exc.status_code,
             content={"error": {"code": exc.code, "message": exc.message}},
         )
+
+    @app.exception_handler(RequestValidationError)
+    async def _handle_request_validation(
+        request: Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        if request.url.path in {
+            "/api/v1/auth/login",
+            "/api/v1/auth/register",
+        }:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": {
+                        "code": "unauthorized",
+                        "message": "身份验证失败",
+                    }
+                },
+            )
+        return await request_validation_exception_handler(request, exc)
 
     @app.exception_handler(Exception)
     async def _handle_unexpected(_request: Request, exc: Exception) -> JSONResponse:

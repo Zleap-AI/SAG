@@ -56,6 +56,16 @@ describe("app initialization", () => {
     expect(readInitialPetCollapsed(storage)).toBe(false);
   });
 
+  it("preserves an explicitly hidden assistant", () => {
+    const storage = memoryStorage({
+      [APP_INITIALIZATION_STORAGE_KEYS.petPresence]: "hidden",
+    });
+
+    expect(readInitialPetPresence(storage)).toBe("hidden");
+    expect(shouldShowPet("normal", "hidden")).toBe(false);
+    expect(shouldShowPet("explore", "hidden")).toBe(false);
+  });
+
   it("falls back from invalid values and migrates legacy workspace choices", () => {
     const invalid = memoryStorage({
       [APP_INITIALIZATION_STORAGE_KEYS.appMode]: "broken",
@@ -87,6 +97,8 @@ describe("app initialization", () => {
     expect(shouldShowPet("explore", "explore-only")).toBe(true);
     expect(shouldShowPet("normal", "always")).toBe(true);
     expect(shouldShowPet("normal", "explore-only")).toBe(false);
+    expect(shouldShowPet("normal", "hidden")).toBe(false);
+    expect(shouldShowPet("explore", "hidden")).toBe(false);
   });
 
   it("uses friendly defaults when browser storage is unavailable", () => {
@@ -117,6 +129,8 @@ describe("app initialization", () => {
 
     expect(readInitialAppState(storage)).toEqual({ mode: "explore", section: "knowledge" });
     expect(readInitialPetPresence(storage)).toBe("explore-only");
+    persistPetPresence(storage, "hidden");
+    expect(readInitialPetPresence(storage)).toBe("hidden");
     expect(readInitialPetCollapsed(storage)).toBe(false);
   });
 

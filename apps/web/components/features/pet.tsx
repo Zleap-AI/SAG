@@ -59,6 +59,7 @@ import {
 import { cn } from "@/lib/utils";
 import type { WorkspaceSection } from "@/lib/workspace";
 import { useApp } from "@/components/features/app-shell";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   useOptionalConversationIndex,
   useOptionalConversationSession,
@@ -186,6 +187,7 @@ function usePetActivity() {
 interface PetProps {
   ambient?: boolean;
   character?: PetAgent;
+  onHide?: () => void;
   syncIdentity?: boolean;
   visible?: boolean;
 }
@@ -197,9 +199,9 @@ interface PetRoamPath {
 
 export function PetWithPreference(props: Omit<PetProps, "visible">) {
   const { appMode } = useApp();
-  const [presence] = usePetPresence();
+  const [presence, setPresence] = usePetPresence();
   const visible = shouldShowPet(appMode, presence);
-  return <Pet {...props} visible={visible} />;
+  return <Pet {...props} visible={visible} onHide={() => setPresence("hidden")} />;
 }
 
 interface PetActionButtonProps {
@@ -219,7 +221,8 @@ interface PetActionButtonProps {
     | "roam"
     | "dance"
     | "collapse"
-    | "expand";
+    | "expand"
+    | "hide";
 }
 
 function PetActionButton({
@@ -252,6 +255,7 @@ function PetActionButton({
 export function Pet({
   ambient = false,
   character: providedCharacter,
+  onHide,
   syncIdentity,
   visible = true,
 }: PetProps = {}) {
@@ -290,6 +294,7 @@ export function Pet({
   const [revealing, setRevealing] = React.useState(false);
   const [curious, setCurious] = React.useState(false);
   const [petOverlay, setPetOverlay] = React.useState<"none" | "actions">("none");
+  const [hideConfirmationOpen, setHideConfirmationOpen] = React.useState(false);
   const [roamPath, setRoamPath] = React.useState<PetRoamPath | null>(null);
   const { preferences: appearance } = usePetAppearancePreferences();
   const dragRef = React.useRef<{
@@ -1154,7 +1159,17 @@ export function Pet({
   if (!visible) return null;
 
   return (
-    <div
+    <>
+      <ConfirmDialog
+        open={hideConfirmationOpen}
+        onOpenChange={setHideConfirmationOpen}
+        title={t("hide.title")}
+        description={t("hide.description")}
+        confirmLabel={t("hide.confirm")}
+        destructive={false}
+        onConfirm={() => onHide?.()}
+      />
+      <div
       ref={elRef}
       className={cn(
         "sag-pet-shell group/pet fixed z-40 block select-none",
@@ -1382,6 +1397,15 @@ export function Pet({
             >
               <SlidersHorizontal />
             </PetActionButton>
+            {onHide && (
+              <PetActionButton
+                slot="hide"
+                label={t("toolbar.hide")}
+                onClick={() => setHideConfirmationOpen(true)}
+              >
+                <X />
+              </PetActionButton>
+            )}
           </div>
         )}
 
@@ -1453,6 +1477,15 @@ export function Pet({
                 >
                   <WandSparkles />
                 </PetActionButton>
+                {onHide && (
+                  <PetActionButton
+                    slot="hide"
+                    label={t("toolbar.hide")}
+                    onClick={() => setHideConfirmationOpen(true)}
+                  >
+                    <X />
+                  </PetActionButton>
+                )}
               </>
             )}
           </div>
@@ -1623,6 +1656,7 @@ export function Pet({
           </div>
         )}
       </motion.div>
-    </div>
+      </div>
+    </>
   );
 }

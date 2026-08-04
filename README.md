@@ -24,6 +24,10 @@
   Built on the state-of-the-art SAG architecture, it turns scattered documents and data into knowledge that is searchable, connected, and traceable.
 </p>
 
+> **fnOS development branch**
+>
+> This branch is the long-lived fnOS adaptation line. It is maintained as `fnos/develop` and is **not merged back into `main`**. For the ordinary SAG project, use [`main`](https://github.com/Zleap-AI/SAG/tree/main).
+
 https://github.com/user-attachments/assets/9bb618e9-fef8-4d07-8a30-3f7d83beb0ff
 
 ## Contents
@@ -31,10 +35,51 @@ https://github.com/user-attachments/assets/9bb618e9-fef8-4d07-8a30-3f7d83beb0ff
 <p align="center">
   <a href="#community">Community</a> ·
   <a href="#project">Project</a> ·
+  <a href="#fnos">fnOS</a> ·
   <a href="#technology">Technology</a> ·
   <a href="#user-guide">User Guide</a> ·
   <a href="#developer-guide">Developer Guide</a>
 </p>
+
+---
+
+<a id="fnos"></a>
+
+## fnOS Docker application
+
+This branch packages SAG as a fnOS Docker application. Its external entry is the fnOS desktop card or port `3080`; users do not need to configure a separate API or Web port.
+
+```text
+fnOS desktop / :3080
+        │
+  sag-gateway (Nginx)
+    ├── /       → sag-web
+    └── /api,/mcp → sag-api → /data
+```
+
+- **API, Web, and Gateway** run as three Compose services. API port `8000` and Web port `3000` are internal-only; the Gateway is the sole host-facing service.
+- **Persistent data** is mounted at `${TRIM_PKGVAR}/data`, containing SQLite, LanceDB, source uploads, and indexes as one recovery unit. The lifecycle hooks retain data on ordinary uninstall and take a full cold backup before an upgrade.
+- **Single-user local mode** starts without password, bootstrap token, or login verification. A display name may be recorded for an empty workspace, but it is not an authentication credential.
+- **Runtime images** are pinned by immutable digest in each FPK. Never replace a shipped image behind a mutable tag such as `latest`.
+
+### fnOS maintenance rules
+
+1. Keep fnOS-only work on `fnos/develop`; changes from `main` flow into this branch through a reviewed PR and fnOS regression tests, never in the reverse direction.
+2. Keep the package contract synchronized: `packages/fnos/sag/manifest`, `app/ui/config`, Compose port mapping, lifecycle scripts, and packaging tests must agree on the same application name and service port.
+3. Treat `/data` as an indivisible compatibility boundary. Schema, migration, backup, restore, upgrade, uninstall, and container-rebuild changes require corresponding lifecycle tests.
+4. Build candidate images before an FPK, verify the exact API/Web/Gateway digests for both supported image architectures, then create the package and checksum from those digests.
+5. Do not commit generated FPK files, checksums, local image archives, or one-off test evidence under `dist/`. Publish reviewed release assets from the release workflow instead.
+
+The relevant ownership boundaries are:
+
+| Area | Source of truth |
+| --- | --- |
+| fnOS app manifest, desktop entry, lifecycle, Compose | `packages/fnos/sag/` |
+| Local fnOS Compose smoke environment | `compose.fnos.yaml`, `deploy/fnos/` |
+| Package, image-policy, release validation | `scripts/build-fnos-package.mjs`, `scripts/validate-fnos-release.mjs`, `scripts/release-fnos.mjs` |
+| Candidate image build and scan | `.github/workflows/fnos-image-release.yml` |
+
+> The current registry references remain transitional while the image namespace moves from the personal account to the `Zleap-AI` organization. New release work must complete that migration before an App Center production submission.
 
 ---
 

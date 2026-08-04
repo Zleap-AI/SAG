@@ -19,7 +19,6 @@ os.environ["SAG_EMBEDDING_API_KEY"] = ""
 os.environ["SAG_MINERU_API_KEY"] = ""
 os.environ["SAG_MINERU_BASE_URL"] = ""
 
-
 @pytest.fixture(autouse=True)
 async def _isolate_persisted_jobs():
     """A test must not recover queued jobs created by an earlier app lifespan."""

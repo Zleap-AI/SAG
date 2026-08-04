@@ -21,6 +21,7 @@ import { useApp } from "@/components/features/app-shell";
 import { DocumentList } from "@/components/features/document-list";
 import { EmptyState } from "@/components/features/empty-state";
 import { RetrievalTestDialog } from "@/components/features/retrieval-test-dialog";
+import { SourceIdCopy } from "@/components/features/source-id-copy";
 import { SourceGraph } from "@/components/features/source-graph";
 import { SyncPanel } from "@/components/features/sync-panel";
 import { UploadZone } from "@/components/features/upload-zone";
@@ -50,7 +51,14 @@ export default function SourceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { capabilities } = useApp();
-  const { source, documents, refresh, notFound } = useSourceContent(id);
+  const {
+    source,
+    documents,
+    documentActivities,
+    refresh,
+    mutateDocument,
+    notFound,
+  } = useSourceContent(id);
   const [contentView, setContentView] = React.useState<ContentView>("list");
   const graphViewActive = contentView !== "list";
 
@@ -106,6 +114,10 @@ export default function SourceDetailPage() {
                 })}
                 {source.description ? ` · ${source.description}` : ""}
               </p>
+              <SourceIdCopy
+                sourceId={source.id}
+                className="mt-3 w-fit max-w-full sm:min-w-80"
+              />
             </>
           ) : (
             <Skeleton className="h-8 w-48" />
@@ -276,7 +288,8 @@ export default function SourceDetailPage() {
             <DocumentList
               sourceId={id}
               documents={documents}
-              onChange={refresh}
+              activities={documentActivities}
+              onAction={mutateDocument}
             />
           )}
         </div>

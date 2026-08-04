@@ -18,6 +18,7 @@ import type {
   KnowledgeMcpDescriptor,
   Persona,
   SearchResponse,
+  SingleUserSession,
   Source,
   SourceGraphResponse,
   SourceMcpDescriptor,
@@ -37,6 +38,7 @@ import type {
 /** 浏览器通过局域网 IP 打开前端时，自动将 API 指向同主机 8000 端口。 */
 function resolveApiBase(): string {
   const configured = process.env.NEXT_PUBLIC_API_BASE;
+  if (configured === "/") return "";
   if (typeof window !== "undefined") {
     const { protocol, hostname } = window.location;
     const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1";
@@ -412,12 +414,25 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
 
 export const api = {
   // auth / system
+  singleUserSession: () => request<SingleUserSession>("/api/v1/auth/session"),
+  initializeSingleUser: (name: string) =>
+    request<SingleUserSession>("/api/v1/auth/session", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  resetSingleUser: () =>
+    request<void>("/api/v1/auth/session", { method: "DELETE" }),
   register: (b: { email: string; password: string; name?: string }) =>
     request<TokenResponse>("/api/v1/auth/register", {
       method: "POST",
       body: JSON.stringify(b),
     }),
-  login: (b: { name: string; email?: string; password?: string }) =>
+  login: (b: {
+    name: string;
+    email?: string;
+    password?: string;
+    bootstrap_token?: string;
+  }) =>
     request<TokenResponse>("/api/v1/auth/login", {
       method: "POST",
       body: JSON.stringify(b),
@@ -542,15 +557,15 @@ export const api = {
     });
   },
   reprocessDocument: (sid: string, did: string) =>
-    request(`/api/v1/sources/${sid}/documents/${did}/reprocess`, {
+    request<BackgroundJob>(`/api/v1/sources/${sid}/documents/${did}/reprocess`, {
       method: "POST",
     }),
   pauseDocument: (sid: string, did: string) =>
-    request(`/api/v1/sources/${sid}/documents/${did}/pause`, {
+    request<BackgroundJob>(`/api/v1/sources/${sid}/documents/${did}/pause`, {
       method: "POST",
     }),
   resumeDocument: (sid: string, did: string) =>
-    request(`/api/v1/sources/${sid}/documents/${did}/resume`, {
+    request<BackgroundJob>(`/api/v1/sources/${sid}/documents/${did}/resume`, {
       method: "POST",
     }),
   deleteDocument: (sid: string, did: string) =>
