@@ -97,7 +97,6 @@ test("package rejects candidate evidence that is not pinned to approved registri
     version: "1.5.0-fnos.1",
     channel: "global",
     revision: "a".repeat(40),
-    candidate_tag: "fnos-candidate-1.5.0-fnos.1-aaaaaaaaaaaa",
     candidate_workflow: { run_id: "30798626087", url: "https://github.com/Zleap-AI/SAG/actions/runs/30798626087" },
   }));
   await writeFile(evidence, JSON.stringify({

@@ -20,7 +20,6 @@ function validManifest() {
     build_id: "20260804.112701Z",
     built_at_utc: "2026-08-04T11:27:01Z",
     source_branch: "fnos/develop",
-    candidate_tag: "fnos-candidate-1.5.0-fnos.1-aaaaaaaaaaaa",
     candidate_workflow: {
       run_id: "30798626087",
       url: "https://github.com/Zleap-AI/SAG/actions/runs/30798626087",
@@ -60,13 +59,12 @@ test("release manifest accepts a complete global immutable release record", asyn
 test("release manifest rejects mutable image tags and inconsistent identity fields", async (t) => {
   const manifest = validManifest();
   manifest.images.api = "ghcr.1ms.run/zleap-ai/sag-api:1.5.0-fnos.1";
-  manifest.candidate_tag = "fnos-candidate-1.4.0-fnos.6-aaaaaaaaaaaa";
   manifest.fpk.filename = "sag-1.4.0-fnos.8.fpk";
   const input = await withManifest(t, manifest);
   const result = validate(input);
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /immutable|candidate tag|filename/i);
+  assert.match(result.stderr, /immutable|filename/i);
 });
 
 test("release manifest rejects missing or malformed build provenance", async (t) => {

@@ -45,9 +45,6 @@ export function validateReleaseManifest(value) {
     fail("built_at_utc must be an RFC3339 UTC timestamp with second precision");
   }
   if (manifest.source_branch !== "fnos/develop") fail("source_branch must be fnos/develop");
-  const expectedCandidateTag = `fnos-candidate-${manifest.version}-${manifest.revision.slice(0, 12)}`;
-  if (manifest.candidate_tag !== expectedCandidateTag) fail("candidate tag must match version and revision");
-
   const workflow = requireObject(manifest.candidate_workflow, "candidate_workflow");
   if (typeof workflow.run_id !== "string" || !/^\d+$/.test(workflow.run_id)) fail("candidate workflow run_id must be numeric");
   if (typeof workflow.url !== "string" || !workflowUrlPattern.test(workflow.url)) fail("candidate workflow URL is invalid");

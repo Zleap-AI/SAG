@@ -95,7 +95,6 @@ async function prepare(options) {
     ...(channel === "cn" ? { cn_repository_prefix: cnRepositoryPrefix } : {}),
     revision,
     ...buildMetadata(),
-    candidate_tag: `fnos-candidate-${version}-${revision.slice(0, 12)}`,
     candidate_workflow: {
       run_id: candidateRunId,
       url: `https://github.com/${releaseRepository}/actions/runs/${candidateRunId}`,
