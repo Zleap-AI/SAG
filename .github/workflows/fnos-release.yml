@@ -1,0 +1,50 @@
+name: fnOS Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Build verification mode
+        required: true
+        default: dry-run
+        type: choice
+        options: [dry-run, publish]
+      publish_confirmation:
+        description: Required only for publish; type PUBLISH
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: fnos-release-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  verify-release-request:
+    name: Verify fnOS release request
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fnos/develop
+          fetch-depth: 0
+      - name: Require the permanent fnOS branch and explicit publish confirmation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/fnos/develop)"
+          manifest_version="$(awk -F= '/^version[[:space:]]*=/{gsub(/[[:space:]]/, "", $2); print $2}' packages/fnos/sag/manifest)"
+          case "$manifest_version" in
+            [0-9]*.[0-9]*.[0-9]*-fnos.[0-9]*) ;;
+            *) echo "invalid fnOS version" >&2; exit 1 ;;
+          esac
+          if [ "${{ inputs.mode }}" = "publish" ]; then
+            test "${{ inputs.publish_confirmation }}" = "PUBLISH"
+          fi
+          printf 'version=%s\n' "$manifest_version" >> "$GITHUB_OUTPUT"
+      - name: Run fnOS static release tests
+        shell: bash
+        run: node --test scripts/tests/fnos-*.test.mjs

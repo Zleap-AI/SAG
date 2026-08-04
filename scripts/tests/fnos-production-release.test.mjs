@@ -30,6 +30,9 @@ test("prepare records a global release input for the checked-out fnOS manifest",
   assert.equal(result.status, 0, result.stderr);
   const releaseInput = JSON.parse(await (await import("node:fs/promises")).readFile(output, "utf8"));
   assert.equal(releaseInput.candidate_workflow.url, "https://github.com/Zleap-AI/SAG/actions/runs/30798626087");
+  assert.match(releaseInput.build_id, /^\d{8}\.\d{6}Z$/);
+  assert.match(releaseInput.built_at_utc, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  assert.equal(releaseInput.source_branch, checkedOutBranch);
 });
 
 test("prepare rejects a release request with an invalid channel", () => {

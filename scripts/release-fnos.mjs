@@ -50,6 +50,15 @@ function readPackageVersion() {
   return match[1];
 }
 
+function buildMetadata() {
+  const builtAtUtc = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  return {
+    build_id: builtAtUtc.replace(/[-:T]/g, "").replace("Z", "Z").replace(/(\d{8})(\d{6}Z)$/, "$1.$2"),
+    built_at_utc: builtAtUtc,
+    source_branch: git("branch", "--show-current"),
+  };
+}
+
 async function prepare(options) {
   const version = requireOption(options, "version");
   const channel = requireOption(options, "channel");
@@ -73,6 +82,7 @@ async function prepare(options) {
     channel,
     ...(channel === "cn" ? { cn_repository_prefix: cnRepositoryPrefix } : {}),
     revision,
+    ...buildMetadata(),
     candidate_tag: `fnos-candidate-${version}-${revision.slice(0, 12)}`,
     candidate_workflow: {
       run_id: candidateRunId,
