@@ -144,6 +144,141 @@ async def test_job_retry_backoff(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_job_queue_stop_allows_active_job_to_reach_safe_boundary(monkeypatch):
+    """Shutdown gives an in-flight job a bounded chance to commit cleanly."""
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Job
+    from sag_api.enums import JobStatus, JobType
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+    from sag_api.jobs.tasks import TASK_HANDLERS
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    completed = asyncio.Event()
+
+    async def handler(_session, _job, **_kwargs):
+        started.set()
+        await release.wait()
+        completed.set()
+
+    monkeypatch.setitem(TASK_HANDLERS, JobType.PROCESS_DOCUMENT, handler)
+    await init_db()
+    async with SessionLocal() as session:
+        job = Job(type=JobType.PROCESS_DOCUMENT, status=JobStatus.QUEUED)
+        queued_job = Job(type=JobType.PROCESS_DOCUMENT, status=JobStatus.QUEUED)
+        session.add(job)
+        session.add(queued_job)
+        await session.commit()
+        job_id = job.id
+        queued_job_id = queued_job.id
+
+    queue = InProcessAsyncQueue(SessionLocal, engine_manager=None, concurrency=1)
+    await queue.start()
+    await queue.enqueue(job_id)
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await queue.enqueue(queued_job_id)
+    asyncio.get_running_loop().call_later(0.05, release.set)
+
+    await queue.stop()
+
+    assert completed.is_set()
+    async with SessionLocal() as session:
+        done = await session.get(Job, job_id)
+        still_queued = await session.get(Job, queued_job_id)
+        assert done is not None and done.status == JobStatus.SUCCEEDED
+        assert still_queued is not None and still_queued.status == JobStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_job_queue_stop_fails_bounded_without_disposing_under_live_worker(monkeypatch):
+    """A cancellation-resistant worker cannot block shutdown or be silently detached."""
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Job
+    from sag_api.enums import JobStatus, JobType
+    from sag_api.jobs import inproc
+    from sag_api.jobs.tasks import TASK_HANDLERS
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(_session, _job, **_kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+
+    monkeypatch.setitem(TASK_HANDLERS, JobType.PROCESS_DOCUMENT, handler)
+    monkeypatch.setattr(inproc, "_STOP_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr(inproc, "_STOP_CANCEL_SECONDS", 0.01, raising=False)
+    await init_db()
+    async with SessionLocal() as session:
+        job = Job(type=JobType.PROCESS_DOCUMENT, status=JobStatus.QUEUED)
+        session.add(job)
+        await session.commit()
+        job_id = job.id
+
+    queue = inproc.InProcessAsyncQueue(SessionLocal, engine_manager=None, concurrency=1)
+    await queue.start()
+    await queue.enqueue(job_id)
+    await asyncio.wait_for(started.wait(), timeout=1)
+    stop_task = asyncio.create_task(queue.stop())
+
+    try:
+        await asyncio.wait_for(cancelled.wait(), timeout=1)
+        with pytest.raises(RuntimeError, match="worker.*did not stop"):
+            await asyncio.wait_for(asyncio.shield(stop_task), timeout=0.5)
+        assert queue._workers
+    finally:
+        release.set()
+        await asyncio.gather(stop_task, return_exceptions=True)
+        await asyncio.gather(*queue._workers, return_exceptions=True)
+        await queue.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_shutdown_does_not_dispose_engines_after_queue_stop_failure(monkeypatch):
+    """A live queue worker keeps shared engine and DB resources intact."""
+    from types import SimpleNamespace
+
+    from sag_api import main
+
+    calls = []
+
+    class AgentRuntime:
+        async def stop(self):
+            calls.append("agent")
+
+    class JobQueue:
+        async def stop(self):
+            calls.append("queue")
+            raise RuntimeError("worker did not stop")
+
+    class EngineManager:
+        async def aclose_all(self):
+            calls.append("engines")
+
+    async def dispose_db():
+        calls.append("database")
+
+    monkeypatch.setattr(main, "dispose_db", dispose_db)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            agent_runtime=AgentRuntime(),
+            job_queue=JobQueue(),
+            engine_manager=EngineManager(),
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="worker did not stop"):
+        await main._shutdown_runtime(app)
+
+    assert calls == ["agent", "queue"]
+
+
+@pytest.mark.asyncio
 async def test_engine_lru_eviction():
     """超出缓存上限逐出最久未用；持锁的槽不被逐出。"""
     from sag_api.core.config import settings
@@ -210,6 +345,104 @@ async def test_engine_close_all_waits_for_inflight_use():
     await use_task
     await close_task
     assert engine.closed is True
+
+
+@pytest.mark.asyncio
+async def test_engine_starts_and_closes_in_the_same_async_context(monkeypatch):
+    """引擎资源 token 必须在创建它的 Context 中释放。"""
+    from contextvars import ContextVar
+
+    from sag_api.core.config import settings
+    from sag_api.sag import engine_manager as engine_manager_module
+
+    current_engine = ContextVar("test_engine_resources", default=None)
+
+    class ContextBoundEngine:
+        instances = []
+
+        def __init__(self, *_args, **_kwargs):
+            self.token = None
+            self.closed = False
+            self.instances.append(self)
+
+        async def start(self):
+            self.token = current_engine.set(self)
+
+        async def init_schema(self):
+            return None
+
+        async def aclose(self):
+            current_engine.reset(self.token)
+            self.closed = True
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(engine_manager_module, "DataEngine", ContextBoundEngine)
+    manager = engine_manager_module.EngineManager(settings)
+    monkeypatch.setattr(manager, "_ensure_source_config", no_op)
+    monkeypatch.setattr(manager, "_ensure_universe_query_indexes", no_op)
+
+    await asyncio.create_task(manager.provision("context-bound-source"))
+    await manager.aclose_all()
+
+    assert ContextBoundEngine.instances[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_engine_async_closes_previous_sqlite_runtime_before_reset(caplog):
+    """新信源启动前必须异步释放旧 aiosqlite 池，不能同步 reset 后泄漏连接。"""
+    import logging
+
+    from sqlalchemy import text
+    from zleap.sag.db import get_session_factory
+
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager
+
+    manager = EngineManager(settings)
+    caplog.set_level(logging.ERROR, logger="sqlalchemy.pool.impl.AsyncAdaptedQueuePool")
+    try:
+        await manager.provision("async-close-first")
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            await session.execute(text("SELECT 1"))
+
+        caplog.clear()
+        await manager.provision("async-close-second")
+
+        assert "MissingGreenlet" not in caplog.text
+    finally:
+        await manager.aclose_all()
+
+
+@pytest.mark.asyncio
+async def test_engine_close_disposes_every_owned_sqlite_pool():
+    """管理器关闭后必须逐个释放曾被 reset 的引擎自有连接池。"""
+    from sqlalchemy import text
+
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager
+
+    manager = EngineManager(settings)
+    closed = False
+    try:
+        await manager.provision("owned-pool-first")
+        first_factory = manager._slots["owned-pool-first"].engine._session_factory
+        first_bind = first_factory.kw["bind"]
+
+        await manager.provision("owned-pool-second")
+        async with first_factory() as session:
+            await session.execute(text("SELECT 1"))
+        assert first_bind.sync_engine.pool.checkedin() == 1
+
+        await manager.aclose_all()
+        closed = True
+
+        assert first_bind.sync_engine.pool.checkedin() == 0
+    finally:
+        if not closed:
+            await manager.aclose_all()
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main, dev, feat/fnos-docker-app]
   pull_request:
   workflow_call:
 
@@ -17,6 +17,17 @@ jobs:
           node-version: "22"
       - name: 测试公开仓标签发布边界
         run: node --test scripts/tests/release-public.test.mjs
+      - name: 测试 fnOS 发布 Compose 边界
+        run: node --test scripts/tests/validate-fnos-release.test.mjs scripts/tests/fnos-gateway-policy.test.mjs scripts/tests/fnos-gateway-scan-summary.test.mjs scripts/tests/fnos-gateway-trivy-report.test.mjs
+      - name: 测试 fnOS 发布工作流策略与状态机
+        run: node --test scripts/tests/fnos-release-workflow.test.mjs scripts/tests/fnos-release-registry.test.mjs scripts/tests/fnos-release-smoke.test.mjs
+      - name: 测试 fnOS 包、生命周期与文档边界
+        env:
+          # CI intentionally does not download an unverified fnpack executable.
+          # The fnpack structural test runs only on a pre-verified runner with
+          # SAG_FNPACK_TESTS=1; deterministic package behavior still runs here.
+          SAG_FNPACK_TESTS: "0"
+        run: node --test scripts/tests/fnos-package.test.mjs scripts/tests/fnos-lifecycle.test.mjs scripts/tests/fnos-auth-boundary.test.mjs
       - name: 测试内部快照导出边界
         if: ${{ hashFiles('scripts/tests/public-port.test.mjs') != '' }}
         run: node --test scripts/tests/public-export-policy.test.mjs scripts/tests/public-port.test.mjs

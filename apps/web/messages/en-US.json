@@ -100,12 +100,12 @@
   },
   "Login": {
     "hero": "Explore your knowledge universe",
-    "nameLabel": "Name",
+    "nameLabel": "What should we call you?",
     "namePlaceholder": "What should we call you?",
-    "submit": "Sign in",
-    "submitting": "Signing in",
-    "welcome": "Welcome back, {name}",
-    "failed": "Sign-in failed. Please try again later."
+    "submit": "Get started",
+    "submitting": "Setting things up",
+    "welcome": "Welcome, {name}",
+    "failed": "Setup failed. Please try again later."
   },
   "AccountSettings": {
     "identityTitle": "Local identity",
@@ -123,7 +123,12 @@
     "extracting": "Extracting",
     "paused": "Paused",
     "ready": "Ready",
-    "failed": "Failed"
+    "failed": "Failed",
+    "requeueing": "Rejoining queue",
+    "pausing": "Stopping",
+    "resuming": "Resuming",
+    "deleting": "Deleting",
+    "waitingRetry": "Waiting for background retry"
   },
   "AppSidebar": {
     "brandTagline": "Knowledge Agent",
@@ -220,10 +225,13 @@
     "unsupportedType": "{name}: Unsupported file type",
     "fileFailed": "{name}: {error}",
     "uploadFailed": "Upload failed",
-    "uploaded": "{count, plural, one {# file uploaded} other {# files uploaded}} and processing in the background",
-    "uploading": "Uploading…",
+    "uploaded": "{count, plural, one {# file uploaded} other {# files uploaded}}. Background processing has started.",
+    "uploading": "Uploading files…",
+    "uploadProgress": "File upload progress",
     "prompt": "Drop files here or click to choose",
-    "support": "Supports Markdown, text, PDF, and more · Up to {maxMb, number} MB per file"
+    "support": "Supports Markdown, text, PDF, and more · Up to {maxMb, number} MB per file",
+    "concurrencyHint": "Is background parsing and extraction slow for multiple documents? Adjust chunk concurrency.",
+    "concurrencyAction": "Open knowledge settings"
   },
   "SyncPanel": {
     "started": "Sync started. SAG is fetching pages in the background.",
@@ -280,6 +288,10 @@
     "viewAria": "View",
     "gridView": "Card view",
     "listView": "List view",
+    "sourceId": "Source ID",
+    "copySourceId": "Copy source ID",
+    "sourceIdCopied": "Source ID copied",
+    "sourceIdCopyFailed": "Failed to copy source ID",
     "documentDetails": "Document details",
     "addDocument": "Add document",
     "syncSource": "Sync source",
@@ -364,7 +376,7 @@
     "extractionSettings": "Extraction",
     "extractionDescription": "Control event and entity extraction speed for each document.",
     "concurrency": "Extraction concurrency per document",
-    "concurrencyDescription": "Chunks extracted concurrently per document. Default: 5.",
+    "concurrencyDescription": "Chunks extracted concurrently per document. Default: 30.",
     "retrievalDescription": "Control knowledge retrieval and extraction language.",
     "retrievalRules": "Retrieval rules",
     "retrievalRulesDescription": "Set the strategy, result count, and language.",
@@ -463,8 +475,11 @@
     "avatar": "Avatar characters",
     "avatarDescription": "Supports @_@, AI, a single character, or emoji.",
     "name": "Assistant name",
-    "petAlwaysOn": "Keep assistant visible",
-    "petAlwaysOnDescription": "Keep the assistant available in normal mode. When off, it appears only in exploration mode.",
+    "petVisibility": "Floating assistant visibility",
+    "petVisibilityDescription": "Choose where the floating assistant appears. You can restore it here after hiding it completely.",
+    "petVisibilityAlways": "Always visible",
+    "petVisibilityExplore": "Explore mode only",
+    "petVisibilityHidden": "Completely hidden",
     "greeting": "Greeting",
     "greetingDescription": "The first sentence shown in a new conversation.",
     "systemPrompt": "System prompt",
@@ -587,7 +602,8 @@
     "exitExploreShort": "Exit",
     "exploreEntered": "You have entered exploration mode",
     "exploreEnteredDescription": "Select a galaxy to explore. Use the button in the upper-right corner to exit.",
-    "resizeWindow": "Resize window"
+    "resizeWindow": "Resize window",
+    "logoutFailed": "Unable to return to the launch page. Please try again."
   },
   "ChatPage": {
     "suggestionSummary": "Summarize the most important knowledge in my library",
@@ -961,7 +977,13 @@
       "answer": "Ask",
       "knowledge": "Knowledge",
       "settings": "Settings",
-      "actions": "Actions"
+      "actions": "Actions",
+      "hide": "Hide floating assistant"
+    },
+    "hide": {
+      "title": "Hide the floating assistant?",
+      "description": "The assistant will no longer appear in any mode. Restore it from Settings → Assistant → Default assistant → Floating assistant visibility.",
+      "confirm": "Hide assistant"
     }
   },
   "PetAppearance": {

@@ -17,7 +17,7 @@ from functools import lru_cache
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from sag_api.core.model_providers import ModelProviderId, get_model_provider
@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     debug: bool = True
     secret_key: str = "dev-insecure-secret-change-me-in-production-0123456789"
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 天
+    # legacy 保留本地开发的名字即身份体验；password 用于 fnOS 等局域网生产部署。
+    auth_mode: Literal["legacy", "password", "single_user"] = "legacy"
+    # password 模式首次初始化/管理员重置所需，必须与 JWT secret 分离且不写日志。
+    auth_bootstrap_token: SecretStr = SecretStr("")
+    auth_password_min_length: int = Field(default=12, ge=12, le=128)
     # 业务展示时区；数据库与 API 时间戳始终使用 UTC。
     timezone: str = "Asia/Shanghai"
     # NoDecode 让逗号分隔值先进入下方 validator，避免 settings 源强制按 JSON 解码。
@@ -56,7 +61,7 @@ class Settings(BaseSettings):
     upload_dir: str = "./.data/uploads"  # 上传原始文件落盘
     max_upload_mb: int = 25  # 单文件上传上限
     job_concurrency: int = 2  # 后台处理并发
-    document_extract_concurrency: int = Field(default=5, ge=1, le=50)  # 单文档 chunk 抽取并发
+    document_extract_concurrency: int = Field(default=30, ge=1, le=50)  # 单文档 chunk 抽取并发
     document_chunk_max_tokens: int = Field(default=1_000, ge=100, le=100_000)
     document_chunk_mode: Literal["standard", "heading_strict"] = "standard"
     # 上传文档已有独立的知识型过滤要求；默认关闭上游基于标题/摘要的严格过滤，

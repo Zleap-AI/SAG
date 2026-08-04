@@ -1,0 +1,159 @@
+#!/bin/bash
+
+set -eu
+
+log_error() {
+    printf '%s\n' "$1" >> "${TRIM_TEMP_LOGFILE}"
+}
+
+umask 077
+
+normalize_trailing_slashes() {
+    normalized="$1"
+    while [ "${normalized}" != "/" ] && [ "${normalized%/}" != "${normalized}" ]; do
+        normalized="${normalized%/}"
+    done
+    printf '%s\n' "${normalized}"
+}
+
+log_platform_dir_state() {
+    candidate="$1"
+    label="$2"
+    reason="$3"
+    parent="${candidate%/*}"
+    if [ -z "${parent}" ]; then
+        parent="/"
+    fi
+    exists=0
+    directory=0
+    symlink=0
+    parent_directory=0
+    parent_writable=0
+    [ -e "${candidate}" ] && exists=1
+    [ -d "${candidate}" ] && directory=1
+    [ -L "${candidate}" ] && symlink=1
+    [ -d "${parent}" ] && parent_directory=1
+    [ -w "${parent}" ] && parent_writable=1
+    uid="$(id -u 2>/dev/null || printf '%s' unknown)"
+    gid="$(id -g 2>/dev/null || printf '%s' unknown)"
+    log_error "SAG installation ${label} state: reason=${reason} exists=${exists} directory=${directory} symlink=${symlink} parent_directory=${parent_directory} parent_writable=${parent_writable} uid=${uid} gid=${gid}"
+}
+
+prepare_platform_dir() {
+    candidate="$1"
+    label="$2"
+    case "${candidate}" in
+        /*) ;;
+        *)
+            log_error "SAG installation rejected unsafe ${label}: path is not absolute."
+            return 1
+            ;;
+    esac
+    if [ ! -e "${candidate}" ] && [ ! -L "${candidate}" ]; then
+        if ! mkdir -p -- "${candidate}"; then
+            log_platform_dir_state "${candidate}" "${label}" "create-failed"
+            return 1
+        fi
+    fi
+    if [ ! -d "${candidate}" ]; then
+        log_platform_dir_state "${candidate}" "${label}" "not-directory"
+        return 1
+    fi
+    if [ ! -w "${candidate}" ] || [ ! -x "${candidate}" ]; then
+        log_platform_dir_state "${candidate}" "${label}" "inaccessible"
+        return 1
+    fi
+    printf '%s\n' "${candidate}"
+}
+
+pkgetc_entry="$(normalize_trailing_slashes "${TRIM_PKGETC}")"
+pkgetc_dir="$(prepare_platform_dir "${pkgetc_entry}" "package configuration directory")" || exit 1
+
+secret_file="${pkgetc_dir}/sag.env"
+
+valid_hex_secret() {
+    value="$1"
+    case "${value}" in
+        *[!0-9a-f]*|'') return 1 ;;
+    esac
+    [ "${#value}" -eq 64 ]
+}
+
+generate_secret() {
+    generated="$(openssl rand -hex 32)" || return 1
+    valid_hex_secret "${generated}" || return 1
+    printf '%s\n' "${generated}"
+}
+
+write_secret_file() {
+    destination="$1"
+    session_secret="$2"
+    secret_temp="${destination}.tmp.$$"
+    trap 'rm -f -- "${secret_temp}"' EXIT HUP INT TERM
+    if ! printf 'SAG_SECRET_KEY=%s\n' "${session_secret}" > "${secret_temp}"; then
+        log_error "SAG installation could not write its temporary secret file."
+        return 1
+    fi
+    if ! chmod 600 "${secret_temp}"; then
+        log_error "SAG installation could not protect its temporary secret file."
+        return 1
+    fi
+}
+
+if [ ! -e "${secret_file}" ]; then
+    secret="$(generate_secret)" || {
+        log_error "SAG installation could not generate its session secret."
+        exit 1
+    }
+    write_secret_file "${secret_file}" "${secret}" || exit 1
+    if ! ln "${secret_temp}" "${secret_file}" 2>/dev/null && [ ! -e "${secret_file}" ]; then
+        log_error "SAG installation could not persist its auth secrets."
+        exit 1
+    fi
+    rm -f -- "${secret_temp}"
+    trap - EXIT HUP INT TERM
+fi
+
+if [ ! -f "${secret_file}" ] || [ -L "${secret_file}" ]; then
+    log_error "SAG requires ${secret_file} to be a regular file."
+    exit 1
+fi
+
+existing_secret=""
+secret_line_count=0
+while IFS= read -r secret_line || [ -n "${secret_line}" ]; do
+    secret_line_count=$((secret_line_count + 1))
+    case "${secret_line_count}:${secret_line}" in
+        1:SAG_SECRET_KEY=*)
+            existing_secret="${secret_line#SAG_SECRET_KEY=}"
+            ;;
+        2:SAG_AUTH_BOOTSTRAP_TOKEN=*)
+            # Accepted only to migrate a password-mode fnOS installation.
+            ;;
+        *)
+            log_error "SAG installation found an invalid existing auth secret file; refusing to overwrite it."
+            exit 1
+            ;;
+    esac
+done < "${secret_file}"
+
+if ! valid_hex_secret "${existing_secret}"; then
+    log_error "SAG installation found an invalid existing secret (session); refusing to overwrite it."
+    exit 1
+fi
+
+if [ "${secret_line_count}" -eq 2 ]; then
+    write_secret_file "${secret_file}" "${existing_secret}" || exit 1
+    if ! mv -- "${secret_temp}" "${secret_file}"; then
+        log_error "SAG installation could not remove its obsolete auth bootstrap credential."
+        exit 1
+    fi
+    trap - EXIT HUP INT TERM
+fi
+
+chmod 600 "${secret_file}" || {
+    log_error "SAG installation could not protect its auth secrets."
+    exit 1
+}
+
+exit 0

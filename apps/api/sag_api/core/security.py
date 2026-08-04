@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -12,21 +13,37 @@ from sag_api.core.config import settings
 
 _ALGO = "HS256"
 _BCRYPT_MAX_BYTES = 72  # bcrypt 硬限制
+_DUMMY_PASSWORD_HASH = "$2b$12$Q3mUJ8FjeDbG763OlYG3Mev4bz75RlMTo16Ou.4TcmbahOtkx08e2"
 
 
-def _clip(password: str) -> bytes:
-    return password.encode("utf-8")[:_BCRYPT_MAX_BYTES]
+def password_bytes(password: str) -> bytes:
+    encoded = password.encode("utf-8")
+    if len(encoded) > _BCRYPT_MAX_BYTES:
+        raise ValueError("密码的 UTF-8 编码不得超过 72 字节")
+    return encoded
 
 
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(_clip(password), bcrypt.gensalt()).decode("utf-8")
+    return bcrypt.hashpw(password_bytes(password), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(password: str, password_hash: str) -> bool:
     try:
-        return bcrypt.checkpw(_clip(password), password_hash.encode("utf-8"))
-    except (ValueError, TypeError):
+        return bcrypt.checkpw(password_bytes(password), password_hash.encode("utf-8"))
+    except (ValueError, TypeError, UnicodeError):
         return False
+
+
+async def hash_password_async(password: str) -> str:
+    return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_async(password: str, password_hash: str) -> bool:
+    return await asyncio.to_thread(verify_password, password, password_hash)
+
+
+async def consume_dummy_password_check(password: str) -> None:
+    await verify_password_async(password, _DUMMY_PASSWORD_HASH)
 
 
 def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> str:

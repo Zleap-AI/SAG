@@ -24,6 +24,7 @@ from sag_api.core.logging import get_logger
 from sag_api.core.security import decode_token
 from sag_api.db.models import Source
 from sag_api.mcp.server import build_source_mcp, use_scope
+from sag_api.services.auth_service import get_user_for_token_payload
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -72,12 +73,16 @@ class ScopedKnowledgeMCP:
             await _send_json(send, 401, {"error": "缺少认证令牌"})
             return
         try:
-            decode_token(token)
+            payload = decode_token(token)
         except jwt.PyJWTError:
             await _send_json(send, 401, {"error": "令牌无效或已过期"})
             return
 
         async with SessionLocal() as session:
+            user = await get_user_for_token_payload(session, payload)
+            if user is None:
+                await _send_json(send, 401, {"error": "令牌无效或已过期"})
+                return
             statement = select(Source).order_by(Source.created_at, Source.id)
             if source_id:
                 statement = statement.where(Source.id == source_id)

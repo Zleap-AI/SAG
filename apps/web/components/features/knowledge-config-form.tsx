@@ -35,7 +35,7 @@ export function KnowledgeConfigForm() {
   const [chunkMaxTokens, setChunkMaxTokens] = React.useState(1_000);
   const [chunkMode, setChunkMode] =
     React.useState<ModelConfig["document_chunk_mode"]>("standard");
-  const [extractConcurrency, setExtractConcurrency] = React.useState(5);
+  const [extractConcurrency, setExtractConcurrency] = React.useState(30);
   const [strategy, setStrategy] = React.useState<ModelConfig["search_strategy"]>("multi");
   const [topK, setTopK] = React.useState(8);
   const [language, setLanguage] = React.useState<ModelConfig["sag_language"]>("zh");
@@ -43,7 +43,7 @@ export function KnowledgeConfigForm() {
   const hydrate = React.useCallback((config: ModelConfig) => {
     setChunkMaxTokens(config.document_chunk_max_tokens ?? 1_000);
     setChunkMode(config.document_chunk_mode ?? "standard");
-    setExtractConcurrency(config.document_extract_concurrency ?? 5);
+    setExtractConcurrency(config.document_extract_concurrency ?? 30);
     setStrategy(config.search_strategy);
     setTopK(config.search_top_k);
     setLanguage(config.sag_language);

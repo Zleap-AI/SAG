@@ -52,13 +52,17 @@ function SettingsPageContent() {
   const section = searchParams.get("section");
 
   React.useEffect(() => {
-    if (activeTab !== "agent" || section !== "appearance") return;
+    const selector =
+      activeTab === "agent" && section === "appearance"
+        ? '[data-settings-section="assistant-appearance"]'
+        : activeTab === "knowledge" && section === "document-processing"
+          ? '[data-settings-section="document-processing"]'
+          : null;
+    if (!selector) return;
     let secondFrame = 0;
     const firstFrame = window.requestAnimationFrame(() => {
       secondFrame = window.requestAnimationFrame(() => {
-        const target = document.querySelector<HTMLElement>(
-          '[data-settings-section="assistant-appearance"]',
-        );
+        const target = document.querySelector<HTMLElement>(selector);
         target?.scrollIntoView({ behavior: "smooth", block: "start" });
         target?.focus({ preventScroll: true });
       });
@@ -108,7 +112,13 @@ function SettingsPageContent() {
         </TabsContent>
 
         <TabsContent value="knowledge" className="m-0 animate-fade-in">
-          <KnowledgeConfigForm />
+          <div
+            data-settings-section="document-processing"
+            tabIndex={-1}
+            className="scroll-mt-6 outline-none"
+          >
+            <KnowledgeConfigForm />
+          </div>
         </TabsContent>
 
         <TabsContent value="integrations" className="m-0 animate-fade-in">

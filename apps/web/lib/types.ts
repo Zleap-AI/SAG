@@ -7,6 +7,11 @@ export interface User {
   created_at: string;
 }
 
+export interface SingleUserSession {
+  setup_required: boolean;
+  user: User | null;
+}
+
 export interface TokenResponse {
   access_token: string;
   token_type: string;
@@ -615,7 +620,7 @@ export interface UniverseTimelineSlice {
 export interface BackgroundJob {
   id: string;
   type: string;
-  status: "queued" | "running" | "succeeded" | "failed";
+  status: "queued" | "running" | "succeeded" | "failed" | "paused";
   source_id: string | null;
   document_id: string | null;
   progress: number;

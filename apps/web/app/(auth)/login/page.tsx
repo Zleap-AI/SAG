@@ -7,8 +7,8 @@ import { ArrowRight, Github, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 import { api, ApiError } from "@/lib/api";
-import { setToken } from "@/lib/auth";
 import { PRODUCT_NAME } from "@/lib/branding";
+import { buildSingleUserSetupRequest } from "@/lib/login";
 import { LanguageToggle } from "@/components/features/language-toggle";
 import { ThemeToggle } from "@/components/features/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,30 @@ export default function LaunchPage() {
   const t = useTranslations("Login");
   const router = useRouter();
   const [name, setName] = React.useState("");
-  const [loading, setLoading] = React.useState(false);
+  const [loading, setLoading] = React.useState(true);
+  const [setupRequired, setSetupRequired] = React.useState(false);
+
+  React.useEffect(() => {
+    let alive = true;
+    api.singleUserSession()
+      .then((session) => {
+        if (!alive) return;
+        if (session.setup_required) {
+          setSetupRequired(true);
+          setLoading(false);
+          return;
+        }
+        router.replace("/chat");
+      })
+      .catch(() => {
+        if (!alive) return;
+        setSetupRequired(true);
+        setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [router]);
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -28,9 +51,9 @@ export default function LaunchPage() {
     if (!nextName) return;
     setLoading(true);
     try {
-      const response = await api.login({ name: nextName });
-      setToken(response.access_token);
-      toast.success(t("welcome", { name: response.user.name }));
+      const request = buildSingleUserSetupRequest(nextName);
+      const response = await api.initializeSingleUser(request.name);
+      toast.success(t("welcome", { name: response.user?.name ?? request.name }));
       router.replace("/chat");
     } catch (error) {
       const message = error instanceof ApiError ? error.message : t("failed");
@@ -70,7 +93,9 @@ export default function LaunchPage() {
             {t("hero")}
           </h1>
 
-          <form
+          {loading && !setupRequired ? (
+            <div className="mt-6 flex justify-center"><Spinner /></div>
+          ) : <form
             onSubmit={onSubmit}
             className="mt-6 flex flex-col gap-4 rounded-lg border bg-background/76 p-5 text-left shadow-lift backdrop-blur-xl"
           >
@@ -96,7 +121,7 @@ export default function LaunchPage() {
               {loading ? <Spinner /> : <ArrowRight className="size-4" />}
               {loading ? t("submitting") : t("submit")}
             </Button>
-          </form>
+          </form>}
         </div>
       </section>
     </main>

@@ -1,0 +1,374 @@
+name: fnOS Candidate Images
+
+on:
+  push:
+    tags:
+      - "fnos-candidate-*"
+
+concurrency:
+  group: fnos-candidate-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    name: Verify reviewed candidate metadata
+    if: github.repository == 'luoshuai990529/SAG'
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      revision: ${{ steps.metadata.outputs.revision }}
+      staging_tag: ${{ steps.metadata.outputs.staging_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - id: metadata
+        name: Verify repository, tag, manifest, and dedicated branch HEAD
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "luoshuai990529/SAG"
+          test "$GITHUB_REF_TYPE" = "tag"
+          test "$GITHUB_SHA" = "$(git rev-parse HEAD)"
+          tag_revision="$(git rev-list -n 1 "${GITHUB_REF_NAME}^{commit}")"
+          test "$GITHUB_SHA" = "$tag_revision"
+          remote_line="$(git ls-remote --heads origin feat/fnos-docker-app)"
+          read -r remote_revision remote_ref extra <<<"$remote_line"
+          test -n "$remote_revision"
+          test "$remote_ref" = "refs/heads/feat/fnos-docker-app"
+          test -z "${extra:-}"
+          test "$GITHUB_SHA" = "$remote_revision"
+          appname=$(awk -F= '/^appname[[:space:]]*=/{gsub(/[[:space:]]/, "", $2); print $2}' packages/fnos/sag/manifest)
+          version=$(awk -F= '/^version[[:space:]]*=/{gsub(/[[:space:]]/, "", $2); print $2}' packages/fnos/sag/manifest)
+          test "$appname" = "sag"
+          case "$version" in
+            1.4.0-fnos.[0-9]*) ;;
+            *) exit 1 ;;
+          esac
+          expected_tag="fnos-candidate-${version}-${GITHUB_SHA:0:12}"
+          test "$GITHUB_REF_NAME" = "$expected_tag"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'revision=%s\n' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          printf 'staging_tag=staging-fnos-%s-%s-%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+
+  quality:
+    needs: candidate
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  gateway-security:
+    name: Verify and scan reviewed gateway
+    needs: [candidate, quality]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      TRIVY_VERSION: "0.70.0"
+      TRIVY_SHA256: "8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.candidate.outputs.revision }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
+      - name: Verify reviewed policy and raw OCI index
+        shell: bash
+        run: |
+          set -euo pipefail
+          gateway_image="$(node scripts/fnos-gateway-policy.mjs verify --docker docker)"
+          printf 'GATEWAY_IMAGE=%s\n' "$gateway_image" >> "$GITHUB_ENV"
+      - name: Install checksum-pinned Trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          install_dir="$RUNNER_TEMP/trivy-${TRIVY_VERSION}"
+          curl --fail --location --retry 3 \
+            --output "$archive" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          printf '%s  %s\n' "$TRIVY_SHA256" "$archive" | sha256sum --check --strict
+          mkdir -p "$install_dir"
+          tar -xzf "$archive" -C "$install_dir" trivy
+          test "$("$install_dir/trivy" --version)" = "Version: ${TRIVY_VERSION}"
+          printf 'TRIVY_BIN=%s\n' "$install_dir/trivy" >> "$GITHUB_ENV"
+      - name: Scan exact linux/amd64 gateway and retain compact evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw_report="$RUNNER_TEMP/gateway-trivy-raw.json"
+          canonical_report="$RUNNER_TEMP/gateway-trivy-canonical.json"
+          set +e
+          "$TRIVY_BIN" image \
+            --platform linux/amd64 \
+            --scanners vuln \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --format json \
+            --output "$raw_report" \
+            "$GATEWAY_IMAGE"
+          trivy_status="$?"
+          set -e
+          canonical_status=0
+          node scripts/canonicalize-fnos-trivy-report.mjs \
+            --input "$raw_report" \
+            --output "$canonical_report" \
+            --scanner-exit-code "$trivy_status" || canonical_status="$?"
+          summary_status=0
+          node scripts/summarize-fnos-gateway-scan.mjs \
+            --report "$canonical_report" \
+            --source-report "$raw_report" \
+            --output gateway-scan-summary.json \
+            --scanner-version "$TRIVY_VERSION" \
+            --scanner-exit-code "$trivy_status" || summary_status="$?"
+          test "$trivy_status" -eq 0
+          test "$canonical_status" -eq 0
+          test "$summary_status" -eq 0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() }}
+        with:
+          name: fnos-gateway-scan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: gateway-scan-summary.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  local-amd64-smoke:
+    name: Build and smoke local linux/amd64 images
+    needs: [candidate, quality]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.candidate.outputs.revision }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
+      - name: Build local API image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.17.0
+        with:
+          context: ./apps/api
+          load: true
+          platforms: linux/amd64
+          tags: sag-api-smoke:${{ needs.candidate.outputs.revision }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.candidate.outputs.revision }}
+            org.opencontainers.image.version=${{ needs.candidate.outputs.version }}
+      - name: Build local Web image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.17.0
+        with:
+          context: ./apps/web
+          load: true
+          platforms: linux/amd64
+          build-args: NEXT_PUBLIC_API_BASE=/
+          tags: sag-web-smoke:${{ needs.candidate.outputs.revision }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.candidate.outputs.revision }}
+            org.opencontainers.image.version=${{ needs.candidate.outputs.version }}
+      - name: Smoke API readiness and Web root
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'docker rm -f sag-api-smoke sag-web-smoke >/dev/null 2>&1 || true' EXIT
+          docker run --detach --name sag-api-smoke --publish 18000:8000 \
+            --env SAG_ENVIRONMENT=prod \
+            --env SAG_DEBUG=false \
+            --env SAG_SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+            --env SAG_AUTH_MODE=single_user \
+            sag-api-smoke:"${{ needs.candidate.outputs.revision }}"
+          docker run --detach --name sag-web-smoke --publish 13000:3000 sag-web-smoke:"${{ needs.candidate.outputs.revision }}"
+          for attempt in {1..30}; do
+            curl --fail --silent --show-error http://127.0.0.1:18000/api/v1/system/ready >/dev/null && break
+            sleep 2
+            test "$attempt" -lt 30 || { docker logs sag-api-smoke; exit 1; }
+          done
+          empty_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:18000/api/v1/auth/session)"
+          test "$empty_status" = 200
+          initialized_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --header 'Content-Type: application/json' \
+            --data '{"name":"Smoke Owner"}' \
+            http://127.0.0.1:18000/api/v1/auth/session)"
+          test "$initialized_status" = 201
+          anonymous_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:18000/api/v1/auth/me)"
+          test "$anonymous_status" = 200
+          for attempt in {1..20}; do
+            curl --fail --silent --show-error http://127.0.0.1:13000/ >/dev/null && break
+            sleep 2
+            test "$attempt" -lt 20 || { docker logs sag-web-smoke; exit 1; }
+          done
+
+  staging:
+    name: Publish multi-platform staging images
+    needs: [candidate, local-amd64-smoke, gateway-security]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: API
+            context: ./apps/api
+            image: ghcr.io/luoshuai990529/sag-api
+            build_args: ""
+          - name: Web
+            context: ./apps/web
+            image: ghcr.io/luoshuai990529/sag-web
+            build_args: NEXT_PUBLIC_API_BASE=/
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.candidate.outputs.revision }}
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.6.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push an isolated staging index
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.17.0
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: ${{ matrix.build_args }}
+          tags: ${{ matrix.image }}:${{ needs.candidate.outputs.staging_tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.candidate.outputs.revision }}
+            org.opencontainers.image.version=${{ needs.candidate.outputs.version }}
+
+  inspect-staging:
+    name: Capture verified staging digests
+    needs: [candidate, staging]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      api_digest: ${{ steps.digests.outputs.api_digest }}
+      web_digest: ${{ steps.digests.outputs.web_digest }}
+    env:
+      CANDIDATE_VERSION: ${{ needs.candidate.outputs.version }}
+      CANDIDATE_REVISION: ${{ needs.candidate.outputs.revision }}
+      STAGING_TAG: ${{ needs.candidate.outputs.staging_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.candidate.outputs.revision }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: digests
+        name: Resolve, validate, and record staging digests once
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_digest="$(node scripts/fnos-release-registry.mjs verify-staging --docker docker --image ghcr.io/luoshuai990529/sag-api --staging-tag "$STAGING_TAG" --revision "$CANDIDATE_REVISION" --version "$CANDIDATE_VERSION")"
+          web_digest="$(node scripts/fnos-release-registry.mjs verify-staging --docker docker --image ghcr.io/luoshuai990529/sag-web --staging-tag "$STAGING_TAG" --revision "$CANDIDATE_REVISION" --version "$CANDIDATE_VERSION")"
+          node scripts/fnos-release-registry.mjs write-handoff --api-digest "$api_digest" --web-digest "$web_digest" --github-output "$GITHUB_OUTPUT" --artifact verified-digests.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fnos-verified-digests-${{ github.run_id }}-${{ github.run_attempt }}
+          path: verified-digests.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Record staging retention
+        shell: bash
+        run: |
+          echo "::notice::Staging tags $STAGING_TAG are retained. Delete only by an audited tag-specific GHCR operation; deleting a digest could remove promoted content."
+
+  smoke-staging:
+    name: Smoke exact captured linux/amd64 digests
+    needs: [candidate, inspect-staging]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    env:
+      API_IMAGE: ghcr.io/luoshuai990529/sag-api@${{ needs.inspect-staging.outputs.api_digest }}
+      WEB_IMAGE: ghcr.io/luoshuai990529/sag-web@${{ needs.inspect-staging.outputs.web_digest }}
+      SMOKE_SCOPE: release-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.candidate.outputs.revision }}
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull and smoke exact captured digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/smoke-fnos-release-images.mjs smoke --docker docker --curl curl --api-image "$API_IMAGE" --web-image "$WEB_IMAGE" --scope "$SMOKE_SCOPE"
+      - name: Always clean exact-digest smoke resources
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          node scripts/smoke-fnos-release-images.mjs cleanup --docker docker --scope "$SMOKE_SCOPE"
+
+  promote:
+    name: Reconcile final tags to verified digests
+    needs: [candidate, inspect-staging, smoke-staging]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      CANDIDATE_VERSION: ${{ needs.candidate.outputs.version }}
+      COMMIT_TAG: sha-${{ needs.candidate.outputs.revision }}
+      API_DIGEST: ${{ needs.inspect-staging.outputs.api_digest }}
+      WEB_DIGEST: ${{ needs.inspect-staging.outputs.web_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.candidate.outputs.revision }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Reconcile and post-verify all final tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/fnos-release-registry.mjs promote --docker docker --api-image ghcr.io/luoshuai990529/sag-api --web-image ghcr.io/luoshuai990529/sag-web --candidate-version "$CANDIDATE_VERSION" --commit-tag "$COMMIT_TAG" --api-digest "$API_DIGEST" --web-digest "$WEB_DIGEST"
+
+  anonymous-postcheck:
+    name: Verify public candidate tags and exact digests anonymously
+    needs: [candidate, inspect-staging, promote]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      CANDIDATE_VERSION: ${{ needs.candidate.outputs.version }}
+      API_DIGEST: ${{ needs.inspect-staging.outputs.api_digest }}
+      WEB_DIGEST: ${{ needs.inspect-staging.outputs.web_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.candidate.outputs.revision }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
+      - name: Resolve public tags and indexes without registry credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/fnos-release-registry.mjs verify-public \
+            --docker docker \
+            --api-image ghcr.io/luoshuai990529/sag-api \
+            --web-image ghcr.io/luoshuai990529/sag-web \
+            --candidate-version "$CANDIDATE_VERSION" \
+            --api-digest "$API_DIGEST" \
+            --web-digest "$WEB_DIGEST"

@@ -41,6 +41,13 @@ async def process_document(
         raise NotFoundError("信源不存在")
     checkpoint = ProcessCheckpoint.from_payload(job.payload)
 
+    # A worker retry reuses the document row. Clear the previous attempt's
+    # failure before parsing can block for a long time, so active processing
+    # never carries a stale terminal error.
+    if document.error is not None:
+        document.error = None
+        await session.commit()
+
     async def refresh_payload() -> dict:
         await session.refresh(job, attribute_names=["payload"])
         return dict(job.payload or {})

@@ -35,6 +35,7 @@ apps/api/dist/desktop/
 
 # Env & secrets
 .env
+.env.fnos
 .env.local
 .env.*.local
 

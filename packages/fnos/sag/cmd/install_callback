@@ -1,0 +1,100 @@
+#!/bin/bash
+
+set -eu
+
+log_error() {
+    printf '%s\n' "$1" >> "${TRIM_TEMP_LOGFILE}"
+}
+
+umask 077
+
+canonical_dir() {
+    (cd -P -- "$1" 2>/dev/null && pwd -P)
+}
+
+normalize_trailing_slashes() {
+    normalized="$1"
+    while [ "${normalized}" != "/" ] && [ "${normalized%/}" != "${normalized}" ]; do
+        normalized="${normalized%/}"
+    done
+    printf '%s\n' "${normalized}"
+}
+
+resolve_platform_dir() {
+    candidate="$1"
+    label="$2"
+    case "${candidate}" in
+        /*) ;;
+        *)
+            log_error "SAG installation rejected unsafe ${label}: path is not absolute."
+            return 1
+            ;;
+    esac
+    if [ ! -d "${candidate}" ]; then
+        log_error "SAG installation rejected unsafe ${label}; verify it is a real directory."
+        return 1
+    fi
+    if [ ! -w "${candidate}" ] || [ ! -x "${candidate}" ]; then
+        log_error "SAG installation cannot access ${label}; verify fnOS application permissions."
+        return 1
+    fi
+    printf '%s\n' "${candidate}"
+}
+
+validate_owned_real_dir() {
+    candidate="$1"
+    label="$2"
+    case "${candidate}" in
+        /*) ;;
+        *)
+            log_error "SAG installation rejected unsafe ${label}: path is not absolute."
+            return 1
+            ;;
+    esac
+    if [ ! -d "${candidate}" ] || [ -L "${candidate}" ] || [ ! -O "${candidate}" ]; then
+        log_error "SAG installation rejected unsafe ${label}; verify it is an owned real directory."
+        return 1
+    fi
+    if [ ! -w "${candidate}" ] || [ ! -x "${candidate}" ]; then
+        log_error "SAG installation cannot access ${label}; verify its private directory permissions."
+        return 1
+    fi
+}
+
+pkgvar_entry="$(normalize_trailing_slashes "${TRIM_PKGVAR}")"
+pkgetc_entry="$(normalize_trailing_slashes "${TRIM_PKGETC}")"
+pkgvar_dir="$(resolve_platform_dir "${pkgvar_entry}" "package variable directory")" || exit 1
+pkgetc_dir="$(resolve_platform_dir "${pkgetc_entry}" "package configuration directory")" || exit 1
+data_dir="${pkgvar_dir}/data"
+backup_dir="${pkgvar_dir}/backup"
+
+for private_child in "${data_dir}" "${backup_dir}"; do
+    if [ "${private_child}" = "${data_dir}" ]; then
+        private_label="active data directory"
+    else
+        private_label="backup directory"
+    fi
+    if [ -L "${private_child}" ] || [ -e "${private_child}" ]; then
+        validate_owned_real_dir "${private_child}" "${private_label}" || exit 1
+    fi
+done
+
+for private_child in "${data_dir}" "${backup_dir}"; do
+    if [ "${private_child}" = "${data_dir}" ]; then
+        private_label="active data directory"
+    else
+        private_label="backup directory"
+    fi
+    if [ ! -e "${private_child}" ] && ! mkdir -- "${private_child}"; then
+        log_error "SAG installation could not create its private directories."
+        exit 1
+    fi
+    validate_owned_real_dir "${private_child}" "${private_label}" || exit 1
+done
+if ! chmod 700 "${data_dir}" "${backup_dir}"; then
+    log_error "SAG installation could not protect its private directories."
+    exit 1
+fi
+
+script_dir="$(cd -P -- "$(dirname -- "$0")" && pwd -P)"
+exec /bin/bash "${script_dir}/prepare_compose_env"

@@ -24,6 +24,10 @@
   基于 SOTA 的 SAG 架构，把分散的文档与数据变成可搜索、可关联、可追溯的知识。
 </p>
 
+> **fnOS 开发分支**
+>
+> 本分支是长期维护的 fnOS 适配线，正式名称为 `fnos/develop`，**不会合回 `main`**。常规 SAG 项目请使用 [`main`](https://github.com/Zleap-AI/SAG/tree/main) 分支。
+
 https://github.com/user-attachments/assets/cae70570-3885-490f-9126-dea23dcb369c
 
 ## 目录
@@ -31,10 +35,51 @@ https://github.com/user-attachments/assets/cae70570-3885-490f-9126-dea23dcb369c
 <p align="center">
   <a href="#社区交流">社区交流</a> ·
   <a href="#项目介绍">项目介绍</a> ·
+  <a href="#fnos">fnOS</a> ·
   <a href="#技术原理">技术原理</a> ·
   <a href="#用户指南">用户指南</a> ·
   <a href="#开发者指南">开发者指南</a>
 </p>
+
+---
+
+<a id="fnos"></a>
+
+## fnOS Docker 应用
+
+本分支将 SAG 打包为 fnOS Docker 应用。用户从 fnOS 桌面入口打开应用，或访问 `3080` 端口；无需额外配置 API 或 Web 端口。
+
+```text
+fnOS 桌面入口 / :3080
+        │
+  sag-gateway（Nginx）
+    ├── /          → sag-web
+    └── /api、/mcp → sag-api → /data
+```
+
+- **API、Web、Gateway** 由三个 Compose 服务组成；API `8000` 和 Web `3000` 只在容器网络内可见，Gateway 是唯一暴露到宿主机的服务。
+- **持久化数据** 挂载在 `${TRIM_PKGVAR}/data`，其中 SQLite、LanceDB、上传原文和索引必须作为一个整体恢复。生命周期脚本默认卸载保留数据，并在升级前创建完整停服冷备。
+- **局域网单用户模式** 不要求密码、初始化密钥或登录校验。首次为空工作区时可记录显示用户名，但该名称不是身份凭据。
+- **运行时镜像** 在每个 FPK 中以不可变 digest 固定；不得用 `latest` 等可变标签覆盖已经交付的镜像。
+
+### fnOS 修改与发布规范
+
+1. fnOS 专用改动只在 `fnos/develop` 维护；`main` 的能力通过评审 PR 单向同步并完成 fnOS 回归，绝不反向合并。
+2. 必须保持应用契约一致：`packages/fnos/sag/manifest`、`app/ui/config`、Compose 端口映射、生命周期脚本和打包测试应使用同一应用名及服务端口。
+3. `/data` 是不可拆分的兼容边界。涉及 Schema、迁移、备份、恢复、升级、卸载或容器重建的改动，必须补充相应生命周期测试。
+4. 先构建候选镜像并验证 API/Web/Gateway 的确切 digest 与目标架构，再基于这些 digest 生成 FPK 和 SHA-256 校验文件。
+5. 不提交 `dist/` 下生成的 FPK、校验文件、本地镜像 archive 或一次性测试证据；评审通过的发布资产应由发布工作流生成。
+
+关键目录与职责：
+
+| 范围 | 代码入口 |
+| --- | --- |
+| fnOS Manifest、桌面入口、生命周期、Compose | `packages/fnos/sag/` |
+| 本地 fnOS Compose 冒烟环境 | `compose.fnos.yaml`、`deploy/fnos/` |
+| 打包、镜像策略、发布校验 | `scripts/build-fnos-package.mjs`、`scripts/validate-fnos-release.mjs`、`scripts/release-fnos.mjs` |
+| 候选镜像构建与扫描 | `.github/workflows/fnos-image-release.yml` |
+
+> 当前镜像仓库地址仍处于从个人命名空间迁移到 `Zleap-AI` 组织命名空间的过渡期；新的正式发布工作必须先完成该迁移，才能提交飞牛应用中心。
 
 ---
 
