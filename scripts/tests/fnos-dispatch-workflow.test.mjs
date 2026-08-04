@@ -19,6 +19,9 @@ test("fnOS release entry is manual, isolated, and checks out fnos/develop", asyn
   assert.match(workflow, /publish_confirmation \}\}" = "PUBLISH"/);
   assert.doesNotMatch(workflow, /on:\n  push:/);
   assert.doesNotMatch(workflow, /\.github\/workflows\/ci\.yml/);
+  assert.doesNotMatch(workflow, /candidate_tag|CANDIDATE_TAG|fnos-candidate-/);
+  assert.match(workflow, /event=push&head_sha=\$\{CANDIDATE_REVISION\}/);
+  assert.match(workflow, /\.head_branch == "fnos\/develop" and \.conclusion == "success"/);
 });
 
 test("fnOS release never publishes a dry-run package and only creates public assets after explicit confirmation", async () => {

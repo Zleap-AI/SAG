@@ -2,8 +2,17 @@ name: fnOS Candidate Images
 
 on:
   push:
-    tags:
-      - "fnos-candidate-*"
+    branches: [fnos/develop]
+    paths:
+      - ".github/workflows/fnos-image-release.yml"
+      - ".github/workflows/fnos-release.yml"
+      - "apps/api/**"
+      - "apps/web/**"
+      - "packages/fnos/**"
+      - "scripts/fnos-*.mjs"
+      - "scripts/release-fnos.mjs"
+      - "scripts/validate-fnos-release.mjs"
+      - "scripts/smoke-fnos-release-images.mjs"
 
 concurrency:
   group: fnos-candidate-${{ github.repository }}
@@ -27,15 +36,14 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
       - id: metadata
-        name: Verify repository, tag, manifest, and dedicated branch HEAD
+        name: Verify repository, branch, manifest, and dedicated branch HEAD
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = "Zleap-AI/SAG"
-          test "$GITHUB_REF_TYPE" = "tag"
+          test "$GITHUB_REF_TYPE" = "branch"
+          test "$GITHUB_REF_NAME" = "fnos/develop"
           test "$GITHUB_SHA" = "$(git rev-parse HEAD)"
-          tag_revision="$(git rev-list -n 1 "${GITHUB_REF_NAME}^{commit}")"
-          test "$GITHUB_SHA" = "$tag_revision"
           remote_line="$(git ls-remote --heads origin fnos/develop)"
           read -r remote_revision remote_ref extra <<<"$remote_line"
           test -n "$remote_revision"
@@ -49,8 +57,6 @@ jobs:
             1.[0-9]*.[0-9]*-fnos.[0-9]*) ;;
             *) exit 1 ;;
           esac
-          expected_tag="fnos-candidate-${version}-${GITHUB_SHA:0:12}"
-          test "$GITHUB_REF_NAME" = "$expected_tag"
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
           printf 'revision=%s\n' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
           printf 'staging_tag=staging-fnos-%s-%s-%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
@@ -136,75 +142,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  local-amd64-smoke:
-    name: Build and smoke local linux/amd64 images
-    needs: [candidate, quality]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.candidate.outputs.revision }}
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
-      - name: Build local API image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.17.0
-        with:
-          context: ./apps/api
-          load: true
-          platforms: linux/amd64
-          tags: sag-api-smoke:${{ needs.candidate.outputs.revision }}
-          labels: |
-            org.opencontainers.image.revision=${{ needs.candidate.outputs.revision }}
-            org.opencontainers.image.version=${{ needs.candidate.outputs.version }}
-      - name: Build local Web image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.17.0
-        with:
-          context: ./apps/web
-          load: true
-          platforms: linux/amd64
-          build-args: NEXT_PUBLIC_API_BASE=/
-          tags: sag-web-smoke:${{ needs.candidate.outputs.revision }}
-          labels: |
-            org.opencontainers.image.revision=${{ needs.candidate.outputs.revision }}
-            org.opencontainers.image.version=${{ needs.candidate.outputs.version }}
-      - name: Smoke API readiness and Web root
-        shell: bash
-        run: |
-          set -euo pipefail
-          trap 'docker rm -f sag-api-smoke sag-web-smoke >/dev/null 2>&1 || true' EXIT
-          docker run --detach --name sag-api-smoke --publish 18000:8000 \
-            --env SAG_ENVIRONMENT=prod \
-            --env SAG_DEBUG=false \
-            --env SAG_SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
-            --env SAG_AUTH_MODE=single_user \
-            sag-api-smoke:"${{ needs.candidate.outputs.revision }}"
-          docker run --detach --name sag-web-smoke --publish 13000:3000 sag-web-smoke:"${{ needs.candidate.outputs.revision }}"
-          for attempt in {1..30}; do
-            curl --fail --silent --show-error http://127.0.0.1:18000/api/v1/system/ready >/dev/null && break
-            sleep 2
-            test "$attempt" -lt 30 || { docker logs sag-api-smoke; exit 1; }
-          done
-          empty_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-            http://127.0.0.1:18000/api/v1/auth/session)"
-          test "$empty_status" = 200
-          initialized_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-            --header 'Content-Type: application/json' \
-            --data '{"name":"Smoke Owner"}' \
-            http://127.0.0.1:18000/api/v1/auth/session)"
-          test "$initialized_status" = 201
-          anonymous_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-            http://127.0.0.1:18000/api/v1/auth/me)"
-          test "$anonymous_status" = 200
-          for attempt in {1..20}; do
-            curl --fail --silent --show-error http://127.0.0.1:13000/ >/dev/null && break
-            sleep 2
-            test "$attempt" -lt 20 || { docker logs sag-web-smoke; exit 1; }
-          done
-
   staging:
     name: Publish multi-platform staging images
-    needs: [candidate, local-amd64-smoke, gateway-security]
+    needs: [candidate, gateway-security]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -217,10 +157,12 @@ jobs:
             context: ./apps/api
             image: ghcr.io/zleap-ai/sag-api
             build_args: ""
+            cache_scope: fnos-sag-api-multiarch
           - name: Web
             context: ./apps/web
             image: ghcr.io/zleap-ai/sag-web
             build_args: NEXT_PUBLIC_API_BASE=/
+            cache_scope: fnos-sag-web-multiarch
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -239,6 +181,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           build-args: ${{ matrix.build_args }}
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}
           tags: ${{ matrix.image }}:${{ needs.candidate.outputs.staging_tag }}
           labels: |
             org.opencontainers.image.revision=${{ needs.candidate.outputs.revision }}

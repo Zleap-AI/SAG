@@ -28,7 +28,6 @@ jobs:
     outputs:
       version: ${{ steps.metadata.outputs.version }}
       revision: ${{ steps.metadata.outputs.revision }}
-      candidate_tag: ${{ steps.metadata.outputs.candidate_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,7 +50,6 @@ jobs:
           revision="$(git rev-parse HEAD)"
           printf 'version=%s\n' "$manifest_version" >> "$GITHUB_OUTPUT"
           printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
-          printf 'candidate_tag=fnos-candidate-%s-%s\n' "$manifest_version" "${revision:0:12}" >> "$GITHUB_OUTPUT"
       - name: Run fnOS static release tests
         shell: bash
         run: node --test scripts/tests/fnos-*.test.mjs
@@ -69,7 +67,6 @@ jobs:
       web_digest: ${{ steps.evidence.outputs.web_digest }}
       gateway: ${{ steps.evidence.outputs.gateway }}
     env:
-      CANDIDATE_TAG: ${{ needs.verify-release-request.outputs.candidate_tag }}
       CANDIDATE_VERSION: ${{ needs.verify-release-request.outputs.version }}
       CANDIDATE_REVISION: ${{ needs.verify-release-request.outputs.revision }}
     steps:
@@ -86,7 +83,7 @@ jobs:
         run: |
           set -euo pipefail
           candidate_run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?event=push&head_sha=${CANDIDATE_REVISION}&per_page=100" \
-            --jq '.workflow_runs[] | select(.name == "fnOS Candidate Images" and .head_branch == env.CANDIDATE_TAG and .conclusion == "success") | .id' \
+            --jq '.workflow_runs[] | select(.name == "fnOS Candidate Images" and .head_branch == "fnos/develop" and .conclusion == "success") | .id' \
             | head -n 1)"
           test -n "$candidate_run_id"
           api_digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "ghcr.io/zleap-ai/sag-api:${CANDIDATE_VERSION}")"
