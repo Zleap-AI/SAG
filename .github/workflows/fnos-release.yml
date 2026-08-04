@@ -1,6 +1,18 @@
-name: fnOS Release
+name: fnOS Delivery
 
 on:
+  push:
+    branches: [fnos/develop]
+    paths:
+      - ".github/workflows/fnos-image-release.yml"
+      - ".github/workflows/fnos-release.yml"
+      - "apps/api/**"
+      - "apps/web/**"
+      - "packages/fnos/**"
+      - "scripts/fnos-*.mjs"
+      - "scripts/release-fnos.mjs"
+      - "scripts/validate-fnos-release.mjs"
+      - "scripts/smoke-fnos-release-images.mjs"
   workflow_dispatch:
     inputs:
       mode:
@@ -18,7 +30,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: fnos-release-${{ github.run_id }}
+  group: fnos-delivery-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -28,7 +40,6 @@ jobs:
     outputs:
       version: ${{ steps.metadata.outputs.version }}
       revision: ${{ steps.metadata.outputs.revision }}
-      candidate_tag: ${{ steps.metadata.outputs.candidate_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -45,64 +56,29 @@ jobs:
             [0-9]*.[0-9]*.[0-9]*-fnos.[0-9]*) ;;
             *) echo "invalid fnOS version" >&2; exit 1 ;;
           esac
-          if [ "${{ inputs.mode }}" = "publish" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "publish" ]; then
             test "${{ inputs.publish_confirmation }}" = "PUBLISH"
           fi
           revision="$(git rev-parse HEAD)"
           printf 'version=%s\n' "$manifest_version" >> "$GITHUB_OUTPUT"
           printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
-          printf 'candidate_tag=fnos-candidate-%s-%s\n' "$manifest_version" "${revision:0:12}" >> "$GITHUB_OUTPUT"
       - name: Run fnOS static release tests
         shell: bash
         run: node --test scripts/tests/fnos-*.test.mjs
 
-  resolve-candidate:
-    name: Resolve approved candidate evidence
+  candidate:
+    name: Build and verify release images
     needs: verify-release-request
-    runs-on: ubuntu-24.04
-    permissions:
-      actions: read
-      contents: read
-    outputs:
-      candidate_run_id: ${{ steps.evidence.outputs.candidate_run_id }}
-      api_digest: ${{ steps.evidence.outputs.api_digest }}
-      web_digest: ${{ steps.evidence.outputs.web_digest }}
-      gateway: ${{ steps.evidence.outputs.gateway }}
-    env:
-      CANDIDATE_TAG: ${{ needs.verify-release-request.outputs.candidate_tag }}
-      CANDIDATE_VERSION: ${{ needs.verify-release-request.outputs.version }}
-      CANDIDATE_REVISION: ${{ needs.verify-release-request.outputs.revision }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.verify-release-request.outputs.revision }}
-          fetch-depth: 0
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
-      - id: evidence
-        name: Require a successful candidate run and exact public images
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          candidate_run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?event=push&head_sha=${CANDIDATE_REVISION}&per_page=100" \
-            --jq '.workflow_runs[] | select(.name == "fnOS Candidate Images" and .head_branch == env.CANDIDATE_TAG and .conclusion == "success") | .id' \
-            | head -n 1)"
-          test -n "$candidate_run_id"
-          api_digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "ghcr.io/zleap-ai/sag-api:${CANDIDATE_VERSION}")"
-          web_digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "ghcr.io/zleap-ai/sag-web:${CANDIDATE_VERSION}")"
-          node scripts/fnos-release-registry.mjs verify-public \
-            --docker docker --api-image ghcr.io/zleap-ai/sag-api --web-image ghcr.io/zleap-ai/sag-web \
-            --candidate-version "$CANDIDATE_VERSION" --api-digest "$api_digest" --web-digest "$web_digest"
-          gateway="$(node scripts/fnos-gateway-policy.mjs verify --docker docker)"
-          printf 'candidate_run_id=%s\n' "$candidate_run_id" >> "$GITHUB_OUTPUT"
-          printf 'api_digest=%s\n' "$api_digest" >> "$GITHUB_OUTPUT"
-          printf 'web_digest=%s\n' "$web_digest" >> "$GITHUB_OUTPUT"
-          printf 'gateway=%s\n' "$gateway" >> "$GITHUB_OUTPUT"
+    # Keep the fnOS implementation on its permanent branch even when this
+    # dispatcher is manually launched from the default branch for visibility.
+    uses: Zleap-AI/SAG/.github/workflows/fnos-image-release.yml@fnos/develop
+    with:
+      revision: ${{ needs.verify-release-request.outputs.revision }}
 
   build-package:
     name: Build and validate fnOS package
-    needs: [verify-release-request, resolve-candidate]
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: [verify-release-request, candidate]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -122,25 +98,31 @@ jobs:
       - name: Produce immutable evidence and FPK in runner workspace
         env:
           CANDIDATE_VERSION: ${{ needs.verify-release-request.outputs.version }}
-          CANDIDATE_RUN_ID: ${{ needs.resolve-candidate.outputs.candidate_run_id }}
-          API_DIGEST: ${{ needs.resolve-candidate.outputs.api_digest }}
-          WEB_DIGEST: ${{ needs.resolve-candidate.outputs.web_digest }}
-          GATEWAY_IMAGE: ${{ needs.resolve-candidate.outputs.gateway }}
+          CANDIDATE_RUN_ID: ${{ github.run_id }}
+          API_DIGEST: ${{ needs.candidate.outputs.api_digest }}
+          WEB_DIGEST: ${{ needs.candidate.outputs.web_digest }}
+          GATEWAY_IMAGE: ${{ needs.candidate.outputs.gateway }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p release
-          node scripts/release-fnos.mjs prepare --version "$CANDIDATE_VERSION" --channel global --candidate-run-id "$CANDIDATE_RUN_ID" --output release/release-input.json
-          cat > release/candidate-evidence.json <<EOF
+          node scripts/release-fnos.mjs prepare \
+            --version "$CANDIDATE_VERSION" \
+            --channel global \
+            --candidate-run-id "$CANDIDATE_RUN_ID" \
+            --output release-input.json
+          cat > candidate-evidence.json <<EOF
           {"api":"ghcr.1ms.run/zleap-ai/sag-api@${API_DIGEST}","web":"ghcr.1ms.run/zleap-ai/sag-web@${WEB_DIGEST}","gateway":"${GATEWAY_IMAGE}"}
           EOF
-          node scripts/release-fnos.mjs package --input release/release-input.json --candidate-evidence release/candidate-evidence.json --output release
+          node scripts/release-fnos.mjs package \
+            --input release-input.json \
+            --candidate-evidence candidate-evidence.json \
+            --output release
           node scripts/fnos-release-manifest.mjs validate --input release/release-manifest.json
 
   publish-release:
     name: Publish reviewed fnOS release assets
-    if: ${{ inputs.mode == 'publish' }}
-    needs: [verify-release-request, resolve-candidate, build-package]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' }}
+    needs: [verify-release-request, candidate, build-package]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -162,19 +144,25 @@ jobs:
       - name: Rebuild immutable release files for publication
         env:
           CANDIDATE_VERSION: ${{ needs.verify-release-request.outputs.version }}
-          CANDIDATE_RUN_ID: ${{ needs.resolve-candidate.outputs.candidate_run_id }}
-          API_DIGEST: ${{ needs.resolve-candidate.outputs.api_digest }}
-          WEB_DIGEST: ${{ needs.resolve-candidate.outputs.web_digest }}
-          GATEWAY_IMAGE: ${{ needs.resolve-candidate.outputs.gateway }}
+          CANDIDATE_RUN_ID: ${{ github.run_id }}
+          API_DIGEST: ${{ needs.candidate.outputs.api_digest }}
+          WEB_DIGEST: ${{ needs.candidate.outputs.web_digest }}
+          GATEWAY_IMAGE: ${{ needs.candidate.outputs.gateway }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p release
-          node scripts/release-fnos.mjs prepare --version "$CANDIDATE_VERSION" --channel global --candidate-run-id "$CANDIDATE_RUN_ID" --output release/release-input.json
-          cat > release/candidate-evidence.json <<EOF
+          node scripts/release-fnos.mjs prepare \
+            --version "$CANDIDATE_VERSION" \
+            --channel global \
+            --candidate-run-id "$CANDIDATE_RUN_ID" \
+            --output release-input.json
+          cat > candidate-evidence.json <<EOF
           {"api":"ghcr.1ms.run/zleap-ai/sag-api@${API_DIGEST}","web":"ghcr.1ms.run/zleap-ai/sag-web@${WEB_DIGEST}","gateway":"${GATEWAY_IMAGE}"}
           EOF
-          node scripts/release-fnos.mjs package --input release/release-input.json --candidate-evidence release/candidate-evidence.json --output release
+          node scripts/release-fnos.mjs package \
+            --input release-input.json \
+            --candidate-evidence candidate-evidence.json \
+            --output release
       - name: Create immutable GitHub Release assets
         env:
           GH_TOKEN: ${{ github.token }}
