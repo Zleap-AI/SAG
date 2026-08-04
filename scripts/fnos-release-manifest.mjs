@@ -9,6 +9,8 @@ const revisionPattern = /^[a-f0-9]{40}$/;
 const sha256Pattern = /^[a-f0-9]{64}$/;
 const versionPattern = /^1\.\d+\.\d+-fnos\.\d+$/;
 const workflowUrlPattern = /^https:\/\/github\.com\/Zleap-AI\/SAG\/actions\/runs\/\d+$/;
+const buildIdPattern = /^\d{8}\.\d{6}Z$/;
+const utcTimestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 
 function fail(message) {
   throw new Error(`fnos-release-manifest: ${message}`);
@@ -36,6 +38,13 @@ export function validateReleaseManifest(value) {
   if (typeof manifest.revision !== "string" || !revisionPattern.test(manifest.revision)) {
     fail("revision must be a lowercase 40-character commit SHA");
   }
+  if (typeof manifest.build_id !== "string" || !buildIdPattern.test(manifest.build_id)) {
+    fail("build_id must match YYYYMMDD.HHMMSSZ");
+  }
+  if (typeof manifest.built_at_utc !== "string" || !utcTimestampPattern.test(manifest.built_at_utc)) {
+    fail("built_at_utc must be an RFC3339 UTC timestamp with second precision");
+  }
+  if (manifest.source_branch !== "fnos/develop") fail("source_branch must be fnos/develop");
   const expectedCandidateTag = `fnos-candidate-${manifest.version}-${manifest.revision.slice(0, 12)}`;
   if (manifest.candidate_tag !== expectedCandidateTag) fail("candidate tag must match version and revision");
 

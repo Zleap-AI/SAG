@@ -17,6 +17,9 @@ function validManifest() {
     version: "1.5.0-fnos.1",
     channel: "global",
     revision,
+    build_id: "20260804.112701Z",
+    built_at_utc: "2026-08-04T11:27:01Z",
+    source_branch: "fnos/develop",
     candidate_tag: "fnos-candidate-1.5.0-fnos.1-aaaaaaaaaaaa",
     candidate_workflow: {
       run_id: "30798626087",
@@ -64,6 +67,16 @@ test("release manifest rejects mutable image tags and inconsistent identity fiel
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /immutable|candidate tag|filename/i);
+});
+
+test("release manifest rejects missing or malformed build provenance", async (t) => {
+  const manifest = validManifest();
+  manifest.build_id = "2026-08-04";
+  delete manifest.built_at_utc;
+  const result = validate(await withManifest(t, manifest));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /build_id|built_at_utc/i);
 });
 
 test("release manifest rejects a cn channel without an approved repository prefix", async (t) => {
