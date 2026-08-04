@@ -403,6 +403,142 @@ def test_extraction_response_does_not_invent_unknown_entity_type():
     assert response.content == original
 
 
+def test_extraction_response_downgrades_overflow_integer_entity_value():
+    import json
+
+    from sag_api.sag.incremental_processor import _normalize_extraction_response
+
+    response = SimpleNamespace(
+        content=json.dumps(
+            {
+                "data": {
+                    "items": [
+                        {
+                            "entities": [
+                                {
+                                    "type": "metric",
+                                    "name": "累计交易笔数",
+                                    "description": "统计指标",
+                                    "value_type": "int",
+                                    "value": "9223372036854775808",
+                                }
+                            ]
+                        }
+                    ]
+                }
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert _normalize_extraction_response(response, {"metric"}) == 1
+    entity = json.loads(response.content)["data"]["items"][0]["entities"][0]
+    assert entity["value_type"] == "text"
+    assert entity["value"] == "9223372036854775808"
+
+
+def test_extraction_response_keeps_sqlite_integer_boundaries():
+    import json
+
+    from sag_api.sag.incremental_processor import _normalize_extraction_response
+
+    values = ["-9223372036854775808", "9223372036854775807"]
+    response = SimpleNamespace(
+        content=json.dumps(
+            {
+                "data": {
+                    "items": [
+                        {
+                            "entities": [
+                                {
+                                    "type": "metric",
+                                    "name": value,
+                                    "description": "统计指标",
+                                    "value_type": "int",
+                                    "value": value,
+                                }
+                                for value in values
+                            ]
+                        }
+                    ]
+                }
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert _normalize_extraction_response(response, {"metric"}) == 0
+    entities = json.loads(response.content)["data"]["items"][0]["entities"]
+    assert [entity["value_type"] for entity in entities] == ["int", "int"]
+
+
+def test_upstream_entity_value_parser_downgrades_overflow_integer():
+    from zleap.sag.modules.extract.parser import EntityValueParser
+
+    from sag_api.sag.incremental_processor import _install_sqlite_integer_guard
+
+    _install_sqlite_integer_guard()
+    fields = EntityValueParser().parse_to_typed_fields("9223372036854775808笔", entity_type="metric")
+
+    assert fields["value_type"] == "text"
+    assert fields["int_value"] is None
+
+
+@pytest.mark.asyncio
+async def test_extract_chunk_downgrades_overflow_integer_before_sag_persists(monkeypatch):
+    import json
+
+    from sag_api.sag import incremental_processor as processor_module
+    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
+
+    payload = {
+        "data": {
+            "items": [
+                {
+                    "entities": [
+                        {
+                            "type": "metric",
+                            "name": "9223372036854775808笔",
+                            "description": "累计交易笔数",
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+
+    class FakeLeafClient:
+        async def chat(self, messages, **kwargs):
+            return SimpleNamespace(
+                content=json.dumps(payload, ensure_ascii=False),
+                usage=SimpleNamespace(total_tokens=42),
+            )
+
+    class FakeRetryClient:
+        def __init__(self):
+            self.client = FakeLeafClient()
+
+    class FakeExtractor:
+        def __init__(self, **kwargs):
+            self.client = FakeRetryClient()
+
+        async def _get_llm_client(self):
+            return self.client
+
+        async def extract(self, config):
+            request = {"data": {"meta": {"entity_types": [{"type": "metric", "description": "指标"}]}}}
+            response = await self.client.client.chat([SimpleNamespace(content=json.dumps(request, ensure_ascii=False))])
+            entity = json.loads(response.content)["data"]["items"][0]["entities"][0]
+            assert entity["value_type"] == "text"
+            return [SimpleNamespace(id="event-1")]
+
+    monkeypatch.setattr(processor_module, "EventExtractor", FakeExtractor)
+    engine = SimpleNamespace(_extractor=SimpleNamespace(prompt_manager=object(), model_config={}))
+    processor = IncrementalDocumentProcessor(engine, "source-config", max_concurrency=1)
+
+    assert await processor._extract_chunk("chunk-1") == (["event-1"], 42)
+
+
 @pytest.mark.asyncio
 async def test_extract_chunk_raises_when_sag_swallows_chunk_failure(monkeypatch):
     from sag_api.sag import incremental_processor as processor_module

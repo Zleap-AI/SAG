@@ -28,6 +28,9 @@ StageCallback = Callable[[str], Awaitable[None]]
 
 log = get_logger("sag.incremental")
 
+_SQLITE_INTEGER_MIN = -(2**63)
+_SQLITE_INTEGER_MAX = 2**63 - 1
+
 _KNOWLEDGE_EVENT_REQUIREMENTS = """
 对于书籍、报告、论文等非新闻文档，“事项”也包括可独立理解的观点、事实、定义、
 机制、因果关系、论证和结论，不要求必须包含日期、人物动作或新闻事件。
@@ -161,11 +164,76 @@ def _normalize_event_entity_aliases(event: object, allowed_types: set[str]) -> i
     return normalized
 
 
-def _normalize_extraction_response(response: Any, allowed_types: set[str]) -> int:
-    """Apply the narrow entity-key compatibility rule to one LLM response."""
+def _value_overflows_sqlite_integer(value: object, entity_type: object) -> bool:
+    """Match zleap-sag numeric parsing, then check SQLite's signed range."""
 
-    if not allowed_types:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return not _SQLITE_INTEGER_MIN <= value <= _SQLITE_INTEGER_MAX
+    if not isinstance(value, str):
+        return False
+    from zleap.sag.modules.extract.parser import EntityValueParser
+
+    parse = getattr(EntityValueParser, "_sag_original_parse", EntityValueParser.parse)
+    parsed = parse(EntityValueParser(), value, entity_type=entity_type if isinstance(entity_type, str) else None)
+    return bool(
+        parsed
+        and parsed.get("type") == "int"
+        and not _SQLITE_INTEGER_MIN <= int(parsed["value"]) <= _SQLITE_INTEGER_MAX
+    )
+
+
+def _install_sqlite_integer_guard() -> None:
+    """Guard zleap-sag's parser at the same boundary that persists Entity.int_value."""
+
+    from zleap.sag.modules.extract.parser import EntityValueParser
+
+    if getattr(EntityValueParser, "_sag_sqlite_integer_guard_installed", False):
+        return
+    original_parse = EntityValueParser.parse
+
+    def guarded_parse(self: Any, text: str, *args: Any, **kwargs: Any):
+        result = original_parse(self, text, *args, **kwargs)
+        if result and result.get("type") == "int" and _value_overflows_sqlite_integer(result.get("value"), None):
+            return {**result, "type": "text", "value": str(text), "unit": None}
+        return result
+
+    EntityValueParser.parse = guarded_parse
+    EntityValueParser._sag_original_parse = original_parse
+    EntityValueParser._sag_sqlite_integer_guard_installed = True
+    log.warning("已启用 zleap-sag SQLite 整数范围兼容保护")
+
+
+_install_sqlite_integer_guard()
+
+
+def _normalize_event_entity_values(event: object) -> int:
+    """Downgrade integer entities that SQLite cannot store without losing their text."""
+
+    if not isinstance(event, dict):
         return 0
+    normalized = 0
+    entities = event.get("entities")
+    if isinstance(entities, list):
+        for entity in entities:
+            if not isinstance(entity, dict) or entity.get("value_type") == "text":
+                continue
+            candidate = entity.get("value") if entity.get("value_type") == "int" else entity.get("name")
+            if _value_overflows_sqlite_integer(candidate, entity.get("type")):
+                entity["value_type"] = "text"
+                normalized += 1
+
+    children = event.get("children")
+    if isinstance(children, list):
+        for child in children:
+            normalized += _normalize_event_entity_values(child)
+    return normalized
+
+
+def _normalize_extraction_response(response: Any, allowed_types: set[str]) -> int:
+    """Normalize response fields that would otherwise fail upstream persistence."""
+
     content = getattr(response, "content", None)
     if not isinstance(content, str):
         return 0
@@ -187,7 +255,9 @@ def _normalize_extraction_response(response: Any, allowed_types: set[str]) -> in
     if not isinstance(items, list):
         return 0
 
-    normalized = sum(_normalize_event_entity_aliases(item, allowed_types) for item in items)
+    normalized = sum(
+        _normalize_event_entity_aliases(item, allowed_types) + _normalize_event_entity_values(item) for item in items
+    )
     if normalized:
         response.content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return normalized
