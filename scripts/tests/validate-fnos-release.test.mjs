@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const validator = fileURLToPath(new URL("../validate-fnos-release.mjs", import.meta.url));
 const digest = `sha256:${"a".repeat(64)}`;
-const gatewayReference = "ghcr.io/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:758f0377a23257333a8957eb5d1f67ccc4b84dfc8a5c3f939e440b087076453c";
+const gatewayReference = "ghcr.1ms.run/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:758f0377a23257333a8957eb5d1f67ccc4b84dfc8a5c3f939e440b087076453c";
 
 function validCompose({
   api = "",
@@ -27,7 +27,7 @@ function validCompose({
   const authEnvironment = environment.length
     ? `    environment:\n${environment.join("\n")}\n`
     : "";
-  return `name: sag\nservices:\n  api:\n    image: ghcr.io/zleap-ai/sag-api@${digest}\n${apiEnvFile}${authEnvironment}${api}  web:\n    image: ghcr.io/zleap-ai/sag-web@${digest}\n${web}  gateway:\n    image: ${gatewayReference}\n${gateway}`;
+  return `name: sag\nservices:\n  api:\n    image: ghcr.1ms.run/zleap-ai/sag-api@${digest}\n${apiEnvFile}${authEnvironment}${api}  web:\n    image: ghcr.1ms.run/zleap-ai/sag-web@${digest}\n${web}  gateway:\n    image: ${gatewayReference}\n${gateway}`;
 }
 
 async function fixture(t, contents) {
@@ -97,7 +97,7 @@ test("rejects an optional fnOS secret env_file", async (t) => {
 });
 
 test("rejects a latest image tag", async (t) => {
-  const compose = await fixture(t, validCompose().replace(`ghcr.io/zleap-ai/sag-api@${digest}`, "ghcr.io/zleap-ai/sag-api:latest"));
+  const compose = await fixture(t, validCompose().replace(`ghcr.1ms.run/zleap-ai/sag-api@${digest}`, "ghcr.1ms.run/zleap-ai/sag-api:latest"));
   const result = validate(compose);
 
   assert.notEqual(result.status, 0);
@@ -182,7 +182,7 @@ test("rejects an extra gateway host port", async (t) => {
 
 test("rejects a lifecycle helper host port", async (t) => {
   const compose = await fixture(t, `${validCompose()}  lifecycle-helper:
-    image: ghcr.io/zleap-ai/sag-api@${digest}
+    image: ghcr.1ms.run/zleap-ai/sag-api@${digest}
     ports:
       - "9000:9000"
 `);
@@ -211,7 +211,7 @@ test("rejects a non-digest image reference", async (t) => {
 test("rejects an immutable but unreviewed Nginx gateway digest", async (t) => {
   const compose = await fixture(t, validCompose().replace(
     gatewayReference,
-    `ghcr.io/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:${"f".repeat(64)}`,
+    `ghcr.1ms.run/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:${"f".repeat(64)}`,
   ));
   const result = validate(compose);
 

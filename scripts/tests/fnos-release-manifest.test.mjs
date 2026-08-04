@@ -26,9 +26,9 @@ function validManifest() {
       url: "https://github.com/Zleap-AI/SAG/actions/runs/30798626087",
     },
     images: {
-      api: `ghcr.io/zleap-ai/sag-api@sha256:${"b".repeat(64)}`,
-      web: `ghcr.io/zleap-ai/sag-web@sha256:${"c".repeat(64)}`,
-      gateway: `ghcr.io/zleap-ai/sag-gateway:1.5.0-fnos.1@sha256:${"d".repeat(64)}`,
+      api: `ghcr.1ms.run/zleap-ai/sag-api@sha256:${"b".repeat(64)}`,
+      web: `ghcr.1ms.run/zleap-ai/sag-web@sha256:${"c".repeat(64)}`,
+      gateway: `ghcr.1ms.run/zleap-ai/sag-gateway:1.5.0-fnos.1@sha256:${"d".repeat(64)}`,
     },
     fpk: { filename: "sag-1.5.0-fnos.1.fpk", sha256: "e".repeat(64) },
   };
@@ -59,7 +59,7 @@ test("release manifest accepts a complete global immutable release record", asyn
 
 test("release manifest rejects mutable image tags and inconsistent identity fields", async (t) => {
   const manifest = validManifest();
-  manifest.images.api = "ghcr.io/zleap-ai/sag-api:1.5.0-fnos.1";
+  manifest.images.api = "ghcr.1ms.run/zleap-ai/sag-api:1.5.0-fnos.1";
   manifest.candidate_tag = "fnos-candidate-1.4.0-fnos.6-aaaaaaaaaaaa";
   manifest.fpk.filename = "sag-1.4.0-fnos.8.fpk";
   const input = await withManifest(t, manifest);

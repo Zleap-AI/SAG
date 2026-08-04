@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "image": {
-    "repository": "ghcr.io/zleap-ai/sag-gateway",
+    "repository": "ghcr.1ms.run/zleap-ai/sag-gateway",
     "tag": "1.4.0-fnos.8",
     "upstreamTag": "1.30.4-alpine",
     "indexDigest": "sha256:758f0377a23257333a8957eb5d1f67ccc4b84dfc8a5c3f939e440b087076453c",
-    "reference": "ghcr.io/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:758f0377a23257333a8957eb5d1f67ccc4b84dfc8a5c3f939e440b087076453c"
+    "reference": "ghcr.1ms.run/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:758f0377a23257333a8957eb5d1f67ccc4b84dfc8a5c3f939e440b087076453c"
   },
   "requiredPlatforms": [
     {
@@ -52,7 +52,7 @@
       "family": "alpine",
       "version": "3.24.1"
     },
-    "expectedTarget": "ghcr.io/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:758f0377a23257333a8957eb5d1f67ccc4b84dfc8a5c3f939e440b087076453c (alpine 3.24.1)",
+    "expectedTarget": "ghcr.1ms.run/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:758f0377a23257333a8957eb5d1f67ccc4b84dfc8a5c3f939e440b087076453c (alpine 3.24.1)",
     "sourceReportSha256": "9fa13bd965a961408daea1d761d7a52f7ed246dc845211c1d3b51873a5b217a9"
   }
 }

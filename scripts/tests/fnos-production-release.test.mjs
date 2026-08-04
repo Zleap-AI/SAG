@@ -65,8 +65,8 @@ test("package rejects candidate evidence that is not pinned to approved registri
   }));
   await writeFile(evidence, JSON.stringify({
     api: `registry.example/sag-api@sha256:${"b".repeat(64)}`,
-    web: `ghcr.io/zleap-ai/sag-web@sha256:${"c".repeat(64)}`,
-    gateway: `ghcr.io/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:${"d".repeat(64)}`,
+    web: `ghcr.1ms.run/zleap-ai/sag-web@sha256:${"c".repeat(64)}`,
+    gateway: `ghcr.1ms.run/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:${"d".repeat(64)}`,
   }));
   const result = spawnSync(process.execPath, [
     script, "package", "--input", input, "--candidate-evidence", evidence,
