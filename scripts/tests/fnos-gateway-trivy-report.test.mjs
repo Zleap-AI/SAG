@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const canonicalizer = path.join(repoRoot, "scripts/canonicalize-fnos-trivy-report.mjs");
-const reference = "ghcr.1ms.run/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:758f0377a23257333a8957eb5d1f67ccc4b84dfc8a5c3f939e440b087076453c";
+const reference = "ghcr.1ms.run/zleap-ai/sag-gateway:1.5.0-fnos.1@sha256:758f0377a23257333a8957eb5d1f67ccc4b84dfc8a5c3f939e440b087076453c";
 const expectedTarget = `${reference} (alpine 3.24.1)`;
 
 async function fixture(t, report) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -35,6 +35,34 @@ test("prepare records a global release input for the checked-out fnOS manifest",
   assert.equal(releaseInput.source_branch, checkedOutBranch);
 });
 
+test("prepare accepts the detached fnos/develop checkout used by GitHub Actions", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "sag-fnos-release-detached-"));
+  const clone = path.join(root, "repository");
+  const output = path.join(root, "release-input.json");
+  t.after(async () => rm(root, { recursive: true, force: true }));
+
+  const cloned = spawnSync("git", ["clone", "--no-hardlinks", repoRoot, clone], { encoding: "utf8" });
+  assert.equal(cloned.status, 0, cloned.stderr);
+  const fetched = spawnSync("git", ["fetch", "origin", "fnos/develop"], { cwd: clone, encoding: "utf8" });
+  assert.equal(fetched.status, 0, fetched.stderr);
+  const detached = spawnSync("git", ["checkout", "--detach", "origin/fnos/develop"], { cwd: clone, encoding: "utf8" });
+  assert.equal(detached.status, 0, detached.stderr);
+  await cp(script, path.join(clone, "scripts", "release-fnos.mjs"));
+
+  const result = spawnSync(process.execPath, [
+    path.join(clone, "scripts", "release-fnos.mjs"),
+    "prepare",
+    "--version", "1.5.0-fnos.1",
+    "--channel", "global",
+    "--candidate-run-id", "30798626087",
+    "--output", output,
+  ], { cwd: clone, encoding: "utf8" });
+
+  assert.equal(result.status, 0, result.stderr);
+  const releaseInput = JSON.parse(await (await import("node:fs/promises")).readFile(output, "utf8"));
+  assert.equal(releaseInput.source_branch, "fnos/develop");
+});
+
 test("prepare rejects a release request with an invalid channel", () => {
   const result = spawnSync(process.execPath, [
     script,
@@ -66,7 +94,7 @@ test("package rejects candidate evidence that is not pinned to approved registri
   await writeFile(evidence, JSON.stringify({
     api: `registry.example/sag-api@sha256:${"b".repeat(64)}`,
     web: `ghcr.1ms.run/zleap-ai/sag-web@sha256:${"c".repeat(64)}`,
-    gateway: `ghcr.1ms.run/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:${"d".repeat(64)}`,
+    gateway: `ghcr.1ms.run/zleap-ai/sag-gateway:1.5.0-fnos.1@sha256:${"d".repeat(64)}`,
   }));
   const result = spawnSync(process.execPath, [
     script, "package", "--input", input, "--candidate-evidence", evidence,

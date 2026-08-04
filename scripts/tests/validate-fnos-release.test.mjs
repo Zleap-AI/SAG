@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const validator = fileURLToPath(new URL("../validate-fnos-release.mjs", import.meta.url));
 const digest = `sha256:${"a".repeat(64)}`;
-const gatewayReference = "ghcr.1ms.run/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:758f0377a23257333a8957eb5d1f67ccc4b84dfc8a5c3f939e440b087076453c";
+const gatewayReference = "ghcr.1ms.run/zleap-ai/sag-gateway:1.5.0-fnos.1@sha256:758f0377a23257333a8957eb5d1f67ccc4b84dfc8a5c3f939e440b087076453c";
 
 function validCompose({
   api = "",
@@ -211,7 +211,7 @@ test("rejects a non-digest image reference", async (t) => {
 test("rejects an immutable but unreviewed Nginx gateway digest", async (t) => {
   const compose = await fixture(t, validCompose().replace(
     gatewayReference,
-    `ghcr.1ms.run/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:${"f".repeat(64)}`,
+    `ghcr.1ms.run/zleap-ai/sag-gateway:1.5.0-fnos.1@sha256:${"f".repeat(64)}`,
   ));
   const result = validate(compose);
 

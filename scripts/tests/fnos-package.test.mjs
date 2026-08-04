@@ -30,7 +30,7 @@ const digestA = `sha256:${"a".repeat(64)}`;
 const digestB = `sha256:${"b".repeat(64)}`;
 const digestD = `sha256:${"d".repeat(64)}`;
 const gatewayDigest = "sha256:758f0377a23257333a8957eb5d1f67ccc4b84dfc8a5c3f939e440b087076453c";
-const gatewayReference = `ghcr.1ms.run/zleap-ai/sag-gateway:1.4.0-fnos.8@${gatewayDigest}`;
+const gatewayReference = `ghcr.1ms.run/zleap-ai/sag-gateway:1.5.0-fnos.1@${gatewayDigest}`;
 const gatewayRevision = "ccdab6c99ae2e2fc53a144dc68d6b8f44163adf2";
 const gatewayAmd64Digest = "sha256:8a4f4b94275ff59d809477799cbbaf1a7ab65ed1871403d05e31fd66bdb8db82";
 const gatewayArm64Digest = "sha256:d64d001f60e9a65d45980907e9070fc46d418980f311052e73c0df2eccc3cc30";
@@ -246,7 +246,7 @@ test("release build refuses an immutable Nginx digest absent from the reviewed p
   const result = build([
     "--api-image", `ghcr.1ms.run/zleap-ai/sag-api@${digestA}`,
     "--web-image", `ghcr.1ms.run/zleap-ai/sag-web@${digestB}`,
-    "--nginx-image", `ghcr.1ms.run/zleap-ai/sag-gateway:1.4.0-fnos.8@sha256:${"f".repeat(64)}`,
+    "--nginx-image", `ghcr.1ms.run/zleap-ai/sag-gateway:1.5.0-fnos.1@sha256:${"f".repeat(64)}`,
     "--output", path.join(root, "candidate.fpk"),
   ]);
 

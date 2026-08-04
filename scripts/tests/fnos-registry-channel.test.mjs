@@ -15,7 +15,7 @@ function run(channel, api = `ghcr.1ms.run/zleap-ai/sag-api@${digest}`, prefix) {
     "--channel", channel,
     "--api-image", api,
     "--web-image", `ghcr.1ms.run/zleap-ai/sag-web@${digest}`,
-    "--gateway-image", `ghcr.1ms.run/zleap-ai/sag-gateway:1.4.0-fnos.8@${digest}`,
+    "--gateway-image", `ghcr.1ms.run/zleap-ai/sag-gateway:1.5.0-fnos.1@${digest}`,
     ...(prefix ? ["--cn-repository-prefix", prefix] : []),
   ], { cwd: repoRoot, encoding: "utf8" });
 }
