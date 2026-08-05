@@ -360,6 +360,21 @@ test("release build rejects a Web digest not bound to the exact candidate tag", 
   assert.match(result.stderr, /web.*candidate tag.*digest/i);
 });
 
+test("candidate build accepts verified unpromoted API and Web digests", async (t) => {
+  const root = await tempRoot(t);
+  const output = path.join(root, "candidate.fpk");
+  const result = build([
+    "--allow-unpromoted-images",
+    "--api-image", `ghcr.1ms.run/zleap-ai/sag-api@${digestA}`,
+    "--web-image", `ghcr.1ms.run/zleap-ai/sag-web@${digestB}`,
+    "--nginx-image", gatewayReference,
+    "--output", output,
+  ], await fakeRegistry(t, { apiTagDigest: digestD, webTagDigest: digestD }));
+
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.equal((await stat(output)).isFile(), true);
+});
+
 test("release build accepts candidate-bound multi-platform API and Web indexes", async (t) => {
   const root = await tempRoot(t);
   const output = path.join(root, "candidate.fpk");

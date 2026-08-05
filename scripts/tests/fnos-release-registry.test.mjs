@@ -13,6 +13,9 @@ const digestA = `sha256:${"a".repeat(64)}`;
 const digestB = `sha256:${"b".repeat(64)}`;
 const api = "ghcr.io/zleap-ai/sag-api";
 const web = "ghcr.io/zleap-ai/sag-web";
+const deliveryApi = `ghcr.1ms.run/zleap-ai/sag-api@${digestA}`;
+const deliveryWeb = `ghcr.1ms.run/zleap-ai/sag-web@${digestB}`;
+const deliveryGateway = `ghcr.1ms.run/zleap-ai/sag-gateway@sha256:${"c".repeat(64)}`;
 const manifestText = readFileSync(path.join(repoRoot, "packages/fnos/sag/manifest"), "utf8");
 const version = manifestText.match(/^version\s*=\s*(\S+)\s*$/m)?.[1];
 if (!version) throw new Error("packages/fnos/sag/manifest is missing a version line");
@@ -86,6 +89,10 @@ function verifyPublicArgs(docker) {
 
 function verifyPublicDigestsArgs(docker) {
   return ["verify-public-digests", "--docker", docker, "--api-image", api, "--web-image", web, "--api-digest", digestA, "--web-digest", digestB];
+}
+
+function verifyDeliveryEndpointsArgs(docker) {
+  return ["verify-delivery-endpoints", "--docker", docker, "--api-image", deliveryApi, "--web-image", deliveryWeb, "--gateway-image", deliveryGateway];
 }
 
 test("digest verification emits only the immutable digest despite docker pull stdout and writes exact JSON/job outputs", async (t) => {
@@ -186,6 +193,17 @@ test("candidate verification anonymously checks immutable digests without creati
   );
   assert.equal(log.filter((args) => args.includes("create")).length, 0);
   assert.equal(log.filter((args) => args.includes("{{.Manifest.Digest}}")).length, 0);
+});
+
+test("delivery endpoint verification resolves all three FPK image references through the configured accelerator", async (t) => {
+  const fake = await fakeDocker(t);
+  const result = run(verifyDeliveryEndpointsArgs(fake.executable), fake.env);
+
+  assert.equal(result.status, 0, result.stderr);
+  const rawReferences = (await stateOf(fake.statePath)).log
+    .filter((args) => args.slice(0, 4).join(" ") === "buildx imagetools inspect --raw")
+    .map((args) => args[4]);
+  assert.deepEqual(rawReferences, [deliveryApi, deliveryWeb, deliveryGateway]);
 });
 
 test("anonymous verification fails when a public candidate tag has a different digest", async (t) => {

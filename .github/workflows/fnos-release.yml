@@ -363,10 +363,35 @@ jobs:
             --api-digest "$API_DIGEST" \
             --web-digest "$WEB_DIGEST"
 
+  delivery-endpoint-check:
+    name: Verify FPK delivery image endpoints
+    needs: [verify-release-request, gateway-security, inspect-images]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      API_IMAGE: ghcr.1ms.run/zleap-ai/sag-api@${{ needs.inspect-images.outputs.api_digest }}
+      WEB_IMAGE: ghcr.1ms.run/zleap-ai/sag-web@${{ needs.inspect-images.outputs.web_digest }}
+      GATEWAY_IMAGE: ${{ needs.gateway-security.outputs.gateway }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify-release-request.outputs.revision }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
+      - name: Resolve all FPK image references through ghcr.1ms.run
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/fnos-release-registry.mjs verify-delivery-endpoints \
+            --docker docker \
+            --api-image "$API_IMAGE" \
+            --web-image "$WEB_IMAGE" \
+            --gateway-image "$GATEWAY_IMAGE"
+
   build-package:
     name: Build and validate fnOS package
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    needs: [verify-release-request, quality, gateway-security, inspect-images, smoke-images, anonymous-digest-postcheck]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate' }}
+    needs: [verify-release-request, quality, gateway-security, inspect-images, smoke-images, anonymous-digest-postcheck, delivery-endpoint-check]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -407,6 +432,7 @@ jobs:
           node scripts/release-fnos.mjs package \
             --input release-input.json \
             --candidate-evidence candidate-evidence.json \
+            --allow-unpromoted-images true \
             --output release
           node scripts/fnos-release-manifest.mjs validate --input release/release-manifest.json
       - name: Upload one-day Candidate FPK
@@ -423,7 +449,7 @@ jobs:
   publish-release:
     name: Publish reviewed fnOS release assets
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' }}
-    needs: [verify-release-request, gateway-security, inspect-images, anonymous-final-postcheck, build-package]
+    needs: [verify-release-request, gateway-security, inspect-images, anonymous-final-postcheck, delivery-endpoint-check]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

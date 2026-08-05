@@ -37,7 +37,15 @@ test("fnOS Delivery validates the dedicated branch and caches parallel multiarch
   assert.match(workflow, /promote:\n[\s\S]*?needs: \[verify-release-request, quality, gateway-security, inspect-images, smoke-images\]/);
   assert.match(workflow, /promote:\n[\s\S]*?if: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.mode == 'publish' \}\}/);
   assert.match(workflow, /anonymous-digest-postcheck:\n[\s\S]*?verify-public-digests/);
-  assert.match(workflow, /build-package:\n[\s\S]*?needs: \[verify-release-request, quality, gateway-security, inspect-images, smoke-images, anonymous-digest-postcheck\]/);
+  assert.match(workflow, /delivery-endpoint-check:\n[\s\S]*?name: Verify FPK delivery image endpoints/);
+  assert.match(workflow, /delivery-endpoint-check:\n[\s\S]*?ghcr\.1ms\.run\/zleap-ai\/sag-api@\$\{\{ needs\.inspect-images\.outputs\.api_digest \}\}/);
+  assert.match(workflow, /delivery-endpoint-check:\n[\s\S]*?ghcr\.1ms\.run\/zleap-ai\/sag-web@\$\{\{ needs\.inspect-images\.outputs\.web_digest \}\}/);
+  assert.match(workflow, /delivery-endpoint-check:\n[\s\S]*?--gateway-image "\$GATEWAY_IMAGE"/);
+  assert.match(workflow, /delivery-endpoint-check:\n[\s\S]*?verify-delivery-endpoints/);
+  assert.match(workflow, /build-package:\n[\s\S]*?needs: \[verify-release-request, quality, gateway-security, inspect-images, smoke-images, anonymous-digest-postcheck, delivery-endpoint-check\]/);
+  assert.match(workflow, /build-package:\n[\s\S]*?if: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.mode == 'candidate' \}\}/);
+  assert.match(workflow, /--allow-unpromoted-images true/);
+  assert.match(workflow, /publish-release:\n[\s\S]*?needs: \[verify-release-request, gateway-security, inspect-images, anonymous-final-postcheck, delivery-endpoint-check\]/);
   assert.doesNotMatch(workflow, /local-amd64-smoke/);
   assert.match(workflow, /smoke-fnos-release-images\.mjs smoke/);
 });
