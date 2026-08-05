@@ -15,11 +15,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Build verification mode
+        description: Candidate produces a one-day private-test FPK artifact; publish creates final tags and a GitHub Release
         required: true
-        default: dry-run
+        default: candidate
         type: choice
-        options: [dry-run, publish]
+        options: [candidate, publish]
       publish_confirmation:
         description: Required only for publish; type PUBLISH
         required: false
@@ -39,7 +39,6 @@ jobs:
     outputs:
       version: ${{ steps.metadata.outputs.version }}
       revision: ${{ steps.metadata.outputs.revision }}
-      staging_tag: ${{ steps.metadata.outputs.staging_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,7 +61,6 @@ jobs:
           revision="$(git rev-parse HEAD)"
           printf 'version=%s\n' "$manifest_version" >> "$GITHUB_OUTPUT"
           printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
-          printf 'staging_tag=staging-fnos-%s-%s-%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "${revision:0:12}" >> "$GITHUB_OUTPUT"
       - name: Run fnOS static release tests
         shell: bash
         run: node --test scripts/tests/fnos-*.test.mjs
@@ -152,8 +150,8 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  staging:
-    name: Publish multi-platform staging images
+  build-images:
+    name: Build digest-only multi-platform images
     needs: verify-release-request
     runs-on: ubuntu-24.04
     permissions:
@@ -184,23 +182,36 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push an isolated staging index
+      - id: build
+        name: Build and push an untagged immutable image index
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.17.0
         with:
           context: ${{ matrix.context }}
-          push: true
+          outputs: type=image,name-canonical=true,push-by-digest=true,push=true
+          tags: ${{ matrix.image }}
           platforms: linux/amd64,linux/arm64
           build-args: ${{ matrix.build_args }}
           cache-from: type=gha,scope=${{ matrix.cache_scope }}
           cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}
-          tags: ${{ matrix.image }}:${{ needs.verify-release-request.outputs.staging_tag }}
           labels: |
             org.opencontainers.image.revision=${{ needs.verify-release-request.outputs.revision }}
             org.opencontainers.image.version=${{ needs.verify-release-request.outputs.version }}
+      - name: Record immutable image digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${{ steps.build.outputs.digest }}"
+          printf '%s\n' "${{ steps.build.outputs.digest }}" > "${{ matrix.name }}-digest.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fnos-image-digest-${{ matrix.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ matrix.name }}-digest.txt
+          if-no-files-found: error
+          retention-days: 30
 
-  inspect-staging:
-    name: Capture verified staging digests
-    needs: [verify-release-request, staging]
+  inspect-images:
+    name: Capture verified untagged image digests
+    needs: [verify-release-request, build-images]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -211,7 +222,6 @@ jobs:
     env:
       CANDIDATE_VERSION: ${{ needs.verify-release-request.outputs.version }}
       CANDIDATE_REVISION: ${{ needs.verify-release-request.outputs.revision }}
-      STAGING_TAG: ${{ needs.verify-release-request.outputs.staging_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -222,13 +232,17 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: fnos-image-digest-*
+          merge-multiple: true
       - id: digests
-        name: Resolve, validate, and record staging digests once
+        name: Validate and record untagged image digests once
         shell: bash
         run: |
           set -euo pipefail
-          api_digest="$(node scripts/fnos-release-registry.mjs verify-staging --docker docker --image ghcr.io/zleap-ai/sag-api --staging-tag "$STAGING_TAG" --revision "$CANDIDATE_REVISION" --version "$CANDIDATE_VERSION")"
-          web_digest="$(node scripts/fnos-release-registry.mjs verify-staging --docker docker --image ghcr.io/zleap-ai/sag-web --staging-tag "$STAGING_TAG" --revision "$CANDIDATE_REVISION" --version "$CANDIDATE_VERSION")"
+          api_digest="$(node scripts/fnos-release-registry.mjs verify-digest --docker docker --image ghcr.io/zleap-ai/sag-api --digest "$(tr -d '\r\n' < API-digest.txt)" --revision "$CANDIDATE_REVISION" --version "$CANDIDATE_VERSION")"
+          web_digest="$(node scripts/fnos-release-registry.mjs verify-digest --docker docker --image ghcr.io/zleap-ai/sag-web --digest "$(tr -d '\r\n' < Web-digest.txt)" --revision "$CANDIDATE_REVISION" --version "$CANDIDATE_VERSION")"
           node scripts/fnos-release-registry.mjs write-handoff --api-digest "$api_digest" --web-digest "$web_digest" --github-output "$GITHUB_OUTPUT" --artifact verified-digests.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -236,21 +250,16 @@ jobs:
           path: verified-digests.json
           if-no-files-found: error
           retention-days: 30
-      - name: Record staging retention
-        shell: bash
-        run: |
-          echo "::notice::Staging tags $STAGING_TAG are retained. Delete only by an audited tag-specific GHCR operation; deleting a digest could remove promoted content."
-
-  smoke-staging:
+  smoke-images:
     name: Smoke exact captured linux/amd64 digests
-    needs: [verify-release-request, inspect-staging]
+    needs: [verify-release-request, inspect-images]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read
     env:
-      API_IMAGE: ghcr.io/zleap-ai/sag-api@${{ needs.inspect-staging.outputs.api_digest }}
-      WEB_IMAGE: ghcr.io/zleap-ai/sag-web@${{ needs.inspect-staging.outputs.web_digest }}
+      API_IMAGE: ghcr.io/zleap-ai/sag-api@${{ needs.inspect-images.outputs.api_digest }}
+      WEB_IMAGE: ghcr.io/zleap-ai/sag-web@${{ needs.inspect-images.outputs.web_digest }}
       SMOKE_SCOPE: release-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -274,15 +283,16 @@ jobs:
 
   promote:
     name: Reconcile final tags to verified digests
-    needs: [verify-release-request, quality, gateway-security, inspect-staging, smoke-staging]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' }}
+    needs: [verify-release-request, quality, gateway-security, inspect-images, smoke-images]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
     env:
       CANDIDATE_VERSION: ${{ needs.verify-release-request.outputs.version }}
-      API_DIGEST: ${{ needs.inspect-staging.outputs.api_digest }}
-      WEB_DIGEST: ${{ needs.inspect-staging.outputs.web_digest }}
+      API_DIGEST: ${{ needs.inspect-images.outputs.api_digest }}
+      WEB_DIGEST: ${{ needs.inspect-images.outputs.web_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -299,22 +309,49 @@ jobs:
           set -euo pipefail
           node scripts/fnos-release-registry.mjs promote --docker docker --api-image ghcr.io/zleap-ai/sag-api --web-image ghcr.io/zleap-ai/sag-web --candidate-version "$CANDIDATE_VERSION" --api-digest "$API_DIGEST" --web-digest "$WEB_DIGEST"
 
-  anonymous-postcheck:
-    name: Verify public candidate tags and exact digests anonymously
-    needs: [verify-release-request, inspect-staging, promote]
+  anonymous-digest-postcheck:
+    name: Verify public immutable digests anonymously
+    needs: [verify-release-request, inspect-images]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
     env:
       CANDIDATE_VERSION: ${{ needs.verify-release-request.outputs.version }}
-      API_DIGEST: ${{ needs.inspect-staging.outputs.api_digest }}
-      WEB_DIGEST: ${{ needs.inspect-staging.outputs.web_digest }}
+      API_DIGEST: ${{ needs.inspect-images.outputs.api_digest }}
+      WEB_DIGEST: ${{ needs.inspect-images.outputs.web_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.verify-release-request.outputs.revision }}
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
-      - name: Resolve public tags and indexes without registry credentials
+      - name: Resolve immutable indexes without registry credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/fnos-release-registry.mjs verify-public-digests \
+            --docker docker \
+            --api-image ghcr.io/zleap-ai/sag-api \
+            --web-image ghcr.io/zleap-ai/sag-web \
+            --api-digest "$API_DIGEST" \
+            --web-digest "$WEB_DIGEST"
+
+  anonymous-final-postcheck:
+    name: Verify public final tags and exact digests anonymously
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' }}
+    needs: [verify-release-request, inspect-images, promote]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      CANDIDATE_VERSION: ${{ needs.verify-release-request.outputs.version }}
+      API_DIGEST: ${{ needs.inspect-images.outputs.api_digest }}
+      WEB_DIGEST: ${{ needs.inspect-images.outputs.web_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify-release-request.outputs.revision }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
+      - name: Resolve final tags and indexes without registry credentials
         shell: bash
         run: |
           set -euo pipefail
@@ -329,7 +366,7 @@ jobs:
   build-package:
     name: Build and validate fnOS package
     if: ${{ github.event_name == 'workflow_dispatch' }}
-    needs: [verify-release-request, gateway-security, inspect-staging, anonymous-postcheck]
+    needs: [verify-release-request, quality, gateway-security, inspect-images, smoke-images, anonymous-digest-postcheck]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -353,8 +390,8 @@ jobs:
         env:
           CANDIDATE_VERSION: ${{ needs.verify-release-request.outputs.version }}
           CANDIDATE_RUN_ID: ${{ github.run_id }}
-          API_DIGEST: ${{ needs.inspect-staging.outputs.api_digest }}
-          WEB_DIGEST: ${{ needs.inspect-staging.outputs.web_digest }}
+          API_DIGEST: ${{ needs.inspect-images.outputs.api_digest }}
+          WEB_DIGEST: ${{ needs.inspect-images.outputs.web_digest }}
           GATEWAY_IMAGE: ${{ needs.gateway-security.outputs.gateway }}
         shell: bash
         run: |
@@ -372,10 +409,21 @@ jobs:
             --candidate-evidence candidate-evidence.json \
             --output release
           node scripts/fnos-release-manifest.mjs validate --input release/release-manifest.json
+      - name: Upload one-day Candidate FPK
+        if: ${{ inputs.mode == 'candidate' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sag-${{ needs.verify-release-request.outputs.version }}-candidate-${{ github.run_id }}
+          path: |
+            release/sag-${{ needs.verify-release-request.outputs.version }}.fpk
+            release/sag-${{ needs.verify-release-request.outputs.version }}.fpk.sha256
+            release/release-manifest.json
+          if-no-files-found: error
+          retention-days: 1
   publish-release:
     name: Publish reviewed fnOS release assets
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' }}
-    needs: [verify-release-request, gateway-security, inspect-staging, anonymous-postcheck, build-package]
+    needs: [verify-release-request, gateway-security, inspect-images, anonymous-final-postcheck, build-package]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -401,8 +449,8 @@ jobs:
         env:
           CANDIDATE_VERSION: ${{ needs.verify-release-request.outputs.version }}
           CANDIDATE_RUN_ID: ${{ github.run_id }}
-          API_DIGEST: ${{ needs.inspect-staging.outputs.api_digest }}
-          WEB_DIGEST: ${{ needs.inspect-staging.outputs.web_digest }}
+          API_DIGEST: ${{ needs.inspect-images.outputs.api_digest }}
+          WEB_DIGEST: ${{ needs.inspect-images.outputs.web_digest }}
           GATEWAY_IMAGE: ${{ needs.gateway-security.outputs.gateway }}
         shell: bash
         run: |
