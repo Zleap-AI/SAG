@@ -84,6 +84,10 @@ function verifyPublicArgs(docker) {
   return ["verify-public", "--docker", docker, "--api-image", api, "--web-image", web, "--candidate-version", version, "--api-digest", digestA, "--web-digest", digestB];
 }
 
+function verifyPublicDigestsArgs(docker) {
+  return ["verify-public-digests", "--docker", docker, "--api-image", api, "--web-image", web, "--api-digest", digestA, "--web-digest", digestB];
+}
+
 test("digest verification emits only the immutable digest despite docker pull stdout and writes exact JSON/job outputs", async (t) => {
   const fake = await fakeDocker(t);
   const githubOutput = path.join(path.dirname(fake.statePath), "github-output");
@@ -168,6 +172,20 @@ test("anonymous verification checks candidate tags and exact multi-platform dige
     log.filter((args) => args.slice(0, 4).join(" ") === "buildx imagetools inspect --raw").map((args) => args[4]),
     [`${api}@${digestA}`, `${web}@${digestB}`],
   );
+});
+
+test("candidate verification anonymously checks immutable digests without creating or resolving version tags", async (t) => {
+  const fake = await fakeDocker(t);
+  const result = run(verifyPublicDigestsArgs(fake.executable), fake.env);
+
+  assert.equal(result.status, 0, result.stderr);
+  const log = (await stateOf(fake.statePath)).log;
+  assert.deepEqual(
+    log.filter((args) => args.slice(0, 4).join(" ") === "buildx imagetools inspect --raw").map((args) => args[4]),
+    [`${api}@${digestA}`, `${web}@${digestB}`],
+  );
+  assert.equal(log.filter((args) => args.includes("create")).length, 0);
+  assert.equal(log.filter((args) => args.includes("{{.Manifest.Digest}}")).length, 0);
 });
 
 test("anonymous verification fails when a public candidate tag has a different digest", async (t) => {

@@ -15,11 +15,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Build verification mode
+        description: Candidate produces a one-day private-test FPK artifact; publish creates final tags and a GitHub Release
         required: true
-        default: dry-run
+        default: candidate
         type: choice
-        options: [dry-run, publish]
+        options: [candidate, publish]
       publish_confirmation:
         description: Required only for publish; type PUBLISH
         required: false
@@ -283,6 +283,7 @@ jobs:
 
   promote:
     name: Reconcile final tags to verified digests
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' }}
     needs: [verify-release-request, quality, gateway-security, inspect-images, smoke-images]
     runs-on: ubuntu-24.04
     permissions:
@@ -308,8 +309,35 @@ jobs:
           set -euo pipefail
           node scripts/fnos-release-registry.mjs promote --docker docker --api-image ghcr.io/zleap-ai/sag-api --web-image ghcr.io/zleap-ai/sag-web --candidate-version "$CANDIDATE_VERSION" --api-digest "$API_DIGEST" --web-digest "$WEB_DIGEST"
 
-  anonymous-postcheck:
-    name: Verify public candidate tags and exact digests anonymously
+  anonymous-digest-postcheck:
+    name: Verify public immutable digests anonymously
+    needs: [verify-release-request, inspect-images]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      CANDIDATE_VERSION: ${{ needs.verify-release-request.outputs.version }}
+      API_DIGEST: ${{ needs.inspect-images.outputs.api_digest }}
+      WEB_DIGEST: ${{ needs.inspect-images.outputs.web_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify-release-request.outputs.revision }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
+      - name: Resolve immutable indexes without registry credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/fnos-release-registry.mjs verify-public-digests \
+            --docker docker \
+            --api-image ghcr.io/zleap-ai/sag-api \
+            --web-image ghcr.io/zleap-ai/sag-web \
+            --api-digest "$API_DIGEST" \
+            --web-digest "$WEB_DIGEST"
+
+  anonymous-final-postcheck:
+    name: Verify public final tags and exact digests anonymously
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' }}
     needs: [verify-release-request, inspect-images, promote]
     runs-on: ubuntu-24.04
     permissions:
@@ -323,7 +351,7 @@ jobs:
         with:
           ref: ${{ needs.verify-release-request.outputs.revision }}
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
-      - name: Resolve public tags and indexes without registry credentials
+      - name: Resolve final tags and indexes without registry credentials
         shell: bash
         run: |
           set -euo pipefail
@@ -338,7 +366,7 @@ jobs:
   build-package:
     name: Build and validate fnOS package
     if: ${{ github.event_name == 'workflow_dispatch' }}
-    needs: [verify-release-request, gateway-security, inspect-images, anonymous-postcheck]
+    needs: [verify-release-request, quality, gateway-security, inspect-images, smoke-images, anonymous-digest-postcheck]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -381,10 +409,21 @@ jobs:
             --candidate-evidence candidate-evidence.json \
             --output release
           node scripts/fnos-release-manifest.mjs validate --input release/release-manifest.json
+      - name: Upload one-day Candidate FPK
+        if: ${{ inputs.mode == 'candidate' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sag-${{ needs.verify-release-request.outputs.version }}-candidate-${{ github.run_id }}
+          path: |
+            release/sag-${{ needs.verify-release-request.outputs.version }}.fpk
+            release/sag-${{ needs.verify-release-request.outputs.version }}.fpk.sha256
+            release/release-manifest.json
+          if-no-files-found: error
+          retention-days: 1
   publish-release:
     name: Publish reviewed fnOS release assets
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' }}
-    needs: [verify-release-request, gateway-security, inspect-images, anonymous-postcheck, build-package]
+    needs: [verify-release-request, gateway-security, inspect-images, anonymous-final-postcheck, build-package]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

@@ -33,6 +33,9 @@ test("manual delivery packages only images built in its own run", async () => {
   assert.match(workflow, /WEB_DIGEST: \$\{\{ needs\.inspect-images\.outputs\.web_digest \}\}/);
   assert.match(workflow, /GATEWAY_IMAGE: \$\{\{ needs\.gateway-security\.outputs\.gateway \}\}/);
   assert.match(workflow, /inputs\.mode == 'publish'/);
+  assert.match(workflow, /inputs\.mode == 'candidate'/);
+  assert.match(workflow, /name: Upload one-day Candidate FPK/);
+  assert.match(workflow, /retention-days: 1/);
   assert.match(workflow, /publish_confirmation \}\}" = "PUBLISH"/);
   assert.doesNotMatch(workflow, /mkdir -p release/);
 });

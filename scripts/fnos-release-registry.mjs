@@ -165,6 +165,16 @@ function verifyPublic(options) {
   inspectPublicDigest(options, webImage, webDigest);
 }
 
+function verifyPublicDigests(options) {
+  const apiImage = requireOption(options, "api_image");
+  const webImage = requireOption(options, "web_image");
+  const apiDigest = requireDigest(requireOption(options, "api_digest"), "api digest");
+  const webDigest = requireDigest(requireOption(options, "web_digest"), "web digest");
+
+  inspectPublicDigest(options, apiImage, apiDigest);
+  inspectPublicDigest(options, webImage, webDigest);
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.command === "verify-digest") {
@@ -181,6 +191,10 @@ async function main() {
   }
   if (options.command === "verify-public") {
     verifyPublic(options);
+    return;
+  }
+  if (options.command === "verify-public-digests") {
+    verifyPublicDigests(options);
     return;
   }
   fail(`unknown command: ${options.command}`);
