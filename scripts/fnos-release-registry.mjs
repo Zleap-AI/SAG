@@ -152,6 +152,21 @@ function inspectPublicDigest(options, image, digest) {
   requireIndex(result.stdout, reference);
 }
 
+function verifyDeliveryEndpoints(options) {
+  const references = [
+    ["api", requireOption(options, "api_image")],
+    ["web", requireOption(options, "web_image")],
+    ["gateway", requireOption(options, "gateway_image")],
+  ];
+  for (const [name, reference] of references) {
+    const separator = reference.lastIndexOf("@");
+    if (separator <= 0) fail(`${name} delivery image must be an immutable digest reference`);
+    const image = reference.slice(0, separator);
+    const digest = requireDigest(reference.slice(separator + 1), `${name} delivery image digest`);
+    inspectPublicDigest(options, image, digest);
+  }
+}
+
 function verifyPublic(options) {
   const apiImage = requireOption(options, "api_image");
   const webImage = requireOption(options, "web_image");
@@ -195,6 +210,10 @@ async function main() {
   }
   if (options.command === "verify-public-digests") {
     verifyPublicDigests(options);
+    return;
+  }
+  if (options.command === "verify-delivery-endpoints") {
+    verifyDeliveryEndpoints(options);
     return;
   }
   fail(`unknown command: ${options.command}`);
