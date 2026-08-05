@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+## v1.5.1 · 2026-08-05
+
+- 修复文档抽取时超出 SQLite 64 位整数范围的数值导致处理失败的问题：此类值会以文本保存，避免导入中断。
+
 ## v1.5.0 · 2026-08-03
 
 - 官方命令行客户端 [`@zleap-ai/sag-cli`](https://www.npmjs.com/package/@zleap-ai/sag-cli) 首次发布：一条命令即可把 SAG 知识库 MCP 挂载进 Codex 或 Claude Code；本机 Docker 免 Token，远程实例 `sag auth login` 后接入，全程不需要手改 Agent MCP 配置。
