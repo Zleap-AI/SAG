@@ -95,7 +95,8 @@
       "knowledge": "Knowledge",
       "integrations": "Integrations",
       "appearance": "Appearance",
-      "graph": "Graph"
+      "graph": "Graph",
+      "diagnostics": "Diagnostics"
     }
   },
   "Login": {
@@ -1253,5 +1254,32 @@
     "fullscreen": "View full screen",
     "continentPlanet": "Continent planet",
     "dualOrbit": "Dual-sphere orbit"
+  },
+  "Diagnostics": {
+    "title": "Diagnostics",
+    "description": "Export diagnostic logs to help troubleshoot issues.",
+    "statsTitle": "Session activity",
+    "statsDescription": "Number of events recorded in the current session.",
+    "entryCount": "{count} events recorded",
+    "empty": "No events recorded yet. Configure a model, upload files, or start a conversation first.",
+    "privacyTitle": "Privacy protection",
+    "privacyDescription": "Rest assured, exported logs are automatically sanitized.",
+    "noSecrets": "Logs do not contain API keys, passwords, or tokens. All secret fields are automatically replaced with [REDACTED].",
+    "exportButton": "Export diagnostic logs",
+    "exporting": "Exporting…",
+    "exportSuccess": "Diagnostic logs exported",
+    "exportFailed": "Export failed, please retry",
+    "clearButton": "Clear logs",
+    "clearConfirmTitle": "Confirm clear logs",
+    "clearConfirmDescription": "This will clear all diagnostic events recorded in the current session. This action cannot be undone.",
+    "clearSuccess": "Logs cleared",
+    "cancel": "Cancel",
+    "confirmClear": "Confirm clear",
+    "whatsIncluded": "Logs include the following:",
+    "includesModelConfig": "Model configuration (without secret keys)",
+    "includesUploads": "File upload records",
+    "includesQA": "Key Q&A interaction events",
+    "includesErrors": "Error and exception information",
+    "includesEnv": "System environment information"
   }
 }

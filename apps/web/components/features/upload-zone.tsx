@@ -7,6 +7,7 @@ import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 import { api, ApiError } from "@/lib/api";
+import { getDiagnosticsStore } from "@/lib/diagnostics";
 import { uploadConcurrencyGuidance } from "@/lib/upload-guidance";
 import { cn } from "@/lib/utils";
 import { Progress } from "@/components/ui/progress";
@@ -51,10 +52,20 @@ export function UploadZone({
       try {
         const idx = ok + 1;
         setProgress({ name: file.name, pct: 0, idx, total: files.length });
-        await api.uploadDocumentWithProgress(sourceId, file, (pct) =>
+        const doc = await api.uploadDocumentWithProgress(sourceId, file, (pct) =>
           setProgress((p) => (p ? { ...p, pct } : p)),
         );
         ok += 1;
+        getDiagnosticsStore().record("knowledge.upload", {
+          source_id: sourceId,
+          document_id: doc.id,
+          filename: file.name,
+          size_bytes: file.size,
+          content_type: file.type || extOf(file.name),
+          status: doc.status,
+          chunk_count: doc.chunk_count,
+          event_count: doc.event_count,
+        });
       } catch (err) {
         toast.error(t("fileFailed", {
           name: file.name,

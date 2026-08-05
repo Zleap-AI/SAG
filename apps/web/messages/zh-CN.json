@@ -95,7 +95,8 @@
       "knowledge": "知识库",
       "integrations": "集成",
       "appearance": "外观",
-      "graph": "图谱"
+      "graph": "图谱",
+      "diagnostics": "诊断"
     }
   },
   "Login": {
@@ -1253,5 +1254,32 @@
     "fullscreen": "全屏查看",
     "continentPlanet": "大陆星球",
     "dualOrbit": "双球轨道"
+  },
+  "Diagnostics": {
+    "title": "诊断日志",
+    "description": "导出运行日志以帮助排查问题。",
+    "statsTitle": "会话活动",
+    "statsDescription": "当前会话已记录的事件数量。",
+    "entryCount": "已记录 {count} 条事件",
+    "empty": "暂无记录的事件。请先进行模型配置、文件上传或问答操作。",
+    "privacyTitle": "隐私保护",
+    "privacyDescription": "请放心，导出的日志已经过自动脱敏处理。",
+    "noSecrets": "日志不包含 API Key、密码或 Token 等敏感信息。所有密钥字段均已自动替换为 [REDACTED]。",
+    "exportButton": "导出诊断日志",
+    "exporting": "导出中…",
+    "exportSuccess": "诊断日志已导出",
+    "exportFailed": "导出失败，请重试",
+    "clearButton": "清除日志",
+    "clearConfirmTitle": "确认清除日志",
+    "clearConfirmDescription": "这将清除当前会话中所有已记录的诊断事件。此操作不可撤销。",
+    "clearSuccess": "日志已清除",
+    "cancel": "取消",
+    "confirmClear": "确认清除",
+    "whatsIncluded": "日志包含以下信息：",
+    "includesModelConfig": "模型配置（不含密钥）",
+    "includesUploads": "文件上传记录",
+    "includesQA": "问答交互关键事件",
+    "includesErrors": "错误与异常信息",
+    "includesEnv": "系统环境信息"
   }
 }

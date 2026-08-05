@@ -1,5 +1,6 @@
 import { API_BASE } from "./api";
 import { getToken } from "./auth";
+import { getDiagnosticsStore } from "./diagnostics";
 import { readClientLocale } from "../i18n/client";
 import { clientErrorMessage, serverErrorMessage } from "../i18n/client-errors";
 
@@ -130,18 +131,35 @@ async function streamPost(
   signal?: AbortSignal,
 ): Promise<AgentRunOutcome> {
   const token = getToken();
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Accept-Language": readClientLocale(),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(body),
-    signal,
-  });
+  const startMs = Date.now();
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept-Language": readClientLocale(),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (e) {
+    const durationMs = Date.now() - startMs;
+    getDiagnosticsStore().record("error", {
+      source: "sse",
+      path,
+      duration_ms: durationMs,
+      error_code: e instanceof DOMException && e.name === "AbortError" ? "aborted" : "network",
+      error_message: e instanceof DOMException && e.name === "AbortError"
+        ? "SSE connection cancelled"
+        : "SSE connection failed — server unreachable",
+    });
+    throw e;
+  }
 
   if (!response.ok || !response.body) {
+    const durationMs = Date.now() - startMs;
     let message = clientErrorMessage("generationFailed");
     let code = "http_error";
     try {
@@ -152,6 +170,15 @@ async function streamPost(
     } catch {
       // Keep the stable fallback when a proxy returns HTML or an empty body.
     }
+    getDiagnosticsStore().record("error", {
+      source: "sse",
+      path,
+      duration_ms: durationMs,
+      status: response.status,
+      error_code: code,
+      error_message: message,
+      request_id: response.headers.get("X-Request-Id") ?? undefined,
+    });
     throw new AgentHttpError(
       serverErrorMessage(code, message, response.status),
       code,

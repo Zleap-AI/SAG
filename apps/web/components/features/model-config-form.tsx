@@ -23,6 +23,7 @@ import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { api, ApiError } from "@/lib/api";
 import { isLlmConfigLocked } from "@/lib/model-config-lock";
+import { getDiagnosticsStore } from "@/lib/diagnostics";
 import type {
   ModelConfig,
   ModelConfigPatch,
@@ -103,6 +104,22 @@ export function ModelConfigForm() {
       }
       setProviders(providerCatalog);
       hydrate(config);
+      getDiagnosticsStore().record("model.load", {
+        llm_provider: config.llm_provider,
+        llm_base_url: config.llm_base_url,
+        llm_model: config.llm_model,
+        llm_context_window: config.llm_context_window,
+        llm_temperature: config.llm_temperature,
+        llm_max_tokens: config.llm_max_tokens,
+        llm_timeout_ms: config.llm_timeout_ms,
+        llm_max_retries: config.llm_max_retries,
+        embedding_model: config.embedding_model,
+        embedding_base_url: config.embedding_base_url,
+        embedding_dimensions: config.embedding_dimensions,
+        document_parser: config.document_parser,
+        mineru_base_url: config.mineru_base_url,
+        mineru_version: config.mineru_version,
+      });
     } catch (error) {
       setLoadError(error instanceof ApiError ? error.message : t("loadFailed"));
     }
@@ -143,6 +160,25 @@ export function ModelConfigForm() {
       const { config } = await api.saveModelConfig(patch);
       hydrate(config);
       await refreshCapabilities();
+      getDiagnosticsStore().record("model.save", {
+        llm_provider: config.llm_provider,
+        llm_base_url: config.llm_base_url,
+        llm_model: config.llm_model,
+        llm_context_window: config.llm_context_window,
+        llm_temperature: config.llm_temperature,
+        llm_max_tokens: config.llm_max_tokens,
+        llm_timeout_ms: config.llm_timeout_ms,
+        llm_max_retries: config.llm_max_retries,
+        embedding_model: config.embedding_model,
+        embedding_base_url: config.embedding_base_url,
+        embedding_dimensions: config.embedding_dimensions,
+        document_parser: config.document_parser,
+        mineru_base_url: config.mineru_base_url,
+        mineru_version: config.mineru_version,
+        llm_api_key_changed: Boolean(llmKey.trim()),
+        embedding_api_key_changed: Boolean(embKey.trim()),
+        mineru_api_key_changed: Boolean(mineruKey.trim()),
+      });
       toast.success(t("saved"));
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : t("saveFailed"));
@@ -155,11 +191,18 @@ export function ModelConfigForm() {
     setTesting(true);
     setTestResult(null);
     try {
-      setTestResult(await api.testModelConfig(currentPatch()));
+      const result = await api.testModelConfig(currentPatch());
+      setTestResult(result);
+      getDiagnosticsStore().record("model.test", {
+        ok: result.ok,
+        message: result.message,
+      });
     } catch (error) {
-      setTestResult({
+      const message = error instanceof ApiError ? error.message : t("testFailed");
+      setTestResult({ ok: false, message });
+      getDiagnosticsStore().record("model.test", {
         ok: false,
-        message: error instanceof ApiError ? error.message : t("testFailed"),
+        message,
       });
     } finally {
       setTesting(false);
