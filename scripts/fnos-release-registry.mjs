@@ -63,15 +63,11 @@ function requireIndex(raw, image) {
   }
 }
 
-function verifyStaging(options) {
+function verifyDigest(options) {
   const image = requireOption(options, "image");
-  const stagingTag = requireOption(options, "staging_tag");
+  const digest = requireDigest(requireOption(options, "digest"), "image digest");
   const revision = requireOption(options, "revision");
   const version = requireOption(options, "version");
-  const stagedReference = `${image}:${stagingTag}`;
-  const resolution = docker(options, ["buildx", "imagetools", "inspect", "--format", "{{.Manifest.Digest}}", stagedReference]);
-  if (resolution.status !== 0) fail(`could not resolve staging tag ${stagedReference}: ${(resolution.stderr || resolution.stdout).trim()}`);
-  const digest = exactDigest(resolution.stdout, `staging tag ${stagedReference}`);
   const immutableReference = `${image}@${digest}`;
   const raw = docker(options, ["buildx", "imagetools", "inspect", "--raw", immutableReference]);
   if (raw.status !== 0) fail(`could not inspect ${immutableReference}: ${(raw.stderr || raw.stdout).trim()}`);
@@ -126,12 +122,11 @@ function promote(options) {
   const apiImage = requireOption(options, "api_image");
   const webImage = requireOption(options, "web_image");
   const candidateVersion = requireOption(options, "candidate_version");
-  const commitTag = requireOption(options, "commit_tag");
   const apiDigest = requireDigest(requireOption(options, "api_digest"), "api digest");
   const webDigest = requireDigest(requireOption(options, "web_digest"), "web digest");
   const finalTags = [
-    [apiImage, candidateVersion, apiDigest], [apiImage, commitTag, apiDigest],
-    [webImage, candidateVersion, webDigest], [webImage, commitTag, webDigest],
+    [apiImage, candidateVersion, apiDigest],
+    [webImage, candidateVersion, webDigest],
   ];
   for (const [image, tag, digest] of finalTags) reconcile(options, image, tag, digest);
   for (const [image, tag, digest] of finalTags) {
@@ -170,10 +165,20 @@ function verifyPublic(options) {
   inspectPublicDigest(options, webImage, webDigest);
 }
 
+function verifyPublicDigests(options) {
+  const apiImage = requireOption(options, "api_image");
+  const webImage = requireOption(options, "web_image");
+  const apiDigest = requireDigest(requireOption(options, "api_digest"), "api digest");
+  const webDigest = requireDigest(requireOption(options, "web_digest"), "web digest");
+
+  inspectPublicDigest(options, apiImage, apiDigest);
+  inspectPublicDigest(options, webImage, webDigest);
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  if (options.command === "verify-staging") {
-    process.stdout.write(`${verifyStaging(options)}\n`);
+  if (options.command === "verify-digest") {
+    process.stdout.write(`${verifyDigest(options)}\n`);
     return;
   }
   if (options.command === "write-handoff") {
@@ -186,6 +191,10 @@ async function main() {
   }
   if (options.command === "verify-public") {
     verifyPublic(options);
+    return;
+  }
+  if (options.command === "verify-public-digests") {
+    verifyPublicDigests(options);
     return;
   }
   fail(`unknown command: ${options.command}`);
