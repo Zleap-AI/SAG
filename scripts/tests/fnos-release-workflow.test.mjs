@@ -11,7 +11,7 @@ test("one fnOS Delivery workflow contains the candidate build and immutable evid
   const workflow = await readFile(workflowPath, "utf8");
 
   assert.match(workflow, /^name: fnOS Delivery$/m);
-  assert.match(workflow, /candidate:|quality:|gateway-security:|staging:|inspect-staging:|smoke-staging:|promote:|anonymous-postcheck:/);
+  assert.match(workflow, /candidate:|quality:|gateway-security:|build-images:|inspect-images:|smoke-images:|promote:|anonymous-postcheck:/);
   assert.match(workflow, /uses: Zleap-AI\/SAG\/\.github\/workflows\/ci\.yml@fnos\/develop/);
   assert.doesNotMatch(workflow, /workflow_call:|fnos-image-release\.yml|fnos-candidate-/);
 });
@@ -24,9 +24,13 @@ test("fnOS Delivery validates the dedicated branch and caches parallel multiarch
   assert.match(workflow, /cache-from: type=gha,scope=\$\{\{ matrix\.cache_scope \}\}/);
   assert.match(workflow, /cache-to: type=gha,mode=max,scope=\$\{\{ matrix\.cache_scope \}\}/);
   assert.match(workflow, /platforms: linux\/amd64,linux\/arm64/);
+  assert.match(workflow, /push-by-digest=true/);
+  assert.match(workflow, /name-canonical=true/);
+  assert.match(workflow, /tags: \$\{\{ matrix\.image \}\}/);
+  assert.doesNotMatch(workflow, /staging-fnos-|COMMIT_TAG|commit-tag|sha-\$\{\{/);
   assert.match(workflow, /gateway-security:\n[\s\S]*?needs: verify-release-request/);
-  assert.match(workflow, /staging:\n[\s\S]*?needs: verify-release-request/);
-  assert.match(workflow, /promote:\n[\s\S]*?needs: \[verify-release-request, quality, gateway-security, inspect-staging, smoke-staging\]/);
+  assert.match(workflow, /build-images:\n[\s\S]*?needs: verify-release-request/);
+  assert.match(workflow, /promote:\n[\s\S]*?needs: \[verify-release-request, quality, gateway-security, inspect-images, smoke-images\]/);
   assert.doesNotMatch(workflow, /local-amd64-smoke/);
   assert.match(workflow, /smoke-fnos-release-images\.mjs smoke/);
 });

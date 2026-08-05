@@ -84,11 +84,11 @@ function verifyPublicArgs(docker) {
   return ["verify-public", "--docker", docker, "--api-image", api, "--web-image", web, "--candidate-version", version, "--api-digest", digestA, "--web-digest", digestB];
 }
 
-test("staging verification emits only a digest despite docker pull stdout and writes exact JSON/job outputs", async (t) => {
-  const fake = await fakeDocker(t, { refs: { [`${api}:staging`]: digestA } });
+test("digest verification emits only the immutable digest despite docker pull stdout and writes exact JSON/job outputs", async (t) => {
+  const fake = await fakeDocker(t);
   const githubOutput = path.join(path.dirname(fake.statePath), "github-output");
   const artifact = path.join(path.dirname(fake.statePath), "verified-digests.json");
-  const verified = run(["verify-staging", "--docker", fake.executable, "--image", api, "--staging-tag", "staging", "--revision", "0123456789abcdef", "--version", version], fake.env);
+  const verified = run(["verify-digest", "--docker", fake.executable, "--image", api, "--digest", digestA, "--revision", "0123456789abcdef", "--version", version], fake.env);
 
   assert.equal(verified.status, 0, verified.stderr);
   assert.equal(verified.stdout, `${digestA}\n`);

@@ -63,15 +63,11 @@ function requireIndex(raw, image) {
   }
 }
 
-function verifyStaging(options) {
+function verifyDigest(options) {
   const image = requireOption(options, "image");
-  const stagingTag = requireOption(options, "staging_tag");
+  const digest = requireDigest(requireOption(options, "digest"), "image digest");
   const revision = requireOption(options, "revision");
   const version = requireOption(options, "version");
-  const stagedReference = `${image}:${stagingTag}`;
-  const resolution = docker(options, ["buildx", "imagetools", "inspect", "--format", "{{.Manifest.Digest}}", stagedReference]);
-  if (resolution.status !== 0) fail(`could not resolve staging tag ${stagedReference}: ${(resolution.stderr || resolution.stdout).trim()}`);
-  const digest = exactDigest(resolution.stdout, `staging tag ${stagedReference}`);
   const immutableReference = `${image}@${digest}`;
   const raw = docker(options, ["buildx", "imagetools", "inspect", "--raw", immutableReference]);
   if (raw.status !== 0) fail(`could not inspect ${immutableReference}: ${(raw.stderr || raw.stdout).trim()}`);
@@ -171,8 +167,8 @@ function verifyPublic(options) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  if (options.command === "verify-staging") {
-    process.stdout.write(`${verifyStaging(options)}\n`);
+  if (options.command === "verify-digest") {
+    process.stdout.write(`${verifyDigest(options)}\n`);
     return;
   }
   if (options.command === "write-handoff") {
