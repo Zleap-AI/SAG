@@ -27,7 +27,7 @@ test("fnOS delivery is implemented by one workflow file", async () => {
 test("manual delivery packages only images built in its own run", async () => {
   const workflow = await readFile(workflowPath, "utf8");
 
-  assert.match(workflow, /if: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}/);
+  assert.match(workflow, /build-package:\n[\s\S]*?if: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.mode == 'candidate' \}\}/);
   assert.match(workflow, /CANDIDATE_RUN_ID: \$\{\{ github\.run_id \}\}/);
   assert.match(workflow, /API_DIGEST: \$\{\{ needs\.inspect-images\.outputs\.api_digest \}\}/);
   assert.match(workflow, /WEB_DIGEST: \$\{\{ needs\.inspect-images\.outputs\.web_digest \}\}/);

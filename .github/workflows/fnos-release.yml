@@ -365,7 +365,7 @@ jobs:
 
   build-package:
     name: Build and validate fnOS package
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate' }}
     needs: [verify-release-request, quality, gateway-security, inspect-images, smoke-images, anonymous-digest-postcheck]
     runs-on: ubuntu-24.04
     steps:
@@ -407,6 +407,7 @@ jobs:
           node scripts/release-fnos.mjs package \
             --input release-input.json \
             --candidate-evidence candidate-evidence.json \
+            --allow-unpromoted-images true \
             --output release
           node scripts/fnos-release-manifest.mjs validate --input release/release-manifest.json
       - name: Upload one-day Candidate FPK
@@ -423,7 +424,7 @@ jobs:
   publish-release:
     name: Publish reviewed fnOS release assets
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'publish' }}
-    needs: [verify-release-request, gateway-security, inspect-images, anonymous-final-postcheck, build-package]
+    needs: [verify-release-request, gateway-security, inspect-images, anonymous-final-postcheck]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

@@ -40,11 +40,15 @@ function fail(message) {
 }
 
 function parseArgs(argv) {
-  const result = { structuralTest: false };
+  const result = { structuralTest: false, allowUnpromotedImages: false };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--structural-test") {
       result.structuralTest = true;
+      continue;
+    }
+    if (argument === "--allow-unpromoted-images") {
+      result.allowUnpromotedImages = true;
       continue;
     }
     const names = {
@@ -202,7 +206,7 @@ async function verifyPublishedImages(options, gatewayPolicy) {
     } else {
       requirePlatforms(name, image, ["linux/amd64", "linux/arm64"]);
     }
-    if (name === "api" || name === "web") {
+    if (!options.allowUnpromotedImages && (name === "api" || name === "web")) {
       const expectedDigest = imageDigest(options[name]);
       const boundDigest = candidateTagDigest(name, options[name], version);
       if (boundDigest !== expectedDigest) {

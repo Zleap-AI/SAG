@@ -117,6 +117,9 @@ async function packageRelease(options) {
     fail(`could not read release input or candidate evidence: ${error.message}`);
   }
   if (input?.appname !== "sag" || !versionPattern.test(input?.version ?? "")) fail("release input is invalid");
+  if (options.allow_unpromoted_images && options.allow_unpromoted_images !== "true") {
+    fail("--allow-unpromoted-images must be true when supplied");
+  }
   validateChannelImages({
     channel: input.channel,
     cnRepositoryPrefix: input.cn_repository_prefix,
@@ -132,6 +135,7 @@ async function packageRelease(options) {
     "--api-image", evidence.api,
     "--web-image", evidence.web,
     "--nginx-image", evidence.gateway,
+    ...(options.allow_unpromoted_images ? ["--allow-unpromoted-images"] : []),
     "--output", packagePath,
   ], { cwd: repoRoot, encoding: "utf8" });
   if (build.error || build.status !== 0) fail(`FPK build failed: ${(build.stderr || build.error?.message || build.stdout).trim()}`);

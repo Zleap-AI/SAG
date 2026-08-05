@@ -38,6 +38,9 @@ test("fnOS Delivery validates the dedicated branch and caches parallel multiarch
   assert.match(workflow, /promote:\n[\s\S]*?if: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.mode == 'publish' \}\}/);
   assert.match(workflow, /anonymous-digest-postcheck:\n[\s\S]*?verify-public-digests/);
   assert.match(workflow, /build-package:\n[\s\S]*?needs: \[verify-release-request, quality, gateway-security, inspect-images, smoke-images, anonymous-digest-postcheck\]/);
+  assert.match(workflow, /build-package:\n[\s\S]*?if: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.mode == 'candidate' \}\}/);
+  assert.match(workflow, /--allow-unpromoted-images true/);
+  assert.match(workflow, /publish-release:\n[\s\S]*?needs: \[verify-release-request, gateway-security, inspect-images, anonymous-final-postcheck\]/);
   assert.doesNotMatch(workflow, /local-amd64-smoke/);
   assert.match(workflow, /smoke-fnos-release-images\.mjs smoke/);
 });
