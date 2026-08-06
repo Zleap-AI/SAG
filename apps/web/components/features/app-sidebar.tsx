@@ -18,6 +18,7 @@ import { toast } from "sonner";
 
 import { api, ApiError } from "@/lib/api";
 import { PRODUCT_NAME } from "@/lib/branding";
+import { appPath } from "@/lib/deployment";
 import { relativeTime } from "@/lib/format";
 import {
   WORKSPACE_SECTIONS,
@@ -57,7 +58,7 @@ function Brand() {
         <SidebarMenuButton size="lg" className="h-14 gap-2.5" tooltip={PRODUCT_NAME} asChild>
           <Link href="/chat">
             <Image
-              src="/sag-icon.png"
+              src={appPath("/sag-icon.png")}
               alt=""
               width={32}
               height={32}
@@ -78,7 +79,8 @@ function Brand() {
 
 function NavUser() {
   const t = useTranslations("AppSidebar");
-  const { user, logout } = useApp();
+  const { user, capabilities, logout } = useApp();
+  const fnosManaged = capabilities?.auth_mode === "fnos";
   const initial = (user?.name || user?.email || "?").slice(0, 1).toUpperCase();
   return (
     <SidebarMenu>
@@ -122,10 +124,10 @@ function NavUser() {
                 {t("identitySettings")}
               </Link>
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={logout} className="text-destructive focus:text-destructive">
+            {!fnosManaged && <DropdownMenuItem onClick={logout} className="text-destructive focus:text-destructive">
               <LogOut className="size-4" />
               {t("signOut")}
-            </DropdownMenuItem>
+            </DropdownMenuItem>}
           </DropdownMenuContent>
         </DropdownMenu>
       </SidebarMenuItem>

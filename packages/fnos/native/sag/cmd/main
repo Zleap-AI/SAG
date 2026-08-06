@@ -1,0 +1,184 @@
+#!/bin/bash
+set -eu
+
+runtime="/var/apps/python312/target/bin/python3"
+node_runtime="/var/apps/nodejs_v22/target/bin/node"
+run_dir="${TRIM_PKGVAR}/run"
+log_dir="${TRIM_PKGVAR}/logs"
+gateway_pid="${run_dir}/gateway.pid"
+web_pid="${run_dir}/web.pid"
+web_port_file="${run_dir}/web.port"
+gateway_socket="${TRIM_APPDEST}/app.sock"
+web_entry="${TRIM_APPDEST}/web/server.js"
+web_root="${TRIM_APPDEST}/web"
+gateway_log="${log_dir}/gateway.log"
+web_log="${log_dir}/web.log"
+secret="${TRIM_PKGETC}/internal-secret"
+
+log_error() { printf '%s\n' "$1" >> "${TRIM_TEMP_LOGFILE:-/dev/null}"; }
+
+prepare_secret() {
+  test ! -L "$secret" && test -f "$secret" && chmod 600 "$secret"
+}
+
+write_pid() {
+  local pid_file="$1" pid="$2" temporary
+  temporary="${pid_file}.tmp.$$"
+  printf '%s\n' "$pid" > "$temporary"
+  mv -f "$temporary" "$pid_file"
+}
+
+valid_pid() {
+  local pid_file="$1" expected="$2" service="${3:-}" pid command attempt=0
+  test -f "$pid_file" || return 1
+  pid="$(cat "$pid_file")"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  # Next rewrites its process title to "next-server", which on Linux also
+  # rewrites /proc/<pid>/cmdline.  Identify such services by the launch
+  # environment marker instead: /proc/<pid>/environ is immutable.
+  command="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  case "$command" in *"$expected"*) return 0 ;; esac
+  if test -n "$service"; then
+    while test "$attempt" -lt 3; do
+      tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx "SAG_NATIVE_SERVICE=$service" && return 0
+      attempt=$((attempt + 1))
+      sleep 0.1
+    done
+  fi
+  return 1
+}
+
+stop_process() {
+  local pid_file="$1" expected="$2" service="${3:-}" pid waited=0
+  if ! valid_pid "$pid_file" "$expected" "$service"; then
+    rm -f "$pid_file"
+    return 0
+  fi
+  pid="$(cat "$pid_file")"
+  kill -TERM "$pid"
+  while kill -0 "$pid" 2>/dev/null && test "$waited" -lt 15; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid"; fi
+  rm -f "$pid_file"
+}
+
+wait_for_web() {
+  local waited=0
+  while test "$waited" -lt 15; do
+    if curl -fsS --max-time 2 "http://127.0.0.1:${web_port}/app/sag/chat" >/dev/null 2>> "$gateway_log"; then return 0; fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+select_web_port() {
+  local candidate=3091
+  while test "$candidate" -le 3191; do
+    if ! ss -ltn 2>/dev/null | grep -Eq "[:.]${candidate}[[:space:]]"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    candidate=$((candidate + 1))
+  done
+  return 1
+}
+
+wait_for_gateway_socket() {
+  local waited=0
+  while test "$waited" -lt 15; do
+    if test -S "$gateway_socket" && valid_pid "$gateway_pid" "sag_api.fnos.cli" && gateway_healthy; then return 0; fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+gateway_healthy() {
+  curl -fsS --max-time 5 --unix-socket "$gateway_socket" http://localhost/healthz 2>> "$gateway_log" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"'
+}
+
+status_check_with_retry() {
+  # Retry a probe up to 3 times with a 1s backoff so a single cold-start hiccup
+  # (a healthz round-trip briefly crossing --max-time, a transient /proc read)
+  # does not exit 3 and cause the fnOS app center to force-close the iframe.
+  local attempt=0
+  while test "$attempt" -lt 3; do
+    "$@" && return 0
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  return 1
+}
+
+web_healthy() {
+  curl -fsS --max-time 8 "http://127.0.0.1:${web_port}/app/sag/chat" >/dev/null 2>> "$web_log"
+}
+
+case "${1:-}" in
+  start)
+    mkdir -p "$run_dir" "$log_dir"
+    export PATH="/var/apps/python312/target/bin:/var/apps/nodejs_v22/target/bin:$PATH"
+    export PYTHONPATH="${TRIM_APPDEST}/server/vendor:${TRIM_APPDEST}/server${PYTHONPATH:+:$PYTHONPATH}"
+    export SAG_FNOS_DATA_ROOT="${TRIM_PKGVAR}"
+    export SAG_FNOS_TEMP_ROOT="${TRIM_PKGTMP}"
+    export SAG_FNOS_INTERNAL_SECRET_FILE="$secret"
+    test -x "$runtime" && test -x "$node_runtime" && test -f "$web_entry" && test -d "$web_root" || { log_error "SAG Native runtime payload is unavailable."; exit 1; }
+    prepare_secret || { log_error "SAG Native internal identity secret is unavailable or has unsafe permissions."; exit 1; }
+    if valid_pid "$web_pid" "$web_entry" "web" && test -f "$web_port_file"; then
+      web_port="$(cat "$web_port_file")"
+    else
+      web_port="$(select_web_port)" || { log_error "No free local port for SAG Native web service."; exit 1; }
+      cd "$web_root"
+      SAG_NATIVE_SERVICE="web" HOSTNAME=127.0.0.1 PORT="$web_port" "$node_runtime" "$web_entry" >> "$web_log" 2>&1 &
+      write_pid "$web_pid" "$!"
+      write_pid "$web_port_file" "$web_port"
+    fi
+    if ! wait_for_web; then
+      stop_process "$web_pid" "$web_entry" "web"
+      exit 1
+    fi
+    if ! valid_pid "$gateway_pid" "sag_api.fnos.cli"; then
+      rm -f "$gateway_socket"
+      "$runtime" -m sag_api.fnos.cli gateway --socket "$gateway_socket" --web-origin "http://127.0.0.1:${web_port}" >> "$gateway_log" 2>&1 &
+      write_pid "$gateway_pid" "$!"
+    fi
+    wait_for_gateway_socket || { stop_process "$gateway_pid" "sag_api.fnos.cli"; stop_process "$web_pid" "$web_entry" "web"; exit 1; }
+    ;;
+  stop)
+    stop_process "$gateway_pid" "sag_api.fnos.cli"
+    stop_process "$web_pid" "$web_entry" "web"
+    rm -f "$gateway_socket" "$web_port_file"
+    ;;
+  status)
+    if ! status_check_with_retry valid_pid "$gateway_pid" "sag_api.fnos.cli"; then
+      log_error "SAG Native gateway process is not running."
+      exit 3
+    fi
+    if ! status_check_with_retry valid_pid "$web_pid" "$web_entry" "web"; then
+      log_error "SAG Native web process is not running."
+      exit 3
+    fi
+    if ! test -S "$gateway_socket"; then
+      log_error "SAG Native gateway socket is missing."
+      exit 3
+    fi
+    if ! status_check_with_retry gateway_healthy; then
+      log_error "SAG Native gateway health check failed; inspect gateway.log."
+      exit 3
+    fi
+    if ! test -f "$web_port_file"; then
+      log_error "SAG Native web port record is missing."
+      exit 3
+    fi
+    web_port="$(cat "$web_port_file")"
+    if ! status_check_with_retry web_healthy; then
+      log_error "SAG Native web health check failed; inspect web.log."
+      exit 3
+    fi
+    ;;
+  *) exit 1 ;;
+esac

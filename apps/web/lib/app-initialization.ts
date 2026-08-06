@@ -22,7 +22,10 @@ export const APP_INITIALIZATION_STORAGE_KEYS = Object.freeze({
   legacyWorkspaceMini: "sag:workspace-mini-mode",
   legacyPetEnabled: "sag:pet",
   petCollapsed: "sag:pet-collapsed",
-  quickModelSetupDismissed: "sag:onboarding:model-setup-dismissed:v1",
+  // Per-user suffix appended at read/write time. On fnOS Native the same
+  // browser origin is shared across OS users; a global key would let one
+  // user's Skip permanently suppress the onboarding dialog for everyone else.
+  quickModelSetupDismissedPrefix: "sag:onboarding:model-setup-dismissed:v1",
   themeBeforeExplore: "sag:theme-before-workspace-collapse",
 });
 
@@ -195,20 +198,20 @@ export function persistPetCollapsed(
 export function shouldShowQuickModelSetup(
   required: boolean,
   storage: InitializationStorage | null | undefined,
+  userId: string | null | undefined,
 ) {
   return required
-    && safelyRead(
-      storage,
-      APP_INITIALIZATION_STORAGE_KEYS.quickModelSetupDismissed,
-    ) !== "true";
+    && safelyRead(storage, quickModelSetupDismissedKey(userId)) !== "true";
 }
 
 export function dismissQuickModelSetup(
   storage: InitializationStorage | null | undefined,
+  userId: string | null | undefined,
 ) {
-  safelyWrite(
-    storage,
-    APP_INITIALIZATION_STORAGE_KEYS.quickModelSetupDismissed,
-    "true",
-  );
+  safelyWrite(storage, quickModelSetupDismissedKey(userId), "true");
+}
+
+function quickModelSetupDismissedKey(userId: string | null | undefined) {
+  const suffix = typeof userId === "string" && userId.length > 0 ? userId : "anonymous";
+  return `${APP_INITIALIZATION_STORAGE_KEYS.quickModelSetupDismissedPrefix}:${suffix}`;
 }

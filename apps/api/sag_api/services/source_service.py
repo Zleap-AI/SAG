@@ -72,6 +72,11 @@ async def get_source(session: AsyncSession, source_id: str) -> Source:
 async def create_source(
     session: AsyncSession, data: SourceCreate, *, engine_manager: EngineManager
 ) -> Source:
+    """Persist the Source row only. Engine provisioning is deferred to a background
+    task in the route layer so the HTTP response returns in <500ms even on cold
+    workers. Subsequent upload/query paths call ``engine_manager._slot`` lazily
+    and are self-healing if the background provision has not landed yet.
+    """
     connector = registry.get(data.connector_kind)
     connector.validate_config(data.config)
     source_type = CONNECTOR_SOURCE_TYPE.get(data.connector_kind, SourceType.DOCUMENT)
@@ -87,13 +92,21 @@ async def create_source(
     session.add(source)
     await session.commit()
     await session.refresh(source)
-
-    # 预建引擎 schema（幂等）；失败不阻断创建，处理文档时会重试
-    try:
-        await engine_manager.provision(source.sag_source_config_id, source)
-    except ApiError as e:
-        log.warning("信源引擎预建失败 %s：%s", source.sag_source_config_id, e.message)
     return source
+
+
+async def provision_source_engine(
+    engine_manager: EngineManager, source_config_id: str, source: Source | None = None
+) -> None:
+    """Background-task companion to :func:`create_source`. Swallows failures so a
+    slow first-time init cannot crash the worker; the next lazy ``_slot`` will retry.
+    """
+    try:
+        await engine_manager.provision(source_config_id, source)
+    except ApiError as e:
+        log.warning("信源引擎预建失败 %s：%s", source_config_id, e.message)
+    except Exception as e:  # noqa: BLE001 - background task; do not propagate
+        log.warning("信源引擎预建异常 %s：%s", source_config_id, e)
 
 
 async def update_source(

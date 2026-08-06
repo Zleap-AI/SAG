@@ -1,0 +1,13 @@
+appname=sag
+version=__SAG_VERSION__
+display_name=SAG知识库
+desc=Self-hosted AI knowledge base and research workspace
+platform=__SAG_PLATFORM__
+os_min_version=1.2.0302
+source=thirdparty
+maintainer=Zleap AI
+distributor=Zleap AI
+install_dep_apps=python312:nodejs_v22
+ctl_stop=true
+desktop_uidir=ui
+desktop_applaunchname=sag.Application

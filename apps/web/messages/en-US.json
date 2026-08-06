@@ -113,6 +113,8 @@
     "nameMissing": "No name set",
     "emailMissing": "No email set",
     "local": "Local",
+    "fnosManaged": "fnOS account",
+    "fnosManagedDescription": "This identity is managed by fnOS. SAG does not provide in-app sign-in, sign-out, or account switching.",
     "signOutTitle": "Sign out of this identity",
     "signOutDescription": "Return to the launch page to confirm or switch your local identity.",
     "signOut": "Return to launch page"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.connectors import registry
@@ -18,6 +18,7 @@ from sag_api.services.source_service import (
     delete_source,
     get_source,
     list_sources,
+    provision_source_engine,
     sync_source,
     update_source,
 )
@@ -41,11 +42,17 @@ async def list_(
 @router.post("", response_model=SourceOut, status_code=201)
 async def create(
     body: SourceCreate,
+    background_tasks: BackgroundTasks,
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     engine_manager: EngineManager = Depends(get_engine_manager),
 ) -> SourceOut:
     source = await create_source(session, body, engine_manager=engine_manager)
+    # Defer engine provisioning; keeps first-time response <500ms even on cold
+    # workers. Later upload/query paths lazily re-provision if this hasn't landed.
+    background_tasks.add_task(
+        provision_source_engine, engine_manager, source.sag_source_config_id, source
+    )
     return SourceOut.model_validate(source)
 
 

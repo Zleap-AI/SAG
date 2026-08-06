@@ -113,6 +113,8 @@
     "nameMissing": "未设置名称",
     "emailMissing": "未设置邮箱",
     "local": "本机",
+    "fnosManaged": "fnOS 账号",
+    "fnosManagedDescription": "此身份由 fnOS 管理；SAG 不提供应用内登录、退出或切换账号。",
     "signOutTitle": "退出当前身份",
     "signOutDescription": "返回启动页，可重新确认或更换本地身份。",
     "signOut": "退出到启动页"

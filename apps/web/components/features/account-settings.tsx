@@ -1,8 +1,6 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { LogOut } from "lucide-react";
-
 import { useApp } from "@/components/features/app-shell";
 import { ArchivedThreadsCard } from "@/components/features/archived-threads-card";
 import { SettingsRow, SettingsSection } from "@/components/features/settings-section";
@@ -12,7 +10,8 @@ import { Button } from "@/components/ui/button";
 
 export function AccountSettings() {
   const t = useTranslations("AccountSettings");
-  const { user, logout } = useApp();
+  const { user, capabilities, logout } = useApp();
+  const fnosManaged = capabilities?.auth_mode === "fnos";
   const initial =
     user?.name.trim().slice(0, 1).toUpperCase() ||
     user?.email.trim().slice(0, 1).toUpperCase() ||
@@ -36,10 +35,10 @@ export function AccountSettings() {
             </div>
           </div>
           <Badge variant="success" className="shrink-0">
-            {t("local")}
+            {fnosManaged ? t("fnosManaged") : t("local")}
           </Badge>
         </div>
-        <SettingsRow
+        {fnosManaged ? <SettingsRow title={t("fnosManaged")} description={t("fnosManagedDescription")}><span /></SettingsRow> : <SettingsRow
           title={t("signOutTitle")}
           description={t("signOutDescription")}
           layout="inline"
@@ -48,10 +47,11 @@ export function AccountSettings() {
             <LogOut />
             {t("signOut")}
           </Button>
-        </SettingsRow>
+        </SettingsRow>}
       </SettingsSection>
 
       <ArchivedThreadsCard />
     </div>
   );
 }
+import { LogOut } from "lucide-react";

@@ -1,4 +1,5 @@
 import { clearToken, getToken } from "./auth";
+import { appPath } from "./deployment";
 import { readClientLocale } from "../i18n/client";
 import { clientErrorMessage, serverErrorMessage } from "../i18n/client-errors";
 import type { SearchStrategy } from "./retrieval-config";
@@ -39,6 +40,7 @@ import type {
 function resolveApiBase(): string {
   const configured = process.env.NEXT_PUBLIC_API_BASE;
   if (configured === "/") return "";
+  if (configured?.startsWith("/")) return configured.replace(/\/+$/, "");
   if (typeof window !== "undefined") {
     const { protocol, hostname } = window.location;
     const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1";
@@ -185,7 +187,7 @@ async function streamGlobalSearch(
 
   if (response.status === 401 && typeof window !== "undefined") {
     clearToken();
-    window.location.href = "/login";
+    window.location.href = appPath("/login");
   }
   if (!response.ok || !response.body) {
     clearStreamTimeout();
@@ -363,7 +365,12 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
     : timeoutSignal;
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}`, { ...opts, headers, signal });
+    for (let attempt = 0; ; attempt += 1) {
+      res = await fetch(`${API_BASE}${path}`, { ...opts, headers, signal });
+      const retryAfter = Number(res.headers.get("retry-after"));
+      if (res.status !== 503 || attempt >= 2 || !Number.isFinite(retryAfter) || retryAfter < 0) break;
+      await new Promise((resolve) => window.setTimeout(resolve, Math.min(retryAfter, 3) * 1000));
+    }
   } catch (e) {
     if (e instanceof DOMException && e.name === "TimeoutError") {
       throw new ApiError(0, "timeout", clientErrorMessage("requestTimeout"));
@@ -380,7 +387,7 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
     !path.includes("/auth/")
   ) {
     clearToken();
-    window.location.href = "/login";
+    window.location.href = appPath("/login");
   }
 
   if (!res.ok) {

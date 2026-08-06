@@ -27,6 +27,7 @@ log = get_logger("system")
 
 def _capabilities() -> dict:
     return {
+        "auth_mode": settings.auth_mode,
         "llm_configured": settings.llm_configured,
         "llm_provider": settings.llm_provider,
         "llm_model": settings.llm_model,

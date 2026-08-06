@@ -1,0 +1,14 @@
+{
+  ".url": {
+    "sag.Application": {
+      "title": "SAG知识库",
+      "icon": "images/icon_{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "gatewayPrefix": "/app/sag",
+      "gatewaySocket": "app.sock",
+      "url": "/app/sag/chat",
+      "allUsers": true
+    }
+  }
+}

@@ -45,12 +45,12 @@ https://github.com/user-attachments/assets/cae70570-3885-490f-9126-dea23dcb369c
 
 <a id="fnos"></a>
 
-## fnOS Docker 应用
+## fnOS Native 应用
 
-本分支将 SAG 打包为 fnOS Docker 应用。用户从 fnOS 桌面入口打开应用，或访问 `3080` 端口；无需额外配置 API 或 Web 端口。
+本分支将 SAG 打包为 fnOS Native 应用。用户从 fnOS 桌面入口的 `/app/sag` 打开；不暴露 API 或 Web 端口。fnOS 登录身份会自动对应到独立的私有 SAG 工作区。
 
 ```text
-fnOS 桌面入口 / :3080
+fnOS 桌面入口 / `/app/sag`
         │
   sag-gateway（Nginx）
     ├── /          → sag-web

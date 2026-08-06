@@ -660,6 +660,7 @@ export interface ExplorationDetail {
 }
 
 export interface Capabilities {
+  auth_mode?: "legacy" | "password" | "single_user" | "fnos";
   llm_configured: boolean;
   llm_provider: ModelProviderId;
   llm_model: string;

@@ -30,6 +30,12 @@ describe("resolveApiBase", () => {
     expect(await attachmentUrl()).toBe("/api/v1/attachments/document-id");
   });
 
+  it("uses the fnOS prefix as the same-origin API base", async () => {
+    process.env.NEXT_PUBLIC_API_BASE = "/app/sag";
+
+    expect(await attachmentUrl()).toBe("/app/sag/api/v1/attachments/document-id");
+  });
+
   it("keeps the configured localhost base when opened locally", async () => {
     process.env.NEXT_PUBLIC_API_BASE = "http://localhost:8000";
     vi.stubGlobal("window", { location: { protocol: "http:", hostname: "localhost" } });

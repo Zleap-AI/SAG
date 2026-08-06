@@ -545,7 +545,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setTimezone(c.timezone || DEFAULT_TIME_ZONE);
         setAgent(a);
         setQuickSetupOpen(
-          shouldShowQuickModelSetup(Boolean(setup?.required), window.localStorage),
+          shouldShowQuickModelSetup(Boolean(setup?.required), window.localStorage, u.id),
         );
         threadLimitRef.current = SIDEBAR_THREADS_PAGE_SIZE;
         loadThreadLimit(a, SIDEBAR_THREADS_PAGE_SIZE).catch(() => {});
@@ -639,7 +639,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               open={quickSetupOpen}
               onOpenChange={(nextOpen) => {
                 setQuickSetupOpen(nextOpen);
-                if (!nextOpen) dismissQuickModelSetup(window.localStorage);
+                if (!nextOpen) dismissQuickModelSetup(window.localStorage, user.id);
               }}
               onConfigured={(nextCapabilities) => {
                 setCapabilities(nextCapabilities);

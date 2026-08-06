@@ -47,6 +47,9 @@
     /* 状态色 */
     --success: 142 52% 40%;
 
+    --font-inter: Inter, ui-sans-serif, system-ui, sans-serif;
+    --font-jbmono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
     --font-sans: var(--font-inter), "PingFang SC", "Hiragino Sans GB",
       "Microsoft YaHei", system-ui, sans-serif;
     --font-mono: var(--font-jbmono), "SFMono-Regular", ui-monospace, Menlo, monospace;

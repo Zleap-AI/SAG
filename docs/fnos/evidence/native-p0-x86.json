@@ -1,0 +1,21 @@
+{
+  "python": "3.12.4",
+  "machine": "x86_64",
+  "imports": {
+    "lancedb": true,
+    "numpy": true,
+    "onnxruntime": true,
+    "orjson": true,
+    "pyarrow": true,
+    "uvloop": true
+  },
+  "lancedb_roundtrip": true,
+  "uds_http": true,
+  "gateway_headers": {
+    "x-trim-userid": "1000",
+    "x-trim-username": "admin",
+    "x-trim-isadmin": "true"
+  },
+  "status": "pass",
+  "errors": []
+}

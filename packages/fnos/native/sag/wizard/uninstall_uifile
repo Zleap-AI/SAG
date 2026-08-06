@@ -1,0 +1,23 @@
+[
+  {
+    "step_title": "SAG data retention",
+    "items": [
+      {
+        "type": "singleselect",
+        "desc": "Choose whether to retain the active SAG data tree.",
+        "subitems": [
+          {
+            "key": "SAG_RETAIN_DATA",
+            "desc": "Retain data (recommended)",
+            "defaultValue": true
+          },
+          {
+            "key": "SAG_DELETE_DATA",
+            "desc": "Permanently delete active data",
+            "defaultValue": false
+          }
+        ]
+      }
+    ]
+  }
+]
