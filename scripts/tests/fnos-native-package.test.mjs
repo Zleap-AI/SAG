@@ -76,7 +76,7 @@ if [[ "$1" == "export" ]]; then
   done
   : > "$output"
 elif [[ "$1" == "pip" ]]; then
-  [[ " $* " == *" --python-platform aarch64-unknown-linux-gnu "* ]]
+  [[ " $* " == *" --python-platform aarch64-unknown-linux-gnu "* || " $* " == *" --python-platform x86_64-unknown-linux-gnu "* ]] || { echo 'pip must target a supported linux triple' >&2; exit 21; }
   [[ " $* " == *" --python-version 3.12 "* ]]
   [[ " $* " == *" --only-binary :all: "* ]] || { echo 'pip must install binary wheels only' >&2; exit 20; }
   if [[ -n "\${FAKE_NATIVE_VENDOR_PAYLOAD:-}" ]]; then
@@ -304,7 +304,9 @@ test("probe builder validates the rendered package after fnpack builds it", asyn
   await assert.rejects(access(rendered), { code: "ENOENT" });
 });
 
-test("probe builder copies the FPK emitted by real fnpack from the rendered package", async (t) => {
+test("probe builder copies the FPK emitted by real fnpack from the rendered package", {
+  skip: process.env.SAG_FNPACK_TESTS !== "1",
+}, async (t) => {
   const fixture = await fakeProbeBuild(t, { useRealFnpack: true });
   const result = buildProbe(["--platform", "x86", "--output", fixture.output], fixture.env);
 
@@ -317,7 +319,9 @@ test("probe builder copies the FPK emitted by real fnpack from the rendered pack
     assert.match(listed.stdout, new RegExp(`cmd/${callback}`));
 });
 
-test("probe builder embeds the probe and vendor payload inside app.tgz", async (t) => {
+test("probe builder embeds the probe and vendor payload inside app.tgz", {
+  skip: process.env.SAG_FNPACK_TESTS !== "1",
+}, async (t) => {
   const fixture = await fakeProbeBuild(t, { useRealFnpack: true, vendorPayload: "fixture-native.so" });
   const result = buildProbe(["--platform", "x86", "--output", fixture.output], fixture.env);
 
