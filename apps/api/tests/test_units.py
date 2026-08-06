@@ -696,6 +696,94 @@ async def test_zleap_sag_extract_compat_repairs_missing_is_valid():
 
 
 @pytest.mark.asyncio
+async def test_zleap_sag_extract_compat_repairs_empty_and_missing_references():
+    from zleap.sag.modules.extract.processor import EventProcessor
+
+    from sag_api.sag.compat import install_zleap_sag_extract_compat
+
+    class FakeLLM:
+        async def chat_with_schema(self, _messages, response_schema):
+            event_schema = response_schema["definitions"]["event"]
+            required = event_schema.get("required", [])
+            # Soft fields must be dropped from required and lose the minItems floor.
+            assert "references" not in required
+            assert "title" not in required
+            assert "content" not in required
+            assert "minItems" not in event_schema["properties"]["references"]
+            return {
+                "type": "response",
+                "data": {
+                    "meta": {"reason": "ok"},
+                    "items": [
+                        # Model omitted references entirely and left title empty.
+                        {"content": "有内容但缺少引用与标题"},
+                        {
+                            "title": "父事项",
+                            "content": "父事项内容",
+                            "references": [1],
+                            "children": [
+                                # Child returned references as empty list.
+                                {"title": "子事项", "content": "子内容", "references": []}
+                            ],
+                        },
+                    ],
+                },
+            }
+
+    install_zleap_sag_extract_compat()
+
+    schema = {
+        "type": "object",
+        "required": ["type", "data"],
+        "properties": {
+            "type": {"const": "response"},
+            "data": {
+                "type": "object",
+                "required": ["items", "meta"],
+                "properties": {
+                    "items": {"type": "array", "items": {"$ref": "#/definitions/event"}},
+                    "meta": {
+                        "type": "object",
+                        "required": ["reason"],
+                        "properties": {"reason": {"type": "string"}},
+                    },
+                },
+            },
+        },
+        "definitions": {
+            "event": {
+                "type": "object",
+                "required": ["title", "content", "references", "is_valid"],
+                "properties": {
+                    "title": {"type": "string"},
+                    "content": {"type": "string"},
+                    "references": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "minItems": 1,
+                    },
+                    "is_valid": {"type": "boolean"},
+                    "children": {"type": "array", "items": {"$ref": "#/definitions/event"}},
+                },
+            },
+        },
+    }
+    fake_processor = SimpleNamespace(llm_client=FakeLLM())
+
+    result = await EventProcessor._call_llm_with_retry(fake_processor, [], schema)
+
+    first, second = result["data"]["items"]
+    # Missing references/title backfilled to schema-shaped defaults; is_valid too.
+    assert first["references"] == []
+    assert first["title"] == ""
+    assert first["is_valid"] is True
+    # Non-empty references and provided fields are left untouched.
+    assert second["references"] == [1]
+    assert second["title"] == "父事项"
+    assert second["children"][0]["references"] == []
+
+
+@pytest.mark.asyncio
 async def test_zleap_sag_extract_compat_falls_back_to_json_object_when_json_schema_is_unavailable():
     from zleap.sag.core.ai.base import BaseLLMClient
     from zleap.sag.core.ai.models import LLMMessage, LLMResponse, LLMRole

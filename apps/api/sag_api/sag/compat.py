@@ -77,6 +77,14 @@ def _looks_like_extract_response_schema(schema: Any) -> bool:
     )
 
 
+# Event fields upstream marks required but validates as warning-only in
+# ``_validate_output``.  Enforcing them as a strict structured-output schema
+# makes providers reject otherwise-usable chunks and retry to the limit, so a
+# single omitted field discards the whole chunk.  We relax them to match what
+# upstream actually tolerates, then backfill defaults in ``_repair_extract_response``.
+_SOFT_EVENT_FIELDS = ("references", "title", "content", "is_valid")
+
+
 def _relax_extract_schema(schema: dict[str, Any]) -> dict[str, Any]:
     relaxed = copy.deepcopy(schema)
     data = relaxed.get("properties", {}).get("data")
@@ -87,7 +95,13 @@ def _relax_extract_schema(schema: dict[str, Any]) -> dict[str, Any]:
             _without_required_field(meta, "reason")
     event = relaxed.get("definitions", {}).get("event")
     if isinstance(event, dict):
-        _without_required_field(event, "is_valid")
+        for field in _SOFT_EVENT_FIELDS:
+            _without_required_field(event, field)
+        # Drop the ``minItems: 1`` floor on references: upstream only warns on
+        # empty references, it never fails validation on them.
+        references = event.get("properties", {}).get("references")
+        if isinstance(references, dict):
+            references.pop("minItems", None)
     return relaxed
 
 
@@ -114,6 +128,17 @@ def _repair_extract_response(result: Any) -> set[str]:
         if "is_valid" not in item:
             item["is_valid"] = True
             repaired.add("data.items[].is_valid")
+        # Backfill the warning-only fields so the item stays schema-shaped for
+        # the downstream parser even when the model dropped them.
+        if not isinstance(item.get("references"), list):
+            item["references"] = []
+            repaired.add("data.items[].references")
+        if not isinstance(item.get("title"), str):
+            item["title"] = ""
+            repaired.add("data.items[].title")
+        if not isinstance(item.get("content"), str):
+            item["content"] = ""
+            repaired.add("data.items[].content")
         children = item.get("children")
         if isinstance(children, list):
             for child in children:
@@ -128,11 +153,14 @@ def install_zleap_sag_extract_compat() -> None:
     """Allow event extraction to accept minor omissions in model output.
 
     Some OpenAI-compatible models produce valid event ``data.items`` but omit
-    telemetry-only ``data.meta`` or the boolean ``is_valid`` flag.  Upstream
-    zleap-sag validates these fields before its parser can use the extracted
-    events, even though the parser already treats missing ``is_valid`` as true.
-    We keep strict validation for title/content/references and restore the
-    compatible defaults before zleap-sag's own output validator runs.
+    telemetry-only ``data.meta`` or per-item fields (``is_valid``, ``references``,
+    ``title``, ``content``).  Upstream zleap-sag lists these as schema-required,
+    yet its own ``_validate_output`` only *warns* on missing/empty
+    ``references``/``title``/``content`` and defaults ``is_valid`` to true — so a
+    single omitted field makes structured-output providers reject and retry the
+    whole chunk to the limit, discarding otherwise-usable events.  We relax the
+    schema to what upstream actually tolerates and restore compatible defaults
+    before zleap-sag's own output validator runs.
     """
 
     from zleap.sag.modules.extract.processor import EventProcessor
