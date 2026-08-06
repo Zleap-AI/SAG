@@ -346,6 +346,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [quickSetupOpen, setQuickSetupOpen] = React.useState(false);
   const [timezone, setTimezone] = React.useState(DEFAULT_TIME_ZONE);
   const diag = useDiagnostics();
+  // `diag.record` is referentially stable (bound to the singleton store), unlike
+  // `diag` itself which changes whenever a new entry is recorded. Depend on the
+  // stable function so the bootstrap effect below doesn't re-run on every log.
+  const recordDiag = diag.record;
   const sidebarOpenRef = React.useRef(true);
   const restoreSidebarOpenRef = React.useRef<boolean | null>(null);
   const threadLimitRef = React.useRef(SIDEBAR_THREADS_PAGE_SIZE);
@@ -627,7 +631,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setQuickSetupOpen(
           shouldShowQuickModelSetup(Boolean(setup?.required), window.localStorage),
         );
-        diag.record("app.init", {
+        recordDiag("app.init", {
           user_id: u.id,
           agent_id: a.id,
           language: c.language ?? "zh",
@@ -660,7 +664,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       alive = false;
       threadRequestIdRef.current += 1;
     };
-  }, [loadThreadLimit, router]);
+  }, [loadThreadLimit, router, recordDiag]);
 
   // 快捷键直接进入探索模式，并打开对应的紧凑工作区。
   React.useEffect(() => {
