@@ -839,7 +839,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <DetailPanelProvider>
               <div
                 className={cn(
-                  "bg-space-field relative grid h-svh min-h-0 overflow-hidden",
+                  // grid-cols-[minmax(0,1fr)]：非-windowed 分支下 grid 项默认 min-width:auto
+                  // 会读子内容的 min-content 撑破 track——PDF 解析出的宽 markdown 就会让
+                  // motion.div 撑到 2198px，右侧内容漂出 SAG 窗口（devtools 实测）。
+                  // minmax(0, 1fr) 显式把 track 最小值钳到 0，等价于给 grid 项加 min-w-0。
+                  "bg-space-field relative grid h-svh min-h-0 grid-cols-[minmax(0,1fr)] overflow-hidden",
                   windowed && "place-items-center p-4",
                 )}
               >
@@ -912,7 +916,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     className={cn(windowed ? "h-full min-h-full" : "h-svh min-h-svh")}
                   >
                     <AppSidebar contained={windowed} />
-                    <SidebarInset className="min-w-0">
+                    <SidebarInset className="min-w-0 overflow-hidden">
                       <SiteHeader />
                       <ContentArea>{children}</ContentArea>
                     </SidebarInset>
@@ -953,16 +957,18 @@ function ContentArea({ children }: { children: React.ReactNode }) {
     <>
       <ResizablePanelGroup
         direction="horizontal"
-        className="min-h-0 flex-1"
+        // min-w-0 + overflow-hidden：flex 子项默认 min-width:auto 会让 Panel 内容宽度
+        // 决定 group 宽度，导致解析内容超长时把整个右侧面板撑到窗口外面（图 5 现象）。
+        className="min-h-0 min-w-0 flex-1 overflow-hidden"
         autoSaveId="sag:detail"
       >
-        <ResizablePanel defaultSize={66} minSize={0}>
+        <ResizablePanel defaultSize={66} minSize={0} className="min-w-0">
           <DetailPanelMain>{children}</DetailPanelMain>
         </ResizablePanel>
         {target && lg && (
           <>
             <ResizableHandle withHandle />
-            <ResizablePanel ref={panelRef} defaultSize={34} minSize={24} maxSize={100} className="flex min-h-0 border-l">
+            <ResizablePanel ref={panelRef} defaultSize={34} minSize={24} maxSize={100} className="flex min-h-0 min-w-0 border-l">
               <DetailPanelOutlet />
             </ResizablePanel>
           </>

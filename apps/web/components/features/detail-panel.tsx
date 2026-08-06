@@ -20,7 +20,7 @@ import type { CitationEventRef, Doc } from "@/lib/types";
 import { formatBytes, formatDate, formatTokenCount, relativeTime } from "@/lib/format";
 import { cleanCitationText, stripCitationTransportTokens } from "@/lib/citation-presentation";
 import { cn } from "@/lib/utils";
-import { MarkdownContent } from "@/components/features/markdown-content";
+import { ChunkedMarkdown } from "@/components/features/markdown-content";
 import { useApp } from "@/components/features/app-shell";
 import { DocStatusBadge } from "@/components/features/status-badge";
 import { Button } from "@/components/ui/button";
@@ -70,6 +70,17 @@ const Ctx = React.createContext<PanelCtx>({
 
 const DEFAULT_PANEL_SIZE = 34;
 
+function sameTarget(a: DetailTarget, b: DetailTarget): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "document" && b.kind === "document") {
+    return a.sourceId === b.sourceId && a.documentId === b.documentId;
+  }
+  if (a.kind === "chunk" && b.kind === "chunk") {
+    return a.sourceId === b.sourceId && a.chunkId === b.chunkId;
+  }
+  return false;
+}
+
 export function useDetailPanel() {
   return React.useContext(Ctx);
 }
@@ -79,13 +90,22 @@ export function DetailPanelProvider({ children }: { children: React.ReactNode })
   const [target, setTarget] = React.useState<DetailTarget | null>(null);
   const [maximized, setMaximized] = React.useState(false);
 
-  const open = React.useCallback((t: DetailTarget) => {
-    setTarget(t);
-  }, []);
   const panelRef = React.useRef<ImperativePanelHandle | null>(null);
   const resetPanelSize = React.useCallback(() => {
     panelRef.current?.resize(DEFAULT_PANEL_SIZE);
   }, []);
+  // 同一目标二次点击 = 关闭（toggle）。用户预期：点开某文档后再点同一个文档
+  // 应该收起面板；否则会以为"点没反应"。不同目标点击 = 切换目标，就地更新。
+  const open = React.useCallback((t: DetailTarget) => {
+    setTarget((prev) => {
+      if (prev && sameTarget(prev, t)) {
+        resetPanelSize();
+        setMaximized(false);
+        return null;
+      }
+      return t;
+    });
+  }, [resetPanelSize]);
   const close = React.useCallback(() => {
     resetPanelSize();
     setTarget(null);
@@ -162,15 +182,19 @@ function RenderModeToggle({
 }
 
 function TextBody({ text, mode }: { text: string; mode: "md" | "raw" }) {
+  // 纵向滚动由外层 DetailPanelOutlet/DetailPanelSheet 承担，避免"面板滚动条 + TextBody
+  // 滚动条"双层套嵌导致的宽度抖动。但内部宽内容（大代码块/表格/长 URL）如果没有单独的
+  // 横向出口，会顶穿容器；外层 overflow-x-hidden 会把它们裁掉表现为"右半边被截断"。
+  // 这里仅开启 overflow-x-auto —— 只作用于宽元素的横向溢出，与外层纵向滚动互不干扰。
   if (mode === "md") {
     return (
-      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto rounded-md border bg-muted/30 p-4">
-        <MarkdownContent content={text} />
+      <div className="w-full min-w-0 max-w-full overflow-x-auto rounded-md border bg-muted/30 p-4">
+        <ChunkedMarkdown content={text} />
       </div>
     );
   }
   return (
-    <pre className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-4 font-mono text-xs leading-relaxed">
+    <pre className="w-full min-w-0 max-w-full overflow-x-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-4 font-mono text-xs leading-relaxed">
       {text}
     </pre>
   );
@@ -182,6 +206,8 @@ function ChunkView({
   target: Extract<DetailTarget, { kind: "chunk" }>;
 }) {
   const t = useTranslations("DetailPanel");
+  const tRef = React.useRef(t);
+  tRef.current = t;
   const locale = useLocale();
   const { timezone } = useApp();
   const [content, setContent] = React.useState<string | null>(null);
@@ -209,13 +235,15 @@ function ChunkView({
       .then((c) => {
         if (!alive) return;
         setContent(c.content);
-        setMeta({ heading: c.heading || target.heading || t("chunk.fallbackHeading"), sourceName: c.source_name });
+        setMeta({ heading: c.heading || target.heading || tRef.current("chunk.fallbackHeading"), sourceName: c.source_name });
       })
-      .catch((e) => alive && setError(e instanceof ApiError ? e.message : t("chunk.loadFailed")));
+      .catch((e) => alive && setError(e instanceof ApiError ? e.message : tRef.current("chunk.loadFailed")));
     return () => {
       alive = false;
     };
-  }, [t, target]);
+    // 只依赖真正会变的字段，target 本身每次点击都是新对象引用；t 是每次渲染新引用（tRef 兜底）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target.sourceId, target.chunkId, target.heading]);
 
   if (error) {
     return <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>;
@@ -307,6 +335,8 @@ function ChunkView({
 function OriginalDocumentPreview({ doc }: { doc: Doc }) {
   const locale = useLocale();
   const t = useTranslations("DetailPanel");
+  const tRef = React.useRef(t);
+  tRef.current = t;
   const [state, setState] = React.useState<
     | { phase: "loading" }
     | { phase: "blob"; url: string; kind: "pdf" | "image" }
@@ -320,6 +350,7 @@ function OriginalDocumentPreview({ doc }: { doc: Doc }) {
   const previewUrl = api.documentPreviewUrl(doc.source_id, doc.id);
 
   React.useEffect(() => {
+    const tr = tRef.current;
     let alive = true;
     let objectUrl: string | null = null;
     setState({ phase: "loading" });
@@ -331,7 +362,7 @@ function OriginalDocumentPreview({ doc }: { doc: Doc }) {
             "Accept-Language": locale,
           },
         });
-        if (!res.ok) throw new Error(t("original.unavailable", { status: res.status }));
+        if (!res.ok) throw new Error(tr("original.unavailable", { status: res.status }));
         const ct = (res.headers.get("content-type") || doc.content_type || "").toLowerCase();
         if (ct.includes("pdf")) {
           objectUrl = URL.createObjectURL(await res.blob());
@@ -351,14 +382,14 @@ function OriginalDocumentPreview({ doc }: { doc: Doc }) {
           if (alive) setState({ phase: "none" });
         }
       } catch (e) {
-        if (alive) setState({ phase: "error", message: e instanceof Error ? e.message : t("original.loadFailed") });
+        if (alive) setState({ phase: "error", message: e instanceof Error ? e.message : tr("original.loadFailed") });
       }
     })();
     return () => {
       alive = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [doc.content_type, doc.id, doc.source_id, locale, previewUrl, t]);
+  }, [doc.content_type, doc.id, doc.source_id, locale, previewUrl]);
 
   async function download() {
     try {
@@ -381,7 +412,7 @@ function OriginalDocumentPreview({ doc }: { doc: Doc }) {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-muted-foreground">{t("original.title")}</span>
         <span className="flex items-center gap-1.5">
@@ -408,7 +439,7 @@ function OriginalDocumentPreview({ doc }: { doc: Doc }) {
         </p>
       )}
       {state.phase === "text" && (
-        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-auto">
           <TextBody text={state.text} mode={textMode} />
         </div>
       )}
@@ -434,18 +465,21 @@ type ParsedPreviewState =
 function ParsedDocumentPreview({ doc }: { doc: Doc }) {
   const locale = useLocale();
   const t = useTranslations("DetailPanel");
+  const tRef = React.useRef(t);
+  tRef.current = t;
   const [state, setState] = React.useState<ParsedPreviewState>({ phase: "loading" });
   const [textMode, setTextMode] = React.useState<"md" | "raw">("md");
   const parsedUrl = api.documentParsedUrl(doc.source_id, doc.id);
 
   React.useEffect(() => {
+    const tr = tRef.current;
     if (doc.status !== "ready") {
       setState({
         phase: "none",
         message:
           doc.status === "failed"
-            ? doc.error || t("parsed.failed")
-            : t("parsed.processing"),
+            ? doc.error || tr("parsed.failed")
+            : tr("parsed.processing"),
       });
       return;
     }
@@ -463,19 +497,19 @@ function ParsedDocumentPreview({ doc }: { doc: Doc }) {
       .then(async (res) => {
         if (res.status === 404) {
           if (alive) {
-            setState({ phase: "none", message: t("parsed.notFound") });
+            setState({ phase: "none", message: tr("parsed.notFound") });
           }
           return;
         }
         if (res.status === 409) {
-          if (alive) setState({ phase: "none", message: t("parsed.notReady") });
+          if (alive) setState({ phase: "none", message: tr("parsed.notReady") });
           return;
         }
-        if (!res.ok) throw new Error(t("parsed.unavailable", { status: res.status }));
+        if (!res.ok) throw new Error(tr("parsed.unavailable", { status: res.status }));
         const text = await res.text();
         if (!alive) return;
         if (!text.trim()) {
-          setState({ phase: "none", message: t("parsed.empty") });
+          setState({ phase: "none", message: tr("parsed.empty") });
           return;
         }
         const limit = 500_000;
@@ -485,17 +519,17 @@ function ParsedDocumentPreview({ doc }: { doc: Doc }) {
         if (!alive || controller.signal.aborted) return;
         setState({
           phase: "error",
-          message: error instanceof Error ? error.message : t("parsed.loadFailed"),
+          message: error instanceof Error ? error.message : tr("parsed.loadFailed"),
         });
       });
     return () => {
       alive = false;
       controller.abort();
     };
-  }, [doc.error, doc.status, locale, parsedUrl, t]);
+  }, [doc.error, doc.status, locale, parsedUrl]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-muted-foreground">{t("parsed.title")}</span>
         {state.phase === "text" && <RenderModeToggle mode={textMode} onChange={setTextMode} />}
@@ -516,7 +550,7 @@ function ParsedDocumentPreview({ doc }: { doc: Doc }) {
         </p>
       )}
       {state.phase === "text" && (
-        <div className="flex min-h-0 flex-1 flex-col gap-2">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
           {state.truncated && (
             <p className="text-xs text-muted-foreground">{t("parsed.truncated")}</p>
           )}
@@ -537,21 +571,27 @@ function DocumentPreview({ doc }: { doc: Doc }) {
     <Tabs
       value={previewMode}
       onValueChange={(value) => setPreviewMode(value as "parsed" | "original")}
-      className="flex min-h-0 flex-1 flex-col"
+      className="flex min-h-0 min-w-0 flex-1 flex-col"
     >
-      <TabsList className="grid w-full grid-cols-2">
+      <TabsList className="grid w-full shrink-0 grid-cols-2">
         <TabsTrigger value="parsed">{t("tabs.parsed")}</TabsTrigger>
         <TabsTrigger value="original">{t("tabs.original")}</TabsTrigger>
       </TabsList>
+      {/* forceMount 让两个 tab 内容都保持挂载，切换只是 CSS 显隐；避免解析 tab 每次
+          切换都重新 fetch/重新分块渲染导致的闪屏抖动。TabsContent 在非激活时会带
+          `hidden` 属性（等同 display:none），不占布局空间。
+          min-w-0：flex 子项默认 min-width:auto 会被内容撑破容器，导致侧栏「右半边被截断」。 */}
       <TabsContent
         value="parsed"
-        className="mt-2 min-h-0 flex-1 data-[state=active]:flex data-[state=active]:flex-col"
+        forceMount
+        className="mt-2 min-h-0 min-w-0 flex-1 data-[state=active]:flex data-[state=active]:flex-col data-[state=inactive]:hidden"
       >
         <ParsedDocumentPreview doc={doc} />
       </TabsContent>
       <TabsContent
         value="original"
-        className="mt-2 min-h-0 flex-1 data-[state=active]:flex data-[state=active]:flex-col"
+        forceMount
+        className="mt-2 min-h-0 min-w-0 flex-1 data-[state=active]:flex data-[state=active]:flex-col data-[state=inactive]:hidden"
       >
         <OriginalDocumentPreview doc={doc} />
       </TabsContent>
@@ -570,22 +610,27 @@ export function DocumentDetailContent({
 }) {
   const locale = useLocale();
   const t = useTranslations("DetailPanel");
+  const tRef = React.useRef(t);
+  tRef.current = t;
   const [doc, setDoc] = React.useState<Doc | null>(null);
   const [error, setError] = React.useState("");
   const { timezone } = useApp();
-
+  // 切换选中文档时不清空旧 doc，避免整块塌陷到 Skeleton 再撑回来造成的侧栏抖动。
+  // 只有首次加载（无历史 doc）才展示 Skeleton；切换视为"刷新"，旧内容原地保留，
+  // 直到新数据到位再整体替换。DocumentPreview 用 key={doc.id} 强制子树重置。
+  // dep 只依赖 id —— t 是 next-intl 每次渲染的新引用，若加入 dep 会让同一文档被
+  // 反复重新 fetch，触发下游 remount 表现为"每次点击都闪一下"。
   React.useEffect(() => {
     let alive = true;
-    setDoc(null);
     setError("");
     api
       .getDocument(sourceId, documentId)
       .then((d) => alive && setDoc(d))
-      .catch((e) => alive && setError(e instanceof ApiError ? e.message : t("document.loadFailed")));
+      .catch((e) => alive && setError(e instanceof ApiError ? e.message : tRef.current("document.loadFailed")));
     return () => {
       alive = false;
     };
-  }, [documentId, sourceId, t]);
+  }, [documentId, sourceId]);
 
   if (error) {
     return <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>;
@@ -600,7 +645,7 @@ export function DocumentDetailContent({
   }
   return (
     <TooltipProvider delayDuration={300}>
-      <div className={cn("flex min-h-0 flex-1 flex-col", compact ? "gap-3" : "gap-4")}>
+      <div className={cn("flex min-h-0 min-w-0 flex-1 flex-col", compact ? "gap-3" : "gap-4")}>
         <div className="flex flex-col gap-2">
           <h3
             className={cn(
@@ -636,7 +681,7 @@ export function DocumentDetailContent({
             </p>
           )}
         </div>
-        <DocumentPreview doc={doc} />
+        <DocumentPreview key={doc.id} doc={doc} />
       </div>
     </TooltipProvider>
   );
@@ -652,11 +697,14 @@ function PanelBody({ target }: { target: DetailTarget }) {
   );
 }
 
-/** lg 断点（详情栏 内嵌/Sheet 的分界）。 */
+/** lg 断点（详情栏 内嵌/Sheet 的分界）。
+ *  阈值 900 刻意小于桌面窗口 minWidth（main.ts 960），保证桌面端在任何窗口尺寸都停留
+ *  在内嵌 Resizable 分栏；避免用户拖窗口时在断点两侧反复触发 Sheet ↔ 分栏切换、造成
+ *  侧栏抖动与布局错乱。Web 端窄浏览器（<900px）仍进入 Sheet 覆盖层。 */
 export function useIsLgUp(): boolean {
   const [isLg, setIsLg] = React.useState(true);
   React.useEffect(() => {
-    const mq = window.matchMedia("(min-width: 1024px)");
+    const mq = window.matchMedia("(min-width: 900px)");
     const update = () => setIsLg(mq.matches);
     update();
     mq.addEventListener("change", update);
@@ -676,7 +724,7 @@ export function DetailPanelSheet() {
         <SheetTitle className="text-sm font-medium">
           {target.kind === "chunk" ? t("panel.chunkTitle") : t("panel.documentTitle")}
         </SheetTitle>
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto [scrollbar-gutter:stable]">
           <PanelBody target={target} />
         </div>
       </SheetContent>
@@ -723,7 +771,12 @@ export function DetailPanelOutlet() {
       </div>
       <div
         className={cn(
-          "flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden p-4",
+          // scrollbar-gutter: stable 预留滚动条位置，避免内容变长/变短时滚动条闪现
+          // 导致侧栏可用宽度瞬间抖动、连带 tab 与 markdown 换行错位。
+          // min-w-0 保证 flex 子项不会被内部宽内容撑破父面板宽度；宽内容由 TextBody 的
+          // overflow-x-auto 处理横向出口，此处**不**用 overflow-x-hidden，
+          // 否则内部 grid（如 TabsList）在某些计算路径下可能被裁掉，表现为 tabs 消失。
+          "flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-4 [scrollbar-gutter:stable]",
           maximized && "mx-auto w-full max-w-4xl",
         )}
       >

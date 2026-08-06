@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { splitMarkdownBlocks } from "@/lib/markdown-blocks";
 import type { Citation } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -161,5 +162,34 @@ export const MarkdownContent = React.memo(function MarkdownContent({
         {content}
       </ReactMarkdown>
     </div>
+  );
+});
+
+/**
+ * 大文档分块渲染：把整份内容切成若干块，每块独立 `MarkdownContent`，块容器加
+ * `content-visibility:auto`（见 globals.css `.md-block`），让浏览器跳过屏幕外块的
+ * 布局/绘制。解析与 DOM 都摊成块，避免一次性渲染超大文档导致的卡顿/冻结。
+ *
+ * 仅用于「解析内容」这类无引用（citations）的长文本；答案流仍走 `MarkdownContent`。
+ * 内容较短时（单块）直接渲染，不引入额外包裹。
+ */
+export const ChunkedMarkdown = React.memo(function ChunkedMarkdown({
+  content,
+}: {
+  content: string;
+}) {
+  const blocks = React.useMemo(() => splitMarkdownBlocks(content), [content]);
+  if (blocks.length <= 1) {
+    return <MarkdownContent content={content} />;
+  }
+  return (
+    <>
+      {blocks.map((block, index) => (
+        // 索引作 key 安全：blocks 由 content 纯函数派生，同一 content 顺序稳定。
+        <div key={index} className="md-block">
+          <MarkdownContent content={block} />
+        </div>
+      ))}
+    </>
   );
 });
