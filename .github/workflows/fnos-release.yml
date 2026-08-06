@@ -28,7 +28,9 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: apps/web/package-lock.json }
       - uses: astral-sh/setup-uv@v5
-        with: { version: "0.6.14", enable-cache: true }
+        # uv must be recent enough to resolve current PyPI wheel metadata;
+        # 0.6.14 rejects greenlet 3.5.3 manylinux wheels as "no usable wheels".
+        with: { version: "0.10.8", enable-cache: true }
       - name: Install verified fnpack 1.2.3
         shell: bash
         run: |

@@ -28,6 +28,10 @@ test("fnOS delivery is a single manual publish flow guarded by explicit confirma
   assert.match(workflow, /\$GITHUB_PATH/);
   // Structural tests may shell out to the verified fnpack binary.
   assert.match(workflow, /SAG_FNPACK_TESTS: "1"/);
+  // uv is pinned to a release that resolves current PyPI wheel metadata
+  // (0.6.14 rejected greenlet 3.5.3 manylinux wheels).
+  assert.match(workflow, /setup-uv@v5/);
+  assert.match(workflow, /version: "0\.10\.8"/);
   // Tests and packaging still run.
   assert.match(workflow, /uv run --extra dev pytest -q/);
   assert.match(workflow, /node scripts\/build-fnos-native-package\.mjs/);
