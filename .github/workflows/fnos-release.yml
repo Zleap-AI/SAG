@@ -29,6 +29,19 @@ jobs:
         with: { node-version: 22, cache: npm, cache-dependency-path: apps/web/package-lock.json }
       - uses: astral-sh/setup-uv@v5
         with: { version: "0.6.14", enable-cache: true }
+      - name: Install verified fnpack 1.2.3
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d "$RUNNER_TEMP/fnpack-bin"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64 \
+            --output "$RUNNER_TEMP/fnpack-bin/fnpack"
+          echo '54b97fa7b70968c4d05c79840f5daeff508957d0bb2062fdb0376d00d9615c93  fnpack' \
+            | (cd "$RUNNER_TEMP/fnpack-bin" && sha256sum --check --strict -)
+          chmod 0755 "$RUNNER_TEMP/fnpack-bin/fnpack"
+          echo "$RUNNER_TEMP/fnpack-bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/fnpack-bin/fnpack" --help
       - name: Validate publish request
         shell: bash
         run: |
@@ -39,6 +52,10 @@ jobs:
           test -s docs/fnos/evidence/native-p0-x86.json
       - name: Test Native implementation
         shell: bash
+        env:
+          # fnpack was installed and checksum-verified above, so structural
+          # tests that shell out to the real binary may run on this runner.
+          SAG_FNPACK_TESTS: "1"
         run: |
           set -euo pipefail
           cd apps/api && uv run --extra dev ruff check sag_api sag_agent tests && uv run --extra dev pytest -q

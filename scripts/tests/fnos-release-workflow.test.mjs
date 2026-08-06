@@ -20,6 +20,14 @@ test("fnOS delivery is a single manual publish flow guarded by explicit confirma
   assert.match(workflow, /inputs\.publish_confirmation.*PUBLISH/);
   // The build environment must disable window scaling for fnOS.
   assert.match(workflow, /NEXT_PUBLIC_ENABLE_WINDOW_SCALING=0/);
+  // fnpack is pinned to the official 1.2.3 binary and verified before use.
+  assert.match(workflow, /https:\/\/static2\.fnnas\.com\/fnpack\/fnpack-1\.2\.3-linux-amd64/);
+  assert.match(workflow, /curl --fail --location --proto '=https' --tlsv1\.2/);
+  assert.match(workflow, /54b97fa7b70968c4d05c79840f5daeff508957d0bb2062fdb0376d00d9615c93 {2}fnpack/);
+  assert.match(workflow, /sha256sum --check --strict/);
+  assert.match(workflow, /\$GITHUB_PATH/);
+  // Structural tests may shell out to the verified fnpack binary.
+  assert.match(workflow, /SAG_FNPACK_TESTS: "1"/);
   // Tests and packaging still run.
   assert.match(workflow, /uv run --extra dev pytest -q/);
   assert.match(workflow, /node scripts\/build-fnos-native-package\.mjs/);
