@@ -19,7 +19,7 @@ describe("app shell viewport stage", () => {
     expect(stageStart).toBeGreaterThanOrEqual(0);
     expect(backdropStart).toBeGreaterThan(stageStart);
     expect(stageOpening).toContain(
-      '"bg-space-field relative grid h-svh min-h-0 overflow-hidden"',
+      '"bg-space-field relative grid h-svh min-h-0 grid-cols-[minmax(0,1fr)] overflow-hidden"',
     );
     expect(stageOpening).not.toContain(
       '"bg-space-field relative grid min-h-svh overflow-hidden"',

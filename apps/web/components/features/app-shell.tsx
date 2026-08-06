@@ -24,6 +24,12 @@ import {
 } from "@/lib/app-initialization";
 import { DEFAULT_AGENT_AVATAR, DEFAULT_AGENT_NAME } from "@/lib/branding";
 import type { ConversationTransport } from "@/lib/conversation-runtime";
+import {
+  getDiagnosticsStore,
+  type DiagEntry,
+  type DiagExport,
+  type DiagLogFile,
+} from "@/lib/diagnostics";
 import { DEFAULT_TIME_ZONE } from "@/lib/format";
 import { PetAgent } from "@/lib/pet-agent";
 import {
@@ -60,6 +66,7 @@ import {
   type WindowMode,
   type WindowSize,
 } from "@/lib/window-layout";
+import { useDiagnostics } from "@/hooks/use-diagnostics";
 import { AppSidebar } from "@/components/features/app-sidebar";
 import { ConversationProvider } from "@/components/features/chat/conversation-provider";
 import {
@@ -120,8 +127,18 @@ const CONVERSATION_TRANSPORT: ConversationTransport = {
     webEnabled,
     onEvent,
     signal,
-  }) =>
-    streamAgentAsk(
+  }) => {
+    const store = getDiagnosticsStore();
+    const startedAt = Date.now();
+    store.record("qa.ask", {
+      agent_id: agentId,
+      thread_id: threadId,
+      query: query.length > 500 ? query.slice(0, 500) + "..." : query,
+      attachment_count: attachmentIds?.length ?? 0,
+      source_ids: sourceIds,
+      web_enabled: webEnabled,
+    });
+    const promise = streamAgentAsk(
       agentId,
       threadId,
       {
@@ -131,9 +148,54 @@ const CONVERSATION_TRANSPORT: ConversationTransport = {
         knowledge_only: knowledgeOnly === true || !webEnabled,
         web_enabled: webEnabled,
       },
-      onEvent,
+      (event) => {
+        // 只记录关键事件，跳过高频 message.delta
+        const keyEvents = new Set([
+          "run.started",
+          "run.completed",
+          "run.failed",
+          "run.cancelled",
+          "tool.started",
+          "tool.completed",
+          "tool.failed",
+          "tool.approval_required",
+        ]);
+        if (keyEvents.has(event.type)) {
+          store.record("qa.event", {
+            event_type: event.type,
+            run_id: event.run_id,
+            sequence: event.sequence,
+            turn: event.turn,
+            payload_keys: Object.keys(event.payload ?? {}),
+          });
+        }
+        onEvent(event);
+      },
       signal,
-    ),
+    );
+    void promise.then((outcome) => {
+      store.record(outcome.status === "completed" ? "qa.complete" : "qa.error", {
+        run_id: outcome.runId,
+        status: outcome.status,
+        message_id: outcome.messageId,
+        duration_ms: Date.now() - startedAt,
+        error_code: outcome.error?.code,
+        error_message: outcome.error?.message
+          ? outcome.error.message.slice(0, 500)
+          : undefined,
+      });
+    }).catch((reason) => {
+      store.record("qa.error", {
+        run_id: "unknown",
+        status: "failed",
+        duration_ms: Date.now() - startedAt,
+        error_message: reason instanceof Error
+          ? reason.message.slice(0, 500)
+          : String(reason).slice(0, 500),
+      });
+    });
+    return promise;
+  },
   cancelRun: ({ agentId, threadId, runId }) =>
     api.cancelAgentRun(agentId, threadId, runId),
   approveTool: ({ agentId, threadId, runId, toolCallId }) =>
@@ -171,6 +233,12 @@ interface AppCtx {
   refreshCapabilities: () => Promise<void>;
   timezone: string;
   updateTimezone: (timezone: string) => Promise<void>;
+  diagnostics: {
+    entries: DiagEntry[];
+    record: (type: DiagEntry["type"], data?: Record<string, unknown>) => void;
+    exportLogs: () => DiagExport;
+    downloadLogs: () => Promise<void>;
+  };
 }
 
 const AppContext = React.createContext<AppCtx>({
@@ -198,6 +266,12 @@ const AppContext = React.createContext<AppCtx>({
   refreshCapabilities: async () => {},
   timezone: DEFAULT_TIME_ZONE,
   updateTimezone: async () => {},
+  diagnostics: {
+    entries: [],
+    record: () => {},
+    exportLogs: () => ({ version: 1 as const, exported_at: "", environment: { app: "web" as const, user_agent: "", language: "", timezone: "" }, model_config: null, capabilities: null, entries: [] }),
+    downloadLogs: async () => {},
+  },
 });
 
 export function useApp() {
@@ -270,6 +344,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = React.useState(true);
   const [quickSetupOpen, setQuickSetupOpen] = React.useState(false);
   const [timezone, setTimezone] = React.useState(DEFAULT_TIME_ZONE);
+  const diag = useDiagnostics();
+  // `diag.record` is referentially stable (bound to the singleton store), unlike
+  // `diag` itself which changes whenever a new entry is recorded. Depend on the
+  // stable function so the bootstrap effect below doesn't re-run on every log.
+  const recordDiag = diag.record;
   const sidebarOpenRef = React.useRef(true);
   const restoreSidebarOpenRef = React.useRef<boolean | null>(null);
   const threadLimitRef = React.useRef(SIDEBAR_THREADS_PAGE_SIZE);
@@ -545,8 +624,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setTimezone(c.timezone || DEFAULT_TIME_ZONE);
         setAgent(a);
         setQuickSetupOpen(
-          shouldShowQuickModelSetup(Boolean(setup?.required), window.localStorage),
+          shouldShowQuickModelSetup(Boolean(setup?.required), window.localStorage, u.id),
         );
+        recordDiag("app.init", {
+          user_id: u.id,
+          agent_id: a.id,
+          language: c.language ?? "zh",
+          timezone: c.timezone || DEFAULT_TIME_ZONE,
+          platform: typeof window !== "undefined" && window.sagDesktop?.isDesktop ? "desktop" : "web",
+          capabilities: {
+            llm_configured: c.llm_configured,
+            llm_provider: c.llm_provider,
+            llm_model: c.llm_model,
+            embedding_model: c.embedding_model,
+            document_parser: c.document_parser,
+            effective_document_parser: c.effective_document_parser,
+            search_strategy: c.search_strategy,
+            max_upload_mb: c.max_upload_mb,
+          },
+        });
         threadLimitRef.current = SIDEBAR_THREADS_PAGE_SIZE;
         loadThreadLimit(a, SIDEBAR_THREADS_PAGE_SIZE).catch(() => {});
       } catch (e) {
@@ -562,7 +658,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       alive = false;
       threadRequestIdRef.current += 1;
     };
-  }, [loadThreadLimit, router]);
+  }, [loadThreadLimit, router, recordDiag]);
 
   // 快捷键直接进入探索模式，并打开对应的紧凑工作区。
   React.useEffect(() => {
@@ -588,6 +684,91 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       toast.error(t("logoutFailed"));
     }
   }, [router, t]);
+
+  const diagnosticsExportLogs = React.useCallback(() => {
+    return diag.exportLogs(
+      {
+        app: typeof window !== "undefined" && window.sagDesktop?.isDesktop ? "desktop" : "web",
+        user_agent: typeof navigator !== "undefined" ? navigator.userAgent : "",
+        language: capabilities?.language ?? "zh",
+        timezone: timezone,
+      },
+      capabilities
+        ? {
+            llm_provider: capabilities.llm_provider,
+            llm_model: capabilities.llm_model,
+            embedding_model: capabilities.embedding_model,
+            document_parser: capabilities.document_parser,
+            effective_document_parser: capabilities.effective_document_parser,
+            search_strategy: capabilities.search_strategy,
+            max_upload_mb: capabilities.max_upload_mb,
+            language: capabilities.language,
+            timezone: capabilities.timezone,
+          }
+        : null,
+      {
+        llm_configured: capabilities?.llm_configured,
+        llm_provider: capabilities?.llm_provider,
+        llm_model: capabilities?.llm_model,
+        embedding_model: capabilities?.embedding_model,
+        document_parser: capabilities?.document_parser,
+        search_strategy: capabilities?.search_strategy,
+        max_upload_mb: capabilities?.max_upload_mb,
+      },
+    );
+  }, [diag, capabilities, timezone]);
+
+  const diagnosticsDownloadLogs = React.useCallback(async () => {
+    // On desktop, pull the real runtime log files (frontend + backend Python
+    // logs are both piped into electron-log's main.log) so the exported file
+    // carries what R&D actually needs to diagnose a locally-deployed instance.
+    let desktopLogFiles: DiagLogFile[] | undefined;
+    if (typeof window !== "undefined" && window.sagDesktop?.getDiagnosticsInfo) {
+      try {
+        const info = await window.sagDesktop.getDiagnosticsInfo();
+        desktopLogFiles = info.logFiles.map((file) => ({
+          name: file.name,
+          path: file.path,
+          size_bytes: file.sizeBytes,
+          content: file.content,
+          truncated: file.truncated,
+        }));
+      } catch {
+        // best-effort: fall back to an export without the on-disk logs
+      }
+    }
+    diag.downloadLogs(
+      {
+        app: typeof window !== "undefined" && window.sagDesktop?.isDesktop ? "desktop" : "web",
+        user_agent: typeof navigator !== "undefined" ? navigator.userAgent : "",
+        language: capabilities?.language ?? "zh",
+        timezone: timezone,
+      },
+      capabilities
+        ? {
+            llm_provider: capabilities.llm_provider,
+            llm_model: capabilities.llm_model,
+            embedding_model: capabilities.embedding_model,
+            document_parser: capabilities.document_parser,
+            effective_document_parser: capabilities.effective_document_parser,
+            search_strategy: capabilities.search_strategy,
+            max_upload_mb: capabilities.max_upload_mb,
+            language: capabilities.language,
+            timezone: capabilities.timezone,
+          }
+        : null,
+      {
+        llm_configured: capabilities?.llm_configured,
+        llm_provider: capabilities?.llm_provider,
+        llm_model: capabilities?.llm_model,
+        embedding_model: capabilities?.embedding_model,
+        document_parser: capabilities?.document_parser,
+        search_strategy: capabilities?.search_strategy,
+        max_upload_mb: capabilities?.max_upload_mb,
+      },
+      desktopLogFiles,
+    );
+  }, [diag, capabilities, timezone]);
 
   if (loading) return <FullLoader />;
   if (!user || !agent) return null;
@@ -619,6 +800,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         refreshCapabilities,
         timezone,
         updateTimezone,
+        diagnostics: {
+          entries: diag.entries,
+          record: diag.record,
+          exportLogs: diagnosticsExportLogs,
+          downloadLogs: diagnosticsDownloadLogs,
+        },
       }}
     >
       <SearchProvider
@@ -639,7 +826,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               open={quickSetupOpen}
               onOpenChange={(nextOpen) => {
                 setQuickSetupOpen(nextOpen);
-                if (!nextOpen) dismissQuickModelSetup(window.localStorage);
+                if (!nextOpen) dismissQuickModelSetup(window.localStorage, user.id);
               }}
               onConfigured={(nextCapabilities) => {
                 setCapabilities(nextCapabilities);
@@ -650,7 +837,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <DetailPanelProvider>
               <div
                 className={cn(
-                  "bg-space-field relative grid h-svh min-h-0 overflow-hidden",
+                  // grid-cols-[minmax(0,1fr)]：非-windowed 分支下 grid 项默认 min-width:auto
+                  // 会读子内容的 min-content 撑破 track——PDF 解析出的宽 markdown 就会让
+                  // motion.div 撑到 2198px，右侧内容漂出 SAG 窗口（devtools 实测）。
+                  // minmax(0, 1fr) 显式把 track 最小值钳到 0，等价于给 grid 项加 min-w-0。
+                  "bg-space-field relative grid h-svh min-h-0 grid-cols-[minmax(0,1fr)] overflow-hidden",
                   windowed && "place-items-center p-4",
                 )}
               >
@@ -723,7 +914,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     className={cn(windowed ? "h-full min-h-full" : "h-svh min-h-svh")}
                   >
                     <AppSidebar contained={windowed} />
-                    <SidebarInset className="min-w-0">
+                    <SidebarInset className="min-w-0 overflow-hidden">
                       <SiteHeader />
                       <ContentArea>{children}</ContentArea>
                     </SidebarInset>
@@ -764,16 +955,18 @@ function ContentArea({ children }: { children: React.ReactNode }) {
     <>
       <ResizablePanelGroup
         direction="horizontal"
-        className="min-h-0 flex-1"
+        // min-w-0 + overflow-hidden：flex 子项默认 min-width:auto 会让 Panel 内容宽度
+        // 决定 group 宽度，导致解析内容超长时把整个右侧面板撑到窗口外面（图 5 现象）。
+        className="min-h-0 min-w-0 flex-1 overflow-hidden"
         autoSaveId="sag:detail"
       >
-        <ResizablePanel defaultSize={66} minSize={0}>
+        <ResizablePanel defaultSize={66} minSize={0} className="min-w-0">
           <DetailPanelMain>{children}</DetailPanelMain>
         </ResizablePanel>
         {target && lg && (
           <>
             <ResizableHandle withHandle />
-            <ResizablePanel ref={panelRef} defaultSize={34} minSize={24} maxSize={100} className="flex min-h-0 border-l">
+            <ResizablePanel ref={panelRef} defaultSize={34} minSize={24} maxSize={100} className="flex min-h-0 min-w-0 border-l">
               <DetailPanelOutlet />
             </ResizablePanel>
           </>

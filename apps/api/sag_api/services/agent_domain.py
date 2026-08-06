@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sag_api.branding import DEFAULT_AGENT_AVATAR, DEFAULT_AGENT_NAME
 from sag_api.core.config import settings
+from sag_api.core.error_taxonomy import ErrorCode
 from sag_api.core.errors import ConflictError, NotFoundError, ValidationError
 from sag_api.db.models import Agent, AgentBinding, Message, Source, Thread
 from sag_api.enums import BindingTargetType, MessageRole
@@ -83,7 +84,7 @@ def _encode_message_cursor(thread_id: str, message: Message) -> str:
 
 def _decode_message_cursor(thread_id: str, value: str) -> tuple[datetime, str]:
     def invalid() -> ValidationError:
-        return ValidationError("消息游标无效", code="invalid_cursor")
+        return ValidationError("消息游标无效", code=ErrorCode.INVALID_CURSOR)
 
     if not value or len(value) > MESSAGE_CURSOR_MAX_LENGTH or value.count(".") != 1:
         raise invalid()
@@ -362,7 +363,7 @@ async def list_messages_page(
     if limit < 1 or limit > MESSAGE_PAGE_MAX:
         raise ValidationError(
             f"消息页大小必须在 1 到 {MESSAGE_PAGE_MAX} 之间",
-            code="invalid_page_limit",
+            code=ErrorCode.INVALID_PAGE_LIMIT,
         )
 
     statement = select(Message).where(Message.thread_id == thread_id)

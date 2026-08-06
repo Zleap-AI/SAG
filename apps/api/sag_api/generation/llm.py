@@ -16,7 +16,13 @@ from typing import Any
 from sag_agent import CancellationToken, ModelChunk, ModelRequest, Usage
 from sag_agent import ToolCall as RuntimeToolCall
 from sag_api.core.config import Settings
-from sag_api.core.errors import ConfigurationError, UpstreamError
+from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
+from sag_api.core.errors import (
+    ApiError,
+    ConfigurationError,
+    ServiceUnavailableError,
+    UpstreamError,
+)
 from sag_api.core.litellm_policy import apply_litellm_completion_policy
 from sag_api.core.logging import get_logger
 
@@ -36,6 +42,51 @@ def _attr(value: Any, name: str, default: Any = None) -> Any:
     if isinstance(value, dict):
         return value.get(name, default)
     return getattr(value, name, default)
+
+
+def _classify_llm_error(e: Exception, *, stage: ErrorStage) -> ApiError:
+    """把 LiteLLM 的裸异常拆分为带 layer/stage 的领域异常。
+
+    历史上所有厂商错误都塌缩成一个 ``UpstreamError``，研发无法区分
+    「超时/限流（可重试）」与「鉴权/请求非法（改配置才行）」。这里按
+    LiteLLM 的异常类型名与 status_code 做粗分类，全部归到 LLM 层。
+    """
+    name = type(e).__name__
+    status = getattr(e, "status_code", None)
+    detail = f"{name}: {e}"
+    # 超时 / 限流 / 服务暂不可用 —— 可安全重试
+    _retryable_names = {
+        "Timeout",
+        "APITimeoutError",
+        "RateLimitError",
+        "ServiceUnavailableError",
+        "InternalServerError",
+    }
+    if name in _retryable_names or status in {408, 429, 503}:
+        return ServiceUnavailableError(
+            f"模型调用暂时失败（{name}），请稍后重试：{e}",
+            code=ErrorCode.LLM_UNAVAILABLE,
+            layer=ErrorLayer.LLM,
+            stage=stage,
+        )
+    # 鉴权失败 —— API key / 权限问题，需改配置
+    if name in {"AuthenticationError", "PermissionDeniedError"} or status in {401, 403}:
+        return ConfigurationError(
+            f"模型鉴权失败（{name}），请检查 API Key 配置：{e}",
+            code=ErrorCode.LLM_AUTH_ERROR,
+            layer=ErrorLayer.LLM,
+            stage=ErrorStage.CONFIG,
+        )
+    # 请求非法 / 上下文超限 —— 请求本身的问题
+    if name in {"BadRequestError", "ContextWindowExceededError", "UnprocessableEntityError"} or status in {400, 422}:
+        return UpstreamError(
+            f"模型拒绝请求（{name}）：{e}",
+            code=ErrorCode.LLM_BAD_REQUEST,
+            layer=ErrorLayer.LLM,
+            stage=stage,
+        )
+    # 其它一律归为通用生成失败
+    return UpstreamError(f"生成失败：{detail}", layer=ErrorLayer.LLM, stage=stage)
 
 
 class LLMClient:
@@ -178,7 +229,7 @@ class LLMClient:
             raise
         except Exception as e:  # noqa: BLE001
             log.warning("LLM 轮次流式调用失败：%s", e)
-            raise UpstreamError(f"生成失败：{e}") from e
+            raise _classify_llm_error(e, stage=ErrorStage.GENERATE) from e
         finally:
             if stream is not None:
                 try:
@@ -192,10 +243,17 @@ class LLMClient:
             resp = await self._create_completion(messages)
             choices = _attr(resp, "choices", []) or []
             if not choices:
-                raise UpstreamError("模型未返回候选答案")
+                raise UpstreamError(
+                    "模型未返回候选答案",
+                    code=ErrorCode.LLM_EMPTY_RESPONSE,
+                    layer=ErrorLayer.LLM,
+                    stage=ErrorStage.GENERATE,
+                )
             return _attr(_attr(choices[0], "message", {}), "content", "") or ""
+        except ApiError:
+            raise
         except Exception as e:  # noqa: BLE001
-            raise UpstreamError(f"生成失败：{e}") from e
+            raise _classify_llm_error(e, stage=ErrorStage.GENERATE) from e
 
     async def stream_complete(self, messages: list[Message]) -> AsyncIterator[str]:
         """Stream plain text completion deltas without the Agent/tool protocol."""
@@ -214,7 +272,7 @@ class LLMClient:
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
-            raise UpstreamError(f"生成失败：{e}") from e
+            raise _classify_llm_error(e, stage=ErrorStage.GENERATE) from e
         finally:
             # Closing explicitly makes browser aborts release the upstream HTTP
             # connection immediately, even when the stream is only partly read.

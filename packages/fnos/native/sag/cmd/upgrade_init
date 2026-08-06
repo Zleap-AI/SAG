@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+command_dir="$(dirname "$0")"
+main="$command_dir/main"
+lifecycle="${TRIM_APPDEST}/runtime/lifecycle.py"
+users="${TRIM_PKGVAR}/users"
+backup_dir="${TRIM_PKGVAR}/backup"
+
+"$command_dir/install_init"
+was_running=false
+if "$main" status >/dev/null 2>&1; then was_running=true; fi
+"$main" stop
+
+restore_if_needed() {
+  if [ "$was_running" = true ]; then "$main" start >/dev/null 2>&1 || true; fi
+}
+trap restore_if_needed EXIT HUP INT TERM
+
+used="$(python3 "$lifecycle" size --root "$users")"
+available="$(df -Pk "$TRIM_PKGVAR" | awk 'NR == 2 { print $4 }')"
+required=$((used * 2 + 102400))
+case "$available" in ''|*[!0-9]*) exit 1 ;; esac
+[ "$available" -ge "$required" ] || exit 1
+mkdir -p "$backup_dir"
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+temporary="$backup_dir/sag-users-$timestamp.tar.gz.tmp"
+final="${temporary%.tmp}"
+python3 "$lifecycle" backup --root "$users" --output "$temporary"
+python3 "$lifecycle" validate --archive "$temporary"
+chmod 600 "$temporary"
+mv -f "$temporary" "$final"
+trap - EXIT HUP INT TERM

@@ -23,6 +23,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 
+from sag_api.core.error_taxonomy import ErrorCode
 from sag_api.core.logging import get_logger
 from sag_api.tools.base import Tool, ToolContext, ToolMeta, ToolResult
 
@@ -326,7 +327,7 @@ async def open_agent_mcp_tools(specs: list[tuple[str, dict]]) -> AsyncIterator[M
                 log.warning("MCP 连接失败 %s", label, exc_info=True)
                 warnings.append(
                     {
-                        "code": "mcp_connection_failed",
+                        "code": ErrorCode.MCP_CONNECTION_FAILED,
                         "server": _namespace(label),
                         "message": "MCP 服务连接失败，本轮已跳过该服务。",
                     }

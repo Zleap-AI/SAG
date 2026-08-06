@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- fnOS 交付迁移为 Native x86 FPK：统一网关、每用户独立 Worker/SQLite 工作区、离线 Vendor 与包体积门禁；ARM 真机验收暂缓。
+
 ## v1.4.0 · 2026-07-23
 
 - 开源版本已基于 `zleap-sag` 全新重构并采用全新 UI；旧版源码归档于 `v1` 分支，不再维护。

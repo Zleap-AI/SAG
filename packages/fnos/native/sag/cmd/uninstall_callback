@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+if [ "${SAG_DELETE_DATA:-false}" = true ]; then
+  python3 "${TRIM_APPDEST}/runtime/lifecycle.py" delete --root "${TRIM_PKGVAR}/users"
+fi

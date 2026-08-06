@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { useParams, usePathname, useRouter } from "next/navigation";
 
 import { DEFAULT_AGENT_AVATAR } from "@/lib/branding";
+import { appPath } from "@/lib/deployment";
 import { useApp } from "@/components/features/app-shell";
 import {
   useConversationRuntime,
@@ -49,7 +50,7 @@ export default function ChatPage() {
       const next = runtime.createDraft({ activate: true });
       preferredDraftRef.current = next;
       setSessionId(next);
-      if (window.location.pathname !== "/chat") router.push("/chat");
+      if (window.location.pathname !== appPath("/chat")) router.push("/chat");
     };
     window.addEventListener("sag:new-chat", onNewChat);
     return () => window.removeEventListener("sag:new-chat", onNewChat);
@@ -58,7 +59,7 @@ export default function ChatPage() {
   React.useEffect(() => {
     const threadId = session?.threadId;
     if (!threadId || routeThreadId) return;
-    const nextPath = `/chat/${threadId}`;
+    const nextPath = appPath(`/chat/${threadId}`);
     if (window.location.pathname === nextPath) return;
     // 不触发路由卸载，确保创建线程后的流式回答持续由同一 runtime 托管。
     window.history.replaceState(window.history.state, "", nextPath);

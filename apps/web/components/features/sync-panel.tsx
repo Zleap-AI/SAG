@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 import { api, ApiError } from "@/lib/api";
+import { getDiagnosticsStore } from "@/lib/diagnostics";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -16,11 +17,22 @@ export function SyncPanel({ sourceId, onSynced }: { sourceId: string; onSynced: 
   async function sync() {
     setBusy(true);
     try {
-      await api.syncSource(sourceId);
+      const result = await api.syncSource(sourceId);
       toast.success(t("started"));
+      getDiagnosticsStore().record("knowledge.upload", {
+        action: "source.sync",
+        source_id: sourceId,
+        job_type: result.type,
+        job_id: result.id,
+      });
       onSynced();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : t("failed"));
+      getDiagnosticsStore().record("error", {
+        context: "source.sync",
+        source_id: sourceId,
+        error_message: err instanceof ApiError ? err.message : String(err),
+      });
     } finally {
       setBusy(false);
     }

@@ -7,6 +7,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { AccountSettings } from "@/components/features/account-settings";
 import { AgentSettingsCard } from "@/components/features/agent-settings-card";
 import { AppearanceSettings } from "@/components/features/appearance-settings";
+import { DiagnosticsSettings } from "@/components/features/diagnostics-settings";
 import { KnowledgeConfigForm } from "@/components/features/knowledge-config-form";
 import { McpSettingsCard } from "@/components/features/mcp-settings-card";
 import { McpServiceSettings } from "@/components/features/mcp-service-settings";
@@ -134,6 +135,10 @@ function SettingsPageContent() {
 
         <TabsContent value="graph" className="m-0 animate-fade-in">
           <GraphSettings />
+        </TabsContent>
+
+        <TabsContent value="diagnostics" className="m-0 animate-fade-in">
+          <DiagnosticsSettings />
         </TabsContent>
       </Tabs>
     </div>

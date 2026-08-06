@@ -6,6 +6,7 @@ import { useLocale, useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 import { ApiError } from "@/lib/api";
+import { getDiagnosticsStore } from "@/lib/diagnostics";
 import {
   deriveDocumentActivity,
   documentActivityShowsProgress,
@@ -47,6 +48,15 @@ export function DocumentList({
       else if (action === "pause") toast.success(t("pausing"));
       else if (action === "resume") toast.success(t("resumed"));
       else toast.success(t("deleted"));
+      getDiagnosticsStore().record("knowledge.upload", {
+        action: `document.${action}`,
+        source_id: sourceId,
+        document_id: document.id,
+        filename: document.filename,
+        status: document.status,
+        chunk_count: document.chunk_count,
+        event_count: document.event_count,
+      });
     } catch (error) {
       const fallback =
         action === "delete"
@@ -57,6 +67,13 @@ export function DocumentList({
               ? t("resumeFailed")
               : t("operationFailed");
       toast.error(error instanceof ApiError ? error.message : fallback);
+      getDiagnosticsStore().record("error", {
+        context: `document.${action}`,
+        source_id: sourceId,
+        document_id: document.id,
+        filename: document.filename,
+        error_message: error instanceof ApiError ? error.message : String(error),
+      });
     }
   }
 

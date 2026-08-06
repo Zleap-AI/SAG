@@ -1,4 +1,6 @@
 import { clearToken, getToken } from "./auth";
+import { appPath } from "./deployment";
+import { getDiagnosticsStore } from "./diagnostics";
 import { readClientLocale } from "../i18n/client";
 import { clientErrorMessage, serverErrorMessage } from "../i18n/client-errors";
 import type { SearchStrategy } from "./retrieval-config";
@@ -39,6 +41,7 @@ import type {
 function resolveApiBase(): string {
   const configured = process.env.NEXT_PUBLIC_API_BASE;
   if (configured === "/") return "";
+  if (configured?.startsWith("/")) return configured.replace(/\/+$/, "");
   if (typeof window !== "undefined") {
     const { protocol, hostname } = window.location;
     const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1";
@@ -60,10 +63,28 @@ export const API_BASE = resolveApiBase();
 export class ApiError extends Error {
   status: number;
   code: string;
-  constructor(status: number, code: string, message: string) {
+  /** 后端返回的 X-Request-Id，用于把前端诊断日志和后端日志串联。 */
+  requestId?: string;
+  /** 责任层：api / llm / engine / storage / network（后端错误分类维度）。 */
+  layer?: string;
+  /** 链路环节：config / parse / load / extract / persist / retrieve / generate。 */
+  stage?: string;
+  /** 是否可安全重试。 */
+  retryable?: boolean;
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    requestId?: string,
+    dimensions?: { layer?: string; stage?: string; retryable?: boolean },
+  ) {
     super(message);
     this.status = status;
     this.code = code;
+    this.requestId = requestId;
+    this.layer = dimensions?.layer;
+    this.stage = dimensions?.stage;
+    this.retryable = dimensions?.retryable;
   }
 }
 
@@ -160,6 +181,7 @@ async function streamGlobalSearch(
     );
 
   armStreamTimeout("first-result", SEARCH_FIRST_RESULT_TIMEOUT_MS);
+  const searchStartMs = Date.now();
   let response: Response;
   try {
     response = await fetch(`${API_BASE}/api/v1/search/stream`, {
@@ -174,18 +196,38 @@ async function streamGlobalSearch(
     });
   } catch (error) {
     clearStreamTimeout();
-    if (timeoutReason) throw timeoutError();
+    if (timeoutReason) {
+      getDiagnosticsStore().record("error", {
+        source: "search-stream",
+        method: "POST",
+        path: "/api/v1/search/stream",
+        duration_ms: Date.now() - searchStartMs,
+        error_code: "timeout",
+        error_message: timeoutReason === "first-result"
+          ? "Search timed out waiting for first result (30s)"
+          : "Search timed out due to idle stream (45s)",
+      });
+      throw timeoutError();
+    }
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new ApiError(0, "aborted", clientErrorMessage("cancelled"));
     }
     if (signal?.aborted)
       throw new ApiError(0, "aborted", clientErrorMessage("cancelled"));
+    getDiagnosticsStore().record("error", {
+      source: "search-stream",
+      method: "POST",
+      path: "/api/v1/search/stream",
+      duration_ms: Date.now() - searchStartMs,
+      error_code: "network",
+      error_message: "Search stream connection failed",
+    });
     throw new ApiError(0, "network", clientErrorMessage("network"));
   }
 
   if (response.status === 401 && typeof window !== "undefined") {
     clearToken();
-    window.location.href = "/login";
+    window.location.href = appPath("/login");
   }
   if (!response.ok || !response.body) {
     clearStreamTimeout();
@@ -200,6 +242,15 @@ async function streamGlobalSearch(
     } catch {
       /* Keep the stable fallback when a proxy returns HTML or an empty body. */
     }
+    getDiagnosticsStore().record("error", {
+      source: "search-stream",
+      method: "POST",
+      path: "/api/v1/search/stream",
+      duration_ms: Date.now() - searchStartMs,
+      status: response.status,
+      error_code: code,
+      error_message: message,
+    });
     throw new ApiError(
       response.status,
       code,
@@ -361,18 +412,43 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const signal = opts.signal
     ? AbortSignal.any([opts.signal, timeoutSignal])
     : timeoutSignal;
+
+  const method = opts.method ?? "GET";
+  const startMs = Date.now();
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}`, { ...opts, headers, signal });
+    for (let attempt = 0; ; attempt += 1) {
+      res = await fetch(`${API_BASE}${path}`, { ...opts, headers, signal });
+      const retryAfter = Number(res.headers.get("retry-after"));
+      if (res.status !== 503 || attempt >= 2 || !Number.isFinite(retryAfter) || retryAfter < 0) break;
+      await new Promise((resolve) => window.setTimeout(resolve, Math.min(retryAfter, 3) * 1000));
+    }
   } catch (e) {
-    if (e instanceof DOMException && e.name === "TimeoutError") {
+    const durationMs = Date.now() - startMs;
+    const isTimeout = e instanceof DOMException && e.name === "TimeoutError";
+    const isAbort = e instanceof DOMException && e.name === "AbortError";
+    getDiagnosticsStore().record("error", {
+      source: "api",
+      method,
+      path,
+      duration_ms: durationMs,
+      error_code: isTimeout ? "timeout" : isAbort ? "aborted" : "network",
+      error_message: isTimeout
+        ? "Request timed out after 30s"
+        : isAbort
+          ? "Request was cancelled"
+          : "Network error — server unreachable or DNS failure",
+    });
+    if (isTimeout) {
       throw new ApiError(0, "timeout", clientErrorMessage("requestTimeout"));
     }
-    if (e instanceof DOMException && e.name === "AbortError") {
+    if (isAbort) {
       throw new ApiError(0, "aborted", clientErrorMessage("cancelled"));
     }
     throw new ApiError(0, "network", clientErrorMessage("network"));
   }
+
+  const durationMs = Date.now() - startMs;
 
   if (
     res.status === 401 &&
@@ -380,17 +456,23 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
     !path.includes("/auth/")
   ) {
     clearToken();
-    window.location.href = "/login";
+    window.location.href = appPath("/login");
   }
 
   if (!res.ok) {
     let code = "error";
     let message = res.statusText || clientErrorMessage("requestFailed");
+    let layer: string | undefined;
+    let stage: string | undefined;
+    let retryable: boolean | undefined;
     try {
       const j = await res.json();
       if (j?.error) {
         code = j.error.code ?? code;
         message = j.error.message ?? message;
+        layer = j.error.layer ?? undefined;
+        stage = j.error.stage ?? undefined;
+        retryable = typeof j.error.retryable === "boolean" ? j.error.retryable : undefined;
       } else if (j?.detail) {
         message =
           typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
@@ -398,11 +480,41 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
     } catch {
       /* ignore */
     }
+    const requestId = res.headers.get("X-Request-Id") ?? undefined;
+    getDiagnosticsStore().record("error", {
+      source: "api",
+      method,
+      path,
+      duration_ms: durationMs,
+      status: res.status,
+      error_code: code,
+      error_message: message,
+      error_layer: layer,
+      error_stage: stage,
+      retryable,
+      request_id: requestId,
+    });
     throw new ApiError(
       res.status,
       code,
       serverErrorMessage(code, message, res.status),
+      requestId,
+      { layer, stage, retryable },
     );
+  }
+
+  // Log slow successful requests (> 5s) as they may indicate backend issues
+  if (durationMs > 5000) {
+    getDiagnosticsStore().record("warn", {
+      source: "api",
+      method,
+      path,
+      duration_ms: durationMs,
+      status: res.status,
+      error_code: "slow_request",
+      error_message: `Request succeeded but took ${durationMs}ms (> 5s threshold)`,
+      request_id: res.headers.get("X-Request-Id") ?? undefined,
+    });
   }
 
   if (res.status === 204) return undefined as T;

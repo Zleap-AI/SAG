@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+secret="${TRIM_PKGETC}/internal-secret"
+mkdir -p "${TRIM_PKGETC}"
+if [ -L "$secret" ]; then
+  echo "refusing symlinked fnOS internal secret" >&2
+  exit 1
+fi
+if [ ! -e "$secret" ]; then
+  umask 077
+  od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$secret"
+fi
+if id sag >/dev/null 2>&1; then
+  chown sag:sag "$secret"
+fi
+chmod 600 "$secret"
+test "$(wc -c < "$secret" | tr -d ' ')" = 64

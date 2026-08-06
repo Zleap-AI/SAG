@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
+from time import time
+
 import jwt
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -20,12 +24,33 @@ from sag_api.services.auth_service import get_single_user, get_user_for_token_pa
 _bearer = HTTPBearer(auto_error=False)
 
 
+@lru_cache
+def _fnos_identity_signer(secret_file: str):
+    from sag_api.fnos.identity import InternalIdentitySigner
+
+    return InternalIdentitySigner.from_file(Path(secret_file))
+
+
 async def get_current_user(
     request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
     session: AsyncSession = Depends(get_session),
 ) -> User:
     from sag_api.core.config import settings
+
+    if settings.auth_mode == "fnos":
+        from sag_api.services.fnos_user_service import get_or_create_fnos_user
+
+        signer = _fnos_identity_signer(settings.fnos_internal_secret_file)
+        identity = signer.verify(
+            request.headers,
+            expected_uid=settings.fnos_uid,
+            now=int(time()),
+            expected_username=settings.fnos_username if settings.fnos_username_isolation else None,
+        )
+        user = await get_or_create_fnos_user(session, identity)
+        request.state.user = user
+        return user
 
     if settings.auth_mode == "single_user":
         user = await get_single_user(session)

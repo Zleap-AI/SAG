@@ -1,11 +1,19 @@
 import createNextIntlPlugin from "next-intl/plugin";
 
 const withNextIntl = createNextIntlPlugin("./i18n/request.ts");
+const configuredBasePath = process.env.NEXT_PUBLIC_APP_BASE_PATH;
+const basePath = configuredBasePath && configuredBasePath !== "/"
+  ? `/${configuredBasePath}`.replace(/\/+/g, "/").replace(/\/$/, "")
+  : undefined;
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
   output: "standalone",
+  basePath,
+  // fnOS serves the UI through a UDS gateway prefix. Avoid Next's secondary
+  // image-optimizer endpoint so public images remain ordinary prefixed assets.
+  images: { unoptimized: Boolean(basePath) },
   // Keep development HMR artifacts isolated from `next build` output.
   distDir: process.env.NODE_ENV === "development" ? ".next-dev" : ".next",
   eslint: { ignoreDuringBuilds: true },

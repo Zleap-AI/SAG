@@ -45,12 +45,12 @@ https://github.com/user-attachments/assets/9bb618e9-fef8-4d07-8a30-3f7d83beb0ff
 
 <a id="fnos"></a>
 
-## fnOS Docker application
+## fnOS Native application
 
-This branch packages SAG as a fnOS Docker application. Its external entry is the fnOS desktop card or port `3080`; users do not need to configure a separate API or Web port.
+This branch packages SAG as a fnOS Native application. Open it from the fnOS desktop card at `/app/sag`; it has no public API or Web port. fnOS login identity selects a separate private SAG workspace for each user.
 
 ```text
-fnOS desktop / :3080
+fnOS desktop / `/app/sag`
         │
   sag-gateway (Nginx)
     ├── /       → sag-web

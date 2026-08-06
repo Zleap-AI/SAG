@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
@@ -24,7 +25,28 @@ from sag_api.services.auth_service import (
     reset_single_user,
 )
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+_FNOS_DISABLED_POST_PATHS = {"/auth/register", "/auth/login", "/auth/session"}
+
+
+class _FnOSAuthRoute(APIRoute):
+    """Reject fnOS-disabled mutations before FastAPI reads or validates a body."""
+
+    def get_route_handler(self):
+        route_handler = super().get_route_handler()
+
+        async def guarded(request: Request) -> Response:
+            if (
+                settings.auth_mode == "fnos"
+                and request.method == "POST"
+                and self.path in _FNOS_DISABLED_POST_PATHS
+            ):
+                raise HTTPException(status_code=404)
+            return await route_handler(request)
+
+        return guarded
+
+
+router = APIRouter(prefix="/auth", tags=["auth"], route_class=_FnOSAuthRoute)
 
 
 def _single_user_response(user: User | None) -> SingleUserSessionResponse:
@@ -76,6 +98,8 @@ async def me(user: User = Depends(get_current_user)) -> UserOut:
 async def single_user_session(
     session: AsyncSession = Depends(get_session),
 ) -> SingleUserSessionResponse:
+    if settings.auth_mode == "fnos":
+        return SingleUserSessionResponse(setup_required=False, user=None)
     return _single_user_response(await get_single_user(session))
 
 
@@ -91,6 +115,8 @@ async def initialize_single_user_session(
 async def reset_single_user_session(
     session: AsyncSession = Depends(get_session),
 ) -> Response:
+    if settings.auth_mode == "fnos":
+        return Response(status_code=404)
     if settings.auth_mode != "single_user":
         return Response(status_code=404)
     await reset_single_user(session)

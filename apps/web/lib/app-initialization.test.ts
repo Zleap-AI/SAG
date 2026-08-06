@@ -148,11 +148,17 @@ describe("app initialization", () => {
 
   it("shows model setup once and respects an explicit skip", () => {
     const storage = memoryStorage();
+    const userA = "user-a";
+    const userB = "user-b";
 
-    expect(shouldShowQuickModelSetup(true, storage)).toBe(true);
-    expect(shouldShowQuickModelSetup(false, storage)).toBe(false);
+    expect(shouldShowQuickModelSetup(true, storage, userA)).toBe(true);
+    expect(shouldShowQuickModelSetup(false, storage, userA)).toBe(false);
 
-    dismissQuickModelSetup(storage);
-    expect(shouldShowQuickModelSetup(true, storage)).toBe(false);
+    dismissQuickModelSetup(storage, userA);
+    expect(shouldShowQuickModelSetup(true, storage, userA)).toBe(false);
+
+    // Skipping in one fnOS user's session must not silence the dialog for a
+    // different user sharing the same browser origin.
+    expect(shouldShowQuickModelSetup(true, storage, userB)).toBe(true);
   });
 });
