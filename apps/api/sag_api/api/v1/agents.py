@@ -16,6 +16,7 @@ from sag_api.core.deps import (
     get_llm,
     get_tool_registry,
 )
+from sag_api.core.error_taxonomy import ErrorCode
 from sag_api.core.errors import ConfigurationError, ConflictError, NotFoundError
 from sag_api.core.logging import get_logger
 from sag_api.db.models import User
@@ -390,7 +391,7 @@ async def ask(
                 "turn": 0,
                 "payload": {
                     "error": {
-                        "code": "stream_error",
+                        "code": ErrorCode.STREAM_ERROR,
                         "message": f"生成中断：{getattr(e, 'message', None) or e}",
                         "retryable": True,
                         "details": {},

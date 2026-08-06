@@ -16,7 +16,7 @@ from sag_api.api.v1 import api_router
 from sag_api.branding import PRODUCT_NAME
 from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal, dispose_db, init_db
-from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
+from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
 from sag_api.core.errors import ApiError
 from sag_api.core.litellm_policy import install_litellm_policy, uninstall_litellm_policy
 from sag_api.core.logging import RequestContextMiddleware, configure_logging, get_logger
@@ -180,7 +180,7 @@ def create_app() -> FastAPI:
         log.exception("未处理异常：%s", exc)
         request_id = getattr(request.state, "request_id", None)
         error: dict[str, object] = {
-            "code": "internal_error",
+            "code": ErrorCode.INTERNAL_ERROR,
             "message": "服务器内部错误",
             "layer": ErrorLayer.API.value,
             "stage": ErrorStage.UNKNOWN.value,

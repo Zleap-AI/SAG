@@ -16,7 +16,7 @@ from typing import Any
 from sag_agent import CancellationToken, ModelChunk, ModelRequest, Usage
 from sag_agent import ToolCall as RuntimeToolCall
 from sag_api.core.config import Settings
-from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
+from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
 from sag_api.core.errors import (
     ApiError,
     ConfigurationError,
@@ -65,7 +65,7 @@ def _classify_llm_error(e: Exception, *, stage: ErrorStage) -> ApiError:
     if name in _retryable_names or status in {408, 429, 503}:
         return ServiceUnavailableError(
             f"模型调用暂时失败（{name}），请稍后重试：{e}",
-            code="llm_unavailable",
+            code=ErrorCode.LLM_UNAVAILABLE,
             layer=ErrorLayer.LLM,
             stage=stage,
         )
@@ -73,7 +73,7 @@ def _classify_llm_error(e: Exception, *, stage: ErrorStage) -> ApiError:
     if name in {"AuthenticationError", "PermissionDeniedError"} or status in {401, 403}:
         return ConfigurationError(
             f"模型鉴权失败（{name}），请检查 API Key 配置：{e}",
-            code="llm_auth_error",
+            code=ErrorCode.LLM_AUTH_ERROR,
             layer=ErrorLayer.LLM,
             stage=ErrorStage.CONFIG,
         )
@@ -81,7 +81,7 @@ def _classify_llm_error(e: Exception, *, stage: ErrorStage) -> ApiError:
     if name in {"BadRequestError", "ContextWindowExceededError", "UnprocessableEntityError"} or status in {400, 422}:
         return UpstreamError(
             f"模型拒绝请求（{name}）：{e}",
-            code="llm_bad_request",
+            code=ErrorCode.LLM_BAD_REQUEST,
             layer=ErrorLayer.LLM,
             stage=stage,
         )
@@ -245,7 +245,7 @@ class LLMClient:
             if not choices:
                 raise UpstreamError(
                     "模型未返回候选答案",
-                    code="llm_empty_response",
+                    code=ErrorCode.LLM_EMPTY_RESPONSE,
                     layer=ErrorLayer.LLM,
                     stage=ErrorStage.GENERATE,
                 )

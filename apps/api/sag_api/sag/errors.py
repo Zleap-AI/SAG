@@ -13,7 +13,7 @@ from zleap.sag.exceptions import (
     SagError,
 )
 
-from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
+from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
 from sag_api.core.errors import (
     ConfigurationError,
     NotFoundError,
@@ -55,7 +55,7 @@ def map_sag_errors(*, stage: ErrorStage = ErrorStage.UNKNOWN):
         message = getattr(e, "message", None) or str(e)
         raise ValidationError(
             f"模型输出不符合结构化 schema：{message}",
-            code="schema_validation_error",
+            code=ErrorCode.SCHEMA_VALIDATION_ERROR,
             layer=ErrorLayer.LLM,
             stage=stage,
         ) from e

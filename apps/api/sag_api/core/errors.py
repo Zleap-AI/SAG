@@ -13,14 +13,14 @@
 
 from __future__ import annotations
 
-from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
+from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
 
 
 class ApiError(Exception):
     """所有 sag 领域异常的基类。"""
 
     status_code: int = 500
-    code: str = "internal_error"
+    code: str = ErrorCode.INTERNAL_ERROR
     layer: ErrorLayer = ErrorLayer.API
     stage: ErrorStage = ErrorStage.UNKNOWN
     retryable: bool = False
@@ -63,28 +63,28 @@ class NotFoundError(ApiError):
     """请求的资源不存在。"""
 
     status_code = 404
-    code = "not_found"
+    code = ErrorCode.NOT_FOUND
 
 
 class ConflictError(ApiError):
     """资源冲突（如重复创建）。"""
 
     status_code = 409
-    code = "conflict"
+    code = ErrorCode.CONFLICT
 
 
 class ValidationError(ApiError):
     """输入校验失败。"""
 
     status_code = 422
-    code = "validation_error"
+    code = ErrorCode.VALIDATION_ERROR
 
 
 class AuthError(ApiError):
     """未认证或凭证无效。"""
 
     status_code = 401
-    code = "unauthorized"
+    code = ErrorCode.UNAUTHORIZED
     layer = ErrorLayer.API
     stage = ErrorStage.AUTH
 
@@ -93,7 +93,7 @@ class ForbiddenError(ApiError):
     """无权访问该资源。"""
 
     status_code = 403
-    code = "forbidden"
+    code = ErrorCode.FORBIDDEN
     layer = ErrorLayer.API
     stage = ErrorStage.AUTH
 
@@ -102,7 +102,7 @@ class ConfigurationError(ApiError):
     """缺少必要配置（如未配置 LLM）。"""
 
     status_code = 400
-    code = "configuration_error"
+    code = ErrorCode.CONFIGURATION_ERROR
     layer = ErrorLayer.API
     stage = ErrorStage.CONFIG
 
@@ -111,7 +111,7 @@ class UpstreamError(ApiError):
     """上游（LLM / 引擎）返回错误。"""
 
     status_code = 502
-    code = "upstream_error"
+    code = ErrorCode.UPSTREAM_ERROR
     layer = ErrorLayer.LLM
 
 
@@ -119,5 +119,5 @@ class ServiceUnavailableError(ApiError):
     """暂时不可用（可重试，如限流 / 超时）。"""
 
     status_code = 503
-    code = "service_unavailable"
+    code = ErrorCode.SERVICE_UNAVAILABLE
     retryable = True

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.connectors import registry
 from sag_api.core.config import settings
+from sag_api.core.error_taxonomy import ErrorCode
 from sag_api.core.errors import ApiError, NotFoundError, ValidationError
 from sag_api.core.logging import get_logger
 from sag_api.db.base import new_id
@@ -43,7 +44,7 @@ async def search_source_candidates(
         if len(ordered_ids) > limit:
             raise ValidationError(
                 f"单次最多检索 {limit} 个信息源，请通过 @ 缩小范围",
-                code="too_many_search_sources",
+                code=ErrorCode.TOO_MANY_SEARCH_SOURCES,
             )
         rows = await session.execute(select(Source).where(Source.id.in_(ordered_ids)))
         by_id = {source.id: source for source in rows.scalars().all()}
