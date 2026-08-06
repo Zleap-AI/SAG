@@ -15,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal
-from sag_api.core.errors import NotFoundError
+from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
+from sag_api.core.errors import ApiError, NotFoundError
 from sag_api.core.logging import get_logger
 from sag_api.db.models import Document, Job, Source
 from sag_api.enums import DocumentStatus, JobType
@@ -27,6 +28,30 @@ from sag_api.sag.dto import ProcessCheckpoint
 log = get_logger("jobs")
 
 TaskHandler = Callable[[AsyncSession, Job], Awaitable[None]]
+
+# 文档失败时的当前状态 → 链路环节。这是「唯一知道 stage 的地方」的兜底映射：
+# 当异常本身没带 stage（非 ApiError，例如逃逸的 jsonschema 错误）时，用文档处在
+# 哪个状态推断它卡在哪个环节。
+_STATUS_TO_STAGE: dict[DocumentStatus, ErrorStage] = {
+    DocumentStatus.PENDING: ErrorStage.PARSE,
+    DocumentStatus.LOADING: ErrorStage.PARSE,
+    DocumentStatus.EXTRACTING: ErrorStage.EXTRACT,
+}
+
+
+def _classify_document_failure(
+    e: Exception, current_status: DocumentStatus
+) -> tuple[ErrorLayer, ErrorStage]:
+    """推断失败的责任层与链路环节。
+
+    优先信任领域异常自带的 layer/stage（LLM 分类、引擎翻译层都会填）；
+    否则退化为「按文档当前状态猜环节」，责任层归 engine（zleap-sag 抽取/入库
+    过程中逃逸的裸异常，如 jsonschema.ValidationError，几乎都发生在引擎侧）。
+    """
+    if isinstance(e, ApiError) and e.layer is not None and e.stage is not None:
+        return e.layer, e.stage
+    stage = _STATUS_TO_STAGE.get(current_status, ErrorStage.EXTRACT)
+    return ErrorLayer.ENGINE, stage
 
 
 async def process_document(
@@ -131,8 +156,18 @@ async def process_document(
     except JobPaused:
         raise
     except Exception as e:  # noqa: BLE001 - 记录到文档后再上抛给 worker
+        layer, stage = _classify_document_failure(e, document.status)
         document.status = DocumentStatus.FAILED
         document.error = getattr(e, "message", None) or str(e)
+        document.error_layer = layer.value
+        document.error_stage = stage.value
+        log.warning(
+            "文档处理失败 doc=%s layer=%s stage=%s error=%s",
+            document.id,
+            layer.value,
+            stage.value,
+            document.error,
+        )
         await session.commit()
         raise
 

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal
+from sag_api.core.error_taxonomy import ErrorCode
 from sag_api.core.errors import (
     ConflictError,
     NotFoundError,
@@ -666,7 +667,7 @@ async def universe_expand(
         if "revision" in str(error):
             raise ConflictError(
                 "知识图谱数据已更新，请重新开始当前探索",
-                code="snapshot_changed",
+                code=ErrorCode.SNAPSHOT_CHANGED,
             ) from error
         raise ValidationError("无效或不匹配的知识宇宙游标") from error
     except TypeError as error:
@@ -680,7 +681,7 @@ async def universe_expand(
     if committed_revision != source_revision:
         raise ConflictError(
             "知识图谱数据已更新，请重新开始当前探索",
-            code="snapshot_changed",
+            code=ErrorCode.SNAPSHOT_CHANGED,
         )
 
     anchor = {
@@ -795,7 +796,7 @@ async def universe_timeline(
         if "revision" in str(error):
             raise ConflictError(
                 "知识图谱数据已更新，请刷新时间轴后继续",
-                code="snapshot_changed",
+                code=ErrorCode.SNAPSHOT_CHANGED,
             ) from error
         raise ValidationError("无效或不匹配的知识时间轴游标") from error
     except TypeError as error:
@@ -807,7 +808,7 @@ async def universe_timeline(
     if committed_revision != source_revision:
         raise ConflictError(
             "知识图谱数据已更新，请刷新时间轴后继续",
-            code="snapshot_changed",
+            code=ErrorCode.SNAPSHOT_CHANGED,
         )
     page_signature = "|".join(
         [

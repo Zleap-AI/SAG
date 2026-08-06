@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import { toolArgumentsPreview } from "@/lib/agent-run-activity";
 import { api } from "@/lib/api";
+import { getDiagnosticsStore } from "@/lib/diagnostics";
 import type { ConversationMessage } from "@/lib/conversation-runtime";
 import { parsePetDraft, PET_DRAFT_EVENT, PET_DRAFT_KEY } from "@/lib/pet-events";
 import { formatTokenCount, relativeTime } from "@/lib/format";
@@ -521,6 +522,10 @@ export function ConversationPanel({
     if ((!query && pendingImages.length === 0) || uploadingRef.current) return;
     if (!capabilities?.llm_configured) {
       toast.error(t("modelNotConfigured"));
+      getDiagnosticsStore().record("error", {
+        context: "conversation.send",
+        error_message: "Model not configured",
+      });
       return;
     }
     if (runtime.getIndexSnapshot().activeRunSessionId) {
@@ -557,9 +562,17 @@ export function ConversationPanel({
 
       void request.catch((error) => {
         toast.error(error instanceof Error ? error.message : t("connectionInterrupted"));
+        getDiagnosticsStore().record("qa.error", {
+          context: "conversation.send",
+          error_message: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+        });
       });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("imageUploadFailed"));
+      getDiagnosticsStore().record("qa.error", {
+        context: "conversation.send.upload",
+        error_message: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+      });
     } finally {
       uploadingRef.current = false;
       setUploading(false);

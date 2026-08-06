@@ -4,6 +4,7 @@ import * as React from "react";
 import { useTranslations } from "next-intl";
 
 import { api, ApiError } from "@/lib/api";
+import { getDiagnosticsStore } from "@/lib/diagnostics";
 import {
   beginDocumentMutation,
   deriveDocumentActivity,
@@ -67,6 +68,38 @@ export function useSourceContent(sourceId: string, active = true) {
       const previousById = new Map(
         (documentsRef.current ?? []).map((document) => [document.id, document]),
       );
+      // 记录文档后台处理的终态跃迁（ready / failed），这是上传后异步链路
+      // 中最容易出问题的一环（如 embedding 上游失败），前端此前无埋点。
+      // 仅在状态从"处理中"跃迁到终态时记录一次，避免轮询重复写入。
+      for (const document of nextDocuments) {
+        const prev = previousById.get(document.id);
+        if (!prev || prev.status === document.status) continue;
+        const wasProcessing =
+          prev.status === "pending"
+          || prev.status === "loading"
+          || prev.status === "extracting";
+        if (document.status === "ready" && wasProcessing) {
+          getDiagnosticsStore().record("knowledge.process", {
+            phase: "ready",
+            source_id: sourceId,
+            document_id: document.id,
+            filename: document.filename,
+            chunk_count: document.chunk_count,
+            event_count: document.event_count,
+            token_usage: document.token_usage,
+          });
+        } else if (document.status === "failed" && prev.status !== "failed") {
+          getDiagnosticsStore().record("knowledge.process", {
+            phase: "failed",
+            source_id: sourceId,
+            document_id: document.id,
+            filename: document.filename,
+            error_message: document.error,
+            error_layer: document.error_layer ?? undefined,
+            error_stage: document.error_stage ?? undefined,
+          });
+        }
+      }
       const now = Date.now();
       setFailedUntil((current) => {
         const next: Record<string, number> = {};

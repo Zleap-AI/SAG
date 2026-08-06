@@ -12,6 +12,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from sag_api.core.db import get_session
 from sag_api.core.deps import get_current_user, get_engine_manager, get_llm
+from sag_api.core.error_taxonomy import ErrorCode
 from sag_api.core.errors import ApiError
 from sag_api.core.logging import get_logger
 from sag_api.db.models import Source, User
@@ -390,7 +391,7 @@ async def global_search_stream(
             log.exception("搜索流未处理异常：%s", error)
             yield _sse(
                 "error",
-                {"code": "stream_error", "message": "搜索生成意外中断"},
+                {"code": ErrorCode.STREAM_ERROR, "message": "搜索生成意外中断"},
             )
 
     return EventSourceResponse(

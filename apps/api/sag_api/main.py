@@ -18,6 +18,7 @@ from sag_api.api.v1 import api_router
 from sag_api.branding import PRODUCT_NAME
 from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal, dispose_db, init_db
+from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
 from sag_api.core.errors import ApiError
 from sag_api.core.litellm_policy import install_litellm_policy, uninstall_litellm_policy
 from sag_api.core.logging import RequestContextMiddleware, configure_logging, get_logger
@@ -182,10 +183,11 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestContextMiddleware)
 
     @app.exception_handler(ApiError)
-    async def _handle_api_error(_request: Request, exc: ApiError) -> JSONResponse:
+    async def _handle_api_error(request: Request, exc: ApiError) -> JSONResponse:
+        request_id = getattr(request.state, "request_id", None)
         return JSONResponse(
             status_code=exc.status_code,
-            content={"error": {"code": exc.code, "message": exc.message}},
+            content=exc.to_envelope(request_id=request_id),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -209,12 +211,19 @@ def create_app() -> FastAPI:
         return await request_validation_exception_handler(request, exc)
 
     @app.exception_handler(Exception)
-    async def _handle_unexpected(_request: Request, exc: Exception) -> JSONResponse:
+    async def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
         log.exception("未处理异常：%s", exc)
-        return JSONResponse(
-            status_code=500,
-            content={"error": {"code": "internal_error", "message": "服务器内部错误"}},
-        )
+        request_id = getattr(request.state, "request_id", None)
+        error: dict[str, object] = {
+            "code": ErrorCode.INTERNAL_ERROR,
+            "message": "服务器内部错误",
+            "layer": ErrorLayer.API.value,
+            "stage": ErrorStage.UNKNOWN.value,
+            "retryable": False,
+        }
+        if request_id:
+            error["request_id"] = request_id
+        return JSONResponse(status_code=500, content={"error": error})
 
     app.include_router(api_router)
 

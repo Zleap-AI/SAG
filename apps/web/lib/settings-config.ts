@@ -1,5 +1,6 @@
 import {
   Bot,
+  Bug,
   Cpu,
   LibraryBig,
   Monitor,
@@ -24,6 +25,7 @@ export const SETTINGS_TABS = [
   { value: "integrations", labelKey: "integrations", icon: Plug },
   { value: "appearance", labelKey: "appearance", icon: Palette },
   { value: "graph", labelKey: "graph", icon: Orbit },
+  { value: "diagnostics", labelKey: "diagnostics", icon: Bug },
 ] as const;
 
 export type SettingsTab = (typeof SETTINGS_TABS)[number]["value"];

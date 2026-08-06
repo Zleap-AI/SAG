@@ -1,3 +1,4 @@
+import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 
 import {
@@ -9,7 +10,7 @@ import {
 } from "electron";
 import log from "electron-log/main";
 
-import { DESKTOP_CHANNELS } from "./channels";
+import { DESKTOP_CHANNELS, type DesktopDiagnosticsInfo } from "./channels";
 import {
   startPackagedRuntime,
   waitForDevelopmentRuntime,
@@ -29,6 +30,13 @@ if (!app.isPackaged) {
 }
 
 log.initialize();
+
+// Cap each log file at 5MB. On overflow electron-log rotates main.log ->
+// main.old.log (keeping a single archive), so on-disk usage stays bounded at
+// ~10MB total and older logs are discarded automatically — no manual cleanup
+// needed. 5MB comfortably covers a recent troubleshooting window while staying
+// small enough to export and share.
+log.transports.file.maxSize = 5 * 1024 * 1024;
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) app.quit();
@@ -87,9 +95,40 @@ function isTrustedSender(event: IpcMainInvokeEvent): boolean {
   }
 }
 
+const LOG_TAIL_BYTES = 5 * 1024 * 1024; // Export at most the last 5MB per log.
+
+/**
+ * Read up to the last `LOG_TAIL_BYTES` of a file without loading the whole
+ * thing into memory. Returns the tail text and whether it was truncated.
+ * Uses only node:fs primitives (no extra dependency).
+ */
+function readLogTail(filePath: string, sizeBytes: number): {
+  content: string;
+  truncated: boolean;
+} {
+  const truncated = sizeBytes > LOG_TAIL_BYTES;
+  const start = truncated ? sizeBytes - LOG_TAIL_BYTES : 0;
+  const length = sizeBytes - start;
+  if (length <= 0) return { content: "", truncated: false };
+  const fd = openSync(filePath, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(length);
+    let offset = 0;
+    while (offset < length) {
+      const read = readSync(fd, buffer, offset, length - offset, start + offset);
+      if (read <= 0) break;
+      offset += read;
+    }
+    return { content: buffer.subarray(0, offset).toString("utf8"), truncated };
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function registerIpc(): void {
   ipcMain.removeHandler(DESKTOP_CHANNELS.appInfo);
   ipcMain.removeHandler(DESKTOP_CHANNELS.checkForUpdates);
+  ipcMain.removeHandler(DESKTOP_CHANNELS.diagnosticsInfo);
   ipcMain.handle(DESKTOP_CHANNELS.appInfo, (event) => {
     if (!isTrustedSender(event)) throw new Error("Untrusted IPC sender");
     return { version: app.getVersion(), platform: process.platform, arch: process.arch };
@@ -97,6 +136,42 @@ function registerIpc(): void {
   ipcMain.handle(DESKTOP_CHANNELS.checkForUpdates, async (event) => {
     if (!isTrustedSender(event)) throw new Error("Untrusted IPC sender");
     return updater?.check() ?? { supported: false };
+  });
+  ipcMain.handle(DESKTOP_CHANNELS.diagnosticsInfo, (event) => {
+    if (!isTrustedSender(event)) throw new Error("Untrusted IPC sender");
+    const logFiles: DesktopDiagnosticsInfo["logFiles"] = [];
+    try {
+      const logPath = log.transports.file.getFile().path;
+      const dir = path.dirname(logPath);
+      const entries = readdirSync(dir);
+      for (const name of entries) {
+        if (name.endsWith(".log")) {
+          const filePath = path.join(dir, name);
+          const sizeBytes = statSync(filePath).size;
+          let content = "";
+          let truncated = false;
+          try {
+            const tail = readLogTail(filePath, sizeBytes);
+            content = tail.content;
+            truncated = tail.truncated;
+          } catch {
+            // best-effort: an unreadable file still lists its metadata
+          }
+          logFiles.push({ name, path: filePath, sizeBytes, content, truncated });
+        }
+      }
+    } catch {
+      // best-effort: log file discovery is not critical
+    }
+    return {
+      version: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+      electron: process.versions.electron ?? "unknown",
+      chrome: process.versions.chrome ?? "unknown",
+      node: process.versions.node ?? "unknown",
+      logFiles,
+    };
   });
 }
 
