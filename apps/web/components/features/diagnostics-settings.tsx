@@ -38,7 +38,7 @@ export function DiagnosticsSettings() {
   };
 
   const handleClear = () => {
-    // Entries are managed by the global store; clearing is a future enhancement
+    diagnostics.clear();
     setClearOpen(false);
     toast.success(t("clearSuccess"));
   };

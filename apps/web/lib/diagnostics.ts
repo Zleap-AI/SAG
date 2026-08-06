@@ -158,6 +158,14 @@ export class DiagnosticsStore {
     return this.cachedSnapshot;
   }
 
+  clear(): void {
+    if (this.buffer.length === 0 && this.seq === 0) return;
+    this.buffer = [];
+    this.seq = 0;
+    this.cachedSnapshot = null;
+    this.notify();
+  }
+
   get count(): number {
     return this.buffer.length;
   }

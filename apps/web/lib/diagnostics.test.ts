@@ -244,4 +244,38 @@ describe("DiagnosticsStore", () => {
     store.record("model.load");
     expect(count).toBe(1);
   });
+
+  it("clear() empties the buffer, resets seq, and notifies subscribers", () => {
+    const store = new DiagnosticsStore();
+    let notifyCount = 0;
+    store.subscribe(() => {
+      notifyCount += 1;
+    });
+    store.record("app.init");
+    store.record("model.load");
+    expect(store.count).toBe(2);
+    expect(notifyCount).toBe(2);
+
+    store.clear();
+
+    expect(store.count).toBe(0);
+    expect(store.snapshot()).toEqual([]);
+    expect(notifyCount).toBe(3);
+
+    store.record("qa.ask");
+    const snapshot = store.snapshot();
+    expect(snapshot).toHaveLength(1);
+    expect(snapshot[0].seq).toBe(1);
+  });
+
+  it("clear() is a no-op on an empty store (no notify)", () => {
+    const store = new DiagnosticsStore();
+    let notifyCount = 0;
+    store.subscribe(() => {
+      notifyCount += 1;
+    });
+    store.clear();
+    expect(notifyCount).toBe(0);
+    expect(store.count).toBe(0);
+  });
 });

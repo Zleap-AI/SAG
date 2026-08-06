@@ -237,6 +237,7 @@ interface AppCtx {
   diagnostics: {
     entries: DiagEntry[];
     record: (type: DiagEntry["type"], data?: Record<string, unknown>) => void;
+    clear: () => void;
     exportLogs: () => DiagExport;
     downloadLogs: () => Promise<void>;
   };
@@ -270,6 +271,7 @@ const AppContext = React.createContext<AppCtx>({
   diagnostics: {
     entries: [],
     record: () => {},
+    clear: () => {},
     exportLogs: () => ({ version: 1 as const, exported_at: "", environment: { app: "web" as const, user_agent: "", language: "", timezone: "" }, model_config: null, capabilities: null, entries: [] }),
     downloadLogs: async () => {},
   },
@@ -805,6 +807,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         diagnostics: {
           entries: diag.entries,
           record: diag.record,
+          clear: diag.clear,
           exportLogs: diagnosticsExportLogs,
           downloadLogs: diagnosticsDownloadLogs,
         },
