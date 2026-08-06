@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from zleap.sag import DataEngine
 
 from sag_api.core.config import Settings
+from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
 from sag_api.core.logging import get_logger
 from sag_api.enums import SEARCH_STRATEGIES, normalize_search_strategy
 from sag_api.sag.config_builder import build_engine_config
@@ -349,11 +350,15 @@ class EngineManager:
         from sag_api.core.errors import UpstreamError
 
         try:
-            with map_sag_errors():
+            with map_sag_errors(stage=ErrorStage.PERSIST):
                 await engine.init_schema()
         except SQLAlchemyError as error:
             log.exception("知识引擎数据库结构初始化失败")
-            raise UpstreamError("信源引擎初始化失败，请稍后重试") from error
+            raise UpstreamError(
+                "信源引擎初始化失败，请稍后重试",
+                layer=ErrorLayer.STORE,
+                stage=ErrorStage.PERSIST,
+            ) from error
         self._schema_ready = True
 
     async def _ensure_source_config(
@@ -399,7 +404,11 @@ class EngineManager:
             from sag_api.core.errors import UpstreamError
 
             log.exception("信源父记录初始化失败 source_config_id=%s", source_config_id)
-            raise UpstreamError("信源引擎初始化失败，请稍后重试") from error
+            raise UpstreamError(
+                "信源引擎初始化失败，请稍后重试",
+                layer=ErrorLayer.STORE,
+                stage=ErrorStage.PERSIST,
+            ) from error
 
     async def _slot(self, source_config_id: str, source: Source | None = None) -> _Slot:
         slot = self._slots.get(source_config_id)
@@ -417,7 +426,7 @@ class EngineManager:
                         source_config_id=source_config_id,
                         health_check=False,
                     )
-                    with map_sag_errors():
+                    with map_sag_errors(stage=ErrorStage.CONFIG):
                         await engine.start()
                     try:
                         await self._ensure_engine_schema(engine)
@@ -552,7 +561,7 @@ class EngineManager:
                     async with slot.state_lock:
                         slot.concurrent_allowed.clear()
                     await slot.idle.wait()
-                    with map_sag_errors():
+                    with map_sag_errors(stage=ErrorStage.PERSIST):
                         deleted = await delete_document_records(
                             source_config_id,
                             document_source_id,
@@ -593,7 +602,7 @@ class EngineManager:
         async def never_pause() -> bool:
             return False
 
-        with map_sag_errors():
+        with map_sag_errors(stage=ErrorStage.EXTRACT):
             async with self.use_concurrently(source_config_id, source) as engine:
                 processor = IncrementalDocumentProcessor(
                     engine,
@@ -627,7 +636,7 @@ class EngineManager:
         async def run() -> Any:
             # The timeout must include waiting for the per-source lock. Otherwise
             # concurrent searches can queue forever before the timed region starts.
-            with map_sag_errors():
+            with map_sag_errors(stage=ErrorStage.RETRIEVE):
                 async with self.use(source_config_id, source) as engine:
                     return await engine.search(query, strategy=strategy, top_k=top_k)
 

@@ -62,6 +62,8 @@ _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
     "documents": {
         "progress": "INTEGER NOT NULL DEFAULT 0",
         "token_usage": "BIGINT NOT NULL DEFAULT 0",
+        "error_layer": "VARCHAR(16)",
+        "error_stage": "VARCHAR(16)",
     },
     "threads": {"archived": "BOOLEAN NOT NULL DEFAULT 0"},
     "messages": {

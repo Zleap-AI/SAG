@@ -59,6 +59,10 @@ export interface Doc {
   progress: number;
   token_usage: number;
   error: string | null;
+  /** 失败责任层（api / llm / engine / storage / network），仅失败时有值。 */
+  error_layer?: string | null;
+  /** 失败链路环节（parse / load / extract / persist 等），仅失败时有值。 */
+  error_stage?: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -37,6 +37,8 @@ class DocumentOut(BaseModel):
     progress: int
     token_usage: int
     error: str | None
+    error_layer: str | None = None
+    error_stage: str | None = None
     created_at: datetime
     updated_at: datetime
 

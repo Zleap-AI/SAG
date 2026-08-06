@@ -162,11 +162,17 @@ async function streamPost(
     const durationMs = Date.now() - startMs;
     let message = clientErrorMessage("generationFailed");
     let code = "http_error";
+    let layer: string | undefined;
+    let stage: string | undefined;
+    let retryable: boolean | undefined;
     try {
       const value = await response.json();
       code = value?.error?.code || code;
       const detail = value?.error?.message || value?.detail;
       message = typeof detail === "string" ? detail : detail ? JSON.stringify(detail) : message;
+      layer = value?.error?.layer ?? undefined;
+      stage = value?.error?.stage ?? undefined;
+      retryable = typeof value?.error?.retryable === "boolean" ? value.error.retryable : undefined;
     } catch {
       // Keep the stable fallback when a proxy returns HTML or an empty body.
     }
@@ -177,6 +183,9 @@ async function streamPost(
       status: response.status,
       error_code: code,
       error_message: message,
+      error_layer: layer,
+      error_stage: stage,
+      retryable,
       request_id: response.headers.get("X-Request-Id") ?? undefined,
     });
     throw new AgentHttpError(

@@ -61,11 +61,26 @@ export class ApiError extends Error {
   code: string;
   /** 后端返回的 X-Request-Id，用于把前端诊断日志和后端日志串联。 */
   requestId?: string;
-  constructor(status: number, code: string, message: string, requestId?: string) {
+  /** 责任层：api / llm / engine / storage / network（后端错误分类维度）。 */
+  layer?: string;
+  /** 链路环节：config / parse / load / extract / persist / retrieve / generate。 */
+  stage?: string;
+  /** 是否可安全重试。 */
+  retryable?: boolean;
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    requestId?: string,
+    dimensions?: { layer?: string; stage?: string; retryable?: boolean },
+  ) {
     super(message);
     this.status = status;
     this.code = code;
     this.requestId = requestId;
+    this.layer = dimensions?.layer;
+    this.stage = dimensions?.stage;
+    this.retryable = dimensions?.retryable;
   }
 }
 
@@ -438,11 +453,17 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     let code = "error";
     let message = res.statusText || clientErrorMessage("requestFailed");
+    let layer: string | undefined;
+    let stage: string | undefined;
+    let retryable: boolean | undefined;
     try {
       const j = await res.json();
       if (j?.error) {
         code = j.error.code ?? code;
         message = j.error.message ?? message;
+        layer = j.error.layer ?? undefined;
+        stage = j.error.stage ?? undefined;
+        retryable = typeof j.error.retryable === "boolean" ? j.error.retryable : undefined;
       } else if (j?.detail) {
         message =
           typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
@@ -459,6 +480,9 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
       status: res.status,
       error_code: code,
       error_message: message,
+      error_layer: layer,
+      error_stage: stage,
+      retryable,
       request_id: requestId,
     });
     throw new ApiError(
@@ -466,6 +490,7 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
       code,
       serverErrorMessage(code, message, res.status),
       requestId,
+      { layer, stage, retryable },
     );
   }
 

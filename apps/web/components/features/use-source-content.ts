@@ -95,6 +95,8 @@ export function useSourceContent(sourceId: string, active = true) {
             document_id: document.id,
             filename: document.filename,
             error_message: document.error,
+            error_layer: document.error_layer ?? undefined,
+            error_stage: document.error_stage ?? undefined,
           });
         }
       }

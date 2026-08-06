@@ -1,9 +1,19 @@
 """sag 领域异常 —— 与框架无关，路由层统一映射为 HTTP 响应。
 
 领域服务只抛这些异常；`sag/` 适配层负责把 `zleap-sag` 的 `SagError` 家族翻译到这里。
+
+每个异常带三个维度：
+- ``code``：HTTP 语义错误码（历史字段，向后兼容，前端逻辑沿用）。
+- ``layer``：责任归属（谁该排查），见 :class:`ErrorLayer`。
+- ``stage``：链路环节（哪一步崩），见 :class:`ErrorStage`。
+另有 ``retryable`` 标识是否可安全重试。layer/stage/retryable 可在构造时按
+实际发生点覆盖 —— 同一个 ``ValidationError`` 在 extract 阶段和 upload 阶段
+应打上不同的 stage。
 """
 
 from __future__ import annotations
+
+from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
 
 
 class ApiError(Exception):
@@ -11,12 +21,42 @@ class ApiError(Exception):
 
     status_code: int = 500
     code: str = "internal_error"
+    layer: ErrorLayer = ErrorLayer.API
+    stage: ErrorStage = ErrorStage.UNKNOWN
+    retryable: bool = False
 
-    def __init__(self, message: str | None = None, *, code: str | None = None):
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        code: str | None = None,
+        layer: ErrorLayer | None = None,
+        stage: ErrorStage | None = None,
+        retryable: bool | None = None,
+    ):
         self.message = message or self.__class__.__doc__ or "Internal error"
         if code:
             self.code = code
+        if layer is not None:
+            self.layer = layer
+        if stage is not None:
+            self.stage = stage
+        if retryable is not None:
+            self.retryable = retryable
         super().__init__(self.message)
+
+    def to_envelope(self, *, request_id: str | None = None) -> dict:
+        """序列化为响应/日志用的结构化错误信封。"""
+        error: dict[str, object] = {
+            "code": self.code,
+            "message": self.message,
+            "layer": self.layer.value,
+            "stage": self.stage.value,
+            "retryable": self.retryable,
+        }
+        if request_id:
+            error["request_id"] = request_id
+        return {"error": error}
 
 
 class NotFoundError(ApiError):
@@ -45,6 +85,8 @@ class AuthError(ApiError):
 
     status_code = 401
     code = "unauthorized"
+    layer = ErrorLayer.API
+    stage = ErrorStage.AUTH
 
 
 class ForbiddenError(ApiError):
@@ -52,6 +94,8 @@ class ForbiddenError(ApiError):
 
     status_code = 403
     code = "forbidden"
+    layer = ErrorLayer.API
+    stage = ErrorStage.AUTH
 
 
 class ConfigurationError(ApiError):
@@ -59,6 +103,8 @@ class ConfigurationError(ApiError):
 
     status_code = 400
     code = "configuration_error"
+    layer = ErrorLayer.API
+    stage = ErrorStage.CONFIG
 
 
 class UpstreamError(ApiError):
@@ -66,6 +112,7 @@ class UpstreamError(ApiError):
 
     status_code = 502
     code = "upstream_error"
+    layer = ErrorLayer.LLM
 
 
 class ServiceUnavailableError(ApiError):
@@ -73,3 +120,4 @@ class ServiceUnavailableError(ApiError):
 
     status_code = 503
     code = "service_unavailable"
+    retryable = True
