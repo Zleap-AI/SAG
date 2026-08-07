@@ -67,10 +67,11 @@ async def upload(
 ) -> DocumentOut:
     source = await get_source(session, source_id)
     _check_extension(file.filename)
-    data = await file.read()
+    max_upload_bytes = settings.max_upload_mb * 1024 * 1024
+    data = await file.read(max_upload_bytes + 1)
     if not data:
         raise ValidationError("文件内容为空")
-    if len(data) > settings.max_upload_mb * 1024 * 1024:
+    if len(data) > max_upload_bytes:
         raise ValidationError(f"文件超过 {settings.max_upload_mb}MB 上限")
     document, _job = await create_document_from_upload(
         session,

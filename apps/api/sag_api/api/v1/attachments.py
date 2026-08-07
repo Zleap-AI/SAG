@@ -51,8 +51,9 @@ async def upload(
     media_type = _ALLOWED.get(ext)
     if media_type is None:
         raise ValidationError("仅支持图片附件（png / jpg / webp / gif）")
-    data = await file.read()
-    if len(data) > _MAX_MB * 1024 * 1024:
+    max_upload_bytes = _MAX_MB * 1024 * 1024
+    data = await file.read(max_upload_bytes + 1)
+    if len(data) > max_upload_bytes:
         raise ValidationError(f"图片过大（上限 {_MAX_MB}MB）")
     attachment_id = f"{uuid.uuid4().hex}{ext}"
     with open(os.path.join(_dir(), attachment_id), "wb") as f:
