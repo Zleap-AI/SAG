@@ -13,12 +13,97 @@ web_entry="${TRIM_APPDEST}/web/server.js"
 web_root="${TRIM_APPDEST}/web"
 gateway_log="${log_dir}/gateway.log"
 web_log="${log_dir}/web.log"
-secret="${TRIM_PKGETC}/internal-secret"
+secret="${TRIM_PKGVAR}/internal-secret"
 
 log_error() { printf '%s\n' "$1" >> "${TRIM_TEMP_LOGFILE:-/dev/null}"; }
 
+# The internal secret lives in TRIM_PKGVAR (== /vol1/@appdata/<pkg> on
+# fnOS), NOT in TRIM_PKGETC (== /vol1/@appconf/<pkg>). fnpack treats
+# @appconf as a shared config volume whose perms it manages itself and
+# does not re-normalize on upgrade — a prior install that left the
+# secret 0700 root:root at @appconf/sag/internal-secret would then be
+# unreadable to the sag package user forever, with no way for main to
+# fix it (main runs as sag; only root can chmod a root-owned file).
+# @appdata/sag is package-owned, so main can always self-heal.
+#
+# hex_ok / generate_secret / secret_ok are duplicated with install_init
+# on purpose: main must be able to bootstrap a working secret without
+# assuming install_init succeeded (fnpack does not re-run install_init
+# on overwrite install, and the file may pre-date this build).
+hex_ok() {
+  case "$1" in
+    "") return 1 ;;
+    *[!0-9a-f]*) return 1 ;;
+    ????????????????????????????????????????????????????????????????) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+generate_secret_material() {
+  if command -v openssl >/dev/null 2>&1; then
+    material="$(openssl rand -hex 32 2>/dev/null | tr -d '\n\r\t ')"
+    if hex_ok "$material"; then printf '%s' "$material"; return 0; fi
+  fi
+  if command -v xxd >/dev/null 2>&1; then
+    material="$(head -c 32 /dev/urandom 2>/dev/null | xxd -p 2>/dev/null | tr -d '\n\r\t ')"
+    if hex_ok "$material"; then printf '%s' "$material"; return 0; fi
+  fi
+  if command -v od >/dev/null 2>&1; then
+    material="$(head -c 32 /dev/urandom 2>/dev/null | od -An -v -tx1 2>/dev/null | tr -d '\n\r\t ')"
+    if hex_ok "$material"; then printf '%s' "$material"; return 0; fi
+  fi
+  return 1
+}
+
+secret_content_ok() {
+  test -f "$1" || return 1
+  bytes="$(wc -c <"$1" 2>/dev/null | tr -d ' \n\t')"
+  test "$bytes" = 64 || return 1
+  content="$(cat "$1" 2>/dev/null)" || return 1
+  hex_ok "$content"
+}
+
+# prepare_secret returns 0 iff main can safely hand the secret to the
+# gateway. Unlike the .19 version this SELF-HEALS: if the file is
+# missing, unreadable-because-wrong-owner, malformed, or truncated,
+# rewrite it. This is safe on this package — the secret is a per-install
+# token, only referenced by processes we spawn, and losing it just
+# forces one re-login on the local UDS. It also makes overwrite-install
+# residues (root-owned file left by a prior version whose install_init
+# ran under a different umask) recover automatically.
 prepare_secret() {
-  test ! -L "$secret" && test -f "$secret" && chmod 600 "$secret"
+  # Refuse a symlink outright — we won't chase it into someone else's dir.
+  if [ -L "$secret" ]; then
+    log_error "SAG Native internal secret at $secret is a symlink; refusing. Delete it manually and restart."
+    return 1
+  fi
+  # Fast path: the common case is a healthy, package-owned file.
+  if secret_content_ok "$secret" && [ -r "$secret" ]; then
+    chmod 600 "$secret" 2>/dev/null || :
+    return 0
+  fi
+  # Slow / recovery path — regenerate.
+  umask 077
+  # Try to remove the residue first. If we can't unlink (e.g. dir is
+  # writable by us but the file is +i or on a read-only mount), fall
+  # through to the write, which will produce the specific errno.
+  if [ -e "$secret" ]; then
+    rm -f "$secret" 2>/dev/null || :
+  fi
+  if [ ! -w "$(dirname "$secret")" ]; then
+    log_error "SAG Native cannot rewrite internal secret: $(dirname "$secret") is not writable by uid=$(id -u 2>/dev/null || echo ?). $(ls -ld "$(dirname "$secret")" 2>&1)."
+    return 1
+  fi
+  material="$(generate_secret_material)" || {
+    log_error "SAG Native cannot regenerate internal secret: no working RNG (need openssl, xxd, or od + /dev/urandom)."
+    return 1
+  }
+  if ! printf '%s' "$material" >"$secret" 2>/dev/null; then
+    log_error "SAG Native cannot write internal secret at $secret. $(ls -ld "$(dirname "$secret")" 2>&1)."
+    return 1
+  fi
+  chmod 600 "$secret" 2>/dev/null || :
+  return 0
 }
 
 write_pid() {
@@ -91,9 +176,17 @@ wait_for_gateway_socket() {
   local waited=0
   while test "$waited" -lt 15; do
     if test -S "$gateway_socket" && valid_pid "$gateway_pid" "sag_api.fnos.cli" && gateway_healthy; then return 0; fi
+    # If the process died during the wait loop, don't waste 14 more
+    # seconds polling a corpse — surface the log tail and bail.
+    if test "$waited" -ge 2 && ! valid_pid "$gateway_pid" "sag_api.fnos.cli"; then
+      log_error "SAG Native gateway process died during startup (waited ${waited}s). Last 20 lines of gateway.log: $(tail -n 20 "$gateway_log" 2>/dev/null | tr '\n' ' ' | head -c 800). Socket: $(ls -l "$gateway_socket" 2>&1)."
+      return 1
+    fi
     sleep 1
     waited=$((waited + 1))
   done
+  # Timed out after 15s — the process may still be alive but not serving.
+  log_error "SAG Native gateway did not become ready within 15s. Socket exists: $(test -S "$gateway_socket" && echo yes || echo no). PID alive: $(valid_pid "$gateway_pid" "sag_api.fnos.cli" && echo yes || echo no). Last 20 lines of gateway.log: $(tail -n 20 "$gateway_log" 2>/dev/null | tr '\n' ' ' | head -c 800)."
   return 1
 }
 
@@ -118,16 +211,62 @@ web_healthy() {
   curl -fsS --max-time 8 "http://127.0.0.1:${web_port}/app/sag/chat" >/dev/null 2>> "$web_log"
 }
 
+# Only registered as the EXIT trap during "main start".  The trap makes
+# sure EVERY non-zero exit from the start path — even an unexpected one —
+# leaves at least a pid/dir/log-tail breadcrumb in TRIM_TEMP_LOGFILE so
+# fnpack never shows the generic "执行脚本出错且原因未知".
+_start_crash_trap() {
+  local s=$?
+  if [ "$s" -ne 0 ]; then
+    log_error "SAG Native start exited with code $s (last step: ${_START_STEP:-<startup>}). UID=$(id -u 2>/dev/null || echo ?) GID=$(id -g 2>/dev/null || echo ?). GW log: $(tail -n 20 "$gateway_log" 2>/dev/null | tr '\n' ' ' | head -c 800). Secret: $(ls -l "$secret" 2>&1). Socket dir: $(ls -ld "$(dirname "$gateway_socket")" 2>&1)."
+  fi
+}
+
 case "${1:-}" in
   start)
-    mkdir -p "$run_dir" "$log_dir"
+    trap _start_crash_trap EXIT
+
+    _START_STEP="mkdir"
+    mkdir -p "$run_dir" "$log_dir" || {
+      log_error "SAG Native cannot create run/log dirs under $TRIM_PKGVAR. UID=$(id -u 2>/dev/null || echo ?). Parent dir: $(ls -ld "$TRIM_PKGVAR" 2>&1)."
+      exit 1
+    }
+
+    # Verify the gateway log is writable BEFORE we launch anything that
+    # redirects into it. A silent redirect failure (read-only fs, wrong
+    # owner, missing parent dir) would otherwise swallow the real error
+    # and leave gateway.log empty — the operator would see nothing at all.
+    _START_STEP="touch-gateway-log"
+    if ! touch "$gateway_log" 2>/dev/null; then
+      log_error "SAG Native cannot write gateway log at $gateway_log. UID=$(id -u 2>/dev/null || echo ?). Dir: $(ls -ld "$log_dir" 2>&1)."
+      exit 1
+    fi
+
+    # Warm the operator if the socket dir is not writable by us so the
+    # eventual PermissionError in uvicorn is not a surprise.
+    _START_STEP="check-socket-dir"
+    if [ ! -w "$(dirname "$gateway_socket")" ]; then
+      log_error "SAG Native gateway socket directory $(dirname "$gateway_socket") is not writable by uid=$(id -u 2>/dev/null || echo ?). $(ls -ld "$(dirname "$gateway_socket")" 2>&1). uvicorn will be unable to bind the UDS."
+      # Don't exit — maybe an ACL grants write after all. The gateway
+      # launch will surface the real errno either way.
+    fi
+
     export PATH="/var/apps/python312/target/bin:/var/apps/nodejs_v22/target/bin:$PATH"
     export PYTHONPATH="${TRIM_APPDEST}/server/vendor:${TRIM_APPDEST}/server${PYTHONPATH:+:$PYTHONPATH}"
     export SAG_FNOS_DATA_ROOT="${TRIM_PKGVAR}"
     export SAG_FNOS_TEMP_ROOT="${TRIM_PKGTMP}"
     export SAG_FNOS_INTERNAL_SECRET_FILE="$secret"
-    test -x "$runtime" && test -x "$node_runtime" && test -f "$web_entry" && test -d "$web_root" || { log_error "SAG Native runtime payload is unavailable."; exit 1; }
-    prepare_secret || { log_error "SAG Native internal identity secret is unavailable or has unsafe permissions."; exit 1; }
+
+    _START_STEP="check-runtimes"
+    if ! test -x "$runtime"; then log_error "SAG Native runtime payload is unavailable: python3 missing at $runtime."; exit 1; fi
+    if ! test -x "$node_runtime"; then log_error "SAG Native runtime payload is unavailable: node missing at $node_runtime."; exit 1; fi
+    if ! test -f "$web_entry"; then log_error "SAG Native runtime payload is unavailable: web entry missing at $web_entry."; exit 1; fi
+    if ! test -d "$web_root"; then log_error "SAG Native runtime payload is unavailable: web root missing at $web_root."; exit 1; fi
+
+    _START_STEP="prepare-secret"
+    prepare_secret || exit 1
+
+    _START_STEP="start-web"
     if valid_pid "$web_pid" "$web_entry" "web" && test -f "$web_port_file"; then
       web_port="$(cat "$web_port_file")"
     else
@@ -137,16 +276,47 @@ case "${1:-}" in
       write_pid "$web_pid" "$!"
       write_pid "$web_port_file" "$web_port"
     fi
+
+    _START_STEP="wait-web"
     if ! wait_for_web; then
+      log_error "SAG Native web process did not become ready within 15s. Web log tail: $(tail -n 20 "$web_log" 2>/dev/null | tr '\n' ' ' | head -c 800)."
       stop_process "$web_pid" "$web_entry" "web"
       exit 1
     fi
+
+    _START_STEP="start-gateway"
     if ! valid_pid "$gateway_pid" "sag_api.fnos.cli"; then
       rm -f "$gateway_socket"
       "$runtime" -m sag_api.fnos.cli gateway --socket "$gateway_socket" --web-origin "http://127.0.0.1:${web_port}" >> "$gateway_log" 2>&1 &
-      write_pid "$gateway_pid" "$!"
+      gw_pid=$!
+      write_pid "$gateway_pid" "$gw_pid"
+      # Give Python ~1s to import + settle, then check it is still alive.
+      # A quick death (permission denied on sqlite, missing native dep,
+      # config parse error, secret mode != 0600, etc.) would otherwise be
+      # invisible until wait_for_gateway_socket times out 15s later with
+      # the useless "gateway process is not running" line. Surface a tail
+      # of the log so the operator can act on the real errno.
+      sleep 1
+      if ! kill -0 "$gw_pid" 2>/dev/null; then
+        gw_tail="$(tail -n 20 "$gateway_log" 2>/dev/null | tr '\n' ' ' | head -c 800)"
+        log_error "SAG Native gateway process exited immediately after launch (pid=$gw_pid). Last gateway.log: ${gw_tail:-<empty>}"
+        stop_process "$web_pid" "$web_entry" "web"
+        rm -f "$gateway_pid" "$gateway_socket"
+        exit 1
+      fi
     fi
-    wait_for_gateway_socket || { stop_process "$gateway_pid" "sag_api.fnos.cli"; stop_process "$web_pid" "$web_entry" "web"; exit 1; }
+
+    _START_STEP="wait-gateway"
+    wait_for_gateway_socket || {
+      # wait_for_gateway_socket already wrote its own log_error; this arm
+      # only cleans up so the next start is from a blank slate.
+      stop_process "$gateway_pid" "sag_api.fnos.cli"
+      stop_process "$web_pid" "$web_entry" "web"
+      exit 1
+    }
+
+    # Success — disarm the crash trap so stop/status are not affected.
+    trap - EXIT
     ;;
   stop)
     stop_process "$gateway_pid" "sag_api.fnos.cli"

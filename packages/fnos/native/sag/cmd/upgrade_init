@@ -1,32 +1,196 @@
 #!/bin/sh
-set -eu
+# upgrade_init — pre-upgrade backup + install-side prep.
+#
+# fnpack invokes this callback for every upgrade path, including the
+# Docker→Native transition where fnpack treats the two as the same
+# appname and calls upgrade_init instead of install_init. Two things
+# went wrong in that path before:
+#
+#   1. "$main" status writes its failure text ("SAG Native gateway
+#      process is not running.") directly to TRIM_TEMP_LOGFILE via
+#      log_error, bypassing stderr, so `2>&1 >/dev/null` cannot mask
+#      it. fnpack then reads TRIM_TEMP_LOGFILE and surfaces that text
+#      as the upgrade error to the user. Redirect TRIM_TEMP_LOGFILE
+#      to /dev/null during the probe so a "not running" answer is
+#      just information, not a user-visible failure.
+#
+#   2. python3 "$lifecycle" size --root "$users" hard-fails when the
+#      users directory does not exist OR when lifecycle.py itself is
+#      not yet in TRIM_APPDEST (fnpack may execute upgrade_init
+#      *before* installing the new package files — TRIM_APPDEST at
+#      this point contains the OLD Docker-version files, which have
+#      no runtime/lifecycle.py). Guard both.
+#
+#   3. Any *unexpected* failure (missing python3, awk absent on a
+#      minimal image, tmpfs full, whatever) must NOT surface to the
+#      user as fnpack's generic "执行脚本出错且原因未知". We install
+#      an EXIT trap that always writes a diagnostic line to
+#      TRIM_TEMP_LOGFILE — the log is the only channel fnpack shows.
+#
+# Docker data at /vol1/@appdata/sag is intentionally left untouched.
+# We do not migrate it: the schema, embeddings layout, and secret
+# format differ. The user re-creates knowledge bases in the Native
+# install. The informational log makes this explicit.
+
+# NOTE: we deliberately do NOT `set -e`. Under strict -e in dash,
+# any subshell/pipe/df/awk hiccup can kill the script before the
+# log write runs, producing the generic fnpack error. Instead we
+# check exit status explicitly at the few real fail-fast points.
+set -u
+
 command_dir="$(dirname "$0")"
 main="$command_dir/main"
-lifecycle="${TRIM_APPDEST}/runtime/lifecycle.py"
-users="${TRIM_PKGVAR}/users"
-backup_dir="${TRIM_PKGVAR}/backup"
+lifecycle="${TRIM_APPDEST:-}/runtime/lifecycle.py"
+users="${TRIM_PKGVAR:-}/users"
+backup_dir="${TRIM_PKGVAR:-}/backup"
+log_file="${TRIM_TEMP_LOGFILE:-}"
 
-"$command_dir/install_init"
+log() {
+  if [ -n "$log_file" ]; then
+    printf 'upgrade_init: %s\n' "$*" >>"$log_file" 2>/dev/null && return 0
+  fi
+  printf 'upgrade_init: %s\n' "$*" >&2
+}
+
+die() { log "$*"; exit 1; }
+
+# Catch every non-zero exit — even ones from commands we didn't
+# guard — so fnpack always shows a concrete cause rather than
+# "执行脚本出错且原因未知".
+on_exit() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    log "aborting with status $status (last command: ${LAST_STEP:-<startup>}); TRIM_APPDEST=${TRIM_APPDEST:-<unset>} TRIM_PKGVAR=${TRIM_PKGVAR:-<unset>} TRIM_PKGETC=${TRIM_PKGETC:-<unset>}"
+  fi
+}
+trap on_exit EXIT
+
+# Every meaningful step updates LAST_STEP so the exit trap can name
+# the offender. Keep the labels short — they show up in the fnpack UI.
+LAST_STEP="startup"
+
+# ---- Environment sanity ---------------------------------------------------
+LAST_STEP="env-check"
+: "${TRIM_APPDEST:=}"
+: "${TRIM_PKGVAR:=}"
+[ -n "$TRIM_APPDEST" ] || die "TRIM_APPDEST is empty; fnpack did not inject the appdest directory"
+[ -n "$TRIM_PKGVAR" ]  || die "TRIM_PKGVAR is empty; fnpack did not inject the package var directory"
+
+# ---- Delegate identity-secret provisioning to install_init ---------------
+LAST_STEP="install_init"
+if ! "$command_dir/install_init"; then
+  die "install_init failed (see preceding install_init lines in this log)"
+fi
+
+# ---- Probe previous service state (silently) ------------------------------
+# main's log_error() appends to TRIM_TEMP_LOGFILE directly; redirecting
+# stderr does not mask it, so we point TRIM_TEMP_LOGFILE at /dev/null
+# for the duration of this probe. On Docker→Native transitions the
+# probe *should* return non-zero (no Native gateway); that is not an
+# error, just information for the restore-if-needed trap.
+LAST_STEP="probe-status"
 was_running=false
-if "$main" status >/dev/null 2>&1; then was_running=true; fi
-"$main" stop
+if TRIM_TEMP_LOGFILE=/dev/null "$main" status >/dev/null 2>&1; then
+  was_running=true
+fi
+
+# ---- Stop the previous instance if one is running ------------------------
+LAST_STEP="stop-previous"
+if [ "$was_running" = true ]; then
+  if ! "$main" stop; then
+    die "failed to stop the running Native instance before upgrade"
+  fi
+else
+  TRIM_TEMP_LOGFILE=/dev/null "$main" stop >/dev/null 2>&1 || :
+fi
 
 restore_if_needed() {
-  if [ "$was_running" = true ]; then "$main" start >/dev/null 2>&1 || true; fi
+  if [ "$was_running" = true ]; then
+    TRIM_TEMP_LOGFILE=/dev/null "$main" start >/dev/null 2>&1 || :
+  fi
 }
-trap restore_if_needed EXIT HUP INT TERM
+trap 'restore_if_needed; on_exit' EXIT HUP INT TERM
 
-used="$(python3 "$lifecycle" size --root "$users")"
-available="$(df -Pk "$TRIM_PKGVAR" | awk 'NR == 2 { print $4 }')"
+# ---- Decide whether there is anything to back up -------------------------
+# Skip the whole backup pipeline when any of these hold:
+#   - Native users directory does not exist yet
+#     (Docker→Native transition, or fresh first install)
+#   - Directory exists but is empty (fresh Native install)
+#   - lifecycle.py is not yet present in TRIM_APPDEST
+#     (fnpack ran upgrade_init before dropping new files, so the
+#     appdest still holds the OLD Docker payload)
+#   - python3 is not on PATH (edge case: minimal fnOS image)
+LAST_STEP="check-users-dir"
+if [ ! -d "$users" ]; then
+  log "no Native users directory yet — skipping pre-upgrade backup (first Native install or Docker→Native transition; Docker data at /vol1/@appdata/sag is preserved but not migrated; recreate knowledge bases in the Native app)"
+  trap - EXIT HUP INT TERM
+  exit 0
+fi
+
+LAST_STEP="check-users-empty"
+if [ -z "$(ls -A "$users" 2>/dev/null)" ]; then
+  log "Native users directory is empty — nothing to back up"
+  trap - EXIT HUP INT TERM
+  exit 0
+fi
+
+LAST_STEP="check-lifecycle-py"
+if [ ! -f "$lifecycle" ]; then
+  log "runtime/lifecycle.py not present in TRIM_APPDEST yet (fnpack has not swapped in the new package payload) — skipping pre-upgrade backup"
+  trap - EXIT HUP INT TERM
+  exit 0
+fi
+
+LAST_STEP="check-python3"
+if ! command -v python3 >/dev/null 2>&1; then
+  log "python3 not on PATH — skipping pre-upgrade backup (this is safe on a first Native install; the runtime is bundled and used by main, not by upgrade_init)"
+  trap - EXIT HUP INT TERM
+  exit 0
+fi
+
+# ---- Compute space budget ------------------------------------------------
+LAST_STEP="lifecycle-size"
+if ! used="$(python3 "$lifecycle" size --root "$users" 2>&1)"; then
+  die "lifecycle.py size failed: $used"
+fi
+case "$used" in
+  ''|*[!0-9]*) die "lifecycle.py size returned non-numeric output: $used" ;;
+esac
+
+LAST_STEP="df-available"
+if ! df_line="$(df -Pk "$TRIM_PKGVAR" 2>&1)"; then
+  die "df -Pk $TRIM_PKGVAR failed: $df_line"
+fi
+available="$(printf '%s\n' "$df_line" | awk 'NR == 2 { print $4 }')"
+case "$available" in
+  ''|*[!0-9]*) die "cannot parse available space from df output on $TRIM_PKGVAR (got: $df_line)" ;;
+esac
 required=$((used * 2 + 102400))
-case "$available" in ''|*[!0-9]*) exit 1 ;; esac
-[ "$available" -ge "$required" ] || exit 1
-mkdir -p "$backup_dir"
+if [ "$available" -lt "$required" ]; then
+  die "insufficient space in $TRIM_PKGVAR: need ${required}K, have ${available}K"
+fi
+
+# ---- Produce the backup archive ------------------------------------------
+LAST_STEP="mkdir-backup"
+if ! mkdir -p "$backup_dir"; then die "cannot create backup dir $backup_dir"; fi
+
+LAST_STEP="backup-archive"
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 temporary="$backup_dir/sag-users-$timestamp.tar.gz.tmp"
 final="${temporary%.tmp}"
-python3 "$lifecycle" backup --root "$users" --output "$temporary"
-python3 "$lifecycle" validate --archive "$temporary"
-chmod 600 "$temporary"
-mv -f "$temporary" "$final"
+if ! backup_output="$(python3 "$lifecycle" backup --root "$users" --output "$temporary" 2>&1)"; then
+  die "lifecycle.py backup failed: $backup_output"
+fi
+
+LAST_STEP="validate-archive"
+if ! validate_output="$(python3 "$lifecycle" validate --archive "$temporary" 2>&1)"; then
+  die "lifecycle.py validate failed: $validate_output"
+fi
+
+LAST_STEP="finalize-archive"
+chmod 600 "$temporary" || die "cannot chmod 600 $temporary"
+mv -f "$temporary" "$final" || die "cannot rename $temporary to $final"
+
+log "pre-upgrade backup written to $final"
 trap - EXIT HUP INT TERM
+exit 0
