@@ -41,6 +41,10 @@ export function useDiagnostics() {
     [store],
   );
 
+  const clear = React.useCallback(() => {
+    store.clear();
+  }, [store]);
+
   const exportLogs = React.useCallback(
     (
       environment: DiagEnvironment,
@@ -71,9 +75,10 @@ export function useDiagnostics() {
       entries,
       count: entries.length,
       record,
+      clear,
       exportLogs,
       downloadLogs,
     }),
-    [entries, record, exportLogs, downloadLogs],
+    [entries, record, clear, exportLogs, downloadLogs],
   );
 }
