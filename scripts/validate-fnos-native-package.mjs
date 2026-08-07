@@ -94,7 +94,17 @@ export async function validateNativeTemplate(root, platform) {
   if (!manifest.get("version")) fail("manifest must define version");
 
   const privilege = await readJson(root, "config/privilege");
-  if (privilege?.defaults?.["run-as"] !== "package") fail("privilege defaults run-as must be package");
+  // fnpack's privilege schema has no per-command override: whatever
+  // `defaults.run-as` is applies to every callback in cmd/, including
+  // install_init. install_init must be able to mkdir under root-owned
+  // /vol1/@appdata (fnpack pre-creates that parent with 0755 root:root
+  // regardless of the package's run-as), so run-as MUST be root — the
+  // same posture the Docker variant of this package has shipped with
+  // for years. The sag user/group are still required (fnpack provisions
+  // them at install and various on-disk artefacts should end up
+  // sag-owned via install_init's chown), even though the long-lived
+  // gateway and web processes currently run as root themselves.
+  if (privilege?.defaults?.["run-as"] !== "root") fail("privilege defaults run-as must be root (install_init needs to mkdir under root-owned /vol1/@appdata)");
   if (privilege.username !== "sag") fail("privilege username must be sag");
   if (privilege.groupname !== "sag") fail("privilege groupname must be sag");
 
