@@ -5,7 +5,7 @@ from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
 from sag_api.db.base import Base, IDMixin, TimestampMixin
-from sag_api.enums import BindingTargetType, MessageRole
+from sag_api.enums import BindingTargetType, MessageRole, MessageStatus
 
 
 class Agent(IDMixin, TimestampMixin, Base):
@@ -58,3 +58,18 @@ class Message(IDMixin, TimestampMixin, Base):
     # excludes tool results and the generated answer so historical playback
     # can audit the same role-separated input that was shown live.
     prompt_preview: Mapped[str] = mapped_column(Text, default="")
+    # 助手回复的终态；对话历史需要保留失败/取消气泡才能与实时会话一致。
+    # values_callable 强制以枚举 value（小写 ok/failed/cancelled）而不是 name（大写）存储，
+    # 与 server_default 保持一致，避免 SAEnum 在读回时按名字查表报 LookupError。
+    status: Mapped[MessageStatus] = mapped_column(
+        SAEnum(
+            MessageStatus,
+            native_enum=False,
+            length=16,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        default=MessageStatus.OK,
+        server_default=MessageStatus.OK.value,
+    )
+    # 失败/取消时的错误结构 {code, message, retryable, details}；成功时为 None。
+    error: Mapped[dict | None] = mapped_column("error_json", JSON, default=None, nullable=True)

@@ -20,7 +20,7 @@ from sag_api.core.config import settings
 from sag_api.core.error_taxonomy import ErrorCode
 from sag_api.core.errors import ConflictError, NotFoundError, ValidationError
 from sag_api.db.models import Agent, AgentBinding, Message, Source, Thread
-from sag_api.enums import BindingTargetType, MessageRole
+from sag_api.enums import BindingTargetType, MessageRole, MessageStatus
 from sag_api.generation import build_agent_messages, build_prompt_preview
 from sag_api.generation.prompt import estimate_tokens
 from sag_api.services.source_service import search_source_candidates
@@ -563,7 +563,12 @@ async def persist_answer(
     citations: list[dict],
     steps: list[dict] | None = None,
     prompt_preview: str = "",
+    *,
+    status: MessageStatus = MessageStatus.OK,
+    error: dict | None = None,
 ) -> str:
+    """写入一条 assistant 消息。失败/取消时 answer 传部分已生成文本（可为 ""），
+    并附带结构化 error {code, message, retryable, details}。"""
     async with session_factory() as session:
         message = Message(
             thread_id=thread_id,
@@ -572,6 +577,8 @@ async def persist_answer(
             citations=citations,
             steps=steps or [],
             prompt_preview=prompt_preview,
+            status=status,
+            error=error,
         )
         session.add(message)
         await session.commit()

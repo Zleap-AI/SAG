@@ -84,6 +84,8 @@ export interface ConversationMessage {
   delivery: ConversationDelivery;
   promptPreview?: string;
   universeActivation?: UniverseActivation;
+  /** 失败/取消时的可读错误文本。UI 用它在气泡内展示错误说明。 */
+  errorMessage?: string;
 }
 
 export type ConversationHistoryStatus = "idle" | "loading" | "ready" | "error";
@@ -218,6 +220,13 @@ function isAbortError(reason: unknown): boolean {
 }
 
 function normalizeMessage(message: Message): ConversationMessage {
+  const status = message.status ?? "ok";
+  const delivery: ConversationDelivery =
+    status === "failed" ? "failed" : status === "cancelled" ? "cancelled" : "persisted";
+  const errorMessage =
+    status !== "ok" && message.error && typeof message.error.message === "string"
+      ? message.error.message
+      : undefined;
   return {
     id: message.id,
     threadId: message.thread_id,
@@ -231,7 +240,8 @@ function normalizeMessage(message: Message): ConversationMessage {
         ? message.prompt_preview
         : undefined,
     createdAt: message.created_at,
-    delivery: "persisted",
+    delivery,
+    errorMessage,
   };
 }
 
@@ -281,11 +291,11 @@ function mergeHistory(
   });
   const local = current.filter(
     (message) =>
-      (message.delivery === "pending" ||
-        message.delivery === "streaming" ||
-        message.delivery === "complete" ||
-        message.delivery === "failed" ||
-        message.delivery === "cancelled") &&
+      // 只有真正“进行中”的本地气泡才保留：complete/failed/cancelled 一旦被后端确认落库
+      // （outcome.messageId 存在），会经 finishOperation 改写 id 后走 uniquePersisted 分支合并；
+      // 未落库的终态气泡由 finishOperation 直接跳过 ensureHistory({force:true}) 兜底，
+      // 因此这里不需要留在 local。
+      (message.delivery === "pending" || message.delivery === "streaming") &&
       !ids.has(message.id),
   );
   return [...uniquePersisted, ...local];
@@ -1029,6 +1039,12 @@ export class ConversationRuntime {
           ? "cancelled"
           : "failed";
     const assistantMessageId = outcome.messageId || operation.assistantMessageId;
+    const errorText =
+      outcome.status === "cancelled"
+        ? clientErrorMessage("stopped")
+        : outcome.status === "failed"
+          ? failure
+          : undefined;
     this.activeOperation = null;
     this.updateSession(
       operation.sessionId,
@@ -1040,14 +1056,11 @@ export class ConversationRuntime {
           updateMessage(current.messages, operation.assistantMessageId, (message) => ({
             ...message,
             id: assistantMessageId,
-            content:
-              message.content ||
-              (outcome.status === "cancelled"
-                ? clientErrorMessage("stopped")
-                : outcome.status === "failed"
-                  ? `⚠︎ ${failure}`
-                  : ""),
+            // 失败/取消时保留已流出的 partial content;为空时也不再塞错误文本，
+            // 错误说明改由 errorMessage 承载,与后端持久化的 (content, error) 分离一致。
+            content: message.content,
             delivery,
+            errorMessage: errorText,
             steps: persistentSteps(steps),
           })).map((message) =>
             message.delivery === "pending"
@@ -1062,7 +1075,11 @@ export class ConversationRuntime {
     this.notifyActivity();
 
     const threadId = this.getSessionSnapshot(operation.sessionId).threadId;
-    if (outcome.status === "completed" && threadId) {
+    // 只有服务端确认落库（拿到 outcome.messageId）时才重拉历史，避免把仅存在于前端的
+    // 终态气泡（例如网络中断、老版本服务端）在 mergeHistory 中被过滤掉。
+    // 修复目标：失败气泡持久化后重跑 mergeHistory，把 (user, failed-assistant) 顺序稳住，
+    // 避免第二次成功回答落回底部时把失败气泡顶到最下。
+    if (threadId && outcome.messageId) {
       await this.ensureHistory(operation.sessionId, { force: true });
     }
   }

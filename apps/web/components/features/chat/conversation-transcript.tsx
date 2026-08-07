@@ -18,6 +18,8 @@ export interface ConversationTranscriptMessage {
   content: string;
   citations?: Citation[];
   steps?: AgentActivityStep[];
+  /** 失败/取消气泡的错误说明；有值时以警示样式显示在正文下方。 */
+  errorMessage?: string;
 }
 
 export interface ConversationLiveActivity {
@@ -116,7 +118,8 @@ export const ConversationMessageItem = React.memo(function ConversationMessageIt
 
   const steps = activity?.steps ?? message.steps ?? [];
   const waiting = streaming && !message.content;
-  const footer = !streaming && message.content
+  const showFooter = !streaming && (message.content || message.errorMessage);
+  const footer = showFooter
     ? renderAssistantFooter?.({ message, index, previousUser })
     : null;
 
@@ -145,6 +148,18 @@ export const ConversationMessageItem = React.memo(function ConversationMessageIt
             onCitationClick={handleCitationClick}
             streaming={streaming}
           />
+        ) : null}
+
+        {!streaming && message.errorMessage ? (
+          <div
+            role="alert"
+            className={cn(
+              "mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive",
+              message.content ? "" : "mt-0",
+            )}
+          >
+            {message.errorMessage}
+          </div>
         ) : null}
 
         {footer}

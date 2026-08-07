@@ -1,17 +1,220 @@
 #!/bin/sh
-set -eu
-secret="${TRIM_PKGETC}/internal-secret"
-mkdir -p "${TRIM_PKGETC}"
+# install_init — provision the fnOS internal identity secret and scrub
+# residues from prior installs.
+#
+# The secret lives under TRIM_PKGVAR (== /vol1/@appdata/<pkg>), NOT
+# TRIM_PKGETC (== /vol1/@appconf/<pkg>). fnpack treats @appconf as a
+# shared config volume whose perms it manages itself and does not
+# re-normalize on overwrite install — a prior release that wrote
+# @appconf/sag/internal-secret at 0700 root:root left the secret
+# unreadable to the sag package user forever, and cmd/main (running as
+# sag) had no way to chmod it back. @appdata/sag is package-owned by
+# fnpack, so both install_init (root) and main (sag) can always write
+# the file with correct perms.
+#
+# This callback is safe to no-op: cmd/main also self-heals the secret
+# on every start. install_init just avoids the very first start having
+# to detour through the fallback path.
+#
+# Every fatal exit writes context to TRIM_TEMP_LOGFILE so the fnOS app
+# centre surfaces a real cause instead of "执行脚本出错且原因未知".
+
+set -u
+
+log_file="${TRIM_TEMP_LOGFILE:-}"
+log() {
+  if [ -n "$log_file" ]; then
+    printf 'install_init: %s\n' "$*" >>"$log_file" 2>/dev/null && return 0
+  fi
+  printf 'install_init: %s\n' "$*" >&2
+}
+die() { log "$*"; exit 1; }
+
+on_exit() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    log "aborting with status $status (last step: ${LAST_STEP:-<startup>}); TRIM_PKGVAR=${TRIM_PKGVAR:-<unset>} TRIM_PKGETC=${TRIM_PKGETC:-<unset>}"
+  fi
+}
+LAST_STEP="startup"
+trap on_exit EXIT
+
+hex_ok() {
+  case "$1" in
+    "") return 1 ;;
+    *[!0-9a-f]*) return 1 ;;
+    ????????????????????????????????????????????????????????????????) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+generate_secret() {
+  if command -v openssl >/dev/null 2>&1; then
+    material="$(openssl rand -hex 32 2>/dev/null | tr -d '\n\r\t ')"
+    if hex_ok "$material"; then printf '%s' "$material"; return 0; fi
+  fi
+  if command -v xxd >/dev/null 2>&1; then
+    material="$(head -c 32 /dev/urandom 2>/dev/null | xxd -p 2>/dev/null | tr -d '\n\r\t ')"
+    if hex_ok "$material"; then printf '%s' "$material"; return 0; fi
+  fi
+  if command -v od >/dev/null 2>&1; then
+    material="$(head -c 32 /dev/urandom 2>/dev/null | od -An -v -tx1 2>/dev/null | tr -d '\n\r\t ')"
+    if hex_ok "$material"; then printf '%s' "$material"; return 0; fi
+  fi
+  return 1
+}
+
+secret_ok() {
+  test -f "$1" || return 1
+  bytes="$(wc -c <"$1" 2>/dev/null | tr -d ' \n\t')"
+  test "$bytes" = 64 || return 1
+  content="$(cat "$1" 2>/dev/null)" || return 1
+  hex_ok "$content"
+}
+
+# ---- 1. Environment sanity ------------------------------------------------
+LAST_STEP="env-sanity"
+: "${TRIM_PKGVAR:=}"
+test -n "$TRIM_PKGVAR" || die "TRIM_PKGVAR is empty; fnpack did not inject a package var directory"
+case "$TRIM_PKGVAR" in
+  /*) ;;
+  *) die "TRIM_PKGVAR ($TRIM_PKGVAR) is not an absolute path" ;;
+esac
+
+# ---- 2. Ensure the var directory exists and is writable -------------------
+LAST_STEP="mkdir-pkgvar"
+if ! mkdir -p "$TRIM_PKGVAR" 2>/dev/null; then
+  die "cannot create $TRIM_PKGVAR (permission denied or read-only filesystem?)"
+fi
+test -d "$TRIM_PKGVAR" || die "$TRIM_PKGVAR is not a directory"
+test -w "$TRIM_PKGVAR" || die "$TRIM_PKGVAR is not writable by the installer"
+
+# ---- 3. Force TRIM_PKGVAR to a mode the sag package user can traverse ----
+# fnpack chowns @appdata/<pkg> to the package user, but on some upgrade
+# paths (or when a prior version misconfigured privilege) the dir may
+# still be root:root. Set both mode and owner defensively.
+LAST_STEP="pkgvar-perms"
+chmod 0755 "$TRIM_PKGVAR" 2>/dev/null || log "chmod 0755 $TRIM_PKGVAR failed (non-fatal)"
+
+# Resolve the package user now so Section 3b can use it. The full ownership
+# section below re-uses the same variable to chown the secret itself.
+package_user="${SAG_INSTALL_PACKAGE_USER:-sag}"
+
+# ---- 3b. Normalize ownership of the whole var tree ------------------------
+# Docker-era SAG wrote /vol1/@appdata/sag as root inside a container. On
+# Docker→Native overwrite install, sag (uid 984) then cannot read those
+# files, so the gateway crashes on the first sqlite open and status
+# reports "gateway process is not running" with no other clue. User has
+# explicitly authorised discarding old install data; the gentler variant
+# is to just remap ownership — data stays in place but becomes accessible.
+# Best-effort: on nested bind-mounts / EROFS / xattr edge cases the
+# recursive chown may partially fail; main will still refuse to open any
+# stragglers with a specific errno, and the operator log tells the story.
+LAST_STEP="normalize-pkgvar-ownership"
+if id "$package_user" >/dev/null 2>&1; then
+  chown -R "$package_user" "$TRIM_PKGVAR" 2>/dev/null || \
+    log "recursive chown of $TRIM_PKGVAR to $package_user failed (non-fatal; probable Docker-era residue — main will surface any unreadable files at start with a specific errno)"
+  if command -v getent >/dev/null 2>&1 && getent group "$package_user" >/dev/null 2>&1; then
+    chgrp -R "$package_user" "$TRIM_PKGVAR" 2>/dev/null || :
+  fi
+fi
+
+secret="$TRIM_PKGVAR/internal-secret"
+
+# ---- 4. Scrub residues from prior installs --------------------------------
+# The user explicitly authorised discarding old-install data on overwrite.
+# The concrete residue that broke start on real hardware was a root-owned
+# secret at @appconf/sag/internal-secret (permissions the sag user could
+# not fix). Remove it so it can't shadow the new @appdata/sag location.
+LAST_STEP="scrub-appconf-residue"
+if [ -n "${TRIM_PKGETC:-}" ] && [ -e "$TRIM_PKGETC/internal-secret" ]; then
+  rm -f "$TRIM_PKGETC/internal-secret" 2>/dev/null || log "could not remove legacy $TRIM_PKGETC/internal-secret (non-fatal; main no longer reads it)"
+fi
+
+# ---- 5. Reject a symlinked secret path ------------------------------------
+LAST_STEP="reject-symlink"
 if [ -L "$secret" ]; then
-  echo "refusing symlinked fnOS internal secret" >&2
-  exit 1
+  # A symlink under our own data dir is almost certainly stale; delete it.
+  rm -f "$secret" 2>/dev/null || die "refusing symlinked $secret and cannot remove it"
 fi
-if [ ! -e "$secret" ]; then
+
+# ---- 6. Reuse a healthy secret; regenerate an unhealthy one ---------------
+LAST_STEP="secret-provisioning"
+if ! secret_ok "$secret"; then
+  if [ -e "$secret" ]; then
+    log "existing internal-secret is not a 64-hex blob; regenerating"
+    rm -f "$secret" || die "cannot remove stale $secret"
+  fi
   umask 077
-  od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$secret"
+  material="$(generate_secret)" || die "no working RNG (need openssl, xxd, or od + /dev/urandom)"
+  hex_ok "$material" || die "generated secret material failed hex validation"
+  printf '%s' "$material" >"$secret" || die "cannot write $secret (disk full or read-only?)"
 fi
-if id sag >/dev/null 2>&1; then
-  chown sag:sag "$secret"
+
+# ---- 7. Ownership -------------------------------------------------------
+# Even though @appdata/sag is package-owned, be defensive: explicitly
+# chown the secret and its containing dir to the sag package user.
+# SAG_INSTALL_PACKAGE_USER lets the test harness pin the current shell
+# user; production always resolves to "sag".
+LAST_STEP="ownership"
+if id "$package_user" >/dev/null 2>&1; then
+  chown "$package_user" "$secret" 2>/dev/null || log "chown $package_user $secret failed (non-fatal; main will self-heal at start)"
+  chown "$package_user" "$TRIM_PKGVAR" 2>/dev/null || log "chown $package_user $TRIM_PKGVAR failed (non-fatal)"
+  if command -v getent >/dev/null 2>&1; then
+    if getent group "$package_user" >/dev/null 2>&1; then
+      chgrp "$package_user" "$secret" 2>/dev/null || :
+      chgrp "$package_user" "$TRIM_PKGVAR" 2>/dev/null || :
+    else
+      log "group $package_user missing; keeping user's primary group on $secret"
+    fi
+  else
+    chgrp "$package_user" "$secret" 2>/dev/null || :
+    chgrp "$package_user" "$TRIM_PKGVAR" 2>/dev/null || :
+  fi
+elif [ -n "${SAG_INSTALL_ALLOW_MISSING_USER:-}" ]; then
+  log "package user $package_user missing but SAG_INSTALL_ALLOW_MISSING_USER set; leaving ownership unchanged"
+else
+  # main's self-heal will still cover this at first start (it runs as the
+  # package user and rewrites the secret under its own uid), so demote to
+  # a warning rather than aborting install.
+  log "package user $package_user does not exist; leaving secret ownership unchanged (main will self-heal at start)"
 fi
-chmod 600 "$secret"
-test "$(wc -c < "$secret" | tr -d ' ')" = 64
+
+# ---- 8. Mode 0600 --------------------------------------------------------
+LAST_STEP="chmod"
+chmod 600 "$secret" || die "cannot chmod 600 $secret"
+
+# ---- 9. Post-condition ---------------------------------------------------
+LAST_STEP="post-condition"
+size="$(wc -c <"$secret" 2>/dev/null | tr -d ' \n\t')"
+case "$size" in
+  64) ;;
+  *) die "post-condition failed: internal-secret is $size bytes (want 64)" ;;
+esac
+
+# ---- 10. Cross-user self-check ------------------------------------------
+# Since main.prepare_secret now self-heals, an EACCES here is no longer
+# fatal — we just log and move on so install itself succeeds.
+LAST_STEP="cross-user-selfcheck"
+if [ "$package_user" != "$(id -un)" ] && id "$package_user" >/dev/null 2>&1; then
+  drop=""
+  if command -v runuser >/dev/null 2>&1; then
+    drop="runuser -u $package_user --"
+  elif command -v su >/dev/null 2>&1; then
+    drop="su -s /bin/sh $package_user -c"
+  fi
+  if [ -n "$drop" ]; then
+    if [ "$drop" = "su -s /bin/sh $package_user -c" ]; then
+      probe_out="$(su -s /bin/sh "$package_user" -c "cat '$secret' >/dev/null 2>&1 && wc -c <'$secret'" 2>&1)"
+      probe_status=$?
+    else
+      probe_out="$($drop sh -c "cat '$secret' >/dev/null 2>&1 && wc -c <'$secret'" 2>&1)"
+      probe_status=$?
+    fi
+    if [ "$probe_status" -ne 0 ]; then
+      log "package user $package_user cannot read $secret at install time (exit $probe_status). Dir: $(ls -ld "$TRIM_PKGVAR" 2>&1). File: $(ls -l "$secret" 2>&1). Probe: $probe_out. main.start will self-heal."
+    fi
+  fi
+fi
+
+exit 0

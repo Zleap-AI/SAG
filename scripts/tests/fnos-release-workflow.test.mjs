@@ -11,13 +11,22 @@ test("fnOS delivery is a single manual publish flow guarded by explicit confirma
   // Manual-only trigger: no push branch, only workflow_dispatch.
   assert.doesNotMatch(workflow, /^\s*push:/m);
   assert.match(workflow, /workflow_dispatch:/);
-  // Version is a required input, not read from the stale Docker manifest.
+  // Version input exists but is OPTIONAL — auto-derived from the latest
+  // main semver tag + the next available fnos build number.
   assert.match(workflow, /version:/);
   assert.match(workflow, /inputs\.version/);
   assert.doesNotMatch(workflow, /packages\/fnos\/sag\/manifest/);
   // Guardrails: only from fnos/develop and only after PUBLISH confirmation.
   assert.match(workflow, /refs\/heads\/fnos\/develop/);
   assert.match(workflow, /inputs\.publish_confirmation.*PUBLISH/);
+  // Version auto-derivation from git tags + release listing.
+  assert.match(workflow, /git tag -l/);
+  assert.match(workflow, /gh release list/);
+  // Validate format: <semver>-fnos.<int> (regex in YAML has escaped dots)
+  assert.match(workflow, /\[1-9\]\[0-9\]\*/);
+  // Two-phase: resolve-version job feeds version to native-x86 job.
+  assert.match(workflow, /resolve-version/);
+  assert.match(workflow, /needs:.*resolve-version/);
   // The build environment must disable window scaling for fnOS.
   assert.match(workflow, /NEXT_PUBLIC_ENABLE_WINDOW_SCALING=0/);
   // fnpack is pinned to the official 1.2.3 binary and verified before use.
@@ -28,8 +37,7 @@ test("fnOS delivery is a single manual publish flow guarded by explicit confirma
   assert.match(workflow, /\$GITHUB_PATH/);
   // Structural tests may shell out to the verified fnpack binary.
   assert.match(workflow, /SAG_FNPACK_TESTS: "1"/);
-  // uv is pinned to a release that resolves current PyPI wheel metadata
-  // (0.6.14 rejected greenlet 3.5.3 manylinux wheels).
+  // uv is pinned to a release that resolves current PyPI wheel metadata.
   assert.match(workflow, /setup-uv@v5/);
   assert.match(workflow, /version: "0\.10\.8"/);
   // Tests and packaging still run.
@@ -38,4 +46,6 @@ test("fnOS delivery is a single manual publish flow guarded by explicit confirma
   assert.match(workflow, /sha256sum/);
   // Release tag encodes the version explicitly.
   assert.match(workflow, /fnos-v\$SAG_VERSION/);
+  // Release notes include base version and SHA256 context.
+  assert.match(workflow, /Base version/);
 });

@@ -4,9 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: FPK version, e.g. 1.5.0-fnos.15. Determines the artifact filename and the release tag (fnos-v<version>).
-        required: true
+        description: >
+          FPK version, e.g. 1.5.3-fnos.1.
+          Leave empty to auto-derive from the latest main release tag + next fnOS build number.
+        required: false
         type: string
+        default: ""
       publish_confirmation:
         description: Type PUBLISH exactly to confirm a real Release will be created.
         required: true
@@ -16,21 +19,95 @@ permissions:
   contents: read
 
 jobs:
-  native-x86:
-    name: Build & publish Native x86 FPK
+  resolve-version:
+    name: Resolve version
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      base_version: ${{ steps.resolve.outputs.base_version }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Resolve base version from git tags
+        id: find-base
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The latest semver tag on the repo (excluding fnOS tags) is the
+          # base version.  Tags must match v<major>.<minor>.<patch>.
+          base="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
+            | grep -Ev -- '-fnos\.' \
+            | head -1 \
+            | sed 's/^v//')"
+          test -n "$base" || { echo "No base version tag found"; exit 1; }
+          echo "Base version: $base"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve fpNOS version
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BASE="${{ steps.find-base.outputs.base }}"
+          MANUAL="${{ inputs.version }}"
+
+          if [ -n "$MANUAL" ]; then
+            VERSION="$MANUAL"
+            echo "Using manual version: $VERSION"
+          else
+            # Find the highest existing fnOS build number for this base.
+            N=1
+            existing="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' 2>/dev/null || true)"
+            if [ -n "$existing" ]; then
+              highest="$(echo "$existing" | grep -E "^fnos-v${BASE//./\\.}-fnos\\.[0-9]+\$" \
+                | sed 's/^fnos-v.*-fnos\.//' \
+                | sort -n \
+                | tail -1 || true)"
+              if [ -n "$highest" ] && [ "$highest" -ge 1 ] 2>/dev/null; then
+                N=$((highest + 1))
+              fi
+            fi
+            VERSION="${BASE}-fnos.${N}"
+            echo "Auto-derived version: $VERSION (highest existing fnos build for $BASE: ${highest:-none})"
+          fi
+
+          # Validate format: <semver>-fnos.<positive int>
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-fnos\.[1-9][0-9]*$'; then
+            echo "VERSION '$VERSION' does not match <major>.<minor>.<patch>-fnos.<N>"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "base_version=$BASE" >> "$GITHUB_OUTPUT"
+
+  native-x86:
+    name: Build & publish Native x86 FPK
+    runs-on: ubuntu-24.04
+    needs: resolve-version
+    permissions:
+      contents: write
+    env:
+      SAG_VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm, cache-dependency-path: apps/web/package-lock.json }
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
       - uses: astral-sh/setup-uv@v5
-        # uv must be recent enough to resolve current PyPI wheel metadata;
-        # 0.6.14 rejects greenlet 3.5.3 manylinux wheels as "no usable wheels".
-        with: { version: "0.10.8", enable-cache: true }
+        with:
+          version: "0.10.8"
+          enable-cache: true
+
       - name: Install verified fnpack 1.2.3
         shell: bash
         run: |
@@ -44,41 +121,67 @@ jobs:
           chmod 0755 "$RUNNER_TEMP/fnpack-bin/fnpack"
           echo "$RUNNER_TEMP/fnpack-bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/fnpack-bin/fnpack" --help
+
       - name: Validate publish request
         shell: bash
         run: |
           set -euo pipefail
-          test "${{ github.ref }}" = "refs/heads/fnos/develop"
-          test "${{ inputs.publish_confirmation }}" = "PUBLISH"
-          test -n "${{ inputs.version }}"
-          test -s docs/fnos/evidence/native-p0-x86.json
+          test "${{ github.ref }}" = "refs/heads/fnos/develop" \
+            || { echo "Publish must be triggered from fnos/develop"; exit 1; }
+          test "${{ inputs.publish_confirmation }}" = "PUBLISH" \
+            || { echo "Confirmation must be exactly PUBLISH"; exit 1; }
+          test -n "$SAG_VERSION"
+          test -s docs/fnos/evidence/native-p0-x86.json \
+            || { echo "Missing native-p0-x86.json evidence"; exit 1; }
+
       - name: Test Native implementation
         shell: bash
         env:
-          # fnpack was installed and checksum-verified above, so structural
-          # tests that shell out to the real binary may run on this runner.
           SAG_FNPACK_TESTS: "1"
         run: |
           set -euo pipefail
-          cd apps/api && uv run --extra dev ruff check sag_api sag_agent tests && uv run --extra dev pytest -q
-          cd ../web && npm ci && npm run typecheck && npm run test:unit
-          cd ../.. && node --test scripts/tests/fnos-*.test.mjs
+          cd apps/api
+          uv run --extra dev ruff check sag_api sag_agent tests
+          uv run --extra dev pytest -q
+          cd ../web
+          npm ci
+          npm run typecheck
+          npm run test:unit
+          cd ../..
+          node --test scripts/tests/fnos-*.test.mjs
+
       - name: Build offline Native inputs
         shell: bash
-        env:
-          SAG_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          cd apps/web && NEXT_PUBLIC_APP_BASE_PATH=/app/sag NEXT_PUBLIC_API_BASE=/app/sag NEXT_PUBLIC_ENABLE_WINDOW_SCALING=0 npm run build
-          cd ../.. && node scripts/build-fnos-native-vendor.mjs --platform linux/amd64 --output "$RUNNER_TEMP/vendor"
-          node scripts/build-fnos-native-package.mjs --platform x86 --vendor "$RUNNER_TEMP/vendor" --web apps/web/.next/standalone --version "$SAG_VERSION" --output "sag-$SAG_VERSION-x86.fpk"
+          cd apps/web
+          NEXT_PUBLIC_APP_BASE_PATH=/app/sag \
+            NEXT_PUBLIC_API_BASE=/app/sag \
+            NEXT_PUBLIC_ENABLE_WINDOW_SCALING=0 \
+            npm run build
+          cd ../..
+          node scripts/build-fnos-native-vendor.mjs \
+            --platform linux/amd64 \
+            --output "$RUNNER_TEMP/vendor"
+          node scripts/build-fnos-native-package.mjs \
+            --platform x86 \
+            --vendor "$RUNNER_TEMP/vendor" \
+            --web apps/web/.next/standalone \
+            --version "$SAG_VERSION" \
+            --output "sag-$SAG_VERSION-x86.fpk"
           sha256sum "sag-$SAG_VERSION-x86.fpk" > "sag-$SAG_VERSION-x86.fpk.sha256"
+
       - name: Publish Native x86 release
         env:
           GH_TOKEN: ${{ github.token }}
-          SAG_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          gh release create "fnos-v$SAG_VERSION" "sag-$SAG_VERSION-x86.fpk" "sag-$SAG_VERSION-x86.fpk.sha256" \
+          gh release create "fnos-v$SAG_VERSION" \
+            "sag-$SAG_VERSION-x86.fpk" \
+            "sag-$SAG_VERSION-x86.fpk.sha256" \
             --title "SAG fnOS Native x86 $SAG_VERSION" \
-            --notes "Auto-published from fnos/develop @ ${GITHUB_SHA}"
+            --notes "Published from fnos/develop @ ${GITHUB_SHA}
+
+          - **Base version**: ${{ needs.resolve-version.outputs.base_version }}
+          - **FPK**: sag-$SAG_VERSION-x86.fpk
+          - **SHA256**: $(cat sag-$SAG_VERSION-x86.fpk.sha256 | awk '{print $1}')"
