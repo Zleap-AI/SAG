@@ -10,6 +10,8 @@ test("fnOS delivery builds only the Native x86 FPK", async () => {
   assert.match(workflow, /runs-on: ubuntu-24\.04/);
   assert.match(workflow, /--platform linux\/amd64/);
   assert.match(workflow, /--platform x86/);
-  assert.match(workflow, /publish_confirmation.*PUBLISH/s);
+  // No PUBLISH typo-trap: workflow_dispatch no longer takes any human
+  // input; the branch guard (fnos/develop only) is the sole gate.
+  assert.doesNotMatch(workflow, /publish_confirmation/);
   assert.doesNotMatch(workflow, /docker\/|docker build|build-push-action|ghcr\.io/i);
 });

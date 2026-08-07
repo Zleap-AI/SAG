@@ -2,18 +2,12 @@ name: fnOS Delivery
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: >
-          FPK version, e.g. 1.5.3-fnos.1.
-          Leave empty to auto-derive from the latest main release tag + next fnOS build number.
-        required: false
-        type: string
-        default: ""
-      publish_confirmation:
-        description: Type PUBLISH exactly to confirm a real Release will be created.
-        required: true
-        type: string
+    # No inputs: version is derived automatically from the latest semver
+    # base tag on the repo + the next available fnOS build number
+    # (highest existing `fnos-v<base>-fnos.N` release, incremented). The
+    # workflow still refuses to run from any branch other than
+    # fnos/develop, so an accidental trigger from a topic branch fails
+    # fast before doing any work.
 
 permissions:
   contents: read
@@ -26,6 +20,13 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       base_version: ${{ steps.resolve.outputs.base_version }}
     steps:
+      - name: Enforce fnos/develop trigger branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ github.ref }}" = "refs/heads/fnos/develop" \
+            || { echo "Publish must be triggered from fnos/develop (got ${{ github.ref }})"; exit 1; }
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -45,7 +46,7 @@ jobs:
           echo "Base version: $base"
           echo "base=$base" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve fpNOS version
+      - name: Resolve fnOS version
         id: resolve
         shell: bash
         env:
@@ -53,27 +54,25 @@ jobs:
         run: |
           set -euo pipefail
           BASE="${{ steps.find-base.outputs.base }}"
-          MANUAL="${{ inputs.version }}"
 
-          if [ -n "$MANUAL" ]; then
-            VERSION="$MANUAL"
-            echo "Using manual version: $VERSION"
-          else
-            # Find the highest existing fnOS build number for this base.
-            N=1
-            existing="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' 2>/dev/null || true)"
-            if [ -n "$existing" ]; then
-              highest="$(echo "$existing" | grep -E "^fnos-v${BASE//./\\.}-fnos\\.[0-9]+\$" \
-                | sed 's/^fnos-v.*-fnos\.//' \
-                | sort -n \
-                | tail -1 || true)"
-              if [ -n "$highest" ] && [ "$highest" -ge 1 ] 2>/dev/null; then
-                N=$((highest + 1))
-              fi
+          # Auto-increment the fnOS build number for this base. Start at
+          # 1 when no previous fnOS release exists for the current base
+          # (e.g. right after a base version bump). Otherwise: bump the
+          # highest existing `fnos-v<base>-fnos.N` release by one.
+          N=1
+          existing="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' 2>/dev/null || true)"
+          highest=""
+          if [ -n "$existing" ]; then
+            highest="$(echo "$existing" | grep -E "^fnos-v${BASE//./\\.}-fnos\\.[0-9]+\$" \
+              | sed 's/^fnos-v.*-fnos\.//' \
+              | sort -n \
+              | tail -1 || true)"
+            if [ -n "$highest" ] && [ "$highest" -ge 1 ] 2>/dev/null; then
+              N=$((highest + 1))
             fi
-            VERSION="${BASE}-fnos.${N}"
-            echo "Auto-derived version: $VERSION (highest existing fnos build for $BASE: ${highest:-none})"
           fi
+          VERSION="${BASE}-fnos.${N}"
+          echo "Auto-derived version: $VERSION (highest existing fnos build for $BASE: ${highest:-none})"
 
           # Validate format: <semver>-fnos.<positive int>
           if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-fnos\.[1-9][0-9]*$'; then
@@ -126,10 +125,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Defense-in-depth: resolve-version already gates on this branch,
+          # but native-x86 checks out its own copy, so re-verify here.
           test "${{ github.ref }}" = "refs/heads/fnos/develop" \
             || { echo "Publish must be triggered from fnos/develop"; exit 1; }
-          test "${{ inputs.publish_confirmation }}" = "PUBLISH" \
-            || { echo "Confirmation must be exactly PUBLISH"; exit 1; }
           test -n "$SAG_VERSION"
           test -s docs/fnos/evidence/native-p0-x86.json \
             || { echo "Missing native-p0-x86.json evidence"; exit 1; }
