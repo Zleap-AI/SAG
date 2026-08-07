@@ -45,6 +45,19 @@ users="${TRIM_PKGVAR:-}/users"
 backup_dir="${TRIM_PKGVAR:-}/backup"
 log_file="${TRIM_TEMP_LOGFILE:-}"
 
+# Prefer the python3.12 runtime we ship (matches cmd/main). The system
+# python3 on fnOS is commonly 3.10/3.11, which rejects newer stdlib
+# kwargs (e.g. tarfile.extractall(filter="data") added in 3.12) and
+# would crash lifecycle.py with a TypeError before it can validate the
+# backup archive. Fall back to system python3 only if the bundled
+# interpreter is missing (rare — it comes from install_dep_apps python312).
+py312="/var/apps/python312/target/bin/python3"
+if [ -x "$py312" ]; then
+  py="$py312"
+else
+  py="python3"
+fi
+
 log() {
   if [ -n "$log_file" ]; then
     printf 'upgrade_init: %s\n' "$*" >>"$log_file" 2>/dev/null && return 0
@@ -142,15 +155,15 @@ if [ ! -f "$lifecycle" ]; then
 fi
 
 LAST_STEP="check-python3"
-if ! command -v python3 >/dev/null 2>&1; then
-  log "python3 not on PATH — skipping pre-upgrade backup (this is safe on a first Native install; the runtime is bundled and used by main, not by upgrade_init)"
+if [ ! -x "$py312" ] && ! command -v python3 >/dev/null 2>&1; then
+  log "no python3 available (neither bundled $py312 nor system python3) — skipping pre-upgrade backup (this is safe on a first Native install; main uses its own bundled runtime)"
   trap - EXIT HUP INT TERM
   exit 0
 fi
 
 # ---- Compute space budget ------------------------------------------------
 LAST_STEP="lifecycle-size"
-if ! used="$(python3 "$lifecycle" size --root "$users" 2>&1)"; then
+if ! used="$("$py" "$lifecycle" size --root "$users" 2>&1)"; then
   die "lifecycle.py size failed: $used"
 fi
 case "$used" in
@@ -178,12 +191,12 @@ LAST_STEP="backup-archive"
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 temporary="$backup_dir/sag-users-$timestamp.tar.gz.tmp"
 final="${temporary%.tmp}"
-if ! backup_output="$(python3 "$lifecycle" backup --root "$users" --output "$temporary" 2>&1)"; then
+if ! backup_output="$("$py" "$lifecycle" backup --root "$users" --output "$temporary" 2>&1)"; then
   die "lifecycle.py backup failed: $backup_output"
 fi
 
 LAST_STEP="validate-archive"
-if ! validate_output="$(python3 "$lifecycle" validate --archive "$temporary" 2>&1)"; then
+if ! validate_output="$("$py" "$lifecycle" validate --archive "$temporary" 2>&1)"; then
   die "lifecycle.py validate failed: $validate_output"
 fi
 

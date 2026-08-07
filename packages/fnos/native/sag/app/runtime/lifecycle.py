@@ -67,7 +67,14 @@ def validate(archive: Path) -> None:
                 raise ValueError("archive contains unsupported links or devices")
             if len(name.parts) > 1 and not _UID.fullmatch(name.parts[1]):
                 raise ValueError("archive contains an invalid user directory")
-        source.extractall(target, filter="data")
+        # NOTE: extractall(filter="data") was added in Python 3.12. upgrade_init
+        # falls back to the system python3, which on many fnOS images is
+        # 3.10/3.11 and rejects that kwarg with TypeError. The membership loop
+        # above already enforces the same safety envelope (no absolute paths,
+        # no ..-escapes, no symlinks/hardlinks/devices, first path component
+        # must be "users", UID directories match _UID) — so we can omit the
+        # filter and stay compatible with the older interpreters fnOS ships.
+        source.extractall(target)
         users = target / "users"
         if not users.is_dir():
             raise ValueError("archive does not contain users")
