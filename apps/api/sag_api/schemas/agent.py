@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from sag_api.enums import BindingTargetType, MessageRole
+from sag_api.enums import BindingTargetType, MessageRole, MessageStatus
 
 
 class AgentCreate(BaseModel):
@@ -78,6 +78,10 @@ class MessageOut(BaseModel):
     attachments: list[dict[str, Any]] = Field(default_factory=list)
     steps: list[dict[str, Any]] = Field(default_factory=list)
     prompt_preview: str = ""
+    # 助手气泡的终态：ok / failed / cancelled。用户消息始终 ok。
+    status: MessageStatus = MessageStatus.OK
+    # 失败/取消时的结构化错误 {code, message, retryable, details}；ok 时为 None。
+    error: dict[str, Any] | None = None
     created_at: datetime
 
 
