@@ -590,6 +590,7 @@
     "showApiKey": "显示 API Key",
     "hideKey": "隐藏 Key",
     "showKey": "显示 Key",
+    "getApiKey": "获取 API Key",
     "keyDescription": "Key 仅保存到当前部署的本地配置，读取时不会回显。",
     "defaults": "默认启用 MinerU 2.5（按页计费）、128K 上下文、1024 维向量和纯向量快速检索。",
     "skip": "跳过，稍后配置",

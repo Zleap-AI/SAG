@@ -590,6 +590,7 @@
     "showApiKey": "Show API Key",
     "hideKey": "Hide key",
     "showKey": "Show key",
+    "getApiKey": "Get API Key",
     "keyDescription": "The key is stored only in this deployment’s local configuration and is never displayed when read.",
     "defaults": "Enables MinerU 2.5 (billed per page), a 128K context window, 1,024-dimensional vectors, and fast vector retrieval by default.",
     "skip": "Skip for now",
