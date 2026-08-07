@@ -6,6 +6,7 @@ import {
   Cpu,
   Eye,
   EyeOff,
+  ExternalLink,
   FileText,
   KeyRound,
   Search,
@@ -131,7 +132,18 @@ export function QuickModelSetupDialog({
 
           <div className="space-y-4 px-6 py-5">
             <Field data-invalid={Boolean(error)}>
-              <FieldLabel htmlFor="quick-setup-api-key">302.AI API Key</FieldLabel>
+              <div className="flex items-center justify-between gap-2">
+                <FieldLabel htmlFor="quick-setup-api-key">302.AI API Key</FieldLabel>
+                <a
+                  href="https://302.ai/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+                >
+                  {t("getApiKey")}
+                  <ExternalLink className="size-3" aria-hidden="true" />
+                </a>
+              </div>
               <div className="relative">
                 <Input
                   ref={inputRef}

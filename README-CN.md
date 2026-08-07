@@ -47,39 +47,134 @@ https://github.com/user-attachments/assets/cae70570-3885-490f-9126-dea23dcb369c
 
 ## fnOS Native 应用
 
-本分支将 SAG 打包为 fnOS Native 应用。用户从 fnOS 桌面入口的 `/app/sag` 打开；不暴露 API 或 Web 端口。fnOS 登录身份会自动对应到独立的私有 SAG 工作区。
+本分支（`fnos/develop`）将 SAG 打包为 **fnOS Native 应用**，而非 Docker/Compose 部署。整个应用不使用容器、不依赖镜像仓库、不对宿主暴露任何 HTTP 端口，交付物是一个自包含的 FPK 归档，由飞牛 OS 应用中心直接安装到 NAS 文件系统上。用户从 fnOS 桌面入口 `/app/sag` 打开；请求经由 fnOS 管理的 Unix Domain Socket 进入 gateway；fnOS 登录身份自动对应到独立的私有 SAG 工作区。
 
 ```text
-fnOS 桌面入口 / `/app/sag`
-        │
-  sag-gateway（Nginx）
-    ├── /          → sag-web
-    └── /api、/mcp → sag-api → /data
+fnOS 桌面 iframe ─ /app/sag ──▶ fnOS 反向代理
+                                    │  (Unix socket：${TRIM_APPDEST}/app.sock)
+                                    ▼
+                        cmd/main（POSIX 启动脚本，单进程树）
+                                    │
+                                    ├── python3 -m sag_api.fnos.cli gateway
+                                    │       （UDS ─ FastAPI + 鉴权 + /api + /mcp + 静态转发）
+                                    │
+                                    └── node web/server.js
+                                           （Next.js standalone，loopback 127.0.0.1:<port>）
+
+NAS 上的持久化状态
+  ${TRIM_PKGVAR}=/vol1/@appdata/sag        # SQLite、LanceDB、上传原文、索引、internal-secret
+  ${TRIM_PKGETC}=/vol1/@appconf/sag        # fnpack 托管的配置卷（不用于存放密钥）
+  ${TRIM_APPDEST}=/var/apps/.../sag        # 只读应用负载（python vendor、next standalone）
 ```
 
-- **API、Web、Gateway** 由三个 Compose 服务组成；API `8000` 和 Web `3000` 只在容器网络内可见，Gateway 是唯一暴露到宿主机的服务。
-- **持久化数据** 挂载在 `${TRIM_PKGVAR}/data`，其中 SQLite、LanceDB、上传原文和索引必须作为一个整体恢复。生命周期脚本默认卸载保留数据，并在升级前创建完整停服冷备。
+- **运行时由 fnOS 托管，不在包内自带。** manifest 通过 `install_dep_apps=python312:nodejs_v22` 声明依赖，启动脚本随后调用 `/var/apps/python312/target/bin/python3` 和 `/var/apps/nodejs_v22/target/bin/node`，宿主机上没有其他额外安装。
+- **两个进程，同一个包用户。** Gateway（Python）和 Web（Next standalone）都以 `sag` 包用户身份运行（`config/privilege → run-as: package`）。PID 与日志写入 `${TRIM_PKGVAR}/run` 与 `${TRIM_PKGVAR}/logs`，应用中心通过 `cmd/main status` 读取状态。
+- **Gateway 走 UDS，不走 TCP。** Gateway 绑定 `${TRIM_APPDEST}/app.sock`：`python -m sag_api.fnos.cli gateway --socket … --web-origin http://127.0.0.1:<web_port>`。宿主机与容器网络都看不到 3000/8000 端口 —— fnOS 直接把桌面 iframe 的请求转发进这个 socket。
+- **按用户隔离工作区。** `fnos/gateway.py` 从请求里解析 fnOS 身份，计算 tenant key，为每个用户在 `${TRIM_PKGVAR}` 下发一份独立的 SQLite + LanceDB。supervisor 按需为每个租户拉起 worker socket。
+- **持久化数据** 整体位于 `${TRIM_PKGVAR}`（SQLite、LanceDB、上传原文、索引、每租户的内部密钥），必须作为一个整体备份 / 恢复。生命周期脚本默认卸载保留数据，并在升级前创建完整停服冷备。
 - **局域网单用户模式** 不要求密码、初始化密钥或登录校验。首次为空工作区时可记录显示用户名，但该名称不是身份凭据。
-- **运行时镜像** 在每个 FPK 中以不可变 digest 固定；不得用 `latest` 等可变标签覆盖已经交付的镜像。
+- **内部密钥位于 `${TRIM_PKGVAR}/internal-secret`，不在 `${TRIM_PKGETC}/`。** `@appconf` 是共享配置卷，fnpack 不会在覆盖安装时重新规范化其权限；把密钥落在包用户拥有的 `@appdata/sag` 下，`main` 才能在启动时无需 root 就完成残留文件的自愈。
+
+### 打包结构
+
+Native 相关的全部内容都在 `packages/fnos/native/sag/` 下 —— Docker 时代的 `packages/fnos/sag/` 已经移除。
+
+```
+packages/fnos/native/sag/
+├── manifest              # appname、版本占位符（__SAG_VERSION__/__SAG_PLATFORM__）、os_min_version、install_dep_apps
+├── ICON.PNG, ICON_256.PNG
+├── config/
+│   ├── privilege         # run-as: package；username/groupname：sag
+│   ├── resource          # cpu/memory 建议值（无 docker-project）
+│   └── ...               # 依赖 + gateway 策略配置
+├── cmd/
+│   ├── install_init      #（root）创建 ${TRIM_PKGVAR}、下发 internal-secret；
+│   │                     #        对只读文件系统 / 父目录缺失 / 非目录残留三种失败做场景化恢复
+│   ├── main              #（sag） start | stop | status；拉起 web + gateway，等 UDS 就绪，
+│   │                     #        任何早退都会写结构化错误 + gateway 日志尾部
+│   ├── upgrade_init      #（root）Docker→Native 迁移 + 冷备 + 屏蔽 status 日志污染
+│   ├── uninstall_init    #（root）保留数据的卸载
+│   └── {install,upgrade,uninstall,config}_callback   # 空操作或轻量跳板
+├── app/
+│   ├── runtime           # fnpack 依赖应用注入的标记文件
+│   └── ui/
+│       ├── config        # 桌面入口：type=iframe、gatewayPrefix=/app/sag、gatewaySocket=app.sock、
+│       │                 #           url=/app/sag/chat、allUsers=true
+│       └── images/       # ui/config 引用的 icon_256.png 等图标
+└── wizard/               # 可选的首次运行向导资源
+```
+
+构建时 `scripts/build-fnos-native-package.mjs` 会把三份负载注入模板：
+
+- `apps/api/sag_api` + `apps/api/sag_agent` → `app/server/`（Python 源码）
+- 由 `scripts/build-fnos-native-vendor.mjs` 冻结的 Python 二进制轮子（目标 `x86_64-unknown-linux-gnu` 或 `aarch64-unknown-linux-gnu`、Python 3.12、`--only-binary :all:`）→ `app/server/vendor/`
+- `apps/web/.next/standalone` + `.next/static` + `public/` → `app/web/`
+
+随后由 `fnpack build` 产出 `sag-<version>-<platform>.fpk`。`scripts/validate-fnos-native-package.mjs` 在 fnpack 前后各跑一次，强制以下契约：`type=iframe`、`run-as=package`、`platform!=all`、无 `docker-project` 资源、无 `service_port`、所有 `__SAG_*__` 占位符已解析、必需的图标齐全、包内不夹带 `docker-compose*` 遗物、`username=sag`、`gatewaySocket=app.sock`。
 
 ### fnOS 修改与发布规范
 
 1. fnOS 专用改动只在 `fnos/develop` 维护；`main` 的能力通过评审 PR 单向同步并完成 fnOS 回归，绝不反向合并。
-2. 必须保持应用契约一致：`packages/fnos/sag/manifest`、`app/ui/config`、Compose 端口映射、生命周期脚本和打包测试应使用同一应用名及服务端口。
-3. `/data` 是不可拆分的兼容边界。涉及 Schema、迁移、备份、恢复、升级、卸载或容器重建的改动，必须补充相应生命周期测试。
-4. 先构建候选镜像并验证 API/Web/Gateway 的确切 digest 与目标架构，再基于这些 digest 生成 FPK 和 SHA-256 校验文件。
-5. 不提交 `dist/` 下生成的 FPK、校验文件、本地镜像 archive 或一次性测试证据；评审通过的发布资产应由发布工作流生成。
+2. 必须保持应用契约一致：`packages/fnos/native/sag/manifest`、`app/ui/config`、`config/privilege` 以及 `cmd/` 下的所有生命周期脚本必须与 `scripts/validate-fnos-native-package.mjs` 一致；任一处变动都要同步更新 validator 及其测试（`scripts/tests/fnos-native-package.test.mjs`、`fnos-native-lifecycle.test.mjs`）。
+3. `${TRIM_PKGVAR}` 是不可拆分的兼容边界。涉及 Schema、迁移、备份、恢复、升级、卸载的改动必须补齐对应的生命周期测试。
+4. 所有生命周期脚本必须兼容 POSIX `sh`（fnOS 上是 dash），并使用 `set -u` 而非 `set -eu`；任何致命 exit 都必须往 `${TRIM_TEMP_LOGFILE}` 写出结构化原因 —— 静默失败正是应用中心那句"执行脚本出错且原因未知"的来源，也是线上支持成本的最大来源。
+5. 不提交 `dist/` 下生成的 FPK、校验文件或一次性测试证据；评审通过的发布资产应由发布工作流生成。
+
+### 本地构建、验证与发布
+
+**本地打 FPK**（macOS 或 Linux，需要 PATH 上有 `fnpack`、Node ≥ 22、uv、Python 3.12）：
+
+```bash
+# 1. 冻结目标平台的 Python 轮子（以下示例为 x86_64 Linux；ARM 用 linux/arm64）
+node scripts/build-fnos-native-vendor.mjs \
+  --platform linux/amd64 \
+  --output /tmp/sag-vendor-x86
+
+# 2. 用 fnOS base path 构建 Next standalone 包
+cd apps/web && NEXT_PUBLIC_APP_BASE_PATH=/app/sag \
+  NEXT_PUBLIC_API_BASE=/app/sag \
+  NEXT_PUBLIC_ENABLE_WINDOW_SCALING=0 \
+  npm run build && cd ../..
+
+# 3. 组装 + fnpack
+node scripts/build-fnos-native-package.mjs \
+  --platform x86 \
+  --vendor /tmp/sag-vendor-x86 \
+  --web apps/web/.next/standalone \
+  --version 1.5.3-fnos.2 \
+  --output dist/sag-1.5.3-fnos.2-x86.fpk
+```
+
+**验证套件**（发布前必须全部通过）：
+
+```bash
+# 后端
+cd apps/api && uv run --extra dev ruff check sag_api sag_agent tests \
+  && uv run --extra dev pytest -q
+
+# 前端
+cd apps/web && npm ci && npm run typecheck && npm run test:unit && npm run lint
+
+# Native 包与生命周期契约（validator、模板、install_init、main.start、upgrade_init 等）
+node --test scripts/tests/fnos-*.test.mjs
+```
+
+**发布** 是 `fnos/develop` 上的 `workflow_dispatch`：
+
+- Workflow：`.github/workflows/fnos-release.yml`（job 名为 **fnOS Delivery**）。
+- 两个 job：`resolve-version` 从最新 `v*` tag 和现有最高 `fnos-v*` release 自动推导 `<base>-fnos.<N>` 版本；`native-x86` 跑完整测试套件、构建 vendor + Next + FPK、计算 sha256，需人工输入 `PUBLISH` 确认后作为 GitHub Release `fnos-v<version>` 发布。
+- workflow 内 fnpack 版本固定为 **1.2.3**（`sha256 54b97fa7…95c93`），本地构建也应使用同一版本；uv 工具链固定为 **0.10.8**，以匹配 greenlet 等对轮子的兼容需求。
+- ARM 平台本地通过 `scripts/build-fnos-native-probe.mjs` 试跑；CI 目前只发布 x86。
 
 关键目录与职责：
 
 | 范围 | 代码入口 |
 | --- | --- |
-| fnOS Manifest、桌面入口、生命周期、Compose | `packages/fnos/sag/` |
-| 本地 fnOS Compose 冒烟环境 | `compose.fnos.yaml`、`deploy/fnos/` |
-| 打包、镜像策略、发布校验 | `scripts/build-fnos-package.mjs`、`scripts/validate-fnos-release.mjs`、`scripts/release-fnos.mjs` |
-| 候选镜像构建与扫描 | `.github/workflows/fnos-image-release.yml` |
-
-> 当前镜像仓库地址仍处于从个人命名空间迁移到 `Zleap-AI` 组织命名空间的过渡期；新的正式发布工作必须先完成该迁移，才能提交飞牛应用中心。
+| fnOS Native 包模板（manifest、桌面入口、生命周期脚本、privilege） | `packages/fnos/native/sag/` |
+| FPK 构建器 + vendor + probe + validator | `scripts/build-fnos-native-package.mjs`、`scripts/build-fnos-native-vendor.mjs`、`scripts/build-fnos-native-probe.mjs`、`scripts/validate-fnos-native-package.mjs` |
+| Native gateway、多租户 supervisor、fnpack 环境粘合 | `apps/api/sag_api/fnos/` |
+| 包 + 生命周期契约测试 | `scripts/tests/fnos-native-package.test.mjs`、`scripts/tests/fnos-native-lifecycle.test.mjs`、`scripts/tests/fnos-release-workflow.test.mjs` |
+| Delivery workflow（版本推导 + 构建 + 发布） | `.github/workflows/fnos-release.yml` |
 
 ---
 

@@ -15,6 +15,16 @@ gateway_log="${log_dir}/gateway.log"
 web_log="${log_dir}/web.log"
 secret="${TRIM_PKGVAR}/internal-secret"
 
+# fnpack invokes every callback in cmd/ (install_init, main, upgrade_init,
+# …) under a single `defaults.run-as` — there is no per-command override.
+# install_init MUST run as root to mkdir under root-owned /vol1/@appdata,
+# so run-as is `root` and main is entered as root too. The Python gateway
+# and Node web therefore also run as root today — matching the Docker
+# variant's behaviour for years. Dropping to the sag package user via
+# runuser is planned as a follow-up hardening step (needs signal-
+# forwarding, env-passing, $TRIM_APPDEST ownership, and valid_pid cmdline-
+# matching all validated together on real fnOS hardware).
+
 log_error() { printf '%s\n' "$1" >> "${TRIM_TEMP_LOGFILE:-/dev/null}"; }
 
 # The internal secret lives in TRIM_PKGVAR (== /vol1/@appdata/<pkg> on

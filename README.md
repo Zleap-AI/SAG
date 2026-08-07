@@ -47,39 +47,134 @@ https://github.com/user-attachments/assets/9bb618e9-fef8-4d07-8a30-3f7d83beb0ff
 
 ## fnOS Native application
 
-This branch packages SAG as a fnOS Native application. Open it from the fnOS desktop card at `/app/sag`; it has no public API or Web port. fnOS login identity selects a separate private SAG workspace for each user.
+This branch (`fnos/develop`) packages SAG as a **fnOS Native application**, not a Docker/Compose deployment. There are no containers, no image registry, and no host-facing HTTP port — the app ships as a single self-contained FPK archive that the fnOS App Center installs directly onto the NAS filesystem. Users open it from the fnOS desktop card at `/app/sag`; requests reach the gateway through a Unix Domain Socket managed by fnOS, and fnOS login identity selects a separate private SAG workspace for each user.
 
 ```text
-fnOS desktop / `/app/sag`
-        │
-  sag-gateway (Nginx)
-    ├── /       → sag-web
-    └── /api,/mcp → sag-api → /data
+fnOS desktop (iframe) ─ /app/sag ──▶ fnOS reverse-proxy
+                                         │  (Unix socket: ${TRIM_APPDEST}/app.sock)
+                                         ▼
+                          cmd/main (POSIX launcher, single process tree)
+                                         │
+                                         ├── python3 -m sag_api.fnos.cli gateway
+                                         │       (UDS ─ FastAPI + auth + /api + /mcp + static forward)
+                                         │
+                                         └── node web/server.js
+                                                 (Next.js standalone, loopback 127.0.0.1:<port>)
+
+Persistent state on the NAS
+  ${TRIM_PKGVAR}=/vol1/@appdata/sag        # SQLite, LanceDB, uploads, indexes, internal-secret
+  ${TRIM_PKGETC}=/vol1/@appconf/sag        # fnpack-managed config volume (not used for secrets)
+  ${TRIM_APPDEST}=/var/apps/.../sag        # read-only app payload (python vendor, next standalone)
 ```
 
-- **API, Web, and Gateway** run as three Compose services. API port `8000` and Web port `3000` are internal-only; the Gateway is the sole host-facing service.
-- **Persistent data** is mounted at `${TRIM_PKGVAR}/data`, containing SQLite, LanceDB, source uploads, and indexes as one recovery unit. The lifecycle hooks retain data on ordinary uninstall and take a full cold backup before an upgrade.
+- **Runtime is fnOS-managed, not bundled.** The FPK declares `install_dep_apps=python312:nodejs_v22` in `manifest`; the launcher then invokes `/var/apps/python312/target/bin/python3` and `/var/apps/nodejs_v22/target/bin/node`. Nothing else is installed on the host.
+- **Two processes, single package user.** Both the gateway (Python) and the web (Next standalone) run as the `sag` package user under fnpack (`config/privilege → run-as: package`). PIDs and logs live under `${TRIM_PKGVAR}/run` and `${TRIM_PKGVAR}/logs`; the fnOS App Center reads status via `cmd/main status`.
+- **Gateway speaks UDS, not TCP.** The gateway binds `${TRIM_APPDEST}/app.sock` with `python -m sag_api.fnos.cli gateway --socket … --web-origin http://127.0.0.1:<web_port>`. No 3000/8000 port is exposed on the host or the container network — fnOS proxies desktop iframe traffic straight into the socket.
+- **Per-user workspaces.** `fnos/gateway.py` extracts the fnOS identity, computes a tenant key, and hands each user their own SQLite + LanceDB workspace under `${TRIM_PKGVAR}`. A supervisor spawns per-tenant worker sockets on demand.
+- **Persistent data** sits under `${TRIM_PKGVAR}` as one recovery unit (SQLite, LanceDB, source uploads, indexes, per-user internal secret). Lifecycle callbacks retain data on ordinary uninstall and take a full cold backup before an upgrade.
 - **Single-user local mode** starts without password, bootstrap token, or login verification. A display name may be recorded for an empty workspace, but it is not an authentication credential.
-- **Runtime images** are pinned by immutable digest in each FPK. Never replace a shipped image behind a mutable tag such as `latest`.
+- **The internal secret lives at `${TRIM_PKGVAR}/internal-secret`, not `${TRIM_PKGETC}/`.** `@appconf` is a shared config volume whose permissions fnpack does not re-normalize on overwrite install; keeping the secret under package-owned `@appdata/sag` lets `main` self-heal a residue file at start without root.
+
+### Package layout
+
+Everything Native-specific lives under `packages/fnos/native/sag/` — the earlier Docker-era `packages/fnos/sag/` layout is gone.
+
+```
+packages/fnos/native/sag/
+├── manifest              # appname, version tokens (__SAG_VERSION__/__SAG_PLATFORM__), os_min_version, install_dep_apps
+├── ICON.PNG, ICON_256.PNG
+├── config/
+│   ├── privilege         # run-as: package; username/groupname: sag
+│   ├── resource          # cpu/memory hints (no docker-project)
+│   └── ...               # dependency + gateway policy files
+├── cmd/
+│   ├── install_init      # (root) create ${TRIM_PKGVAR}, provision internal-secret, scenario-based
+│   │                     #        recovery for read-only fs / missing parent / non-directory residue
+│   ├── main              # (sag)  start | stop | status; launches web + gateway, waits for UDS readiness,
+│   │                     #        writes structured errors + tail-of-log on any early exit
+│   ├── upgrade_init      # (root) Docker→Native migration + cold-backup + status log isolation
+│   ├── uninstall_init    # (root) retain-data uninstall
+│   └── {install,upgrade,uninstall,config}_callback   # noop / thin trampolines
+├── app/
+│   ├── runtime           # marker for fnpack's dependency-app injection
+│   └── ui/
+│       ├── config        # desktop entry: type=iframe, gatewayPrefix=/app/sag, gatewaySocket=app.sock,
+│       │                 #                url=/app/sag/chat, allUsers=true
+│       └── images/       # icon_256.png etc. referenced by ui/config
+└── wizard/               # optional first-run wizard payload
+```
+
+At build time `scripts/build-fnos-native-package.mjs` grafts three payloads into the template:
+
+- `apps/api/sag_api` + `apps/api/sag_agent` → `app/server/` (Python source)
+- Frozen Python wheels from `scripts/build-fnos-native-vendor.mjs` (targeting `x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-gnu`, python 3.12, `--only-binary :all:`) → `app/server/vendor/`
+- `apps/web/.next/standalone` + `.next/static` + `public/` → `app/web/`
+
+Then `fnpack build` produces `sag-<version>-<platform>.fpk`. `scripts/validate-fnos-native-package.mjs` runs before and after fnpack to enforce the contract (`type=iframe`, `run-as=package`, `platform!=all`, no `docker-project` resource, no `service_port`, all `__SAG_*__` tokens resolved, all required icons present, no `docker-compose*` artifacts leaked in, `username=sag`, `gatewaySocket=app.sock`).
 
 ### fnOS maintenance rules
 
 1. Keep fnOS-only work on `fnos/develop`; changes from `main` flow into this branch through a reviewed PR and fnOS regression tests, never in the reverse direction.
-2. Keep the package contract synchronized: `packages/fnos/sag/manifest`, `app/ui/config`, Compose port mapping, lifecycle scripts, and packaging tests must agree on the same application name and service port.
-3. Treat `/data` as an indivisible compatibility boundary. Schema, migration, backup, restore, upgrade, uninstall, and container-rebuild changes require corresponding lifecycle tests.
-4. Build candidate images before an FPK, verify the exact API/Web/Gateway digests for both supported image architectures, then create the package and checksum from those digests.
-5. Do not commit generated FPK files, checksums, local image archives, or one-off test evidence under `dist/`. Publish reviewed release assets from the release workflow instead.
+2. Keep the package contract synchronized: `packages/fnos/native/sag/manifest`, `app/ui/config`, `config/privilege`, and every lifecycle script in `cmd/` must agree with `scripts/validate-fnos-native-package.mjs`. A change in one requires updating the validator and its tests (`scripts/tests/fnos-native-package.test.mjs`, `fnos-native-lifecycle.test.mjs`).
+3. Treat `${TRIM_PKGVAR}` as an indivisible compatibility boundary. Schema, migration, backup, restore, upgrade, and uninstall changes require corresponding lifecycle tests.
+4. Keep every lifecycle script POSIX-`sh` compatible (dash on fnOS) and use `set -u` rather than `set -eu`. Every fatal exit must write a structured message to `${TRIM_TEMP_LOGFILE}` — silent failures are what the App Center surfaces as "执行脚本出错且原因未知" and are the single biggest cost driver on live installs.
+5. Do not commit generated FPK files, checksums, or one-off test evidence under `dist/`. Publish reviewed release assets from the release workflow instead.
+
+### Build, verify, and release
+
+**Build a local FPK** (macOS or Linux; needs `fnpack` on `PATH`, Node ≥ 22, uv, python 3.12):
+
+```bash
+# 1. Vendor Python wheels for the target platform (x86_64 Linux shown; use linux/arm64 for ARM)
+node scripts/build-fnos-native-vendor.mjs \
+  --platform linux/amd64 \
+  --output /tmp/sag-vendor-x86
+
+# 2. Build the Next standalone bundle with the fnOS base path
+cd apps/web && NEXT_PUBLIC_APP_BASE_PATH=/app/sag \
+  NEXT_PUBLIC_API_BASE=/app/sag \
+  NEXT_PUBLIC_ENABLE_WINDOW_SCALING=0 \
+  npm run build && cd ../..
+
+# 3. Assemble + fnpack
+node scripts/build-fnos-native-package.mjs \
+  --platform x86 \
+  --vendor /tmp/sag-vendor-x86 \
+  --web apps/web/.next/standalone \
+  --version 1.5.3-fnos.2 \
+  --output dist/sag-1.5.3-fnos.2-x86.fpk
+```
+
+**Verification suites** (all must pass before publishing):
+
+```bash
+# Backend
+cd apps/api && uv run --extra dev ruff check sag_api sag_agent tests \
+  && uv run --extra dev pytest -q
+
+# Frontend
+cd apps/web && npm ci && npm run typecheck && npm run test:unit && npm run lint
+
+# Native package + lifecycle contract (validator, template, install_init, main.start, upgrade_init, ...)
+node --test scripts/tests/fnos-*.test.mjs
+```
+
+**Release** is `workflow_dispatch` only on `fnos/develop`:
+
+- Workflow: `.github/workflows/fnos-release.yml` (job name **fnOS Delivery**).
+- Two jobs: `resolve-version` auto-derives `<base>-fnos.<N>` from the latest `v*` tag on the repo and the highest existing `fnos-v*` release; `native-x86` runs the full test sweep, builds vendor + Next + FPK, sha256-sums the artefact, and publishes it as GitHub Release `fnos-v<version>` after a manual `PUBLISH` confirmation.
+- fnpack is pinned to **1.2.3** (`sha256 54b97fa7…95c93`) inside the workflow; local builds should match. The uv toolchain is pinned to **0.10.8** for wheel-compat with greenlet et al.
+- Native ARM images are exercised locally via `scripts/build-fnos-native-probe.mjs`; publishing ARM is not wired to CI yet.
 
 The relevant ownership boundaries are:
 
 | Area | Source of truth |
 | --- | --- |
-| fnOS app manifest, desktop entry, lifecycle, Compose | `packages/fnos/sag/` |
-| Local fnOS Compose smoke environment | `compose.fnos.yaml`, `deploy/fnos/` |
-| Package, image-policy, release validation | `scripts/build-fnos-package.mjs`, `scripts/validate-fnos-release.mjs`, `scripts/release-fnos.mjs` |
-| Candidate image build and scan | `.github/workflows/fnos-image-release.yml` |
-
-> The current registry references remain transitional while the image namespace moves from the personal account to the `Zleap-AI` organization. New release work must complete that migration before an App Center production submission.
+| fnOS Native package template (manifest, desktop entry, lifecycle scripts, privilege) | `packages/fnos/native/sag/` |
+| FPK builder + vendor + probe + validator | `scripts/build-fnos-native-package.mjs`, `scripts/build-fnos-native-vendor.mjs`, `scripts/build-fnos-native-probe.mjs`, `scripts/validate-fnos-native-package.mjs` |
+| Native gateway, per-user tenant supervisor, fnpack env glue | `apps/api/sag_api/fnos/` |
+| Package + lifecycle contract tests | `scripts/tests/fnos-native-package.test.mjs`, `scripts/tests/fnos-native-lifecycle.test.mjs`, `scripts/tests/fnos-release-workflow.test.mjs` |
+| Delivery workflow (version resolution + build + release) | `.github/workflows/fnos-release.yml` |
 
 ---
 
