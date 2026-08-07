@@ -5,20 +5,27 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-test("fnOS delivery is a single manual publish flow guarded by explicit confirmation", async () => {
+test("fnOS delivery is a single manual publish flow guarded by branch", async () => {
   const workflow = await readFile(path.join(root, ".github/workflows/fnos-release.yml"), "utf8");
   assert.match(workflow, /^name: fnOS Delivery$/m);
   // Manual-only trigger: no push branch, only workflow_dispatch.
   assert.doesNotMatch(workflow, /^\s*push:/m);
   assert.match(workflow, /workflow_dispatch:/);
-  // Version input exists but is OPTIONAL — auto-derived from the latest
-  // main semver tag + the next available fnos build number.
-  assert.match(workflow, /version:/);
-  assert.match(workflow, /inputs\.version/);
+  // No human-entered inputs: the version is auto-derived and the
+  // PUBLISH confirmation typo-trap has been retired.
+  assert.doesNotMatch(workflow, /^\s*inputs:/m);
+  assert.doesNotMatch(workflow, /inputs\.version/);
+  assert.doesNotMatch(workflow, /inputs\.publish_confirmation/);
   assert.doesNotMatch(workflow, /packages\/fnos\/sag\/manifest/);
-  // Guardrails: only from fnos/develop and only after PUBLISH confirmation.
-  assert.match(workflow, /refs\/heads\/fnos\/develop/);
-  assert.match(workflow, /inputs\.publish_confirmation.*PUBLISH/);
+  // Only surviving guardrail: publish must run from fnos/develop, and
+  // it must be enforced in BOTH jobs (resolve-version + native-x86) so
+  // an accidental trigger from a topic branch fails fast in resolve-
+  // version before native-x86 even starts.
+  const branchGuards = workflow.match(/refs\/heads\/fnos\/develop/g) ?? [];
+  assert.ok(
+    branchGuards.length >= 2,
+    `expected the fnos/develop branch guard in both jobs, found ${branchGuards.length}`,
+  );
   // Version auto-derivation from git tags + release listing.
   assert.match(workflow, /git tag -l/);
   assert.match(workflow, /gh release list/);
