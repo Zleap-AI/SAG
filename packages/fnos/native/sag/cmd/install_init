@@ -83,18 +83,44 @@ esac
 
 # ---- 2. Ensure the var directory exists and is writable -------------------
 LAST_STEP="mkdir-pkgvar"
-# install_init runs as root on a standard fnpack setup, but on some
-# fnOS builds the privilege.defaults may be misinterpreted and the
-# script lands as the package user.  If the directory already exists
-# (fnpack pre-created it) just move on; otherwise surface the exact
-# uid + directory state so we can diagnose the root cause.
+# An earlier Docker install (or a prior broken Native install) may
+# have left a regular file, symlink, or socket at this path — all of
+# which would block mkdir.  Remove any non-directory residue first.
+if [ -e "$TRIM_PKGVAR" ] && [ ! -d "$TRIM_PKGVAR" ]; then
+  log "removing non-directory residue at $TRIM_PKGVAR ($(ls -ld "$TRIM_PKGVAR" 2>&1))"
+  rm -f "$TRIM_PKGVAR" 2>/dev/null || die "cannot remove non-directory residue at $TRIM_PKGVAR ($(ls -ld "$TRIM_PKGVAR" 2>&1))"
+fi
+
 if ! mkdir -p "$TRIM_PKGVAR" 2>/tmp/sag-install-mkdir-err.$$; then
   mkdir_err="$(cat /tmp/sag-install-mkdir-err.$$ 2>/dev/null || true)"
   rm -f /tmp/sag-install-mkdir-err.$$
   if [ -d "$TRIM_PKGVAR" ] && [ -w "$TRIM_PKGVAR" ]; then
     log "mkdir -p $TRIM_PKGVAR reported an error but the directory exists and is writable; continuing (err: ${mkdir_err:-none})"
   else
-    die "cannot create $TRIM_PKGVAR (uid=$(id -u 2>/dev/null || echo ?), mkdir: ${mkdir_err:-unknown}, parent: $(ls -ld "$(dirname "$TRIM_PKGVAR")" 2>&1), target: $(ls -ld "$TRIM_PKGVAR" 2>&1))"
+    parent="$(dirname "$TRIM_PKGVAR")"
+
+    # ── Scenario 1: read-only filesystem ──────────────────────────
+    # The NAS / volume has been remounted read-only (common after
+    # disk errors, fs corruption, or unsafe shutdown).  There is
+    # nothing install_init can do — the operator must fix the hardware.
+    case "$(printf '%s' "$mkdir_err" | tr '[:upper:]' '[:lower:]')" in
+      *"read-only"*|*"read only"*|*"readonly"*)
+        die "filesystem is read-only — cannot create $TRIM_PKGVAR. The storage volume may have been remounted read-only due to disk errors. Check dmesg and fnOS storage health, then remount read-write before reinstalling."
+        ;;
+    esac
+
+    # ── Scenario 2: parent directory missing ──────────────────────
+    if [ ! -d "$parent" ]; then
+      die "parent directory $parent does not exist — fnOS may not have provisioned /vol1/@appdata yet (uid=$(id -u 2>/dev/null || echo ?))"
+    fi
+
+    # ── Scenario 3: permission denied (likely not running as root) ─
+    if [ ! -w "$parent" ]; then
+      die "parent directory $parent is not writable by uid=$(id -u 2>/dev/null || echo ?). install_init must run as root to create $TRIM_PKGVAR. $(ls -ld "$parent" 2>&1). Check privilege config or fnpack version."
+    fi
+
+    # ── Fallback: unknown cause, surface everything ───────────────
+    die "cannot create $TRIM_PKGVAR (uid=$(id -u 2>/dev/null || echo ?), mkdir: ${mkdir_err:-unknown}, parent: $(ls -ld "$parent" 2>&1), target: $(ls -ld "$TRIM_PKGVAR" 2>&1))"
   fi
 fi
 rm -f /tmp/sag-install-mkdir-err.$$
