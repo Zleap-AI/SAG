@@ -70,6 +70,8 @@ _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
         "attachments_json": "JSON",
         "steps_json": "JSON",
         "prompt_preview": "TEXT NOT NULL DEFAULT ''",
+        "status": "VARCHAR(16) NOT NULL DEFAULT 'ok'",
+        "error_json": "JSON",
     },
     "universe_dirty_sources": {"revision": "INTEGER NOT NULL DEFAULT 1"},
 }

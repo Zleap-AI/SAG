@@ -69,6 +69,12 @@ class MessageRole(StrEnum):
     SYSTEM = "system"
 
 
+class MessageStatus(StrEnum):
+    OK = "ok"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class BindingTargetType(StrEnum):
     SOURCE = "source"
     MCP_SERVER = "mcp_server"  # Phase C：挂载 MCP server 作为工具来源

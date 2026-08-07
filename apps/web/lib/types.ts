@@ -295,6 +295,14 @@ export interface MessageAttachment {
   media_type?: string;
 }
 
+export type MessageStatus = "ok" | "failed" | "cancelled";
+
+export interface MessageError {
+  message?: string;
+  code?: string;
+  [key: string]: unknown;
+}
+
 export interface Message {
   id: string;
   thread_id: string;
@@ -304,6 +312,8 @@ export interface Message {
   attachments?: MessageAttachment[];
   steps?: MessageStep[];
   prompt_preview?: string;
+  status?: MessageStatus;
+  error?: MessageError | null;
   created_at: string;
 }
 

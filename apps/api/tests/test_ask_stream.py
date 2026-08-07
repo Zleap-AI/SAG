@@ -270,9 +270,24 @@ async def test_ask_stream_agentic_events_and_trace():
             assert "details" in tool_step
 
 
+class PartialThenFailLLM(AgenticLLM):
+    """流出几个 token 后再抛错 → 用于验证 partial answer 是否随失败气泡入库。"""
+
+    async def stream_turn(self, request, cancellation):
+        del request
+        cancellation.raise_if_cancelled()
+        yield ModelChunk(text_delta="部分")
+        yield ModelChunk(text_delta="回答")
+        raise UpstreamError("read timed out")
+        yield  # pragma: no cover
+
+
 @pytest.mark.asyncio
 async def test_ask_stream_provider_failure_has_terminal_error():
-    """Provider failures remain explicit instead of silently changing protocols."""
+    """Provider failure → assistant bubble persisted with status=failed & structured error.
+
+    此前空 assistant 会导致刷新丢失错误提示；改为持久化后前端能稳定回放失败气泡。
+    """
     from sag_api.main import app
 
     transport = httpx.ASGITransport(app=app)
@@ -288,10 +303,114 @@ async def test_ask_stream_provider_failure_has_terminal_error():
             body = ask.text
             assert "event: run.failed" in body
             assert "event: run.completed" not in body
+            # RUN_FAILED payload 中带 message_id，前端可对应替换本地临时气泡 id。
+            assert '"message_id":' in body
             msgs = (
                 await c.get(f"/api/v1/agents/{a['id']}/threads/{th['id']}/messages", headers=H)
             ).json()["items"]
-            assert not any(m["role"] == "assistant" for m in msgs)
+            asst = [m for m in msgs if m["role"] == "assistant"]
+            assert len(asst) == 1
+            failed = asst[0]
+            assert failed["status"] == "failed"
+            assert failed["error"]
+            assert isinstance(failed["error"].get("message"), str)
+            # 无 token 流出 → 正文为空，前端展示纯错误说明。
+            assert failed["content"] == ""
+
+
+@pytest.mark.asyncio
+async def test_ask_stream_partial_answer_preserved_on_failure():
+    """Partial output before failure 应写入 failed 气泡的 content 中，保留可读上下文。"""
+    from sag_api.main import app
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        app.state.llm = PartialThenFailLLM()
+        async with httpx.AsyncClient(transport=transport, base_url="http://t", timeout=60) as c:
+            H, a, th = await _setup(c)
+            ask = await c.post(
+                f"/api/v1/agents/{a['id']}/threads/{th['id']}/ask",
+                headers=H,
+                json={"query": "分段失败"},
+            )
+            assert "event: run.failed" in ask.text
+            msgs = (
+                await c.get(f"/api/v1/agents/{a['id']}/threads/{th['id']}/messages", headers=H)
+            ).json()["items"]
+            asst = [m for m in msgs if m["role"] == "assistant"][-1]
+            assert asst["status"] == "failed"
+            assert asst["content"] == "部分回答"
+            assert asst["error"] and asst["error"].get("code")
+
+
+@pytest.mark.asyncio
+async def test_ask_stream_failure_then_success_preserves_history_order():
+    """
+    复现 bug 的历史回放路径：连续两次 QA（首次失败、二次成功），
+    /messages 应按时间顺序返回：user₁, assistant(failed), user₂, assistant(ok)。
+    前端 mergeHistory 依赖这个稳定顺序来避免失败气泡被挤到最底部。
+    """
+    from sag_api.main import app
+
+    class OneShotBroken:
+        """第一次调用抛错，之后正常回答。"""
+
+        def __init__(self):
+            self.calls = 0
+
+        @property
+        def configured(self):
+            return True
+
+        async def stream_turn(self, request, cancellation):
+            del request
+            self.calls += 1
+            if self.calls == 1:
+                raise UpstreamError("read timed out")
+                yield  # pragma: no cover
+            cancellation.raise_if_cancelled()
+            for token in ["恢", "复"]:
+                yield ModelChunk(text_delta=token)
+            yield ModelChunk(finish_reason="stop")
+
+        async def complete(self, messages):
+            del messages
+            return ""
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        app.state.llm = OneShotBroken()
+        async with httpx.AsyncClient(transport=transport, base_url="http://t", timeout=60) as c:
+            H, a, th = await _setup(c)
+            first = await c.post(
+                f"/api/v1/agents/{a['id']}/threads/{th['id']}/ask",
+                headers=H,
+                json={"query": "第一个问题"},
+            )
+            assert "event: run.failed" in first.text
+            second = await c.post(
+                f"/api/v1/agents/{a['id']}/threads/{th['id']}/ask",
+                headers=H,
+                json={"query": "第二个问题"},
+            )
+            assert "event: run.completed" in second.text
+
+            msgs = (
+                await c.get(f"/api/v1/agents/{a['id']}/threads/{th['id']}/messages", headers=H)
+            ).json()["items"]
+            # 关键点：两次问答都持久化 → 后续刷新能稳定回放（首次失败气泡不会消失）。
+            assert len(msgs) == 4
+            users = [m for m in msgs if m["role"] == "user"]
+            assistants = [m for m in msgs if m["role"] == "assistant"]
+            assert {m["content"] for m in users} == {"第一个问题", "第二个问题"}
+            assert len(assistants) == 2
+            statuses = sorted(m["status"] for m in assistants)
+            assert statuses == ["failed", "ok"]
+            ok_msg = next(m for m in assistants if m["status"] == "ok")
+            failed_msg = next(m for m in assistants if m["status"] == "failed")
+            assert ok_msg["content"] == "恢复"
+            assert failed_msg["content"] == ""
+            assert failed_msg["error"] and failed_msg["error"].get("message")
 
 
 @pytest.mark.asyncio

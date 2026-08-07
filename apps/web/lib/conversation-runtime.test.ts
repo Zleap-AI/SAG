@@ -38,6 +38,28 @@ function message(id: string, content: string, promptPreview?: string): Message {
   };
 }
 
+function persistedMessage(overrides: {
+  id: string;
+  role: Message["role"];
+  content: string;
+  created_at: string;
+  status?: Message["status"];
+  error?: Message["error"];
+}): Message {
+  return {
+    id: overrides.id,
+    thread_id: "thread-1",
+    role: overrides.role,
+    content: overrides.content,
+    citations: [],
+    attachments: [],
+    steps: [],
+    status: overrides.status,
+    error: overrides.error,
+    created_at: overrides.created_at,
+  };
+}
+
 function messageRange(from: number, to: number): Message[] {
   return Array.from({ length: to - from + 1 }, (_, index) => {
     const value = from + index;
@@ -146,6 +168,32 @@ class FakeTransport implements ConversationTransport {
   emit(value: AgentEvent): void {
     if (!this.onEvent) throw new Error("stream has not started");
     this.onEvent(value);
+  }
+}
+
+/**
+ * FakeTransport 只能处理单次 stream。这里扩展一个允许排队多轮 stream 的版本,
+ * 保留 FakeTransport 的其它行为(历史分页、审批、取消、删除)。
+ */
+class SequentialTransport extends FakeTransport {
+  readonly streamQueue: Array<Deferred<AgentRunOutcome>> = [];
+
+  enqueueStream(): Deferred<AgentRunOutcome> {
+    const next = deferred<AgentRunOutcome>();
+    this.streamQueue.push(next);
+    return next;
+  }
+
+  stream(input: Parameters<ConversationTransport["stream"]>[0]): Promise<AgentRunOutcome> {
+    this.streamCalls.push({
+      webEnabled: input.webEnabled,
+      knowledgeOnly: input.knowledgeOnly,
+    });
+    this.onEvent = input.onEvent;
+    this.streamSignal = input.signal;
+    const pending = this.streamQueue.shift();
+    if (!pending) throw new Error("stream called without enqueued outcome");
+    return pending.promise;
   }
 }
 
@@ -576,7 +624,8 @@ describe("conversation runtime", () => {
     transport.streamResult.resolve({ status: "cancelled", runId: "run-1" });
     await running;
     expect(conversations.getSessionSnapshot(sessionId).messages.at(-1)).toMatchObject({
-      content: "已停止",
+      content: "",
+      errorMessage: "已停止",
       delivery: "cancelled",
     });
     expect(conversations.getSessionSnapshot(sessionId).messages.at(-1)?.steps.at(-1)).toMatchObject({
@@ -650,6 +699,187 @@ describe("conversation runtime", () => {
 
     transport.streamResult.resolve({ status: "completed", runId: "run-1" });
     await running;
+  });
+
+  it("keeps a failed bubble in history order after a subsequent successful reply", async () => {
+    const transport = new SequentialTransport();
+    const conversations = runtime(transport);
+    const sessionId = conversations.forThread("thread-1", { activate: true });
+
+    // 第一轮 QA 失败:服务端已把失败气泡持久化,并回带 message_id。
+    // finishOperation 会调 ensureHistory({force:true}),这一页应带回 (user, failed-assistant)。
+    transport.historyPages.push(
+      page([
+        persistedMessage({
+          id: "server-user-1",
+          role: "user",
+          content: "问题一",
+          created_at: "2026-07-12T00:00:00Z",
+        }),
+        persistedMessage({
+          id: "server-failed-1",
+          role: "assistant",
+          content: "半句",
+          created_at: "2026-07-12T00:00:01Z",
+          status: "failed",
+          error: { code: "llm_timeout", message: "读超时" },
+        }),
+      ]),
+    );
+    const round1 = transport.enqueueStream();
+    const running1 = conversations.send(sessionId, { query: "问题一" });
+    transport.emit(event("run.started", 0, { user_message_id: "server-user-1" }, 1, "run-1"));
+    transport.emit(event("message.delta", 1, { role: "assistant", delta: "半句" }, 1, "run-1"));
+    transport.emit(
+      event(
+        "run.failed",
+        2,
+        {
+          error: { code: "llm_timeout", message: "读超时", retryable: true },
+          message_id: "server-failed-1",
+        },
+        1,
+        "run-1",
+      ),
+    );
+    round1.resolve({
+      status: "failed",
+      runId: "run-1",
+      messageId: "server-failed-1",
+      error: { code: "llm_timeout", message: "读超时", retryable: true },
+    });
+    await running1.catch(() => {});
+
+    const after1 = conversations.getSessionSnapshot(sessionId);
+    expect(after1.messages.map((message) => message.id)).toEqual([
+      "server-user-1",
+      "server-failed-1",
+    ]);
+    expect(after1.messages[1]).toMatchObject({
+      role: "assistant",
+      delivery: "failed",
+      content: "半句",
+      errorMessage: "读超时",
+    });
+
+    // 第二轮 QA 成功。ensureHistory 会带回全量 [u1, failed-a1, u2, ok-a2],
+    // mergeHistory 必须让失败气泡留在 u1 之后、u2 之前(bug 表现是失败气泡被顶到最底部)。
+    transport.historyPages.push(
+      page([
+        persistedMessage({
+          id: "server-user-1",
+          role: "user",
+          content: "问题一",
+          created_at: "2026-07-12T00:00:00Z",
+        }),
+        persistedMessage({
+          id: "server-failed-1",
+          role: "assistant",
+          content: "半句",
+          created_at: "2026-07-12T00:00:01Z",
+          status: "failed",
+          error: { code: "llm_timeout", message: "读超时" },
+        }),
+        persistedMessage({
+          id: "server-user-2",
+          role: "user",
+          content: "问题二",
+          created_at: "2026-07-12T00:00:02Z",
+        }),
+        persistedMessage({
+          id: "server-ok-2",
+          role: "assistant",
+          content: "完整答案",
+          created_at: "2026-07-12T00:00:03Z",
+        }),
+      ]),
+    );
+    const round2 = transport.enqueueStream();
+    const running2 = conversations.send(sessionId, { query: "问题二" });
+    transport.emit(event("run.started", 0, { user_message_id: "server-user-2" }, 1, "run-2"));
+    transport.emit(event("message.delta", 1, { role: "assistant", delta: "完整答案" }, 1, "run-2"));
+    transport.emit(
+      event(
+        "run.completed",
+        2,
+        { output: "完整答案", citations: [], message_id: "server-ok-2" },
+        1,
+        "run-2",
+      ),
+    );
+    round2.resolve({ status: "completed", runId: "run-2", messageId: "server-ok-2" });
+    await running2;
+
+    const after2 = conversations.getSessionSnapshot(sessionId);
+    expect(after2.messages.map((message) => message.id)).toEqual([
+      "server-user-1",
+      "server-failed-1",
+      "server-user-2",
+      "server-ok-2",
+    ]);
+    expect(after2.messages[1]).toMatchObject({
+      role: "assistant",
+      delivery: "failed",
+      errorMessage: "读超时",
+    });
+    expect(after2.messages.at(-1)).toMatchObject({
+      role: "assistant",
+      delivery: "persisted",
+      content: "完整答案",
+    });
+    // 关键回归断言:失败气泡没有被追加到最底部。
+    expect(after2.messages.at(-1)?.id).not.toBe("server-failed-1");
+  });
+
+  it("restores persisted failed bubbles on a fresh runtime (page refresh)", async () => {
+    const transport = new FakeTransport();
+    transport.historyPages.push(
+      page([
+        persistedMessage({
+          id: "u1",
+          role: "user",
+          content: "问题一",
+          created_at: "2026-07-12T00:00:00Z",
+        }),
+        persistedMessage({
+          id: "a1",
+          role: "assistant",
+          content: "半句",
+          created_at: "2026-07-12T00:00:01Z",
+          status: "failed",
+          error: { code: "llm_timeout", message: "读超时" },
+        }),
+        persistedMessage({
+          id: "u2",
+          role: "user",
+          content: "问题二",
+          created_at: "2026-07-12T00:00:02Z",
+        }),
+        persistedMessage({
+          id: "a2",
+          role: "assistant",
+          content: "完整答案",
+          created_at: "2026-07-12T00:00:03Z",
+        }),
+      ]),
+    );
+    const conversations = runtime(transport);
+    const sessionId = conversations.forThread("thread-1", { activate: true });
+    await conversations.ensureHistory(sessionId);
+
+    const snapshot = conversations.getSessionSnapshot(sessionId);
+    expect(snapshot.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2", "a2"]);
+    expect(snapshot.messages[1]).toMatchObject({
+      role: "assistant",
+      delivery: "failed",
+      content: "半句",
+      errorMessage: "读超时",
+    });
+    expect(snapshot.messages[3]).toMatchObject({
+      role: "assistant",
+      delivery: "persisted",
+      content: "完整答案",
+    });
   });
 
   it("aborts owned work only when the runtime is disposed", () => {

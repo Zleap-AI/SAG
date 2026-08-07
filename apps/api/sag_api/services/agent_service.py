@@ -27,6 +27,7 @@ from sag_agent import (
 from sag_agent import (
     ToolResult as RuntimeToolResult,
 )
+from sag_api.enums import MessageStatus
 from sag_api.generation import LLMClient, build_prompt_preview
 from sag_api.sag import EngineManager, SourceGraphInfo
 from sag_api.services.agent_domain import (
@@ -530,6 +531,7 @@ async def generate_stream(
     external_reference_urls: set[str] = set()
     trace: list[dict] = []
     tool_inputs: dict[str, dict[str, Any]] = {}
+    partial_answer: list[str] = []  # 失败/取消时保留已流出的正文
     handle = None
     terminal = False
 
@@ -706,6 +708,13 @@ async def generate_stream(
                         }
                     )
                 elif (
+                    event.type == EventType.MESSAGE_DELTA
+                    and payload.get("role") == "assistant"
+                ):
+                    delta = payload.get("delta")
+                    if isinstance(delta, str):
+                        partial_answer.append(delta)
+                elif (
                     event.type == EventType.MESSAGE_COMPLETED and payload.get("message", {}).get("role") == "assistant"
                 ):
                     duration = int(payload.get("duration_ms") or 0)
@@ -754,6 +763,36 @@ async def generate_stream(
                     }
                     terminal = True
                 elif event.type in (EventType.RUN_FAILED, EventType.RUN_CANCELLED):
+                    # 失败/取消也写入 assistant 消息，保留会话错误历史（含已流出的 partial answer）。
+                    partial_text = "".join(partial_answer)
+                    canonical_answer, internal_citations = _finalize_answer_citations(
+                        partial_text,
+                        citations,
+                    )
+                    error_payload = payload.get("error") if isinstance(payload, Mapping) else None
+                    status = (
+                        MessageStatus.CANCELLED
+                        if event.type == EventType.RUN_CANCELLED
+                        else MessageStatus.FAILED
+                    )
+                    message_id = None
+                    if thread_id is not None:
+                        message_id = await persist_answer(
+                            session_factory,
+                            thread_id,
+                            canonical_answer,
+                            internal_citations,
+                            steps=trace,
+                            prompt_preview=frozen_prompt_preview,
+                            status=status,
+                            error=dict(error_payload) if isinstance(error_payload, Mapping) else None,
+                        )
+                    output_payload = {
+                        **payload,
+                        "message_id": message_id,
+                        "partial_output": canonical_answer,
+                        "prompt_preview": frozen_prompt_preview,
+                    }
                     terminal = True
 
                 yield _stream_event(event, payload=output_payload)
