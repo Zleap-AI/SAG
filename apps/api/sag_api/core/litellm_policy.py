@@ -72,7 +72,7 @@ def apply_litellm_completion_policy(
         normalized["extra_body"] = dict(settings.llm_extra_body)
 
     model = str(normalized.get("model") or settings.routed_llm_model)
-    if normalized.get("tools") and _is_deepseek_v4(model):
+    if _is_deepseek_v4(model):
         extra_body = dict(normalized.get("extra_body") or {})
         extra_body["thinking"] = {"type": "disabled"}
         normalized["extra_body"] = extra_body
