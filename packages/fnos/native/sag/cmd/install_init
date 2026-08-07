@@ -83,11 +83,23 @@ esac
 
 # ---- 2. Ensure the var directory exists and is writable -------------------
 LAST_STEP="mkdir-pkgvar"
-if ! mkdir -p "$TRIM_PKGVAR" 2>/dev/null; then
-  die "cannot create $TRIM_PKGVAR (permission denied or read-only filesystem?)"
+# install_init runs as root on a standard fnpack setup, but on some
+# fnOS builds the privilege.defaults may be misinterpreted and the
+# script lands as the package user.  If the directory already exists
+# (fnpack pre-created it) just move on; otherwise surface the exact
+# uid + directory state so we can diagnose the root cause.
+if ! mkdir -p "$TRIM_PKGVAR" 2>/tmp/sag-install-mkdir-err.$$; then
+  mkdir_err="$(cat /tmp/sag-install-mkdir-err.$$ 2>/dev/null || true)"
+  rm -f /tmp/sag-install-mkdir-err.$$
+  if [ -d "$TRIM_PKGVAR" ] && [ -w "$TRIM_PKGVAR" ]; then
+    log "mkdir -p $TRIM_PKGVAR reported an error but the directory exists and is writable; continuing (err: ${mkdir_err:-none})"
+  else
+    die "cannot create $TRIM_PKGVAR (uid=$(id -u 2>/dev/null || echo ?), mkdir: ${mkdir_err:-unknown}, parent: $(ls -ld "$(dirname "$TRIM_PKGVAR")" 2>&1), target: $(ls -ld "$TRIM_PKGVAR" 2>&1))"
+  fi
 fi
-test -d "$TRIM_PKGVAR" || die "$TRIM_PKGVAR is not a directory"
-test -w "$TRIM_PKGVAR" || die "$TRIM_PKGVAR is not writable by the installer"
+rm -f /tmp/sag-install-mkdir-err.$$
+test -d "$TRIM_PKGVAR" || die "$TRIM_PKGVAR is not a directory (uid=$(id -u))"
+test -w "$TRIM_PKGVAR" || die "$TRIM_PKGVAR is not writable by uid=$(id -u)"
 
 # ---- 3. Force TRIM_PKGVAR to a mode the sag package user can traverse ----
 # fnpack chowns @appdata/<pkg> to the package user, but on some upgrade
