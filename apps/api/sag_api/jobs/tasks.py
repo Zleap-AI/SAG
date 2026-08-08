@@ -6,11 +6,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
@@ -19,8 +20,8 @@ from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
 from sag_api.core.errors import ApiError, NotFoundError
 from sag_api.core.logging import get_logger
 from sag_api.db.models import Document, Job, Source
-from sag_api.enums import DocumentStatus, JobType
-from sag_api.jobs.control import JobPaused
+from sag_api.enums import DocumentStatus, JobStatus, JobType
+from sag_api.jobs.control import JobDeleted, JobPaused
 from sag_api.parsing import prepare_document
 from sag_api.sag import EngineManager
 from sag_api.sag.dto import ProcessCheckpoint
@@ -78,6 +79,9 @@ async def process_document(
         return dict(job.payload or {})
 
     async def on_stage(stage: str) -> None:
+        await session.refresh(document)
+        if document.status in {DocumentStatus.PAUSING, DocumentStatus.DELETING}:
+            return
         if stage == "loading":
             document.status = DocumentStatus.LOADING
             document.progress = max(document.progress, 5)
@@ -91,6 +95,9 @@ async def process_document(
         await session.commit()
 
     async def on_parser_state(state: dict) -> None:
+        await session.refresh(document)
+        if document.status in {DocumentStatus.PAUSING, DocumentStatus.DELETING}:
+            return
         document.status = DocumentStatus.LOADING
         document.progress = max(document.progress, 10)
         job.progress = document.progress / 100
@@ -156,6 +163,9 @@ async def process_document(
     except JobPaused:
         raise
     except Exception as e:  # noqa: BLE001 - 记录到文档后再上抛给 worker
+        await session.refresh(document)
+        if document.status == DocumentStatus.DELETING:
+            raise JobPaused() from e
         layer, stage = _classify_document_failure(e, document.status)
         document.status = DocumentStatus.FAILED
         document.error = getattr(e, "message", None) or str(e)
@@ -171,6 +181,13 @@ async def process_document(
         await session.commit()
         raise
 
+    await session.refresh(document)
+    if document.status == DocumentStatus.DELETING:
+        raise JobPaused()
+    if document.status == DocumentStatus.PAUSING:
+        document.status = DocumentStatus.PAUSED
+        await session.commit()
+        raise JobPaused()
     document.status = DocumentStatus.READY
     document.chunk_count = outcome.chunk_count
     document.event_count = outcome.event_count
@@ -206,6 +223,67 @@ async def process_document(
             source_id=source.id,
             reason="document_processed",
         )
+
+
+async def delete_document_task(
+    session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None
+) -> None:
+    """等待抽取器停止后，清理派生数据、文件和文档记录。"""
+    if not job.document_id:
+        raise NotFoundError("删除任务缺少文档")
+    document = await session.get(Document, job.document_id)
+    if document is None:
+        raise JobDeleted()
+    source = await session.get(Source, document.source_id)
+    if source is None:
+        raise NotFoundError("信源不存在")
+
+    while True:
+        active_process = await session.scalar(
+            select(Job.id).where(
+                Job.document_id == document.id,
+                Job.type == JobType.PROCESS_DOCUMENT,
+                Job.status == JobStatus.RUNNING,
+            )
+        )
+        if active_process is None:
+            break
+        await asyncio.sleep(0.1)
+        session.expire_all()
+
+    await session.refresh(document)
+    if document.sag_source_id:
+        await engine_manager.delete_document_data(
+            source.sag_source_config_id,
+            document.sag_source_id,
+            source=source,
+        )
+    path = document.storage_path
+    await session.delete(document)
+    await session.flush()
+    from sag_api.services.document_service import _refresh_source_counts
+
+    await _refresh_source_counts(session, source)
+    await session.commit()
+    if path:
+        from sag_api.parsing.service import parsed_sidecar_paths
+
+        for candidate in [path, *parsed_sidecar_paths(path)]:
+            try:
+                if os.path.exists(candidate):
+                    os.remove(candidate)
+            except OSError:
+                pass
+    if job_queue is not None:
+        from sag_api.services.universe_service import schedule_universe_refresh
+
+        await schedule_universe_refresh(
+            session,
+            job_queue,
+            source_id=source.id,
+            reason="document_deleted",
+        )
+    raise JobDeleted()
 
 
 async def sync_source(session: AsyncSession, job: Job, *, engine_manager=None, job_queue=None) -> None:
@@ -271,6 +349,7 @@ async def index_universe(
 
 TASK_HANDLERS: dict[JobType, TaskHandler] = {
     JobType.PROCESS_DOCUMENT: process_document,
+    JobType.DELETE_DOCUMENT: delete_document_task,
     JobType.SYNC_SOURCE: sync_source,
     JobType.INDEX_UNIVERSE: index_universe,
 }

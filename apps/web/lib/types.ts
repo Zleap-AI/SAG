@@ -43,7 +43,10 @@ export type DocumentStatus =
   | "pending"
   | "loading"
   | "extracting"
+  | "pausing"
   | "paused"
+  | "deleting"
+  | "delete_failed"
   | "ready"
   | "failed";
 

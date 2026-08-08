@@ -150,6 +150,32 @@ describe("document activity", () => {
     expect(shouldPollDocument(document(), undefined, 20_000, 19_999)).toBe(false);
   });
 
+  it("keeps polling persisted pause and delete requests after a page refresh", () => {
+    expect(deriveDocumentActivity(document({ status: "pausing", error: null }))).toMatchObject({
+      phase: "pausing",
+      busy: false,
+      poll: true,
+      error: null,
+    });
+    expect(deriveDocumentActivity(document({ status: "deleting", error: null }))).toMatchObject({
+      phase: "deleting",
+      busy: false,
+      poll: true,
+      error: null,
+    });
+  });
+
+  it("shows a persisted deletion failure without polling forever", () => {
+    expect(
+      deriveDocumentActivity(document({ status: "delete_failed", error: "清理派生数据失败" })),
+    ).toMatchObject({
+      phase: "delete_failed",
+      busy: false,
+      poll: false,
+      error: "清理派生数据失败",
+    });
+  });
+
   it("treats succeeded, failed and paused jobs as terminal", () => {
     expect(isDocumentJobTerminal("succeeded")).toBe(true);
     expect(isDocumentJobTerminal("failed")).toBe(true);

@@ -18,7 +18,7 @@ from sag_api.core.errors import ServiceUnavailableError, UpstreamError
 from sag_api.core.logging import get_logger
 from sag_api.db.models import Document
 from sag_api.enums import DocumentStatus, JobStatus, JobType
-from sag_api.jobs.control import JobPaused
+from sag_api.jobs.control import JobDeleted, JobPaused
 from sag_api.jobs.queue import JobQueue
 from sag_api.jobs.tasks import TASK_HANDLERS
 from sag_api.sag import EngineManager
@@ -223,6 +223,8 @@ class InProcessAsyncQueue(JobQueue):
                 job.progress = 1.0
                 job.finished_at = _now()
                 job.error = None
+            except JobDeleted:
+                return
             except JobPaused:
                 await session.rollback()
                 job = await session.get(Job, job_id)
@@ -257,5 +259,10 @@ class InProcessAsyncQueue(JobQueue):
                         job.status = JobStatus.FAILED
                         job.error = msg
                         job.finished_at = _now()
+                        if job.type == JobType.DELETE_DOCUMENT and job.document_id:
+                            document = await session.get(Document, job.document_id)
+                            if document is not None:
+                                document.status = DocumentStatus.DELETE_FAILED
+                                document.error = msg
                         log.warning("任务失败 job=%s（尝试 %d 次）：%s", job_id, attempts, msg)
             await session.commit()

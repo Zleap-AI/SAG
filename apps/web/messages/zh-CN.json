@@ -122,6 +122,7 @@
     "pending": "待处理",
     "loading": "解析入库",
     "extracting": "抽取中",
+    "delete_failed": "删除失败",
     "paused": "已暂停",
     "ready": "就绪",
     "failed": "失败",

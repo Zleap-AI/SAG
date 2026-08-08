@@ -127,6 +127,8 @@ async def reprocess_document(
     engine_manager: EngineManager,
 ) -> Job:
     document = await get_document(session, source, document_id)
+    if document.status in {DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED}:
+        raise ConflictError("文档正在删除或删除失败，无法重新处理")
     latest = await session.scalar(
         select(Job).where(Job.document_id == document.id).order_by(Job.created_at.desc())
     )
@@ -242,6 +244,7 @@ async def pause_document(session: AsyncSession, source: Source, document_id: str
     if job.status != JobStatus.RUNNING:
         raise ConflictError("抽取任务已经结束，无法停止")
     job.payload = {**(job.payload or {}), "pause_requested": True}
+    document.status = DocumentStatus.PAUSING
     await session.commit()
     await session.refresh(job)
     return job
@@ -256,6 +259,8 @@ async def resume_document(
 ) -> Job:
     """把暂停任务原样重新入队，处理器会跳过断点中已完成的分块。"""
     document = await get_document(session, source, document_id)
+    if document.status in {DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED}:
+        raise ConflictError("文档正在删除或删除失败，无法继续")
     job = await session.scalar(
         select(Job)
         .where(Job.document_id == document.id, Job.status == JobStatus.PAUSED)
@@ -287,12 +292,22 @@ async def delete_document(
     source: Source,
     document_id: str,
     *,
-    engine_manager: EngineManager,
+    engine_manager: EngineManager | None = None,
     job_queue: JobQueue | None = None,
-) -> None:
+) -> Job:
     document = await get_document(session, source, document_id)
-    path = document.storage_path
-    sag_source_id = document.sag_source_id
+    existing = await session.scalar(
+        select(Job)
+        .where(
+            Job.document_id == document.id,
+            Job.type == JobType.DELETE_DOCUMENT,
+            Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+        )
+        .order_by(Job.created_at.desc())
+        .limit(1)
+    )
+    if existing is not None:
+        return existing
 
     active_jobs = list(
         (
@@ -308,34 +323,17 @@ async def delete_document(
         job.payload = {**(job.payload or {}), "pause_requested": True}
         if job.status == JobStatus.QUEUED:
             job.status = JobStatus.PAUSED
-    if active_jobs:
-        await session.commit()
-
-    if sag_source_id:
-        await engine_manager.delete_document_data(
-            source.sag_source_config_id,
-            sag_source_id,
-            source=source,
-        )
-
-    await session.delete(document)
-    await session.flush()
-    await _refresh_source_counts(session, source)
-    await session.commit()
-    if path:
-        from sag_api.parsing.service import parsed_sidecar_paths
-
-        for candidate in [path, *parsed_sidecar_paths(path)]:
-            try:
-                if os.path.exists(candidate):
-                    os.remove(candidate)
-            except OSError:
-                pass
-    from sag_api.services.universe_service import schedule_universe_refresh
-
-    await schedule_universe_refresh(
-        session,
-        job_queue,
+    document.status = DocumentStatus.DELETING
+    document.error = None
+    delete_job = Job(
+        type=JobType.DELETE_DOCUMENT,
         source_id=source.id,
-        reason="document_deleted",
+        document_id=document.id,
+        status=JobStatus.QUEUED,
     )
+    session.add(delete_job)
+    await session.commit()
+    await session.refresh(delete_job)
+    if job_queue is not None:
+        await job_queue.enqueue(delete_job.id)
+    return delete_job
