@@ -122,6 +122,7 @@
     "pending": "Pending",
     "loading": "Parsing",
     "extracting": "Extracting",
+    "delete_failed": "Delete failed",
     "paused": "Paused",
     "ready": "Ready",
     "failed": "Failed",

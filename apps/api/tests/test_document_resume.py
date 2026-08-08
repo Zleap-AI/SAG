@@ -638,6 +638,8 @@ async def test_pause_and_resume_document_service():
         paused_job = await pause_document(session, source, document.id)
         assert paused_job.status == JobStatus.RUNNING
         assert paused_job.payload["pause_requested"] is True
+        await session.refresh(document)
+        assert document.status == DocumentStatus.PAUSING
 
         paused_job.status = JobStatus.PAUSED
         document.status = DocumentStatus.PAUSED
@@ -679,6 +681,120 @@ async def test_pause_and_resume_document_service():
         stopped_before_start = await pause_document(session, source, queued_document.id)
         assert stopped_before_start.status == JobStatus.PAUSED
         assert queued_document.status == DocumentStatus.PAUSED
+
+
+@pytest.mark.asyncio
+async def test_delete_document_persists_deleting_and_queues_cleanup():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.services.document_service import delete_document
+
+    class FakeQueue:
+        def __init__(self):
+            self.ids: list[str] = []
+
+        async def enqueue(self, job_id: str):
+            self.ids.append(job_id)
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(name="delete-source", sag_source_config_id="delete-source-config")
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="deleting.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/deleting.md",
+            status=DocumentStatus.EXTRACTING,
+        )
+        session.add(document)
+        await session.flush()
+        process_job = Job(
+            type=JobType.PROCESS_DOCUMENT,
+            source_id=source.id,
+            document_id=document.id,
+            status=JobStatus.RUNNING,
+        )
+        session.add(process_job)
+        await session.commit()
+
+        queue = FakeQueue()
+        delete_job = await delete_document(
+            session,
+            source,
+            document.id,
+            engine_manager=None,
+            job_queue=queue,
+        )
+
+        await session.refresh(document)
+        await session.refresh(process_job)
+        assert document.status == DocumentStatus.DELETING
+        assert process_job.payload["pause_requested"] is True
+        assert delete_job.type == JobType.DELETE_DOCUMENT
+        assert delete_job.status == JobStatus.QUEUED
+        assert queue.ids == [delete_job.id]
+
+
+@pytest.mark.asyncio
+async def test_delete_document_job_removes_document_after_processing_stops(tmp_path):
+    from sqlalchemy import select
+
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+
+    class FakeEngine:
+        def __init__(self):
+            self.deleted: list[str] = []
+
+        async def delete_document_data(self, _config_id, document_source_id, *, source):
+            assert source.sag_source_config_id == "delete-worker-config"
+            self.deleted.append(document_source_id)
+
+    await init_db()
+    path = tmp_path / "deleting.md"
+    path.write_text("content")
+    async with SessionLocal() as session:
+        source = Source(name="delete-worker", sag_source_config_id="delete-worker-config")
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="deleting.md",
+            content_type="text/markdown",
+            size_bytes=7,
+            storage_path=str(path),
+            status=DocumentStatus.DELETING,
+            sag_source_id="engine-document",
+        )
+        session.add(document)
+        await session.flush()
+        delete_job = Job(
+            type=JobType.DELETE_DOCUMENT,
+            source_id=source.id,
+            document_id=document.id,
+            status=JobStatus.QUEUED,
+        )
+        session.add(delete_job)
+        await session.commit()
+        document_id, delete_job_id = document.id, delete_job.id
+
+    engine = FakeEngine()
+    queue = InProcessAsyncQueue(SessionLocal, engine, concurrency=1)
+    await queue._run(delete_job_id)
+
+    async with SessionLocal() as session:
+        assert await session.get(Document, document_id) is None
+        assert await session.get(Job, delete_job_id) is None
+        source = await session.scalar(select(Source).where(Source.name == "delete-worker"))
+        assert source is not None and source.document_count == 0
+    assert engine.deleted == ["engine-document"]
+    assert not path.exists()
 
 
 @pytest.mark.asyncio

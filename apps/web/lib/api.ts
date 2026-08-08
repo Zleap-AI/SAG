@@ -659,7 +659,7 @@ export const api = {
       method: "POST",
     }),
   deleteDocument: (sid: string, did: string) =>
-    request(`/api/v1/sources/${sid}/documents/${did}`, { method: "DELETE" }),
+    request<BackgroundJob>(`/api/v1/sources/${sid}/documents/${did}`, { method: "DELETE" }),
 
   // Agent
   listAgents: () => request<Agent[]>("/api/v1/agents"),
