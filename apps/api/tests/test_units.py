@@ -302,6 +302,15 @@ def test_document_output_redacts_database_details():
     document = DocumentOut.model_validate(payload)
     assert document.error == "解析服务暂时不可用"
 
+    payload["status"] = DocumentStatus.DELETE_FAILED
+    payload["error"] = "(sqlalchemy.exc.OperationalError) database is locked [SQL: DELETE]"
+    document = DocumentOut.model_validate(payload)
+    assert document.error == "文档删除失败，请重试；若仍失败，请查看服务日志。"
+
+    payload["error"] = "(sqlite3.IntegrityError) FOREIGN KEY constraint failed [SQL: DELETE]"
+    document = DocumentOut.model_validate(payload)
+    assert document.error == "文档删除失败，请重试；若仍失败，请查看服务日志。"
+
 
 @pytest.mark.asyncio
 async def test_llm_timeout_and_retries_reach_unified_client(monkeypatch):

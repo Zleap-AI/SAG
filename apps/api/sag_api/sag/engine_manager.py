@@ -57,6 +57,10 @@ CheckpointCallback = Callable[[ProcessCheckpoint], Awaitable[None]]
 PauseCheck = Callable[[], Awaitable[bool]]
 
 
+class _DocumentAdmissionYielded(Exception):
+    """A processor waiting to enter the engine yielded to a control intent."""
+
+
 def _urlsafe_encode(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
@@ -210,6 +214,7 @@ class _Slot:
     idle: asyncio.Event = field(default_factory=asyncio.Event)
     concurrent_allowed: asyncio.Event = field(default_factory=asyncio.Event)
     concurrent_users: int = 0
+    maintenance_requests: int = 0
     last_used: float = field(default_factory=time.monotonic)
     closing: bool = False
 
@@ -544,7 +549,12 @@ class EngineManager:
             candidates = [
                 (s.last_used, scid)
                 for scid, s in self._slots.items()
-                if scid != keep and not s.lock.locked() and s.concurrent_users == 0
+                if (
+                    scid != keep
+                    and not s.lock.locked()
+                    and s.concurrent_users == 0
+                    and s.maintenance_requests == 0
+                )
             ]
             if not candidates:
                 break  # 其余都在忙，暂不逐出
@@ -577,14 +587,26 @@ class EngineManager:
                 return
 
     @asynccontextmanager
-    async def use_concurrently(self, source_config_id: str, source: Source | None = None):
+    async def use_concurrently(
+        self,
+        source_config_id: str,
+        source: Source | None = None,
+        *,
+        should_pause: PauseCheck | None = None,
+    ):
         """取得共享资源但不串行化文档处理；独立 loader/extractor 隔离可变状态。"""
         while True:
             slot = await self._slot(source_config_id, source)
             # Maintenance waiters must not hold the global lifecycle read gate;
             # otherwise a configuration reset could be delayed by work that has
             # not actually started yet.
-            await slot.concurrent_allowed.wait()
+            while not slot.concurrent_allowed.is_set():
+                if should_pause is not None and await should_pause():
+                    raise _DocumentAdmissionYielded
+                try:
+                    await asyncio.wait_for(slot.concurrent_allowed.wait(), timeout=0.1)
+                except TimeoutError:
+                    continue
             async with self._lifecycle_gate.read():
                 async with slot.state_lock:
                     if slot.closing or not slot.concurrent_allowed.is_set():
@@ -604,6 +626,53 @@ class EngineManager:
     async def provision(self, source_config_id: str, source: Source | None = None) -> None:
         """确保该源的引擎 schema 与父记录就绪（幂等）。"""
         await self._slot(source_config_id, source)
+
+    async def begin_document_maintenance(
+        self,
+        source_config_id: str,
+        source: Source | None = None,
+    ) -> None:
+        """Stop admitting processors and wait until existing users drain.
+
+        The wait deliberately happens outside the job worker pool. The caller
+        owns one maintenance request until ``end_document_maintenance``.
+        """
+        while True:
+            slot = await self._slot(source_config_id, source)
+            registered = False
+            try:
+                async with slot.state_lock:
+                    if slot.closing:
+                        continue
+                    slot.maintenance_requests += 1
+                    slot.concurrent_allowed.clear()
+                    registered = True
+                await slot.idle.wait()
+                if slot.closing:
+                    await self.end_document_maintenance(source_config_id)
+                    continue
+                return
+            except BaseException:
+                if registered:
+                    async with slot.state_lock:
+                        slot.maintenance_requests = max(0, slot.maintenance_requests - 1)
+                        if slot.maintenance_requests == 0:
+                            slot.concurrent_allowed.set()
+                raise
+
+    async def end_document_maintenance(
+        self,
+        source_config_id: str,
+        source: Source | None = None,
+    ) -> None:
+        """Release one source-maintenance request and resume admission."""
+        slot = self._slots.get(source_config_id)
+        if slot is None:
+            return
+        async with slot.state_lock:
+            slot.maintenance_requests = max(0, slot.maintenance_requests - 1)
+            if slot.maintenance_requests == 0 and not slot.closing:
+                slot.concurrent_allowed.set()
 
     async def delete_document_data(
         self,
@@ -635,7 +704,8 @@ class EngineManager:
                         )
                 finally:
                     async with slot.state_lock:
-                        slot.concurrent_allowed.set()
+                        if slot.maintenance_requests == 0:
+                            slot.concurrent_allowed.set()
                     slot.lock.release()
                 break
         log.info(
@@ -669,24 +739,49 @@ class EngineManager:
         async def never_pause() -> bool:
             return False
 
+        effective_checkpoint = checkpoint or ProcessCheckpoint()
+        effective_should_pause = should_pause or never_pause
+
+        def paused_outcome() -> ProcessOutcome:
+            return ProcessOutcome(
+                source_id=effective_checkpoint.source_id,
+                chunk_count=len(effective_checkpoint.chunk_ids),
+                event_count=effective_checkpoint.event_count,
+                chunk_ids=list(effective_checkpoint.chunk_ids),
+                event_ids=list(effective_checkpoint.event_ids),
+                processed_chunk_ids=list(effective_checkpoint.processed_chunk_ids),
+                eventless_chunk_ids=list(effective_checkpoint.eventless_chunk_ids),
+                token_usage=effective_checkpoint.token_usage,
+                paused=True,
+            )
+
         with map_sag_errors(stage=ErrorStage.EXTRACT):
-            async with self.use_concurrently(source_config_id, source) as engine:
-                processor = IncrementalDocumentProcessor(
-                    engine,
+            if await effective_should_pause():
+                return paused_outcome()
+            try:
+                async with self.use_concurrently(
                     source_config_id,
-                    max_concurrency=max_concurrency or self._settings.document_extract_concurrency,
-                    chunk_max_tokens=self._settings.document_chunk_max_tokens,
-                    chunk_mode=self._settings.document_chunk_mode,
-                    document_title=document_title,
-                    enable_strict_filtering=self._settings.document_strict_filtering,
-                )
-                return await processor.process(
-                    path,
-                    checkpoint=checkpoint or ProcessCheckpoint(),
-                    on_checkpoint=on_checkpoint or ignore_checkpoint,
-                    should_pause=should_pause or never_pause,
-                    on_stage=on_stage,
-                )
+                    source,
+                    should_pause=effective_should_pause,
+                ) as engine:
+                    processor = IncrementalDocumentProcessor(
+                        engine,
+                        source_config_id,
+                        max_concurrency=max_concurrency or self._settings.document_extract_concurrency,
+                        chunk_max_tokens=self._settings.document_chunk_max_tokens,
+                        chunk_mode=self._settings.document_chunk_mode,
+                        document_title=document_title,
+                        enable_strict_filtering=self._settings.document_strict_filtering,
+                    )
+                    return await processor.process(
+                        path,
+                        checkpoint=effective_checkpoint,
+                        on_checkpoint=on_checkpoint or ignore_checkpoint,
+                        should_pause=effective_should_pause,
+                        on_stage=on_stage,
+                    )
+            except _DocumentAdmissionYielded:
+                return paused_outcome()
 
     async def _search_raw(
         self,

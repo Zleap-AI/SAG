@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import pytest
 
-from sag_api.enums import DocumentStatus
+from sag_api.enums import DocumentStatus, JobType
 from sag_api.jobs.inproc import _mark_document_waiting_retry
 
 
@@ -24,7 +24,7 @@ async def test_retry_marks_document_pending_without_resetting_checkpoint_metrics
             assert document_id == "document-1"
             return document
 
-    job = SimpleNamespace(document_id="document-1")
+    job = SimpleNamespace(document_id="document-1", type=JobType.PROCESS_DOCUMENT)
 
     await _mark_document_waiting_retry(FakeSession(), job)
 
@@ -43,7 +43,27 @@ async def test_non_document_retry_does_not_query_for_a_document():
         async def get(self, _model, _document_id):
             raise AssertionError("a non-document job must not load a document")
 
-    await _mark_document_waiting_retry(FakeSession(), SimpleNamespace(document_id=None))
+    await _mark_document_waiting_retry(
+        FakeSession(),
+        SimpleNamespace(document_id=None, type=JobType.INDEX_UNIVERSE),
+    )
+
+
+@pytest.mark.asyncio
+async def test_delete_retry_keeps_document_deleting():
+    document = SimpleNamespace(status=DocumentStatus.DELETING, error=None)
+
+    class FakeSession:
+        async def get(self, _model, document_id):
+            assert document_id == "document-1"
+            return document
+
+    await _mark_document_waiting_retry(
+        FakeSession(),
+        SimpleNamespace(document_id="document-1", type=JobType.DELETE_DOCUMENT),
+    )
+
+    assert document.status == DocumentStatus.DELETING
 
 
 @pytest.mark.asyncio

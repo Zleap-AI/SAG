@@ -47,7 +47,7 @@ export function DocumentList({
       if (action === "reprocess") toast.success(t("requeued"));
       else if (action === "pause") toast.success(t("pausing"));
       else if (action === "resume") toast.success(t("resumed"));
-      else toast.success(t("deleted"));
+      else toast.success(t("deleting"));
       getDiagnosticsStore().record("knowledge.upload", {
         action: `document.${action}`,
         source_id: sourceId,

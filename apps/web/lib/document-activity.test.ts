@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { BackgroundJob, Doc } from "./types";
+import enMessages from "../messages/en-US.json";
+import zhMessages from "../messages/zh-CN.json";
 import {
   beginDocumentMutation,
   deriveDocumentActivity,
@@ -53,6 +55,10 @@ function job(overrides: Partial<BackgroundJob> = {}): BackgroundJob {
 }
 
 describe("document activity", () => {
+  it("describes deletion as immediate removal with automatic background cleanup", () => {
+    expect(zhMessages.DocumentList.deleting).toBe("文档已移除，后台清理将自动完成");
+    expect(enMessages.DocumentList.deleting).toBe("Document removed; background cleanup will finish automatically");
+  });
   it("keeps a failed checkpoint visible while requeueing", () => {
     const doc = document();
     const mutation = beginDocumentMutation(doc, "reprocess", 1_000);
@@ -148,6 +154,32 @@ describe("document activity", () => {
     expect(shouldPollDocument(document({ status: "ready" }), undefined, 20_000)).toBe(false);
     expect(shouldPollDocument(document({ status: "paused" }), undefined, 20_000)).toBe(false);
     expect(shouldPollDocument(document(), undefined, 20_000, 19_999)).toBe(false);
+  });
+
+  it("keeps polling persisted pause and delete requests after a page refresh", () => {
+    expect(deriveDocumentActivity(document({ status: "pausing", error: null }))).toMatchObject({
+      phase: "pausing",
+      busy: true,
+      poll: true,
+      error: null,
+    });
+    expect(deriveDocumentActivity(document({ status: "deleting", error: null }))).toMatchObject({
+      phase: "deleting",
+      busy: true,
+      poll: true,
+      error: null,
+    });
+  });
+
+  it("shows a persisted deletion failure without polling forever", () => {
+    expect(
+      deriveDocumentActivity(document({ status: "delete_failed", error: "清理派生数据失败" })),
+    ).toMatchObject({
+      phase: "delete_failed",
+      busy: false,
+      poll: false,
+      error: "清理派生数据失败",
+    });
   });
 
   it("treats succeeded, failed and paused jobs as terminal", () => {

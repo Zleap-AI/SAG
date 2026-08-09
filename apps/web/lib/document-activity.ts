@@ -42,6 +42,8 @@ const PROCESSING_STATES = new Set<DocumentStatus>([
   "pending",
   "loading",
   "extracting",
+  "pausing",
+  "deleting",
 ]);
 const FAILED_POLLING_WINDOW_MS = 15_000;
 
@@ -56,7 +58,7 @@ export function documentActivityLabelKey(
 }
 
 export function documentActivityShowsProgress(phase: DocumentActivityPhase) {
-  return phase !== "ready" && phase !== "deleting";
+  return phase !== "ready" && phase !== "deleting" && phase !== "delete_failed";
 }
 
 export function beginDocumentMutation(
@@ -109,7 +111,9 @@ export function shouldKeepDocumentMutation(
   document: Doc | undefined,
   mutation: DocumentMutationState,
 ) {
-  if (mutation.action === "delete") return Boolean(document);
+  if (mutation.action === "delete") {
+    return Boolean(document && document.status !== "delete_failed");
+  }
   if (!mutation.job || !isDocumentJobTerminal(mutation.job.status)) return true;
   if (!document) return false;
   if (mutation.job.status === "paused" && document.status === "paused") return false;
@@ -196,8 +200,14 @@ export function deriveDocumentActivity(
   return {
     phase: document.status,
     progress,
-    busy: Boolean(mutation && poll),
+    busy:
+      document.status === "pausing"
+      || document.status === "deleting"
+      || Boolean(mutation && poll),
     poll,
-    error: document.status === "failed" ? document.error : null,
+    error:
+      document.status === "failed" || document.status === "delete_failed"
+        ? document.error
+        : null,
   };
 }
