@@ -127,6 +127,26 @@ describe("document activity", () => {
     });
   });
 
+  it("enables deletion after the server accepts a reprocess request", () => {
+    const ready = document({ status: "ready", progress: 100, error: null });
+    const requesting = beginDocumentMutation(ready, "reprocess", 1_000);
+    const accepted = {
+      ...requesting,
+      job: job({ type: "reprocess_document", status: "queued" }),
+    };
+    const pending = document({ status: "pending", progress: 0, error: null });
+
+    expect(deriveDocumentActivity(ready, requesting, 1_001)).toMatchObject({
+      phase: "requeueing",
+      canDelete: false,
+    });
+    expect(deriveDocumentActivity(pending, accepted, 1_500)).toMatchObject({
+      phase: "pending",
+      busy: true,
+      canDelete: true,
+    });
+  });
+
   it("does not show a stale failure after the document resumes processing", () => {
     const extracting = document({
       status: "extracting",
@@ -243,6 +263,26 @@ describe("document activity", () => {
     ).toBe(false);
   });
 
+  it("clears a completed reprocess-control overlay when processing later fails", () => {
+    const failed = document({ status: "failed", error: "重新处理失败" });
+    const mutation = {
+      ...beginDocumentMutation(
+        document({ status: "ready", progress: 100, error: null }),
+        "reprocess",
+        1_000,
+      ),
+      job: job({ type: "reprocess_document", status: "succeeded" }),
+    };
+
+    expect(shouldKeepDocumentMutation(failed, mutation)).toBe(false);
+    expect(deriveDocumentActivity(failed, mutation, 2_000)).toMatchObject({
+      phase: "failed",
+      busy: false,
+      poll: false,
+      error: "重新处理失败",
+    });
+  });
+
   it("clears delete and pause overlays only after their document state is reflected", () => {
     const deleting = {
       ...beginDocumentMutation(document(), "delete", 1_000),
@@ -301,6 +341,27 @@ describe("document activity", () => {
         job: pausedJob,
       }),
     ).toBe(false);
+  });
+
+  it("clears the resume overlay once the server enters extracting", () => {
+    const paused = document({ status: "paused", progress: 52, error: null });
+    const extracting = document({
+      status: "extracting",
+      progress: 52,
+      error: null,
+    });
+    const mutation = {
+      ...beginDocumentMutation(paused, "resume", 1_000),
+      job: job({ status: "queued" }),
+    };
+
+    expect(shouldKeepDocumentMutation(extracting, mutation)).toBe(false);
+    expect(deriveDocumentActivity(extracting, mutation, 2_000)).toMatchObject({
+      phase: "extracting",
+      busy: false,
+      poll: true,
+      error: null,
+    });
   });
 
   it("rejects an older refresh response after a newer request starts", () => {

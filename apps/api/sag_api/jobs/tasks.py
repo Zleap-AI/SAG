@@ -19,7 +19,7 @@ from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
 from sag_api.core.errors import ApiError, NotFoundError
 from sag_api.core.logging import get_logger
 from sag_api.db.models import Document, Job, Source
-from sag_api.enums import DocumentStatus, JobType
+from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs.control import JobPaused, JobYielded
 from sag_api.jobs.scheduling import SOURCE_MAINTENANCE
 from sag_api.parsing import prepare_document
@@ -310,6 +310,73 @@ async def delete_document_task(
             await session.rollback()
 
 
+async def reprocess_document_task(
+    session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None
+) -> None:
+    """在信源维护窗口内清理旧派生数据，再排入普通文档处理任务。"""
+    target_document_id = job.document_id or str(
+        (job.payload or {}).get("target_document_id") or ""
+    )
+    if not target_document_id:
+        raise NotFoundError("重新处理任务缺少文档")
+    document = await session.get(Document, target_document_id)
+    if document is None:
+        raise NotFoundError("文档不存在")
+    source = await session.get(Source, document.source_id)
+    if source is None:
+        raise NotFoundError("信源不存在")
+
+    payload = dict(job.payload or {})
+    derived_source_ids = sorted(
+        {
+            value.strip()
+            for value in payload.get("derived_source_ids", [])
+            if isinstance(value, str) and value.strip()
+        }
+    )
+    if not payload.get("cleanup_completed"):
+        for derived_source_id in derived_source_ids:
+            await engine_manager.delete_document_data(
+                source.sag_source_config_id,
+                derived_source_id,
+                source=source,
+            )
+
+    await session.refresh(document)
+    if document.status in _DELETE_CONTROL_STATES:
+        job.payload = {
+            **payload,
+            "cleanup_completed": True,
+        }
+        await session.commit()
+        return
+
+    process_job_id = payload.get("process_job_id")
+    process_job = (
+        await session.get(Job, process_job_id)
+        if isinstance(process_job_id, str) and process_job_id
+        else None
+    )
+    if process_job is None:
+        process_job = Job(
+            type=JobType.PROCESS_DOCUMENT,
+            source_id=source.id,
+            document_id=document.id,
+            status=JobStatus.QUEUED,
+        )
+        session.add(process_job)
+        await session.flush()
+    job.payload = {
+        **payload,
+        "cleanup_completed": True,
+        "process_job_id": process_job.id,
+    }
+    await session.commit()
+    await session.refresh(process_job)
+    if job_queue is not None:
+        await job_queue.enqueue(process_job.id)
+
+
 async def sync_source(session: AsyncSession, job: Job, *, engine_manager=None, job_queue=None) -> None:
     """动态连接器同步：discover → fetch → 登记文档并入队处理（复用 ingest→extract 管线）。"""
     # 延迟导入避免与 jobs 包的循环依赖
@@ -373,6 +440,7 @@ async def index_universe(
 
 TASK_HANDLERS: dict[JobType, TaskHandler] = {
     JobType.PROCESS_DOCUMENT: process_document,
+    JobType.REPROCESS_DOCUMENT: reprocess_document_task,
     JobType.DELETE_DOCUMENT: delete_document_task,
     JobType.SYNC_SOURCE: sync_source,
     JobType.INDEX_UNIVERSE: index_universe,

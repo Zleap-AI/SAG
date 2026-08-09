@@ -54,6 +54,7 @@ class DocumentStatus(StrEnum):
 
 class JobType(StrEnum):
     PROCESS_DOCUMENT = "process_document"
+    REPROCESS_DOCUMENT = "reprocess_document"
     DELETE_DOCUMENT = "delete_document"
     SYNC_SOURCE = "sync_source"
     INDEX_UNIVERSE = "index_universe"

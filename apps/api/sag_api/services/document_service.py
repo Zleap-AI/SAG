@@ -148,6 +148,14 @@ async def reprocess_document(
     }:
         return latest
     restart_from_scratch = document.status == DocumentStatus.READY
+    retrying_cleanup = bool(
+        latest is not None
+        and latest.type == JobType.REPROCESS_DOCUMENT
+        and latest.status == JobStatus.FAILED
+    )
+    requires_maintenance = restart_from_scratch or retrying_cleanup
+    original_status = document.status
+    derived_source_ids: set[str] = set()
     if restart_from_scratch:
         derived_source_ids = {
             value
@@ -164,30 +172,66 @@ async def reprocess_document(
             ]
             if value
         }
-        # 历史版本的“重新处理”每次都会新建 Article；从所有历史 Job 断点收集
-        # source_id，既清理当前记录，也清理此前已经遗留的重复派生数据。
-        for derived_source_id in sorted(derived_source_ids):
-            await engine_manager.delete_document_data(
-                source.sag_source_config_id,
-                derived_source_id,
-                source=source,
-            )
 
-    document.status = DocumentStatus.PENDING
-    document.error = None
+    values: dict = {
+        "status": DocumentStatus.PENDING,
+        "error": None,
+    }
     if restart_from_scratch:
-        document.progress = 0
-        document.chunk_count = 0
-        document.event_count = 0
-        document.token_usage = 0
-        document.sag_source_id = None
-        await session.flush()
+        values.update(
+            progress=0,
+            chunk_count=0,
+            event_count=0,
+            token_usage=0,
+            sag_source_id=None,
+        )
+    claimed = await session.execute(
+        update(Document)
+        .where(Document.id == document.id, Document.status == original_status)
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        await session.rollback()
+        existing = await session.scalar(
+            select(Job)
+            .where(
+                Job.document_id == document_id,
+                Job.type.in_(
+                    [JobType.PROCESS_DOCUMENT, JobType.REPROCESS_DOCUMENT]
+                ),
+                Job.status.in_(
+                    [JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.PAUSED]
+                ),
+            )
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(1)
+        )
+        if existing is not None:
+            return existing
+        raise ConflictError("文档状态已变化，请刷新后重试")
+    await session.refresh(document)
+    if restart_from_scratch:
         await _refresh_source_counts(session, source)
     payload = dict(latest.payload or {}) if latest is not None and not restart_from_scratch else {}
     payload.pop("pause_requested", None)
     payload.pop("resume_requested", None)
+    if restart_from_scratch:
+        payload = set_scheduler(
+            {
+                "target_document_id": document.id,
+                "derived_source_ids": sorted(derived_source_ids),
+            },
+            priority=DELETE_PRIORITY,
+        )
+    elif retrying_cleanup:
+        payload = set_scheduler(payload, priority=DELETE_PRIORITY, blocked_reason=None)
     job = Job(
-        type=JobType.PROCESS_DOCUMENT,
+        type=(
+            JobType.REPROCESS_DOCUMENT
+            if requires_maintenance
+            else JobType.PROCESS_DOCUMENT
+        ),
         source_id=source.id,
         document_id=document.id,
         status=JobStatus.QUEUED,
@@ -197,6 +241,8 @@ async def reprocess_document(
     session.add(job)
     await session.commit()
     await session.refresh(job)
+    if requires_maintenance:
+        job_queue.begin_source_maintenance(source.id, job.id)
     await job_queue.enqueue(job.id)
     return job
 
@@ -336,6 +382,7 @@ async def delete_document(
     job_queue: JobQueue | None = None,
 ) -> Job:
     document = await get_document(session, source, document_id)
+    source_record_id = source.id
     existing = await session.scalar(
         select(Job)
         .where(
@@ -357,6 +404,17 @@ async def delete_document(
             )
         ).all()
     )
+    active_reprocess_jobs = list(
+        (
+            await session.scalars(
+                select(Job).where(
+                    Job.document_id == document.id,
+                    Job.type == JobType.REPROCESS_DOCUMENT,
+                    Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+                )
+            )
+        ).all()
+    )
 
     # A document whose processor has never started cannot have written any
     # engine-side records. Delete it inside this request so it is never held up
@@ -364,6 +422,7 @@ async def delete_document(
     metadata_only = (
         document.status == DocumentStatus.PENDING
         and not document.sag_source_id
+        and not active_reprocess_jobs
         and all(
             active_job.status == JobStatus.QUEUED
             and active_job.started_at is None
@@ -375,6 +434,44 @@ async def delete_document(
     if metadata_only:
         path = document.storage_path
         target_document_id = document.id
+        claimed = await session.execute(
+            update(Document)
+            .where(
+                Document.id == target_document_id,
+                Document.status == DocumentStatus.PENDING,
+                Document.sag_source_id.is_(None),
+            )
+            .values(status=DocumentStatus.DELETING, error=None)
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            await session.rollback()
+            completed_jobs = list(
+                (
+                    await session.scalars(
+                        select(Job)
+                        .where(
+                            Job.source_id == source_record_id,
+                            Job.type == JobType.DELETE_DOCUMENT,
+                            Job.status == JobStatus.SUCCEEDED,
+                        )
+                        .order_by(Job.created_at.desc(), Job.id.desc())
+                        .limit(100)
+                    )
+                ).all()
+            )
+            completed = next(
+                (
+                    candidate
+                    for candidate in completed_jobs
+                    if (candidate.payload or {}).get("target_document_id")
+                    == target_document_id
+                ),
+                None,
+            )
+            if completed is not None:
+                return completed
+            raise ConflictError("文档状态已变化，请刷新后重试")
         completed_at = datetime.now(UTC)
         completed = Job(
             type=JobType.DELETE_DOCUMENT,
@@ -406,6 +503,34 @@ async def delete_document(
                 except OSError:
                     pass
         return completed
+
+    if existing is None:
+        original_status = document.status
+        claimed = await session.execute(
+            update(Document)
+            .where(Document.id == document.id, Document.status == original_status)
+            .values(status=DocumentStatus.DELETING, error=None)
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            await session.rollback()
+            existing = await session.scalar(
+                select(Job)
+                .where(
+                    Job.document_id == document_id,
+                    Job.type == JobType.DELETE_DOCUMENT,
+                    Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+                )
+                .order_by(Job.created_at.desc(), Job.id.desc())
+                .limit(1)
+            )
+            if existing is None:
+                raise ConflictError("文档状态已变化，请刷新后重试")
+            if job_queue is not None:
+                job_queue.begin_source_maintenance(source_record_id, existing.id)
+                await job_queue.enqueue(existing.id)
+            return existing
+        await session.refresh(document)
 
     for job in active_jobs:
         job.payload = {**(job.payload or {}), "pause_requested": True}

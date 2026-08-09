@@ -66,6 +66,86 @@ async def test_never_started_pending_document_is_deleted_without_using_a_worker(
 
 
 @pytest.mark.asyncio
+async def test_concurrent_pending_deletes_share_one_completed_job(tmp_path):
+    from sqlalchemy import select
+
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.services.document_service import delete_document
+
+    class QueueSpy:
+        def begin_source_maintenance(self, *_args):
+            raise AssertionError("metadata-only deletion must not open source maintenance")
+
+        async def enqueue(self, _job_id):
+            raise AssertionError("metadata-only deletion must not wait for a worker")
+
+    await init_db()
+    path = tmp_path / "concurrent-pending.md"
+    path.write_text("# pending", encoding="utf-8")
+    async with SessionLocal() as session:
+        source = Source(
+            name="concurrent-pending-delete",
+            sag_source_config_id="concurrent-pending-delete-config",
+            document_count=1,
+        )
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="pending.md",
+            content_type="text/markdown",
+            size_bytes=9,
+            storage_path=str(path),
+            status=DocumentStatus.PENDING,
+        )
+        session.add(document)
+        await session.flush()
+        session.add(
+            Job(
+                type=JobType.PROCESS_DOCUMENT,
+                status=JobStatus.QUEUED,
+                source_id=source.id,
+                document_id=document.id,
+            )
+        )
+        await session.commit()
+        source_id, document_id = source.id, document.id
+
+    async def remove():
+        async with SessionLocal() as session:
+            source = await session.get(Source, source_id)
+            return await delete_document(
+                session,
+                source,
+                document_id,
+                job_queue=QueueSpy(),
+            )
+
+    first, second = await asyncio.gather(remove(), remove())
+
+    async with SessionLocal() as session:
+        completed = [
+            job
+            for job in (
+                await session.scalars(
+                    select(Job).where(
+                        Job.source_id == source_id,
+                        Job.type == JobType.DELETE_DOCUMENT,
+                        Job.status == JobStatus.SUCCEEDED,
+                    )
+                )
+            ).all()
+            if (job.payload or {}).get("target_document_id") == document_id
+        ]
+        assert await session.get(Document, document_id) is None
+    assert first.id == second.id
+    assert [job.id for job in completed] == [first.id]
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
 async def test_delete_during_loading_is_cooperative_and_does_not_hard_cancel():
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.db.models import Document, Job, Source
@@ -202,6 +282,71 @@ async def test_delete_waits_for_source_idle_outside_the_worker_queue():
     engine.idle.set()
     queued_delete = await asyncio.wait_for(queue._queue.get(), timeout=1)
     assert queued_delete[-1] == delete_id
+    queue._queue.task_done()
+    await queue.stop()
+
+
+@pytest.mark.asyncio
+async def test_reprocess_cleanup_waits_for_source_idle_outside_the_worker_queue():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+    from sag_api.jobs.scheduling import DELETE_WAITING_SOURCE, get_blocked_reason
+
+    class CoordinatedEngine:
+        def __init__(self):
+            self.waiting = asyncio.Event()
+            self.idle = asyncio.Event()
+
+        async def begin_document_maintenance(self, *_args, **_kwargs):
+            self.waiting.set()
+            await self.idle.wait()
+
+        async def end_document_maintenance(self, *_args, **_kwargs):
+            return None
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(name="park-reprocess", sag_source_config_id="park-reprocess-config")
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="ready.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/ready.md",
+            status=DocumentStatus.PENDING,
+        )
+        session.add(document)
+        await session.flush()
+        cleanup_job = Job(
+            type=JobType.REPROCESS_DOCUMENT,
+            status=JobStatus.QUEUED,
+            source_id=source.id,
+            document_id=document.id,
+            payload={"target_document_id": document.id, "derived_source_ids": ["engine-old"]},
+        )
+        session.add(cleanup_job)
+        await session.commit()
+        source_id, cleanup_id = source.id, cleanup_job.id
+
+    engine = CoordinatedEngine()
+    queue = InProcessAsyncQueue(SessionLocal, engine, concurrency=1)
+    queue.begin_source_maintenance(source_id, cleanup_id)
+    await queue.enqueue(cleanup_id)
+    await asyncio.wait_for(engine.waiting.wait(), timeout=1)
+
+    async with SessionLocal() as session:
+        parked = await session.get(Job, cleanup_id)
+        assert parked.status == JobStatus.QUEUED
+        assert get_blocked_reason(parked.payload) == DELETE_WAITING_SOURCE
+    assert queue._queue.empty()
+
+    engine.idle.set()
+    queued_cleanup = await asyncio.wait_for(queue._queue.get(), timeout=1)
+    assert queued_cleanup[-1] == cleanup_id
     queue._queue.task_done()
     await queue.stop()
 

@@ -127,7 +127,7 @@ export function DocumentList({
           size="icon"
           className={`${buttonClass ?? ""} text-muted-foreground hover:text-destructive`}
           title={t("delete")}
-          disabled={activity.busy}
+          disabled={!activity.canDelete}
           onClick={() => void perform(document, "delete")}
         >
           <Trash2 className="size-4" />

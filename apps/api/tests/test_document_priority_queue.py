@@ -138,6 +138,73 @@ async def test_recovery_preserves_delete_priority_over_normal_jobs():
 
 
 @pytest.mark.asyncio
+async def test_recovery_deduplicates_legacy_active_document_jobs():
+    from sqlalchemy import select
+
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="legacy-duplicate-recovery",
+            sag_source_config_id="legacy-duplicate-recovery-config",
+        )
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="duplicate.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/duplicate.md",
+            status=DocumentStatus.PENDING,
+        )
+        session.add(document)
+        await session.flush()
+        jobs = [
+            Job(
+                type=JobType.PROCESS_DOCUMENT,
+                status=JobStatus.QUEUED,
+                source_id=source.id,
+                document_id=document.id,
+            )
+            for _ in range(3)
+        ]
+        session.add_all(jobs)
+        await session.commit()
+        document_id = document.id
+
+    queue = InProcessAsyncQueue(SessionLocal, engine_manager=None, concurrency=1)
+    await queue._recover()
+
+    recovered_ids: list[str] = []
+    while not queue._queue.empty():
+        recovered_ids.append(_queued_job_id(await queue._queue.get()))
+    async with SessionLocal() as session:
+        recovered = list(
+            (
+                await session.scalars(
+                    select(Job).where(
+                        Job.document_id == document_id,
+                        Job.type == JobType.PROCESS_DOCUMENT,
+                    )
+                )
+            ).all()
+        )
+    active = [job for job in recovered if job.status == JobStatus.QUEUED]
+    superseded = [job for job in recovered if job.status == JobStatus.PAUSED]
+    assert len(active) == 1
+    assert recovered_ids == [active[0].id]
+    assert len(superseded) == 2
+    assert {
+        (job.payload or {}).get("superseded_by_job_id") for job in superseded
+    } == {active[0].id}
+
+
+@pytest.mark.asyncio
 async def test_source_maintenance_requeues_blocked_job_after_last_delete():
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.db.models import Document, Job, Source

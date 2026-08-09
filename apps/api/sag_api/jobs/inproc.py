@@ -38,8 +38,10 @@ log = get_logger("jobs")
 # 退避基数（秒）：第 n 次重试等待 base**n。测试可 monkeypatch 缩短。
 _BACKOFF_BASE_SECONDS = 2.0
 _RECOVERY_LOCK_RETRIES = 4
-_STOP_GRACE_SECONDS = 5.0
-_STOP_CANCEL_SECONDS = 1.0
+_MAINTENANCE_JOB_TYPES = {
+    JobType.DELETE_DOCUMENT,
+    JobType.REPROCESS_DOCUMENT,
+}
 
 
 def _now() -> datetime:
@@ -82,7 +84,7 @@ class InProcessAsyncQueue(JobQueue):
         self._source_maintenance_jobs: dict[str, set[str]] = {}
         self._source_maintenance_tasks: dict[str, asyncio.Task] = {}
         self._source_maintenance_ready: set[str] = set()
-        self._source_delete_dispatched: dict[str, str] = {}
+        self._source_maintenance_dispatched: dict[str, str] = {}
         self._started = False
         self._stopping = False
 
@@ -95,7 +97,7 @@ class InProcessAsyncQueue(JobQueue):
                     job = await session.get(Job, job_id)
                     if job is None:
                         return
-                    if job.type == JobType.DELETE_DOCUMENT and job.source_id:
+                    if job.type in _MAINTENANCE_JOB_TYPES and job.source_id:
                         self.begin_source_maintenance(job.source_id, job.id)
                         job.payload = set_scheduler(
                             job.payload,
@@ -104,7 +106,7 @@ class InProcessAsyncQueue(JobQueue):
                         await session.commit()
                         source_id = job.source_id
                         if source_id in self._source_maintenance_ready:
-                            await self._dispatch_next_delete(source_id)
+                            await self._dispatch_next_maintenance(source_id)
                         else:
                             self._schedule_source_maintenance(source_id)
                         return
@@ -179,7 +181,7 @@ class InProcessAsyncQueue(JobQueue):
                     )
                     return
                 self._source_maintenance_ready.add(source_id)
-                await self._dispatch_next_delete(source_id)
+                await self._dispatch_next_maintenance(source_id)
                 return
             except asyncio.CancelledError:
                 self._source_maintenance_ready.discard(source_id)
@@ -200,11 +202,11 @@ class InProcessAsyncQueue(JobQueue):
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30.0)
 
-    async def _dispatch_next_delete(self, source_id: str) -> None:
-        """Dispatch at most one delete per source while its window stays open."""
+    async def _dispatch_next_maintenance(self, source_id: str) -> None:
+        """Dispatch at most one maintenance job per source while its window stays open."""
         if source_id not in self._source_maintenance_ready:
             return
-        dispatched = self._source_delete_dispatched.get(source_id)
+        dispatched = self._source_maintenance_dispatched.get(source_id)
         if dispatched is not None:
             return
         from sag_api.db.models import Job
@@ -217,7 +219,7 @@ class InProcessAsyncQueue(JobQueue):
                 select(Job)
                 .where(
                     Job.id.in_(active_ids),
-                    Job.type == JobType.DELETE_DOCUMENT,
+                    Job.type.in_(_MAINTENANCE_JOB_TYPES),
                     Job.status == JobStatus.QUEUED,
                 )
                 .order_by(Job.created_at, Job.id)
@@ -229,18 +231,18 @@ class InProcessAsyncQueue(JobQueue):
             priority = get_priority(job.payload)
             await session.commit()
             job_id = job.id
-        self._source_delete_dispatched[source_id] = job_id
+        self._source_maintenance_dispatched[source_id] = job_id
         await self._queue.put((priority, next(self._enqueue_sequence), job_id))
 
     async def finish_source_maintenance(self, source_id: str, job_id: str) -> None:
         active = self._source_maintenance_jobs.get(source_id)
         if active is not None:
             active.discard(job_id)
-        if self._source_delete_dispatched.get(source_id) == job_id:
-            self._source_delete_dispatched.pop(source_id, None)
+        if self._source_maintenance_dispatched.get(source_id) == job_id:
+            self._source_maintenance_dispatched.pop(source_id, None)
         if active:
             if source_id in self._source_maintenance_ready:
-                await self._dispatch_next_delete(source_id)
+                await self._dispatch_next_maintenance(source_id)
             else:
                 self._schedule_source_maintenance(source_id)
             return
@@ -387,7 +389,7 @@ class InProcessAsyncQueue(JobQueue):
         self._universe_user_locks.clear()
         self._source_maintenance_jobs.clear()
         self._source_maintenance_ready.clear()
-        self._source_delete_dispatched.clear()
+        self._source_maintenance_dispatched.clear()
         self._started = False
 
     async def _recover(self) -> None:
@@ -404,9 +406,56 @@ class InProcessAsyncQueue(JobQueue):
                             )
                         )
                     ).scalars().all()
+
+                    # Older versions could persist multiple active jobs for one
+                    # document when identical control requests raced. Keep the
+                    # most advanced job of each type and make the rest inert
+                    # before workers are allowed to recover them.
+                    active_by_document: dict[tuple[str, JobType], list] = {}
+                    for candidate in rows:
+                        target_id = candidate.document_id or str(
+                            (candidate.payload or {}).get("target_document_id") or ""
+                        )
+                        if target_id and candidate.type in {
+                            JobType.PROCESS_DOCUMENT,
+                            JobType.REPROCESS_DOCUMENT,
+                            JobType.DELETE_DOCUMENT,
+                        }:
+                            active_by_document.setdefault(
+                                (target_id, candidate.type), []
+                            ).append(candidate)
+                    for candidates in active_by_document.values():
+                        if len(candidates) < 2:
+                            continue
+
+                        def recovery_rank(candidate):
+                            checkpoint = (candidate.payload or {}).get(
+                                "process_checkpoint"
+                            )
+                            processed_count = len(
+                                checkpoint.get("processed_chunk_ids", [])
+                            ) if isinstance(checkpoint, dict) else 0
+                            return (
+                                candidate.status == JobStatus.RUNNING,
+                                processed_count,
+                                candidate.progress,
+                                candidate.created_at,
+                                candidate.id,
+                            )
+
+                        keeper = max(candidates, key=recovery_rank)
+                        for duplicate in candidates:
+                            if duplicate.id == keeper.id:
+                                continue
+                            duplicate.status = JobStatus.PAUSED
+                            duplicate.error = None
+                            duplicate.payload = {
+                                **(duplicate.payload or {}),
+                                "superseded_by_job_id": keeper.id,
+                            }
                     for job in rows:
                         if (
-                            job.type == JobType.DELETE_DOCUMENT
+                            job.type in _MAINTENANCE_JOB_TYPES
                             and job.source_id
                             and job.status in {JobStatus.QUEUED, JobStatus.RUNNING}
                         ):
@@ -525,7 +574,7 @@ class InProcessAsyncQueue(JobQueue):
             for job in rows
             if job.status == JobStatus.QUEUED
             and (
-                job.type == JobType.DELETE_DOCUMENT
+                job.type in _MAINTENANCE_JOB_TYPES
                 or not get_blocked_reason(job.payload)
             )
         ]
@@ -620,11 +669,11 @@ class InProcessAsyncQueue(JobQueue):
                 job.progress = 1.0
                 job.finished_at = _now()
                 job.error = None
-                release_source_maintenance = claimed_type == JobType.DELETE_DOCUMENT
+                release_source_maintenance = claimed_type in _MAINTENANCE_JOB_TYPES
             except asyncio.CancelledError:
                 raise
             except JobDeleted:
-                if claimed_type == JobType.DELETE_DOCUMENT and claimed_source_id:
+                if claimed_type in _MAINTENANCE_JOB_TYPES and claimed_source_id:
                     await self.finish_source_maintenance(claimed_source_id, job_id)
                 return
             except JobYielded as yielded:
@@ -665,7 +714,7 @@ class InProcessAsyncQueue(JobQueue):
                         await _mark_document_waiting_retry(session, job)
                         delay = _BACKOFF_BASE_SECONDS**attempts
                         self._schedule_retry(job_id, delay)
-                        retry_source_maintenance = claimed_type == JobType.DELETE_DOCUMENT
+                        retry_source_maintenance = claimed_type in _MAINTENANCE_JOB_TYPES
                         log.warning(
                             "任务可重试 job=%s（第 %d/%d 次），%.1fs 后重排：%s",
                             job_id, attempts, settings.job_max_attempts, delay, msg,
@@ -680,10 +729,16 @@ class InProcessAsyncQueue(JobQueue):
                                 document.status = DocumentStatus.DELETE_FAILED
                                 document.error = msg
                             release_source_maintenance = bool(claimed_source_id)
+                        elif job.type == JobType.REPROCESS_DOCUMENT and job.document_id:
+                            document = await session.get(Document, job.document_id)
+                            if document is not None:
+                                document.status = DocumentStatus.FAILED
+                                document.error = msg
+                            release_source_maintenance = bool(claimed_source_id)
                         log.warning("任务失败 job=%s（尝试 %d 次）：%s", job_id, attempts, msg)
             await session.commit()
             if retry_source_maintenance and claimed_source_id:
-                if self._source_delete_dispatched.get(claimed_source_id) == job_id:
-                    self._source_delete_dispatched.pop(claimed_source_id, None)
+                if self._source_maintenance_dispatched.get(claimed_source_id) == job_id:
+                    self._source_maintenance_dispatched.pop(claimed_source_id, None)
             if release_source_maintenance and claimed_source_id:
                 await self.finish_source_maintenance(claimed_source_id, job_id)
