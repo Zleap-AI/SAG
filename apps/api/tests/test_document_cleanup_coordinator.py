@@ -408,6 +408,211 @@ async def test_maintenance_release_happens_after_peer_resume_is_durable():
 
 
 @pytest.mark.asyncio
+async def test_cascaded_reprocess_job_does_not_leave_source_maintenance_stuck():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+    from sag_api.jobs.scheduling import SOURCE_MAINTENANCE, get_blocked_reason
+
+    class ReleasingEngine:
+        def __init__(self):
+            self.end_count = 0
+
+        async def end_document_maintenance(self, *_args, **_kwargs):
+            self.end_count += 1
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="cascaded-reprocess-maintenance",
+            sag_source_config_id="cascaded-reprocess-maintenance-config",
+        )
+        session.add(source)
+        await session.flush()
+        delete_target = Document(
+            source_id=source.id,
+            filename="delete-target.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/delete-target.md",
+            status=DocumentStatus.DELETING,
+        )
+        peer = Document(
+            source_id=source.id,
+            filename="peer.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/peer.md",
+            status=DocumentStatus.EXTRACTING,
+        )
+        session.add_all([delete_target, peer])
+        await session.flush()
+        reprocess = Job(
+            type=JobType.REPROCESS_DOCUMENT,
+            status=JobStatus.QUEUED,
+            source_id=source.id,
+            document_id=delete_target.id,
+        )
+        blocked_peer = Job(
+            type=JobType.PROCESS_DOCUMENT,
+            status=JobStatus.QUEUED,
+            source_id=source.id,
+            document_id=peer.id,
+            payload={"_scheduler": {"blocked_reason": SOURCE_MAINTENANCE}},
+        )
+        session.add_all([reprocess, blocked_peer])
+        await session.commit()
+        source_id = source.id
+        reprocess_id = reprocess.id
+        peer_job_id = blocked_peer.id
+
+    engine = ReleasingEngine()
+    queue = InProcessAsyncQueue(SessionLocal, engine, concurrency=1)
+    queue.begin_source_maintenance(source_id, reprocess_id)
+    queue.begin_source_maintenance(source_id, "finishing-delete")
+    queue._source_maintenance_ready.add(source_id)
+    queue._source_maintenance_dispatched[source_id] = "finishing-delete"
+
+    async with SessionLocal() as session:
+        target = await session.get(Document, delete_target.id)
+        await session.delete(target)
+        await session.commit()
+        assert await session.get(Job, reprocess_id) is None
+
+    await queue.finish_source_maintenance(source_id, "finishing-delete")
+
+    assert queue.source_maintenance_requested(source_id) is False
+    assert engine.end_count == 1
+    assert (await queue._queue.get())[-1] == peer_job_id
+    async with SessionLocal() as session:
+        resumed = await session.get(Job, peer_job_id)
+        assert get_blocked_reason(resumed.payload) is None
+        assert resumed.payload["resume_requested"] is True
+
+
+@pytest.mark.asyncio
+async def test_coordinator_closes_window_when_only_maintenance_job_disappears():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+    from sag_api.jobs.scheduling import SOURCE_MAINTENANCE, get_blocked_reason
+
+    class ImmediateEngine:
+        def __init__(self):
+            self.begin_count = 0
+            self.end_count = 0
+
+        async def begin_document_maintenance(self, *_args, **_kwargs):
+            self.begin_count += 1
+
+        async def end_document_maintenance(self, *_args, **_kwargs):
+            self.end_count += 1
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="missing-only-maintenance",
+            sag_source_config_id="missing-only-maintenance-config",
+        )
+        session.add(source)
+        await session.flush()
+        peer = Document(
+            source_id=source.id,
+            filename="peer.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/peer.md",
+            status=DocumentStatus.EXTRACTING,
+        )
+        session.add(peer)
+        await session.flush()
+        blocked_peer = Job(
+            type=JobType.PROCESS_DOCUMENT,
+            status=JobStatus.QUEUED,
+            source_id=source.id,
+            document_id=peer.id,
+            payload={"_scheduler": {"blocked_reason": SOURCE_MAINTENANCE}},
+        )
+        session.add(blocked_peer)
+        await session.commit()
+        source_id = source.id
+        peer_job_id = blocked_peer.id
+
+    engine = ImmediateEngine()
+    queue = InProcessAsyncQueue(SessionLocal, engine, concurrency=1)
+    queue.begin_source_maintenance(source_id, "missing-reprocess-job")
+    queue._source_maintenance_dispatched[source_id] = "missing-reprocess-job"
+    queue._schedule_source_maintenance(source_id)
+    coordinator = queue._source_maintenance_tasks[source_id]
+
+    await asyncio.wait_for(asyncio.shield(coordinator), timeout=1)
+
+    assert coordinator.cancelled() is False
+    assert queue.source_maintenance_requested(source_id) is False
+    assert source_id not in queue._source_maintenance_dispatched
+    assert engine.begin_count == 1
+    assert engine.end_count == 1
+    assert (await queue._queue.get())[-1] == peer_job_id
+    async with SessionLocal() as session:
+        resumed = await session.get(Job, peer_job_id)
+        assert get_blocked_reason(resumed.payload) is None
+        assert resumed.payload["resume_requested"] is True
+
+
+@pytest.mark.asyncio
+async def test_dispatch_restores_missing_running_maintenance_registration():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Job, Source
+    from sag_api.enums import JobStatus, JobType
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+    from sag_api.jobs.scheduling import DELETE_WAITING_SOURCE
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="restore-running-maintenance",
+            sag_source_config_id="restore-running-maintenance-config",
+        )
+        session.add(source)
+        await session.flush()
+        running = Job(
+            type=JobType.DELETE_DOCUMENT,
+            status=JobStatus.RUNNING,
+            source_id=source.id,
+            payload={"target_document_id": "running-target"},
+        )
+        queued = Job(
+            type=JobType.DELETE_DOCUMENT,
+            status=JobStatus.QUEUED,
+            source_id=source.id,
+            payload={
+                "target_document_id": "queued-target",
+                "_scheduler": {"blocked_reason": DELETE_WAITING_SOURCE},
+            },
+        )
+        session.add_all([running, queued])
+        await session.commit()
+        source_id = source.id
+        running_id = running.id
+        queued_id = queued.id
+
+    queue = InProcessAsyncQueue(SessionLocal, engine_manager=None, concurrency=1)
+    queue.begin_source_maintenance(source_id, running_id)
+    queue.begin_source_maintenance(source_id, queued_id)
+    queue._source_maintenance_ready.add(source_id)
+
+    await queue._dispatch_next_maintenance(source_id)
+
+    assert queue._source_maintenance_dispatched[source_id] == running_id
+    assert queue._queue.empty()
+    async with SessionLocal() as session:
+        still_queued = await session.get(Job, queued_id)
+        assert still_queued.payload["_scheduler"]["blocked_reason"] == DELETE_WAITING_SOURCE
+
+
+@pytest.mark.asyncio
 async def test_same_source_deletes_share_one_maintenance_window_and_run_serially(
     monkeypatch,
 ):
@@ -582,7 +787,7 @@ async def test_stop_waits_for_workers_before_releasing_maintenance_windows():
 
 
 @pytest.mark.asyncio
-async def test_new_maintenance_request_is_not_lost_while_previous_window_closes():
+async def test_new_maintenance_request_is_dispatched_after_previous_window_closes():
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.db.models import Job, Source
     from sag_api.enums import JobStatus, JobType
@@ -590,8 +795,12 @@ async def test_new_maintenance_request_is_not_lost_while_previous_window_closes(
 
     class ClosingEngine:
         def __init__(self):
+            self.begin_count = 0
             self.end_started = asyncio.Event()
             self.release_end = asyncio.Event()
+
+        async def begin_document_maintenance(self, *_args, **_kwargs):
+            self.begin_count += 1
 
         async def end_document_maintenance(self, *_args, **_kwargs):
             self.end_started.set()
@@ -629,3 +838,257 @@ async def test_new_maintenance_request_is_not_lost_while_previous_window_closes(
 
     assert queue.source_maintenance_requested(source_id) is True
     assert next_job_id in queue._source_maintenance_jobs[source_id]
+    assert (await asyncio.wait_for(queue._queue.get(), timeout=1))[-1] == next_job_id
+    assert queue._source_maintenance_dispatched[source_id] == next_job_id
+    assert engine.begin_count == 1
+    await queue.stop()
+
+
+@pytest.mark.asyncio
+async def test_closing_maintenance_window_retries_transient_engine_failure(
+    monkeypatch,
+):
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.jobs import inproc
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+    from sag_api.jobs.scheduling import SOURCE_MAINTENANCE, get_blocked_reason
+
+    class FlakyEngine:
+        def __init__(self):
+            self.end_count = 0
+
+        async def end_document_maintenance(self, *_args, **_kwargs):
+            self.end_count += 1
+            if self.end_count == 1:
+                raise RuntimeError("temporary engine release failure")
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="transient-maintenance-close",
+            sag_source_config_id="transient-maintenance-close-config",
+        )
+        session.add(source)
+        await session.flush()
+        peer = Document(
+            source_id=source.id,
+            filename="peer.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/peer.md",
+            status=DocumentStatus.EXTRACTING,
+        )
+        session.add(peer)
+        await session.flush()
+        blocked_peer = Job(
+            type=JobType.PROCESS_DOCUMENT,
+            status=JobStatus.QUEUED,
+            source_id=source.id,
+            document_id=peer.id,
+            payload={"_scheduler": {"blocked_reason": SOURCE_MAINTENANCE}},
+        )
+        session.add(blocked_peer)
+        await session.commit()
+        source_id, peer_job_id = source.id, blocked_peer.id
+
+    monkeypatch.setattr(inproc, "_MAINTENANCE_CLOSE_RETRY_SECONDS", 0, raising=False)
+    engine = FlakyEngine()
+    queue = InProcessAsyncQueue(SessionLocal, engine, concurrency=1)
+    queue.begin_source_maintenance(source_id, "finishing-delete")
+    queue._source_maintenance_ready.add(source_id)
+    queue._source_maintenance_dispatched[source_id] = "finishing-delete"
+
+    await asyncio.wait_for(
+        queue.finish_source_maintenance(source_id, "finishing-delete"),
+        timeout=1,
+    )
+
+    assert engine.end_count == 2
+    assert queue.source_maintenance_requested(source_id) is False
+    assert source_id not in queue._source_maintenance_ready
+    assert source_id not in queue._source_maintenance_closing
+    assert (await asyncio.wait_for(queue._queue.get(), timeout=1))[-1] == peer_job_id
+    assert queue._queue.empty()
+    async with SessionLocal() as session:
+        resumed = await session.get(Job, peer_job_id)
+        assert get_blocked_reason(resumed.payload) is None
+        assert resumed.payload["resume_requested"] is True
+
+
+@pytest.mark.asyncio
+async def test_stop_tracks_coordinator_while_it_closes_a_ghost_window():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Source
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+
+    class BlockingEngine:
+        def __init__(self):
+            self.end_started = asyncio.Event()
+            self.end_count = 0
+
+        async def begin_document_maintenance(self, *_args, **_kwargs):
+            return None
+
+        async def end_document_maintenance(self, *_args, **_kwargs):
+            self.end_count += 1
+            if self.end_count == 1:
+                self.end_started.set()
+                await asyncio.Event().wait()
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="tracked-ghost-close",
+            sag_source_config_id="tracked-ghost-close-config",
+        )
+        session.add(source)
+        await session.commit()
+        source_id = source.id
+
+    engine = BlockingEngine()
+    queue = InProcessAsyncQueue(SessionLocal, engine, concurrency=1)
+    queue.begin_source_maintenance(source_id, "missing-maintenance-job")
+    queue._schedule_source_maintenance(source_id)
+    coordinator = queue._source_maintenance_tasks[source_id]
+
+    await asyncio.wait_for(engine.end_started.wait(), timeout=1)
+    assert queue._source_maintenance_tasks[source_id] is coordinator
+
+    await asyncio.wait_for(queue.stop(), timeout=1)
+
+    assert coordinator.done()
+    assert engine.end_count == 2
+    assert queue._source_maintenance_tasks == {}
+    assert queue._source_maintenance_jobs == {}
+    assert queue._source_maintenance_ready == set()
+    assert queue._source_maintenance_closing == set()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_finish_calls_close_and_resume_once():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+    from sag_api.jobs.scheduling import SOURCE_MAINTENANCE
+
+    class CountingEngine:
+        def __init__(self):
+            self.end_started = asyncio.Event()
+            self.release_end = asyncio.Event()
+            self.end_count = 0
+
+        async def end_document_maintenance(self, *_args, **_kwargs):
+            self.end_count += 1
+            self.end_started.set()
+            await self.release_end.wait()
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="concurrent-maintenance-finish",
+            sag_source_config_id="concurrent-maintenance-finish-config",
+        )
+        session.add(source)
+        await session.flush()
+        peer = Document(
+            source_id=source.id,
+            filename="peer.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/peer.md",
+            status=DocumentStatus.EXTRACTING,
+        )
+        session.add(peer)
+        await session.flush()
+        blocked_peer = Job(
+            type=JobType.PROCESS_DOCUMENT,
+            status=JobStatus.QUEUED,
+            source_id=source.id,
+            document_id=peer.id,
+            payload={"_scheduler": {"blocked_reason": SOURCE_MAINTENANCE}},
+        )
+        session.add(blocked_peer)
+        await session.commit()
+        source_id, peer_job_id = source.id, blocked_peer.id
+
+    engine = CountingEngine()
+    queue = InProcessAsyncQueue(SessionLocal, engine, concurrency=1)
+    queue.begin_source_maintenance(source_id, "finishing-delete")
+    queue._source_maintenance_ready.add(source_id)
+    queue._source_maintenance_dispatched[source_id] = "finishing-delete"
+
+    first = asyncio.create_task(
+        queue.finish_source_maintenance(source_id, "finishing-delete")
+    )
+    await asyncio.wait_for(engine.end_started.wait(), timeout=1)
+    second = asyncio.create_task(
+        queue.finish_source_maintenance(source_id, "finishing-delete")
+    )
+    await asyncio.wait_for(second, timeout=1)
+    engine.release_end.set()
+    await asyncio.wait_for(first, timeout=1)
+
+    assert engine.end_count == 1
+    assert (await asyncio.wait_for(queue._queue.get(), timeout=1))[-1] == peer_job_id
+    assert queue._queue.empty()
+    assert queue.source_maintenance_requested(source_id) is False
+    assert source_id not in queue._source_maintenance_ready
+    assert source_id not in queue._source_maintenance_closing
+
+
+@pytest.mark.asyncio
+async def test_stop_releases_window_when_dispatch_and_release_both_fail():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Source
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+
+    class FlakyReleaseEngine:
+        def __init__(self):
+            self.end_count = 0
+            self.second_end_started = asyncio.Event()
+
+        async def begin_document_maintenance(self, *_args, **_kwargs):
+            return None
+
+        async def end_document_maintenance(self, *_args, **_kwargs):
+            self.end_count += 1
+            if self.end_count == 1:
+                raise RuntimeError("temporary release failure")
+            if self.end_count == 2:
+                self.second_end_started.set()
+                await asyncio.Event().wait()
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="dispatch-and-release-failure",
+            sag_source_config_id="dispatch-and-release-failure-config",
+        )
+        session.add(source)
+        await session.commit()
+        source_id = source.id
+
+    engine = FlakyReleaseEngine()
+    queue = InProcessAsyncQueue(SessionLocal, engine, concurrency=1)
+
+    async def fail_dispatch(_source_id):
+        raise RuntimeError("temporary dispatch database failure")
+
+    queue._dispatch_next_maintenance = fail_dispatch
+    queue.begin_source_maintenance(source_id, "maintenance-job")
+    queue._schedule_source_maintenance(source_id)
+
+    await asyncio.wait_for(engine.second_end_started.wait(), timeout=2)
+    assert source_id in queue._source_maintenance_ready
+
+    await asyncio.wait_for(queue.stop(), timeout=1)
+
+    # First release failed, the second was cancelled by stop(), and stop's
+    # ready-window fallback performed the final successful release.
+    assert engine.end_count == 3
+    assert queue._source_maintenance_tasks == {}
+    assert queue._source_maintenance_jobs == {}
+    assert queue._source_maintenance_ready == set()

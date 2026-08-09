@@ -38,6 +38,7 @@ log = get_logger("jobs")
 # 退避基数（秒）：第 n 次重试等待 base**n。测试可 monkeypatch 缩短。
 _BACKOFF_BASE_SECONDS = 2.0
 _RECOVERY_LOCK_RETRIES = 4
+_MAINTENANCE_CLOSE_RETRY_SECONDS = 0.5
 _MAINTENANCE_JOB_TYPES = {
     JobType.DELETE_DOCUMENT,
     JobType.REPROCESS_DOCUMENT,
@@ -183,23 +184,55 @@ class InProcessAsyncQueue(JobQueue):
                     return
                 self._source_maintenance_ready.add(source_id)
                 await self._dispatch_next_maintenance(source_id)
+                if (
+                    source_id not in self._source_maintenance_ready
+                    and source_id not in self._source_maintenance_closing
+                    and self.source_maintenance_requested(source_id)
+                ):
+                    # A new control request arrived while this coordinator was
+                    # closing an empty/ghost window. Reuse the tracked task to
+                    # open the next window instead of spawning an untracked one.
+                    continue
                 return
             except asyncio.CancelledError:
-                self._source_maintenance_ready.discard(source_id)
                 if window_open and source is not None:
-                    await self._engine_manager.end_document_maintenance(
-                        source_config_id,
-                        source=source,
-                    )
+                    try:
+                        await self._engine_manager.end_document_maintenance(
+                            source_config_id,
+                            source=source,
+                        )
+                    except Exception:  # noqa: BLE001 - stop() retries ready windows
+                        self._source_maintenance_ready.add(source_id)
+                        log.exception(
+                            "取消协调器时释放信源维护窗口失败 source=%s",
+                            source_id,
+                        )
+                    else:
+                        self._source_maintenance_ready.discard(source_id)
+                else:
+                    self._source_maintenance_ready.discard(source_id)
                 raise
             except Exception:  # noqa: BLE001 - coordinator retries off-worker
-                self._source_maintenance_ready.discard(source_id)
-                if window_open and source is not None:
-                    await self._engine_manager.end_document_maintenance(
-                        source_config_id,
-                        source=source,
-                    )
                 log.exception("等待信源维护窗口失败，后台重试 source=%s", source_id)
+                if window_open and source is not None:
+                    self._source_maintenance_ready.add(source_id)
+                    while source_id in self._source_maintenance_ready:
+                        try:
+                            await self._engine_manager.end_document_maintenance(
+                                source_config_id,
+                                source=source,
+                            )
+                            self._source_maintenance_ready.discard(source_id)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:  # noqa: BLE001 - retry before reopening
+                            log.exception(
+                                "重试释放信源维护窗口失败 source=%s",
+                                source_id,
+                            )
+                            await asyncio.sleep(delay)
+                else:
+                    self._source_maintenance_ready.discard(source_id)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30.0)
 
@@ -210,33 +243,214 @@ class InProcessAsyncQueue(JobQueue):
             or source_id in self._source_maintenance_closing
         ):
             return
-        dispatched = self._source_maintenance_dispatched.get(source_id)
-        if dispatched is not None:
-            return
         from sag_api.db.models import Job
 
         active_ids = self._source_maintenance_jobs.get(source_id, set())
         if not active_ids:
             return
+        registered_ids = set(active_ids)
+        registered_dispatched = self._source_maintenance_dispatched.get(source_id)
+        query_ids = set(registered_ids)
+        if registered_dispatched is not None:
+            query_ids.add(registered_dispatched)
+        close_empty_window = False
+        job_id: str | None = None
+        priority = DELETE_PRIORITY
         async with self._session_factory() as session:
-            job = await session.scalar(
-                select(Job)
-                .where(
-                    Job.id.in_(active_ids),
-                    Job.type.in_(_MAINTENANCE_JOB_TYPES),
-                    Job.status == JobStatus.QUEUED,
-                )
-                .order_by(Job.created_at, Job.id)
-                .limit(1)
+            live_jobs = list(
+                (
+                    await session.scalars(
+                        select(Job)
+                        .where(
+                            Job.id.in_(query_ids),
+                            Job.source_id == source_id,
+                            Job.type.in_(_MAINTENANCE_JOB_TYPES),
+                            Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+                        )
+                        .order_by(Job.created_at, Job.id)
+                    )
+                ).all()
             )
-            if job is None:
+            live_ids = {candidate.id for candidate in live_jobs}
+            stale_ids = registered_ids - live_ids
+            current_ids = self._source_maintenance_jobs.get(source_id)
+            if current_ids is None:
                 return
-            job.payload = set_scheduler(job.payload, blocked_reason=None)
-            priority = get_priority(job.payload)
-            await session.commit()
-            job_id = job.id
+            # Only remove IDs from the snapshot queried above. A new maintenance
+            # request may be registered while the database query is awaiting;
+            # it must survive this reconciliation and open its own window.
+            current_ids.difference_update(stale_ids)
+            dispatched = self._source_maintenance_dispatched.get(source_id)
+            if (
+                dispatched is not None
+                and dispatched == registered_dispatched
+                and dispatched not in live_ids
+            ):
+                self._source_maintenance_dispatched.pop(source_id, None)
+                dispatched = None
+            if stale_ids:
+                log.warning(
+                    "清理失效的信源维护任务 source=%s jobs=%s",
+                    source_id,
+                    sorted(stale_ids),
+                )
+            if (
+                source_id not in self._source_maintenance_ready
+                or source_id in self._source_maintenance_closing
+            ):
+                return
+            if not current_ids:
+                close_empty_window = True
+            else:
+                running = next(
+                    (
+                        candidate
+                        for candidate in live_jobs
+                        if candidate.id in current_ids
+                        and candidate.status == JobStatus.RUNNING
+                    ),
+                    None,
+                )
+                if running is not None:
+                    self._source_maintenance_dispatched[source_id] = running.id
+                    return
+                if dispatched is not None:
+                    return
+                job = next(
+                    (
+                        candidate
+                        for candidate in live_jobs
+                        if candidate.id in current_ids
+                        and candidate.status == JobStatus.QUEUED
+                    ),
+                    None,
+                )
+                if job is None:
+                    return
+                job.payload = set_scheduler(job.payload, blocked_reason=None)
+                priority = get_priority(job.payload)
+                await session.commit()
+                job_id = job.id
+        if close_empty_window:
+            await self._close_source_maintenance(source_id)
+            return
+        if job_id is None:
+            return
         self._source_maintenance_dispatched[source_id] = job_id
         await self._queue.put((priority, next(self._enqueue_sequence), job_id))
+
+    async def _close_source_maintenance(self, source_id: str) -> None:
+        if source_id in self._source_maintenance_closing:
+            return
+        self._source_maintenance_closing.add(source_id)
+
+        from sag_api.db.models import Job, Source
+
+        current_task = asyncio.current_task()
+        coordinator = self._source_maintenance_tasks.get(source_id)
+        closing_in_coordinator = coordinator is current_task
+        try:
+            if (
+                coordinator is not None
+                and not closing_in_coordinator
+                and not coordinator.done()
+            ):
+                coordinator.cancel()
+                await asyncio.gather(coordinator, return_exceptions=True)
+
+            # First make every blocked PROCESS job durable. If engine release
+            # then fails transiently, retain these IDs and retry only the engine
+            # phase so no wake-up can be lost or duplicated.
+            while True:
+                candidate_ready_ids: set[str] = set()
+                candidate_source = None
+                try:
+                    async with self._session_factory() as session:
+                        candidate_source = await session.get(Source, source_id)
+                        rows = list(
+                            (
+                                await session.scalars(
+                                    select(Job).where(
+                                        Job.source_id == source_id,
+                                        Job.type == JobType.PROCESS_DOCUMENT,
+                                        Job.status == JobStatus.QUEUED,
+                                    ).join(
+                                        Document,
+                                        Job.document_id == Document.id,
+                                    ).where(
+                                        Document.status.in_(
+                                            [
+                                                DocumentStatus.PENDING,
+                                                DocumentStatus.LOADING,
+                                                DocumentStatus.EXTRACTING,
+                                            ]
+                                        )
+                                    )
+                                )
+                            ).all()
+                        )
+                        for blocked in rows:
+                            if (
+                                get_blocked_reason(blocked.payload)
+                                != SOURCE_MAINTENANCE
+                            ):
+                                continue
+                            payload = set_scheduler(
+                                blocked.payload,
+                                priority=RESUME_PRIORITY,
+                                blocked_reason=None,
+                            )
+                            payload["resume_requested"] = True
+                            blocked.payload = payload
+                            candidate_ready_ids.add(blocked.id)
+                        await session.commit()
+                    source = candidate_source
+                    ready_ids = candidate_ready_ids
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - close must remain retryable
+                    log.exception(
+                        "持久化信源维护唤醒失败，后台重试 source=%s",
+                        source_id,
+                    )
+                    await asyncio.sleep(_MAINTENANCE_CLOSE_RETRY_SECONDS)
+
+            # Persist wake-ups before reopening engine admission. A restart can
+            # recover this durable state even if cancellation happens before the
+            # in-memory enqueue below.
+            while source_id in self._source_maintenance_ready and source is not None:
+                try:
+                    await self._engine_manager.end_document_maintenance(
+                        source.sag_source_config_id,
+                        source=source,
+                    )
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - keep the window tracked and retry
+                    log.exception(
+                        "释放信源维护窗口失败，后台重试 source=%s",
+                        source_id,
+                    )
+                    await asyncio.sleep(_MAINTENANCE_CLOSE_RETRY_SECONDS)
+
+            self._source_maintenance_ready.discard(source_id)
+            self._source_maintenance_closing.discard(source_id)
+            if self.source_maintenance_requested(source_id):
+                # A new control request can arrive while the old window closes.
+                # The current coordinator continues its loop; a worker-owned
+                # close starts a fresh coordinator after the old one is gone.
+                if not closing_in_coordinator:
+                    self._schedule_source_maintenance(source_id)
+            else:
+                self._source_maintenance_jobs.pop(source_id, None)
+            for ready_id in ready_ids:
+                await self.enqueue(ready_id)
+        finally:
+            # Never leave a source permanently fenced if database or engine
+            # cleanup is cancelled during shutdown.
+            self._source_maintenance_closing.discard(source_id)
 
     async def finish_source_maintenance(self, source_id: str, job_id: str) -> None:
         active = self._source_maintenance_jobs.get(source_id)
@@ -250,72 +464,7 @@ class InProcessAsyncQueue(JobQueue):
             else:
                 self._schedule_source_maintenance(source_id)
             return
-
-        self._source_maintenance_closing.add(source_id)
-
-        from sag_api.db.models import Job, Source
-
-        task = self._source_maintenance_tasks.pop(source_id, None)
-        if task is not None and not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-
-        ready_ids: list[str] = []
-        source = None
-        async with self._session_factory() as session:
-            source = await session.get(Source, source_id)
-            rows = list(
-                (
-                    await session.scalars(
-                        select(Job).where(
-                            Job.source_id == source_id,
-                            Job.type == JobType.PROCESS_DOCUMENT,
-                            Job.status == JobStatus.QUEUED,
-                        ).join(Document, Job.document_id == Document.id).where(
-                            Document.status.in_(
-                                [
-                                    DocumentStatus.PENDING,
-                                    DocumentStatus.LOADING,
-                                    DocumentStatus.EXTRACTING,
-                                ]
-                            )
-                        )
-                    )
-                ).all()
-            )
-            for blocked in rows:
-                if get_blocked_reason(blocked.payload) != SOURCE_MAINTENANCE:
-                    continue
-                payload = set_scheduler(
-                    blocked.payload,
-                    priority=RESUME_PRIORITY,
-                    blocked_reason=None,
-                )
-                payload["resume_requested"] = True
-                blocked.payload = payload
-                ready_ids.append(blocked.id)
-            await session.commit()
-
-        # Persist wake-ups before reopening engine admission. A restart can
-        # recover this durable state even if the process exits in the small gap
-        # between the commit and the in-memory enqueue below.
-        if source_id in self._source_maintenance_ready and source is not None:
-            await self._engine_manager.end_document_maintenance(
-                source.sag_source_config_id,
-                source=source,
-            )
-        self._source_maintenance_ready.discard(source_id)
-        self._source_maintenance_closing.discard(source_id)
-        if self.source_maintenance_requested(source_id):
-            # A new delete/reprocess request can arrive while the previous
-            # window is awaiting its durable wake-up commit or engine release.
-            # Keep that registration and open a fresh window instead of
-            # dropping the whole per-source set below.
-            self._schedule_source_maintenance(source_id)
-        else:
-            self._source_maintenance_jobs.pop(source_id, None)
-        for ready_id in ready_ids:
-            await self.enqueue(ready_id)
+        await self._close_source_maintenance(source_id)
 
     def _schedule_retry(self, job_id: str, delay: float) -> None:
         """退避后重新入队（不阻塞 worker）。"""
