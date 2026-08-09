@@ -935,3 +935,16 @@ def test_agent_name_is_injected_into_prompt():
     assert "你的名字是「小跃」" in system
     assert "保持严谨。" in system
     assert "sag" not in system.lower()
+
+
+def test_document_delete_keeps_v1_success_contract():
+    from sag_api.main import app
+
+    operation = app.openapi()["paths"][
+        "/api/v1/sources/{source_id}/documents/{document_id}"
+    ]["delete"]
+
+    assert "200" in operation["responses"]
+    assert "202" not in operation["responses"]
+    schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+    assert schema["$ref"].endswith("/Ok")

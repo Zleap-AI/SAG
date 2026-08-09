@@ -506,6 +506,11 @@ async def test_same_source_deletes_share_one_maintenance_window_and_run_serially
                 await asyncio.sleep(0.01)
 
         await asyncio.wait_for(wait_for_both(), timeout=2)
+        async def maintenance_released():
+            while engine.end_count != 1:
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(maintenance_released(), timeout=1)
         async with SessionLocal() as session:
             completed = [await session.get(Job, job_id) for job_id in job_ids]
             assert all(job is not None and job.status == JobStatus.SUCCEEDED for job in completed)
@@ -574,3 +579,53 @@ async def test_stop_waits_for_workers_before_releasing_maintenance_windows():
 
     assert engine.released == [("config-source-a", "source-a")]
     assert queue._source_maintenance_ready == set()
+
+
+@pytest.mark.asyncio
+async def test_new_maintenance_request_is_not_lost_while_previous_window_closes():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Job, Source
+    from sag_api.enums import JobStatus, JobType
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+
+    class ClosingEngine:
+        def __init__(self):
+            self.end_started = asyncio.Event()
+            self.release_end = asyncio.Event()
+
+        async def end_document_maintenance(self, *_args, **_kwargs):
+            self.end_started.set()
+            await self.release_end.wait()
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(name="closing-race", sag_source_config_id="closing-race-config")
+        session.add(source)
+        await session.flush()
+        next_job = Job(
+            type=JobType.DELETE_DOCUMENT,
+            status=JobStatus.QUEUED,
+            source_id=source.id,
+            payload={"target_document_id": "next-document"},
+        )
+        session.add(next_job)
+        await session.commit()
+        source_id, next_job_id = source.id, next_job.id
+
+    engine = ClosingEngine()
+    queue = InProcessAsyncQueue(SessionLocal, engine, concurrency=1)
+    queue.begin_source_maintenance(source_id, "finishing-job")
+    queue._source_maintenance_ready.add(source_id)
+    queue._source_maintenance_dispatched[source_id] = "finishing-job"
+
+    finishing = asyncio.create_task(
+        queue.finish_source_maintenance(source_id, "finishing-job")
+    )
+    await asyncio.wait_for(engine.end_started.wait(), timeout=1)
+    queue.begin_source_maintenance(source_id, next_job_id)
+    await queue.enqueue(next_job_id)
+    engine.release_end.set()
+    await asyncio.wait_for(finishing, timeout=1)
+
+    assert queue.source_maintenance_requested(source_id) is True
+    assert next_job_id in queue._source_maintenance_jobs[source_id]

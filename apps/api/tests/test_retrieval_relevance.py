@@ -79,3 +79,167 @@ async def test_invalid_llm_citation_falls_back_to_selected_evidence():
     assert "实际入选的事实" in answer
     assert "[1]" in answer
     assert "[9]" not in answer
+
+
+@pytest.mark.asyncio
+async def test_retrieval_excludes_logically_deleted_document_before_physical_cleanup():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
+    from sag_api.sag import SearchOutcome
+    from sag_api.services.retrieval_service import retrieve_relevant_sections
+
+    class FakeEngine:
+        async def search_many(self, _targets, query, **_kwargs):
+            return SearchOutcome(
+                query=query,
+                sections=[
+                    RetrievedSection(
+                        chunk_id="hidden",
+                        heading="删除文档",
+                        content="目标主题来自已删除文档。",
+                        score=0.99,
+                        source_id="engine-hidden",
+                        source_config_id="visibility-config",
+                    ),
+                    RetrievedSection(
+                        chunk_id="visible",
+                        heading="保留文档",
+                        content="目标主题来自保留文档。",
+                        score=0.9,
+                        source_id="engine-visible",
+                        source_config_id="visibility-config",
+                    ),
+                ],
+                stats={},
+            )
+
+        async def grep_chunks(self, *_args, **_kwargs):
+            return []
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(name="visibility", sag_source_config_id="visibility-config")
+        session.add(source)
+        await session.flush()
+        session.add_all(
+            [
+                Document(
+                    source_id=source.id,
+                    filename="hidden.md",
+                    content_type="text/markdown",
+                    size_bytes=10,
+                    storage_path="/tmp/hidden.md",
+                    status=DocumentStatus.DELETING,
+                    sag_source_id="engine-hidden",
+                ),
+                Document(
+                    source_id=source.id,
+                    filename="visible.md",
+                    content_type="text/markdown",
+                    size_bytes=10,
+                    storage_path="/tmp/visible.md",
+                    status=DocumentStatus.READY,
+                    sag_source_id="engine-visible",
+                ),
+            ]
+        )
+        await session.commit()
+
+        outcome = await retrieve_relevant_sections(
+            FakeEngine(),
+            [source],
+            "目标主题",
+            top_k=8,
+        )
+
+    assert [item.chunk_id for item in outcome.sections] == ["visible"]
+
+
+@pytest.mark.asyncio
+async def test_lexical_retrieval_keeps_visible_peer_during_logical_delete():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
+    from sag_api.sag import SearchOutcome
+    from sag_api.services.retrieval_service import retrieve_relevant_sections
+
+    class FakeEngine:
+        async def search_many(self, _targets, query, **_kwargs):
+            return SearchOutcome(query=query, sections=[], stats={})
+
+        async def grep_chunks(self, *_args, **_kwargs):
+            return [
+                {"chunk_id": "hidden", "heading": "目标主题", "snippet": "隐藏", "source_id": "engine-hidden"},
+                {"chunk_id": "visible", "heading": "目标主题", "snippet": "保留", "source_id": "engine-visible"},
+            ]
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(name="lexical-visibility", sag_source_config_id="lexical-config")
+        session.add(source)
+        await session.flush()
+        session.add(
+            Document(
+                source_id=source.id,
+                filename="hidden.md",
+                content_type="text/markdown",
+                size_bytes=10,
+                storage_path="/tmp/hidden.md",
+                status=DocumentStatus.DELETING,
+                sag_source_id="engine-hidden",
+            )
+        )
+        await session.commit()
+        outcome = await retrieve_relevant_sections(FakeEngine(), [source], "目标主题")
+
+    assert [item.chunk_id for item in outcome.sections] == ["visible"]
+
+
+@pytest.mark.asyncio
+async def test_event_recall_excludes_events_from_logically_deleted_document():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.services.retrieval_service import recall_event_scores
+
+    class FakeEngine:
+        async def search_event_scores(self, *_args, **_kwargs):
+            return {
+                ("event-config", "hidden-event"): 0.99,
+                ("event-config", "visible-event"): 0.9,
+            }
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(name="event-visibility", sag_source_config_id="event-config")
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="hidden.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/hidden.md",
+            status=DocumentStatus.DELETING,
+            sag_source_id="engine-hidden",
+        )
+        session.add(document)
+        await session.flush()
+        session.add(
+            Job(
+                type=JobType.PROCESS_DOCUMENT,
+                status=JobStatus.SUCCEEDED,
+                source_id=source.id,
+                document_id=document.id,
+                payload={"process_checkpoint": {"event_ids": ["hidden-event"]}},
+            )
+        )
+        await session.commit()
+        scores = await recall_event_scores(
+            FakeEngine(),
+            "目标主题",
+            {source.sag_source_config_id: source},
+        )
+
+    assert scores == {("event-config", "visible-event"): 0.9}

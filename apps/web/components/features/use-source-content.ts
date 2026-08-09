@@ -278,21 +278,25 @@ export function useSourceContent(sourceId: string, active = true) {
     const mutation = beginDocumentMutation(document, action);
     setMutations((current) => ({ ...current, [document.id]: mutation }));
     try {
-      const job =
-        action === "delete"
-          ? await api.deleteDocument(mutationSourceId, document.id)
-          : action === "reprocess"
-            ? await api.reprocessDocument(mutationSourceId, document.id)
-            : action === "pause"
-              ? await api.pauseDocument(mutationSourceId, document.id)
-              : await api.resumeDocument(mutationSourceId, document.id);
+      let job: BackgroundJob | null = null;
+      if (action === "delete") {
+        await api.deleteDocument(mutationSourceId, document.id);
+      } else if (action === "reprocess") {
+        job = await api.reprocessDocument(mutationSourceId, document.id);
+      } else if (action === "pause") {
+        job = await api.pauseDocument(mutationSourceId, document.id);
+      } else {
+        job = await api.resumeDocument(mutationSourceId, document.id);
+      }
       if (!isCurrentDocumentSource(mutationSourceId, sourceIdRef.current)) return false;
-      setMutations((current) => {
-        const latest = current[document.id];
-        return latest
-          ? { ...current, [document.id]: { ...latest, job } }
-          : current;
-      });
+      if (job) {
+        setMutations((current) => {
+          const latest = current[document.id];
+          return latest
+            ? { ...current, [document.id]: { ...latest, job } }
+            : current;
+        });
+      }
       if (!isCurrentDocumentSource(mutationSourceId, sourceIdRef.current)) return false;
       await refresh({ background: true });
       return true;

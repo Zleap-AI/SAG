@@ -267,10 +267,17 @@ async def delete_document_task(
         raise NotFoundError("信源不存在")
 
     await session.refresh(document)
+    derived_source_ids = {
+        value.strip()
+        for value in (job.payload or {}).get("derived_source_ids", [])
+        if isinstance(value, str) and value.strip()
+    }
     if document.sag_source_id:
+        derived_source_ids.add(document.sag_source_id)
+    for derived_source_id in sorted(derived_source_ids):
         await engine_manager.delete_document_data(
             source.sag_source_config_id,
-            document.sag_source_id,
+            derived_source_id,
             source=source,
         )
     path = document.storage_path

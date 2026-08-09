@@ -1533,6 +1533,63 @@ async def test_delete_after_reprocess_request_uses_maintenance_cleanup():
 
 
 @pytest.mark.asyncio
+async def test_delete_after_failed_reprocess_keeps_old_engine_ids_for_cleanup():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.services.document_service import delete_document
+
+    class FakeQueue:
+        async def enqueue(self, _job_id: str):
+            return None
+
+        def begin_source_maintenance(self, _source_id: str, _job_id: str):
+            return None
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(name="failed-reprocess-delete", sag_source_config_id="failed-config")
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="failed.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/failed.md",
+            status=DocumentStatus.FAILED,
+            sag_source_id=None,
+        )
+        session.add(document)
+        await session.flush()
+        session.add(
+            Job(
+                type=JobType.REPROCESS_DOCUMENT,
+                source_id=source.id,
+                document_id=document.id,
+                status=JobStatus.FAILED,
+                payload={
+                    "target_document_id": document.id,
+                    "derived_source_ids": ["engine-old", "engine-older"],
+                },
+            )
+        )
+        await session.commit()
+
+        delete_job = await delete_document(
+            session,
+            source,
+            document.id,
+            job_queue=FakeQueue(),
+        )
+
+        assert set(delete_job.payload["derived_source_ids"]) == {
+            "engine-old",
+            "engine-older",
+        }
+
+
+@pytest.mark.asyncio
 async def test_job_pause_is_not_failure_or_retry(monkeypatch):
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.db.models import Job

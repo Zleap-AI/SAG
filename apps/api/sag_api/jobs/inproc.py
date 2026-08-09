@@ -85,6 +85,7 @@ class InProcessAsyncQueue(JobQueue):
         self._source_maintenance_tasks: dict[str, asyncio.Task] = {}
         self._source_maintenance_ready: set[str] = set()
         self._source_maintenance_dispatched: dict[str, str] = {}
+        self._source_maintenance_closing: set[str] = set()
         self._started = False
         self._stopping = False
 
@@ -204,7 +205,10 @@ class InProcessAsyncQueue(JobQueue):
 
     async def _dispatch_next_maintenance(self, source_id: str) -> None:
         """Dispatch at most one maintenance job per source while its window stays open."""
-        if source_id not in self._source_maintenance_ready:
+        if (
+            source_id not in self._source_maintenance_ready
+            or source_id in self._source_maintenance_closing
+        ):
             return
         dispatched = self._source_maintenance_dispatched.get(source_id)
         if dispatched is not None:
@@ -246,6 +250,8 @@ class InProcessAsyncQueue(JobQueue):
             else:
                 self._schedule_source_maintenance(source_id)
             return
+
+        self._source_maintenance_closing.add(source_id)
 
         from sag_api.db.models import Job, Source
 
@@ -299,7 +305,15 @@ class InProcessAsyncQueue(JobQueue):
                 source=source,
             )
         self._source_maintenance_ready.discard(source_id)
-        self._source_maintenance_jobs.pop(source_id, None)
+        self._source_maintenance_closing.discard(source_id)
+        if self.source_maintenance_requested(source_id):
+            # A new delete/reprocess request can arrive while the previous
+            # window is awaiting its durable wake-up commit or engine release.
+            # Keep that registration and open a fresh window instead of
+            # dropping the whole per-source set below.
+            self._schedule_source_maintenance(source_id)
+        else:
+            self._source_maintenance_jobs.pop(source_id, None)
         for ready_id in ready_ids:
             await self.enqueue(ready_id)
 
@@ -390,6 +404,7 @@ class InProcessAsyncQueue(JobQueue):
         self._source_maintenance_jobs.clear()
         self._source_maintenance_ready.clear()
         self._source_maintenance_dispatched.clear()
+        self._source_maintenance_closing.clear()
         self._started = False
 
     async def _recover(self) -> None:
@@ -447,8 +462,9 @@ class InProcessAsyncQueue(JobQueue):
                         for duplicate in candidates:
                             if duplicate.id == keeper.id:
                                 continue
-                            duplicate.status = JobStatus.PAUSED
-                            duplicate.error = None
+                            duplicate.status = JobStatus.FAILED
+                            duplicate.error = "任务已被恢复流程中的较新进度取代"
+                            duplicate.finished_at = _now()
                             duplicate.payload = {
                                 **(duplicate.payload or {}),
                                 "superseded_by_job_id": keeper.id,
@@ -704,7 +720,16 @@ class InProcessAsyncQueue(JobQueue):
                 job = await session.get(Job, job_id)
                 msg = getattr(e, "message", None) or str(e)
                 attempts = job.attempts if job is not None else settings.job_max_attempts
-                retry = job is not None and _is_retryable(e) and attempts < settings.job_max_attempts
+                delete_cleanup = bool(
+                    job is not None and job.type == JobType.DELETE_DOCUMENT
+                )
+                retry = job is not None and (
+                    delete_cleanup
+                    or (
+                        _is_retryable(e)
+                        and attempts < settings.job_max_attempts
+                    )
+                )
                 if job is not None:
                     if retry:
                         # 退避重排：状态回 QUEUED，延迟 base**attempts 秒后重新入队
@@ -712,9 +737,17 @@ class InProcessAsyncQueue(JobQueue):
                         job.progress = 0.0
                         job.error = f"第 {attempts} 次失败，将重试：{msg}"
                         await _mark_document_waiting_retry(session, job)
-                        delay = _BACKOFF_BASE_SECONDS**attempts
+                        if delete_cleanup and job.document_id:
+                            document = await session.get(Document, job.document_id)
+                            if document is not None:
+                                document.status = DocumentStatus.DELETING
+                                document.error = None
+                        delay = min(_BACKOFF_BASE_SECONDS ** min(attempts, 10), 60.0)
                         self._schedule_retry(job_id, delay)
                         retry_source_maintenance = claimed_type in _MAINTENANCE_JOB_TYPES
+                        release_source_maintenance = bool(
+                            delete_cleanup and claimed_source_id
+                        )
                         log.warning(
                             "任务可重试 job=%s（第 %d/%d 次），%.1fs 后重排：%s",
                             job_id, attempts, settings.job_max_attempts, delay, msg,

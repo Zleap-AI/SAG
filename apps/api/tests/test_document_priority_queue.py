@@ -195,7 +195,7 @@ async def test_recovery_deduplicates_legacy_active_document_jobs():
             ).all()
         )
     active = [job for job in recovered if job.status == JobStatus.QUEUED]
-    superseded = [job for job in recovered if job.status == JobStatus.PAUSED]
+    superseded = [job for job in recovered if job.status == JobStatus.FAILED]
     assert len(active) == 1
     assert recovered_ids == [active[0].id]
     assert len(superseded) == 2
@@ -646,7 +646,7 @@ async def test_scheduler_yield_keeps_document_extracting(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_delete_failure_releases_source_maintenance_and_requeues_blocked_job():
+async def test_delete_failure_releases_source_maintenance_and_retries_cleanup():
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.db.models import Document, Job, Source
     from sag_api.enums import DocumentStatus, JobStatus, JobType
@@ -711,9 +711,13 @@ async def test_delete_failure_releases_source_maintenance_and_requeues_blocked_j
     async with SessionLocal() as session:
         deleting = await session.get(Document, deleting_id)
         blocked = await session.get(Job, blocked_job_id)
-        assert deleting.status == DocumentStatus.DELETE_FAILED
+        delete_job = await session.get(Job, delete_job_id)
+        assert deleting.status == DocumentStatus.DELETING
+        assert delete_job.status == JobStatus.QUEUED
         assert blocked.payload["resume_requested"] is True
         assert blocked.payload["_scheduler"] == {"priority": 10}
+    assert queue._retry_tasks
+    await queue.stop()
 
 
 @pytest.mark.asyncio

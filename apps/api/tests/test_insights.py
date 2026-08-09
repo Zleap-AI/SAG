@@ -242,7 +242,7 @@ async def test_entity_read_path():
                 f"/api/v1/sources/{sid}/documents/{document_id}",
                 headers=H,
             )
-            assert deleted.status_code == 202
+            assert deleted.status_code == 200
             for _ in range(40):
                 document_response = await c.get(
                     f"/api/v1/sources/{sid}/documents/{document_id}",

@@ -253,6 +253,28 @@ def _checkpoint_source_id(payload: dict | None) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+async def _document_derived_source_ids(
+    session: AsyncSession,
+    document: Document,
+) -> set[str]:
+    """Collect every engine article id ever associated with one document."""
+    values = {document.sag_source_id} if document.sag_source_id else set()
+    jobs = (
+        await session.scalars(select(Job).where(Job.document_id == document.id))
+    ).all()
+    for candidate in jobs:
+        payload = candidate.payload or {}
+        checkpoint_id = _checkpoint_source_id(payload)
+        if checkpoint_id:
+            values.add(checkpoint_id)
+        values.update(
+            value.strip()
+            for value in payload.get("derived_source_ids", [])
+            if isinstance(value, str) and value.strip()
+        )
+    return values
+
+
 async def _refresh_source_counts(session: AsyncSession, source: Source) -> None:
     document_count, chunk_count, event_count = (
         await session.execute(
@@ -383,6 +405,7 @@ async def delete_document(
 ) -> Job:
     document = await get_document(session, source, document_id)
     source_record_id = source.id
+    derived_source_ids = await _document_derived_source_ids(session, document)
     existing = await session.scalar(
         select(Job)
         .where(
@@ -553,7 +576,10 @@ async def delete_document(
         document_id=document.id,
         status=JobStatus.QUEUED,
         payload=set_scheduler(
-            {"target_document_id": document.id},
+            {
+                "target_document_id": document.id,
+                "derived_source_ids": sorted(derived_source_ids),
+            },
             priority=DELETE_PRIORITY,
         ),
     )

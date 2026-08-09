@@ -18,6 +18,7 @@ from sag_api.parsing.text import (
     read_text_file,
 )
 from sag_api.sag import EngineManager
+from sag_api.schemas.common import Ok
 from sag_api.schemas.document import DocumentOut, IngestRequest
 from sag_api.schemas.job import JobOut
 from sag_api.services.document_service import (
@@ -251,19 +252,19 @@ async def resume(
     return JobOut.model_validate(job)
 
 
-@router.delete("/{document_id}", response_model=JobOut, status_code=202)
+@router.delete("/{document_id}", response_model=Ok)
 async def delete_(
     source_id: str,
     document_id: str,
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
-) -> JobOut:
+) -> Ok:
     source = await get_source(session, source_id)
-    job = await delete_document(
+    await delete_document(
         session,
         source,
         document_id,
         job_queue=job_queue,
     )
-    return JobOut.model_validate(job)
+    return Ok(detail="文档已删除")
