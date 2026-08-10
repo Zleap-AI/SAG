@@ -1,10 +1,9 @@
 #!/bin/sh
 # upgrade_init — pre-upgrade backup + install-side prep.
 #
-# fnpack invokes this callback for every upgrade path, including the
-# Docker→Native transition where fnpack treats the two as the same
-# appname and calls upgrade_init instead of install_init. Two things
-# went wrong in that path before:
+# fnpack invokes this callback under the same run-as as install_init
+# and main (this package: run-as=root). Two things went wrong in
+# earlier upgrade paths that this script keeps guarding:
 #
 #   1. "$main" status writes its failure text ("SAG Native gateway
 #      process is not running.") directly to TRIM_TEMP_LOGFILE via
@@ -17,9 +16,7 @@
 #   2. python3 "$lifecycle" size --root "$users" hard-fails when the
 #      users directory does not exist OR when lifecycle.py itself is
 #      not yet in TRIM_APPDEST (fnpack may execute upgrade_init
-#      *before* installing the new package files — TRIM_APPDEST at
-#      this point contains the OLD Docker-version files, which have
-#      no runtime/lifecycle.py). Guard both.
+#      *before* installing the new package files). Guard both.
 #
 #   3. Any *unexpected* failure (missing python3, awk absent on a
 #      minimal image, tmpfs full, whatever) must NOT surface to the
@@ -27,10 +24,10 @@
 #      an EXIT trap that always writes a diagnostic line to
 #      TRIM_TEMP_LOGFILE — the log is the only channel fnpack shows.
 #
-# Docker data at /vol1/@appdata/sag is intentionally left untouched.
-# We do not migrate it: the schema, embeddings layout, and secret
-# format differ. The user re-creates knowledge bases in the Native
-# install. The informational log makes this explicit.
+# Any Docker-era data at /vol1/@appdata/sag from previous SAG
+# releases is intentionally left untouched. We do not migrate it:
+# the schema, embeddings layout, and secret format differ. The user
+# re-creates knowledge bases in the current install.
 
 # NOTE: we deliberately do NOT `set -e`. Under strict -e in dash,
 # any subshell/pipe/df/awk hiccup can kill the script before the
@@ -89,18 +86,24 @@ LAST_STEP="env-check"
 [ -n "$TRIM_APPDEST" ] || die "TRIM_APPDEST is empty; fnpack did not inject the appdest directory"
 [ -n "$TRIM_PKGVAR" ]  || die "TRIM_PKGVAR is empty; fnpack did not inject the package var directory"
 
-# ---- Delegate identity-secret provisioning to install_init ---------------
-LAST_STEP="install_init"
-if ! "$command_dir/install_init"; then
-  die "install_init failed (see preceding install_init lines in this log)"
+# ---- Delegate identity-secret provisioning to install_callback -----------
+# Since install_init no longer touches $TRIM_PKGVAR (fnpack does not
+# guarantee it exists at that stage), the secret / perm work lives in
+# install_callback. Re-invoke it here so an upgrade path also converges
+# on the same $TRIM_PKGVAR mode 0700 sag:sag / internal-secret 0600
+# sag:sag guarantees a fresh install produces. Idempotent.
+LAST_STEP="install_callback"
+if ! "$command_dir/install_callback"; then
+  die "install_callback failed (see preceding install_callback lines in this log)"
 fi
 
 # ---- Probe previous service state (silently) ------------------------------
 # main's log_error() appends to TRIM_TEMP_LOGFILE directly; redirecting
 # stderr does not mask it, so we point TRIM_TEMP_LOGFILE at /dev/null
-# for the duration of this probe. On Docker→Native transitions the
-# probe *should* return non-zero (no Native gateway); that is not an
-# error, just information for the restore-if-needed trap.
+# for the duration of this probe. On a first Native install (nothing
+# to probe) or an upgrade where the previous instance has already been
+# stopped, the probe returns non-zero — that is not an error, just
+# information for the restore-if-needed trap.
 LAST_STEP="probe-status"
 was_running=false
 if TRIM_TEMP_LOGFILE=/dev/null "$main" status >/dev/null 2>&1; then
@@ -135,14 +138,14 @@ trap 'restore_if_needed; on_exit' EXIT HUP INT TERM
 #   - python3 is not on PATH (edge case: minimal fnOS image)
 LAST_STEP="check-users-dir"
 if [ ! -d "$users" ]; then
-  log "no Native users directory yet — skipping pre-upgrade backup (first Native install or Docker→Native transition; Docker data at /vol1/@appdata/sag is preserved but not migrated; recreate knowledge bases in the Native app)"
+  log "no users directory yet — skipping pre-upgrade backup (first Native install)"
   trap - EXIT HUP INT TERM
   exit 0
 fi
 
 LAST_STEP="check-users-empty"
 if [ -z "$(ls -A "$users" 2>/dev/null)" ]; then
-  log "Native users directory is empty — nothing to back up"
+  log "users directory is empty — nothing to back up"
   trap - EXIT HUP INT TERM
   exit 0
 fi
@@ -156,7 +159,7 @@ fi
 
 LAST_STEP="check-python3"
 if [ ! -x "$py312" ] && ! command -v python3 >/dev/null 2>&1; then
-  log "no python3 available (neither bundled $py312 nor system python3) — skipping pre-upgrade backup (this is safe on a first Native install; main uses its own bundled runtime)"
+  log "no python3 available (neither bundled $py312 nor system python3) — skipping pre-upgrade backup (this is safe on a first install; main uses its own bundled runtime)"
   trap - EXIT HUP INT TERM
   exit 0
 fi

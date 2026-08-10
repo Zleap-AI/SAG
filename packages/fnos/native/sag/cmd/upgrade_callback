@@ -1,2 +1,23 @@
 #!/bin/sh
+# upgrade_callback — heal ownership/perm drift after an upgrade.
+#
+# Runs as ROOT (config/privilege defaults.run-as=root). fnpack invokes
+# this callback after swapping in the new package payload. Delegate to
+# install_callback so an upgrade from any prior release lands with the
+# same guarantees a fresh install would: $TRIM_PKGVAR mode 0700 sag:sag,
+# internal-secret 0600 sag:sag, no root-owned residues under the data
+# root that would break sag's runtime access.
+
+set -u
+
+command_dir="$(dirname "$0")"
+
+if ! "$command_dir/install_callback"; then
+  log_file="${TRIM_TEMP_LOGFILE:-}"
+  if [ -n "$log_file" ]; then
+    printf 'upgrade_callback: install_callback delegation failed (see preceding install_callback lines)\n' >>"$log_file" 2>/dev/null || :
+  fi
+  exit 1
+fi
+
 exit 0

@@ -1,5 +1,15 @@
 #!/bin/sh
 set -eu
 if [ "${SAG_DELETE_DATA:-false}" = true ]; then
-  python3 "${TRIM_APPDEST}/runtime/lifecycle.py" delete --root "${TRIM_PKGVAR}/users"
+  # Prefer the bundled python3.12 (matches cmd/main and cmd/upgrade_init).
+  # The system python3 on fnOS is commonly 3.10/3.11 and rejects newer
+  # stdlib kwargs used by lifecycle.py; fall back only if the bundled
+  # interpreter is missing (rare — comes from install_dep_apps python312).
+  py312="/var/apps/python312/target/bin/python3"
+  if [ -x "$py312" ]; then
+    py="$py312"
+  else
+    py="python3"
+  fi
+  "$py" "${TRIM_APPDEST}/runtime/lifecycle.py" delete --root "${TRIM_PKGVAR}/users"
 fi

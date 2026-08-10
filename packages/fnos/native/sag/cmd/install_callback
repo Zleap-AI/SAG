@@ -1,3 +1,147 @@
 #!/bin/sh
-set -eu
+# install_callback — provision $TRIM_PKGVAR ownership, perms, and the
+# internal identity secret.
+#
+# Runs as ROOT (config/privilege defaults.run-as=root). By this point in
+# the lifecycle the fnpack framework has materialized $TRIM_PKGVAR
+# (== /vol1/@appdata/<pkg>) — it did not exist when install_init ran.
+# This callback:
+#
+#   1. Ensures $TRIM_PKGVAR exists, is owned by sag:sag, and is mode 0700
+#      (so per-user data under $TRIM_PKGVAR/users/<key>/ is not
+#      traversable by other local accounts).
+#   2. Provisions $TRIM_PKGVAR/internal-secret as a 64-hex random blob
+#      owned by sag:sag, mode 0600. cmd/main exports this file to the
+#      gateway; the sag user must own it because main drops privileges
+#      to sag before exec'ing the gateway.
+#   3. Scrubs any legacy residue at $TRIM_PKGETC/internal-secret. A
+#      prior release wrote the secret there; @appconf is a shared
+#      config volume whose perms fnpack does not re-normalize, so
+#      leftover 0700 root:root files there are permanently unreadable
+#      to sag. Delete on sight — main no longer reads that path.
+#
+# Idempotent: safe to re-run (overwrite install, retried install).
+
+set -u
+
+log_file="${TRIM_TEMP_LOGFILE:-}"
+log() {
+  if [ -n "$log_file" ]; then
+    printf 'install_callback: %s\n' "$*" >>"$log_file" 2>/dev/null && return 0
+  fi
+  printf 'install_callback: %s\n' "$*" >&2
+}
+die() { log "$*"; exit 1; }
+
+on_exit() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    log "aborting with status $status (last step: ${LAST_STEP:-<startup>}); uid=$(id -u 2>/dev/null || echo ?) TRIM_PKGVAR=${TRIM_PKGVAR:-<unset>} TRIM_PKGETC=${TRIM_PKGETC:-<unset>}"
+  fi
+}
+LAST_STEP="startup"
+trap on_exit EXIT
+
+hex_ok() {
+  case "$1" in
+    "") return 1 ;;
+    *[!0-9a-f]*) return 1 ;;
+    ????????????????????????????????????????????????????????????????) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+generate_secret() {
+  if command -v openssl >/dev/null 2>&1; then
+    material="$(openssl rand -hex 32 2>/dev/null | tr -d '\n\r\t ')"
+    if hex_ok "$material"; then printf '%s' "$material"; return 0; fi
+  fi
+  if command -v xxd >/dev/null 2>&1; then
+    material="$(head -c 32 /dev/urandom 2>/dev/null | xxd -p 2>/dev/null | tr -d '\n\r\t ')"
+    if hex_ok "$material"; then printf '%s' "$material"; return 0; fi
+  fi
+  if command -v od >/dev/null 2>&1; then
+    material="$(head -c 32 /dev/urandom 2>/dev/null | od -An -v -tx1 2>/dev/null | tr -d '\n\r\t ')"
+    if hex_ok "$material"; then printf '%s' "$material"; return 0; fi
+  fi
+  return 1
+}
+
+secret_ok() {
+  test -f "$1" || return 1
+  bytes="$(wc -c <"$1" 2>/dev/null | tr -d ' \n\t')"
+  test "$bytes" = 64 || return 1
+  content="$(cat "$1" 2>/dev/null)" || return 1
+  hex_ok "$content"
+}
+
+# ---- 1. Environment sanity ------------------------------------------------
+LAST_STEP="env-sanity"
+: "${TRIM_PKGVAR:=}"
+test -n "$TRIM_PKGVAR" || die "TRIM_PKGVAR is empty; fnpack did not inject a package var directory"
+case "$TRIM_PKGVAR" in
+  /*) ;;
+  *) die "TRIM_PKGVAR ($TRIM_PKGVAR) is not an absolute path" ;;
+esac
+
+# ---- 2. Materialize $TRIM_PKGVAR under sag:sag mode 0700 -----------------
+LAST_STEP="pkgvar-mkdir"
+mkdir -p "$TRIM_PKGVAR" || die "cannot create $TRIM_PKGVAR (parent: $(ls -ld "$(dirname "$TRIM_PKGVAR")" 2>&1))"
+
+LAST_STEP="pkgvar-chown"
+chown sag:sag "$TRIM_PKGVAR" 2>/dev/null || log "chown sag:sag $TRIM_PKGVAR failed (non-fatal; may be a rare NAS ACL case)"
+
+LAST_STEP="pkgvar-chmod"
+chmod 0700 "$TRIM_PKGVAR" || die "cannot chmod 0700 $TRIM_PKGVAR"
+
+secret="$TRIM_PKGVAR/internal-secret"
+
+# ---- 3. Scrub residues from prior installs --------------------------------
+LAST_STEP="scrub-appconf-residue"
+if [ -n "${TRIM_PKGETC:-}" ] && [ -e "$TRIM_PKGETC/internal-secret" ]; then
+  rm -f "$TRIM_PKGETC/internal-secret" 2>/dev/null || log "could not remove legacy $TRIM_PKGETC/internal-secret (non-fatal; main no longer reads it)"
+fi
+
+# ---- 4. Reject a symlinked secret path ------------------------------------
+LAST_STEP="reject-symlink"
+if [ -L "$secret" ]; then
+  rm -f "$secret" 2>/dev/null || die "refusing symlinked $secret and cannot remove it"
+fi
+
+# ---- 5. Reuse a healthy secret; regenerate an unhealthy one ---------------
+LAST_STEP="secret-provisioning"
+if ! secret_ok "$secret"; then
+  if [ -e "$secret" ]; then
+    log "existing internal-secret is not a 64-hex blob; regenerating"
+    rm -f "$secret" || die "cannot remove stale $secret"
+  fi
+  umask 077
+  material="$(generate_secret)" || die "no working RNG (need openssl, xxd, or od + /dev/urandom)"
+  hex_ok "$material" || die "generated secret material failed hex validation"
+  printf '%s' "$material" >"$secret" || die "cannot write $secret (disk full or read-only?)"
+fi
+
+# ---- 6. Ownership + mode on the secret ------------------------------------
+LAST_STEP="secret-chown"
+chown sag:sag "$secret" 2>/dev/null || log "chown sag:sag $secret failed (non-fatal)"
+
+LAST_STEP="secret-chmod"
+chmod 0600 "$secret" || die "cannot chmod 0600 $secret"
+
+# ---- 7. Fixup ownership on any pre-existing subtree ----------------------
+# Overwrite installs from a prior root-era release may have left
+# root-owned dirs/files under $TRIM_PKGVAR. Recursive chown so the sag
+# runtime can read/write everything under its own data root.
+LAST_STEP="pkgvar-recursive-chown"
+chown -R sag:sag "$TRIM_PKGVAR" 2>/dev/null || log "recursive chown of $TRIM_PKGVAR failed (non-fatal)"
+
+# ---- 8. Post-condition ----------------------------------------------------
+LAST_STEP="post-condition"
+size="$(wc -c <"$secret" 2>/dev/null | tr -d ' \n\t')"
+case "$size" in
+  64) ;;
+  *) die "post-condition failed: internal-secret is $size bytes (want 64)" ;;
+esac
+
+log "install_callback complete (pkgvar=$TRIM_PKGVAR mode 0700 sag:sag, internal-secret 0600 sag:sag)"
 exit 0

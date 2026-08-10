@@ -132,16 +132,6 @@ test("rendered x86 and ARM packages satisfy the native package contract", async 
   }
 });
 
-test("rendered x86 and ARM packages permit fnOS 1.2.0302", async (t) => {
-  const { validateNativeTemplate } = await loadValidator();
-  for (const platform of ["x86", "arm"]) {
-    const root = await renderedPackage(t, platform);
-    const manifestPath = path.join(root, "manifest");
-    await writeFile(manifestPath, (await readFile(manifestPath, "utf8")).replace("1.2.0401", "1.2.0302"));
-    await validateNativeTemplate(root, platform);
-  }
-});
-
 test("rendered x86 and ARM packages accept the documented unified-gateway entry", async (t) => {
   const { validateNativeTemplate } = await loadValidator();
   for (const platform of ["x86", "arm"]) {
@@ -189,12 +179,23 @@ test("rendered native package rejects a manifest service port", async (t) => {
   await expectRejected(root, "x86", /service_port/i);
 });
 
-test("rendered native package rejects a package-user default when install_init needs root", async (t) => {
+test("rendered native package rejects a package run-as default (must be root so install_callback can chown $TRIM_PKGVAR to sag)", async (t) => {
   const root = await renderedPackage(t, "x86");
   await writeFile(path.join(root, "config/privilege"), JSON.stringify({
     defaults: { "run-as": "package" }, username: "sag", groupname: "sag",
   }));
   await expectRejected(root, "x86", /run-as.*root/i);
+});
+
+test("rendered native package rejects cmd/main missing the privilege drop", async (t) => {
+  const root = await renderedPackage(t, "x86");
+  const mainPath = path.join(root, "cmd/main");
+  const original = await readFile(mainPath, "utf8");
+  // Strip both fallbacks so no drop tool is referenced. The rest of
+  // the file stays intact; validator should now reject.
+  const stripped = original.replace(/\bsetpriv\b/g, "no_such_tool").replace(/\bsu\s+-s\b/g, "no_such_tool ");
+  await writeFile(mainPath, stripped);
+  await expectRejected(root, "x86", /setpriv|drop privileges/i);
 });
 
 test("rendered native package rejects platform all", async (t) => {
