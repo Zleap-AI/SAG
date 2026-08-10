@@ -10,11 +10,11 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
+from sag_api.core.config import settings
 from sag_api.core.db import get_session
 from sag_api.core.deps import get_current_user, get_engine_manager, get_llm
 from sag_api.core.error_taxonomy import ErrorCode
 from sag_api.core.errors import ApiError, ValidationError
-from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
 from sag_api.db.models import Source, User
 from sag_api.generation import LLMClient

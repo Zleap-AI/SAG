@@ -34,7 +34,11 @@ from sag_api.enums import (
 )
 from sag_api.sag._timings_probe import (
     capture_scope as _timings_capture_scope,
+)
+from sag_api.sag._timings_probe import (
     install_engine_timings_probe as _install_timings_probe,
+)
+from sag_api.sag._timings_probe import (
     release_scope as _timings_release_scope,
 )
 from sag_api.sag.config_builder import build_engine_config
