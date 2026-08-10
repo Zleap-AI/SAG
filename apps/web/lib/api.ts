@@ -19,6 +19,7 @@ import type {
   KnowledgeMcpDescriptor,
   Persona,
   SearchResponse,
+  Section,
   Source,
   SourceGraphResponse,
   SourceMcpDescriptor,
@@ -90,6 +91,36 @@ export interface GlobalSearchBody {
   top_k?: number;
   strategy?: SearchStrategy;
   save_exploration?: boolean;
+}
+
+export interface EvalCompareBody {
+  query: string;
+  strategies: SearchStrategy[];
+  source_ids?: string[];
+  top_k?: number;
+  judge?: boolean;
+}
+
+export interface EvalStrategyResult {
+  strategy: SearchStrategy;
+  sections: Section[];
+  stats: Record<string, unknown>;
+  error: string | null;
+}
+
+export interface EvalJudge {
+  a_strategy: SearchStrategy;
+  b_strategy: SearchStrategy;
+  winner: "A" | "B" | "tie" | string;
+  reason: string;
+}
+
+export interface EvalCompareResponse {
+  query: string;
+  results: EvalStrategyResult[];
+  judges: EvalJudge[];
+  judge_enabled: boolean;
+  judge_reason: string | null;
 }
 
 export interface GlobalSearchStreamHandlers {
@@ -790,6 +821,12 @@ export const api = {
       signal,
     }),
   streamGlobalSearch,
+  evalCompare: (b: EvalCompareBody, signal?: AbortSignal) =>
+    request<EvalCompareResponse>("/api/v1/search/eval-compare", {
+      method: "POST",
+      body: JSON.stringify(b),
+      signal,
+    }),
 
   // 知识宇宙：统计轮廓 + 原子时间线与显式探索
   universeManifest: () =>

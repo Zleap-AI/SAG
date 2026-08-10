@@ -24,11 +24,18 @@ import { Spinner } from "@/components/ui/spinner";
 import { api, ApiError } from "@/lib/api";
 import { SEARCH_STRATEGIES } from "@/lib/retrieval-config";
 import type { ModelConfig, ModelConfigPatch } from "@/lib/types";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 export function KnowledgeConfigForm() {
   const t = useTranslations("KnowledgeConfig");
   const strategies = useTranslations("SearchStrategies");
-  const { refreshCapabilities } = useApp();
+  const { refreshCapabilities, capabilities } = useApp();
+  const disabledStrategies = capabilities?.search_strategies_disabled ?? {};
   const [loaded, setLoaded] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
@@ -198,19 +205,44 @@ export function KnowledgeConfigForm() {
               <FieldLabel htmlFor="kb-search-strategy">{t("retrievalStrategy")}</FieldLabel>
               <Select
                 value={strategy}
-                onValueChange={(value) =>
-                  setStrategy(value as ModelConfig["search_strategy"])
-                }
+                onValueChange={(value) => {
+                  if (disabledStrategies[value as ModelConfig["search_strategy"]]) {
+                    // 保险:后端拒的策略这里不允许赋值,避免 save 时 422 起手
+                    return;
+                  }
+                  setStrategy(value as ModelConfig["search_strategy"]);
+                }}
               >
                 <SelectTrigger id="kb-search-strategy">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {SEARCH_STRATEGIES.map(({ value, labelKey }) => (
-                    <SelectItem key={value} value={value}>
-                      {strategies(labelKey)}
-                    </SelectItem>
-                  ))}
+                  <TooltipProvider delayDuration={150}>
+                    {SEARCH_STRATEGIES.map(({ value, labelKey }) => {
+                      const info = disabledStrategies[value];
+                      const item = (
+                        <SelectItem key={value} value={value} disabled={Boolean(info)}>
+                          <span className="flex items-center gap-1.5">
+                            {strategies(labelKey)}
+                            {info && (
+                              <span className="text-[10px] text-muted-foreground">
+                                {strategies("disabledSuffix")}
+                              </span>
+                            )}
+                          </span>
+                        </SelectItem>
+                      );
+                      if (!info) return item;
+                      return (
+                        <Tooltip key={value}>
+                          <TooltipTrigger asChild>{item}</TooltipTrigger>
+                          <TooltipContent side="right" className="max-w-[220px] text-left">
+                            {info.message}
+                          </TooltipContent>
+                        </Tooltip>
+                      );
+                    })}
+                  </TooltipProvider>
                 </SelectContent>
               </Select>
             </Field>

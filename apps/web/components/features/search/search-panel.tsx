@@ -28,6 +28,7 @@ import type {
   SearchResponse,
   Source,
 } from "@/lib/types";
+import { useApp } from "@/components/features/app-shell";
 import { useDetailPanel } from "@/components/features/detail-panel";
 import {
   useSearchWorkspace,
@@ -118,6 +119,7 @@ export function SearchPanel({
   const t = useTranslations("Search");
   const searchStrategies = useTranslations("SearchStrategies");
   const search = useSearchWorkspace();
+  const { capabilities } = useApp();
   const ensureSources = search.ensureSources;
   const { open } = useDetailPanel();
   const [mentionOpen, setMentionOpen] = React.useState(false);
@@ -435,6 +437,7 @@ export function SearchPanel({
                 value={search.strategy}
                 defaultValue={search.defaultStrategy}
                 onValueChange={changeStrategy}
+                disabledMap={capabilities?.search_strategies_disabled}
               />
             </div>
             {mentionOpen && (

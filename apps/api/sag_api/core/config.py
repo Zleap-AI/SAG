@@ -137,7 +137,9 @@ class Settings(BaseSettings):
     mineru_result_max_mb: int = 100
 
     # ── 检索默认 ────────────────────────────────────────────────────────
-    search_strategy: SearchStrategy = "vector"
+    # multi_es_fast：默认策略。相关率平均比 vector 高 ~14 个百分点；
+    # vector store 不支持 lexical(pgvector/oceanbase) 时由 engine_manager 自动降级为 vector。
+    search_strategy: SearchStrategy = "multi_es_fast"
     search_top_k: int = 8
     # 全库检索先选有界信源候选；@ 显式范围同样受此硬上限保护。
     search_source_candidate_limit: int = Field(default=16, ge=1, le=256)
@@ -145,6 +147,10 @@ class Settings(BaseSettings):
     # 精确模式（multi）含查询侧 LLM 往返；超时/失败/空结果自动回退快速模式（vector）。
     search_source_timeout: float = 12.0
     search_fallback_vector: bool = True
+
+    # ── 检索评测 ────────────────────────────────────────────────────────
+    # LLM-as-judge 在评测端点/CLI 里默认开启；线上或不想烧 token 时可临时关闭。
+    eval_llm_judge_enabled: bool = True
 
     # ── 知识宇宙 ──────────────────────────────────────────────────────────
     # 服务端统一下发景深门与场景预算，前端不再散落硬编码阈值。

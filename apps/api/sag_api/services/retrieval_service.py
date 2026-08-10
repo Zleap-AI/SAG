@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
@@ -371,6 +372,8 @@ async def retrieve_relevant_sections(
     requested_limit = max(1, min(int(top_k or settings.search_top_k), 50))
     candidate_limit = min(50, max(requested_limit * 3, requested_limit + 8))
     targets = [(source.sag_source_config_id, source) for source in sources]
+    total_start = time.perf_counter()
+    engine_start = time.perf_counter()
     outcome, lexical, hidden = await asyncio.gather(
         engine_manager.search_many(
             targets,
@@ -381,6 +384,7 @@ async def retrieve_relevant_sections(
         _lexical_sections(engine_manager, sources, query),
         _hidden_document_derivatives(sources),
     )
+    engine_latency_ms = round((time.perf_counter() - engine_start) * 1000, 2)
     def visible(section: RetrievedSection) -> bool:
         if section.source_id:
             return section.source_id not in hidden.source_ids
@@ -389,12 +393,15 @@ async def retrieve_relevant_sections(
     semantic_sections = [section for section in outcome.sections if visible(section)]
     lexical_sections = [section for section in lexical if visible(section)]
     hidden_count = len(outcome.sections) + len(lexical) - len(semantic_sections) - len(lexical_sections)
+    rerank_start = time.perf_counter()
     reranked = rerank_sections(
         query,
         semantic_sections,
         lexical=lexical_sections,
         limit=requested_limit,
     )
+    rerank_latency_ms = round((time.perf_counter() - rerank_start) * 1000, 2)
+    total_latency_ms = round((time.perf_counter() - total_start) * 1000, 2)
     stats = {
         **outcome.stats,
         "requested_top_k": requested_limit,
@@ -405,6 +412,9 @@ async def retrieve_relevant_sections(
         "lexical_candidates": reranked.lexical_count,
         "has_more": reranked.relevant_count > len(reranked.sections),
         "logically_deleted_filtered": hidden_count,
+        "latency_engine_ms": engine_latency_ms,
+        "latency_rerank_ms": rerank_latency_ms,
+        "latency_total_ms": total_latency_ms,
     }
     return SearchOutcome(
         query=outcome.query or query,

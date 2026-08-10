@@ -27,7 +27,16 @@ from zleap.sag import DataEngine
 from sag_api.core.config import Settings
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
 from sag_api.core.logging import get_logger
-from sag_api.enums import SEARCH_STRATEGIES, normalize_search_strategy
+from sag_api.enums import (
+    SEARCH_STRATEGIES,
+    SEARCH_STRATEGY_REQUIREMENTS,
+    normalize_search_strategy,
+)
+from sag_api.sag._timings_probe import (
+    capture_scope as _timings_capture_scope,
+    install_engine_timings_probe as _install_timings_probe,
+    release_scope as _timings_release_scope,
+)
 from sag_api.sag.config_builder import build_engine_config
 from sag_api.sag.dto import (
     EntityInfo,
@@ -217,6 +226,8 @@ class EngineManager:
         self._cache_size = max(1, settings.engine_cache_size)
         self._schema_ready = False
         self._universe_indexes_ready = False
+        # 一次性 monkey-patch zleap 检索链,把每 step 的 `_timings` 送回 SearchOutcome.stats
+        _install_timings_probe()
 
     async def _ensure_universe_query_indexes(self) -> None:
         """Best-effort composite indexes for bounded timeline and neighbor reads."""
@@ -326,19 +337,95 @@ class EngineManager:
         except Exception:  # noqa: BLE001 - indexes are an optimization, never availability
             log.exception("创建知识宇宙查询索引失败，继续使用现有索引")
 
+    # 门面策略(sag_api 对外) → zleap engine 实际接收的策略名。
+    # 门面提供更细粒度的可选项(如 multi_es_fast/precise),而 zleap 上游 mode
+    # 默认已经是 fast;此处保留翻译点是为了给后续 precise 变体和 telemetry 区分留位置。
+    _FACADE_TO_ZLEAP_STRATEGY: dict[str, str] = {
+        "vector": "vector",
+        "multi": "multi",
+        "multi_es_fast": "multi_es",
+    }
+
+    _VECTOR_PROVIDER_LEXICAL_SUPPORT: dict[str, bool] = {
+        "lancedb": True,
+        "es": True,
+        "pgvector": False,
+        "oceanbase": False,
+    }
+
+    def _vector_provider_supports_lexical(self) -> bool:
+        return self._VECTOR_PROVIDER_LEXICAL_SUPPORT.get(self._settings.sag_vector_provider, False)
+
+    def _strategy_missing_capabilities(self, strategy: str) -> tuple[str, ...]:
+        requirements = SEARCH_STRATEGY_REQUIREMENTS.get(strategy, frozenset())
+        missing: list[str] = []
+        for capability in requirements:
+            if capability == "lexical_search" and not self._vector_provider_supports_lexical():
+                missing.append(capability)
+        return tuple(missing)
+
     def _effective_search_strategy(self, requested: str | None) -> str:
-        """只允许快速/精确两档，并兼容存量内部配置中的 atomic。"""
+        """校验请求的门面策略。未识别或能力不满足时按配置策略回退,再兜底 vector。"""
         raw = requested or self._settings.search_strategy
         strategy = normalize_search_strategy(raw)
         if strategy in SEARCH_STRATEGIES:
-            if strategy != raw:
-                log.info("旧检索策略 %s 已按精确模式 multi 执行", raw)
-            return strategy
+            missing = self._strategy_missing_capabilities(strategy)
+            if not missing:
+                if strategy != raw:
+                    log.info("旧检索策略 %s 已按精确模式 multi 执行", raw)
+                return strategy
+            log.warning(
+                "策略 %s 所需能力缺失(%s, provider=%s),按后台默认策略回退",
+                strategy,
+                ",".join(missing),
+                self._settings.sag_vector_provider,
+            )
+        else:
+            log.warning("忽略不支持的检索策略 %s", raw)
         fallback = normalize_search_strategy(self._settings.search_strategy)
-        if fallback not in SEARCH_STRATEGIES:
+        if fallback not in SEARCH_STRATEGIES or self._strategy_missing_capabilities(fallback):
             fallback = "vector"
-        log.warning("忽略不支持的检索策略 %s，改用 %s", raw, fallback)
         return fallback
+
+    def _zleap_engine_strategy(self, facade_strategy: str) -> str:
+        """把门面策略翻译成 zleap DataEngine.search 认识的名字。"""
+        return self._FACADE_TO_ZLEAP_STRATEGY.get(facade_strategy, facade_strategy)
+
+    @classmethod
+    def _capability_disabled_reason(cls, capability: str, provider: str) -> tuple[str, str] | None:
+        """给定缺失的能力名 + 当前 provider,产出 (reason_code, 用户可读文案)。"""
+        if capability == "lexical_search":
+            return (
+                "vector_provider_lacks_lexical",
+                f"当前向量存储 ({provider}) 不支持 BM25 词法检索,无法启用 multi_es 系列策略。",
+            )
+        return None
+
+    @classmethod
+    def strategies_capability_report(cls, settings: Settings) -> dict[str, Any]:
+        """探测每个门面策略在当前部署下是否可用,供 /capabilities 直接透传给前端。
+
+        无需持有 EngineManager 实例——所有判据只来自 settings。
+        """
+        provider = settings.sag_vector_provider
+        supports_lexical = cls._VECTOR_PROVIDER_LEXICAL_SUPPORT.get(provider, False)
+        enabled: list[str] = []
+        disabled: dict[str, dict[str, str]] = {}
+        for strategy in sorted(SEARCH_STRATEGIES):
+            requirements = SEARCH_STRATEGY_REQUIREMENTS.get(strategy, frozenset())
+            missing: list[tuple[str, str]] = []
+            for capability in requirements:
+                if capability == "lexical_search" and not supports_lexical:
+                    reason = cls._capability_disabled_reason(capability, provider)
+                    if reason is not None:
+                        missing.append(reason)
+            if missing:
+                # 只呈现第一个原因即可满足 UI 灰置 + tooltip 展示。
+                reason_code, message = missing[0]
+                disabled[strategy] = {"reason": reason_code, "message": message}
+            else:
+                enabled.append(strategy)
+        return {"enabled": enabled, "disabled": disabled}
 
     def _config_for(self, source: Source | None) -> Any:
         overrides = None
@@ -725,18 +812,32 @@ class EngineManager:
         strategy: str,
         top_k: int,
     ) -> SearchOutcome:
-        """单次检索（带每源时限）。超时抛 asyncio.TimeoutError。"""
+        """单次检索（带每源时限）。超时抛 asyncio.TimeoutError。
+
+        strategy 是门面名(vector/multi/multi_es_fast);进入 zleap 前翻译成引擎名。
+        """
         timeout = max(1.0, self._settings.search_source_timeout)
+        engine_strategy = self._zleap_engine_strategy(strategy)
 
         async def run() -> Any:
             # The timeout must include waiting for the per-source lock. Otherwise
             # concurrent searches can queue forever before the timed region starts.
             with map_sag_errors(stage=ErrorStage.RETRIEVE):
                 async with self.use(source_config_id, source) as engine:
-                    return await engine.search(query, strategy=strategy, top_k=top_k)
+                    return await engine.search(query, strategy=engine_strategy, top_k=top_k)
 
-        result = await asyncio.wait_for(run(), timeout)
-        return SearchOutcome.from_result(result)
+        # 开一个 timings 桶,捕获 zleap 检索链内部的每 step 耗时(见 _timings_probe)。
+        bucket, token = _timings_capture_scope()
+        try:
+            result = await asyncio.wait_for(run(), timeout)
+        finally:
+            _timings_release_scope(token)
+        outcome = SearchOutcome.from_result(result)
+        if bucket:
+            merged_stats = dict(outcome.stats)
+            merged_stats["engine_timings"] = dict(bucket)
+            outcome = SearchOutcome(query=outcome.query, sections=outcome.sections, stats=merged_stats)
+        return outcome
 
     async def search(
         self,
@@ -922,16 +1023,23 @@ class EngineManager:
         )
         from zleap.sag.modules.load.processor import DocumentProcessor
 
-        async def recall() -> list[dict[str, Any]]:
+        async def recall() -> tuple[list[dict[str, Any]], dict[str, float]]:
+            timings: dict[str, float] = {}
+            t0 = time.perf_counter()
             query_vector = await DocumentProcessor().generate_embedding(query)
+            timings["vector.embedding"] = round((time.perf_counter() - t0) * 1000, 2)
             repository = SourceChunkRepository(get_es_client())
-            return await repository.search_similar_by_content(
+            t1 = time.perf_counter()
+            docs = await repository.search_similar_by_content(
                 query_vector=query_vector,
                 k=top_k,
                 source_config_ids=source_config_ids,
             )
+            timings["vector.es_search"] = round((time.perf_counter() - t1) * 1000, 2)
+            timings["vector.total"] = round((time.perf_counter() - t0) * 1000, 2)
+            return docs, timings
 
-        hits = await asyncio.wait_for(
+        hits, batch_timings = await asyncio.wait_for(
             recall(),
             timeout=max(1.0, self._settings.search_source_timeout),
         )
@@ -978,6 +1086,7 @@ class EngineManager:
                 "source_limit_applied": requested_sources > len(targets),
                 "candidates": len(sections) + len(loose),
                 "chunk_recall": "batch-vector",
+                "engine_timings": batch_timings,
             },
         )
 

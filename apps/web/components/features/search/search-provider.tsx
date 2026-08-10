@@ -159,9 +159,17 @@ function rememberSearch(query: string, current: string[]): string[] {
 
 export function SearchProvider({
   defaultStrategy,
+  disabledMap,
   children,
 }: {
   defaultStrategy: SearchStrategy;
+  /**
+   * 后端 capabilities.search_strategies_disabled;某个策略被下线后,
+   * 若当前选中的正好落在这里,就静默回退到 defaultStrategy。
+   */
+  disabledMap?: Partial<
+    Record<SearchStrategy, { reason: string; message: string }>
+  >;
   children: React.ReactNode;
 }) {
   const t = useTranslations("Search");
@@ -487,6 +495,17 @@ export function SearchProvider({
   const setStrategy = React.useCallback((strategy: SearchStrategy) => {
     setState((current) => ({ ...current, strategy }));
   }, []);
+
+  // capabilities 变化后,如果当前选中的策略已被后端标记为不可用,
+  // 静默回退到 defaultStrategy,避免用户点击「检索」时才收到 422。
+  React.useEffect(() => {
+    if (!disabledMap) return;
+    setState((current) => {
+      if (!disabledMap[current.strategy]) return current;
+      if (current.strategy === defaultStrategy) return current;
+      return { ...current, strategy: defaultStrategy };
+    });
+  }, [disabledMap, defaultStrategy]);
 
   const setScope = React.useCallback((scoped: SearchScope[]) => {
     setState((current) => ({ ...current, scoped }));

@@ -14,6 +14,7 @@ from sag_api.core.model_providers import model_provider_catalog
 from sag_api.db.models import Source, User
 from sag_api.generation import LLMClient
 from sag_api.mcp.server import MCP_TOOL_DETAILS, MCP_TOOL_NAMES
+from sag_api.sag.engine_manager import EngineManager
 from sag_api.schemas.system import (
     ModelConfigUpdate,
     QuickModelSetupRequest,
@@ -26,6 +27,7 @@ log = get_logger("system")
 
 
 def _capabilities() -> dict:
+    strategy_report = EngineManager.strategies_capability_report(settings)
     return {
         "llm_configured": settings.llm_configured,
         "llm_provider": settings.llm_provider,
@@ -38,6 +40,8 @@ def _capabilities() -> dict:
         "vector_provider": settings.sag_vector_provider,
         "language": settings.sag_language,
         "search_strategy": settings.search_strategy,
+        "search_strategies": strategy_report["enabled"],
+        "search_strategies_disabled": strategy_report["disabled"],
         "timezone": settings.timezone,
         "max_upload_mb": settings.max_upload_mb,
         "allowed_upload_exts": sorted(settings.allowed_upload_exts),

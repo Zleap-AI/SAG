@@ -819,6 +819,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             ? capabilities.search_strategy
             : DEFAULT_SEARCH_STRATEGY
         }
+        disabledMap={capabilities?.search_strategies_disabled}
       >
         <KnowledgeProvider>
           <ConversationProvider

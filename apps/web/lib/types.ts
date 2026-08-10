@@ -1,4 +1,7 @@
-import type { SearchStrategy } from "./retrieval-config";
+import type {
+  SearchStrategy,
+  SearchStrategyDisabledMap,
+} from "./retrieval-config";
 
 export interface User {
   id: string;
@@ -682,6 +685,17 @@ export interface Capabilities {
   vector_provider: string;
   language: string;
   search_strategy: SearchStrategy;
+  /**
+   * Strategies the backend currently accepts. When the field is missing
+   * (older API), the client falls back to the full enum defined by
+   * SEARCH_STRATEGIES.
+   */
+  search_strategies?: SearchStrategy[];
+  /**
+   * Strategies the backend advertises but cannot serve on the active
+   * vector provider — used to gray the option out with an explanation.
+   */
+  search_strategies_disabled?: SearchStrategyDisabledMap;
   document_parser: DocumentParser;
   effective_document_parser: EffectiveDocumentParser;
   mineru_configured: boolean;

@@ -91,7 +91,7 @@ QUICK_SETUP_302 = {
     "document_extract_concurrency": 30,
     "document_chunk_max_tokens": 1_000,
     "document_chunk_mode": "standard",
-    "search_strategy": "vector",
+    "search_strategy": "multi_es_fast",
     "search_top_k": 8,
     "sag_language": "zh",
 }

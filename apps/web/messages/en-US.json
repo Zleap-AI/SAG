@@ -335,13 +335,16 @@
     "loadFailed": "Failed to load knowledge"
   },
   "SearchStrategies": {
-    "vectorLabel": "Fast",
-    "vectorDescription": "Retrieve directly by semantic similarity for a faster response.",
+    "vectorLabel": "Fast (vector)",
+    "vectorDescription": "Retrieve directly by vector similarity for a faster response.",
+    "multiEsFastLabel": "Fast (multi_es-fast)",
+    "multiEsFastDescription": "BM25 entity recall plus event multi-hop, skipping the LLM rerank.",
     "multiLabel": "Precise",
     "multiDescription": "Combine entity relationships with LLM reranking for more complete results.",
     "mode": "Retrieval mode",
     "modeAria": "Retrieval mode: {strategy}",
-    "default": "Default"
+    "default": "Default",
+    "disabledSuffix": "(unavailable)"
   },
   "RetrievalTest": {
     "failed": "Retrieval failed",
@@ -352,7 +355,14 @@
     "run": "Retrieve",
     "resultCount": "{count, plural, one {# result} other {# results}}",
     "empty": "No content was retrieved. Rephrase the query or confirm that document processing is complete.",
-    "section": "Passage"
+    "section": "Passage",
+    "compareMode": "Compare two strategies",
+    "runCompare": "Compare",
+    "strategyA": "Strategy A",
+    "strategyB": "Strategy B",
+    "judgeToggle": "Enable LLM judge",
+    "sameStrategyError": "Pick two different strategies for A and B",
+    "judgeMissing": "No judge verdict was produced"
   },
   "KnowledgeConfig": {
     "title": "Knowledge settings",

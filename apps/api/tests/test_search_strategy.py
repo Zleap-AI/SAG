@@ -365,3 +365,223 @@ async def test_search_source_candidates_use_database_limit_and_explicit_order(mo
 
             await session.execute(delete(Source).where(Source.id.in_(ids)))
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_multi_es_fast_translates_to_zleap_multi_es(monkeypatch):
+    """门面 multi_es_fast → zleap multi_es;stats.requested/effective 都保留门面名。
+
+    这是 vector vs multi_es_fast 评测能真的分出差异的前提:如果翻译层错把 multi_es_fast
+    折成 vector,eval-compare 会给出两列相同结果。
+    """
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager
+
+    monkeypatch.setattr(settings, "sag_vector_provider", "lancedb")
+    manager = EngineManager(settings)
+    captured_strategies: list[str] = []
+
+    @asynccontextmanager
+    async def fake_use(*_args, **_kwargs):
+        class _Result:
+            def __init__(self, query: str):
+                self.query = query
+                # zleap engine yields dict-shape sections; from_section reads .get.
+                self.sections = [
+                    {
+                        "chunk_id": "c1",
+                        "heading": "h",
+                        "content": "body",
+                        "score": 0.5,
+                        "rank": 1,
+                        "source_config_id": "cfg-1",
+                    }
+                ]
+                self.stats = {"chunk_recall": "multi_es"}
+
+        class _Engine:
+            async def search(self, query, *, strategy, top_k):
+                captured_strategies.append(strategy)
+                return _Result(query)
+
+        yield _Engine()
+
+    monkeypatch.setattr(manager, "use", fake_use)
+
+    outcome = await manager.search(
+        "cfg-1",
+        "外卖骑手收入",
+        strategy="multi_es_fast",
+        top_k=6,
+    )
+
+    assert captured_strategies == ["multi_es"]
+    assert outcome.stats["requested_strategy"] == "multi_es_fast"
+    assert outcome.stats["effective_strategy"] == "multi_es_fast"
+    assert outcome.stats["fallback_used"] is False
+
+
+@pytest.mark.asyncio
+async def test_multi_es_fast_gated_by_lexical_capability(monkeypatch):
+    """provider 不支持 lexical_search 时,门面策略必须回退到 settings.search_strategy(通常是 vector)。
+
+    Web 端灰置只是提示,后端必须自己拦住,否则会打到不支持 BM25 的向量库。
+    """
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager
+
+    monkeypatch.setattr(settings, "sag_vector_provider", "pgvector")
+    monkeypatch.setattr(settings, "search_strategy", "vector")
+    manager = EngineManager(settings)
+
+    effective = manager._effective_search_strategy("multi_es_fast")
+    assert effective == "vector"
+
+
+def test_strategies_capability_report_marks_multi_es_disabled_on_pgvector(monkeypatch):
+    """capabilities API 直接透传的形状。UI 灰置 + tooltip 靠这里返回的 disabled map。"""
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager
+
+    monkeypatch.setattr(settings, "sag_vector_provider", "pgvector")
+    report = EngineManager.strategies_capability_report(settings)
+
+    assert set(report["enabled"]) == {"vector", "multi"}
+    assert "multi_es_fast" in report["disabled"]
+    disabled_entry = report["disabled"]["multi_es_fast"]
+    assert disabled_entry["reason"] == "vector_provider_lacks_lexical"
+    assert "pgvector" in disabled_entry["message"]
+
+    monkeypatch.setattr(settings, "sag_vector_provider", "lancedb")
+    ok_report = EngineManager.strategies_capability_report(settings)
+    assert set(ok_report["enabled"]) == {"vector", "multi", "multi_es_fast"}
+    assert ok_report["disabled"] == {}
+
+
+@pytest.mark.asyncio
+async def test_capabilities_endpoint_exposes_disabled_strategies(monkeypatch):
+    """Web 端读的 /system/capabilities 必须把 disabled map 透传给前端灰置逻辑。"""
+    from sag_api.core.config import settings
+    from sag_api.main import app
+
+    monkeypatch.setattr(settings, "sag_vector_provider", "pgvector")
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            response = await client.get("/api/v1/system/capabilities")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "multi_es_fast" not in payload["search_strategies"]
+    assert "multi_es_fast" in payload["search_strategies_disabled"]
+    assert (
+        payload["search_strategies_disabled"]["multi_es_fast"]["reason"]
+        == "vector_provider_lacks_lexical"
+    )
+
+
+@pytest.mark.asyncio
+async def test_eval_compare_returns_two_strategies_and_skips_judge(monkeypatch):
+    """/search/eval-compare 的端到端形状:两列结果 + judge 因 LLM 未配置被跳过。
+
+    模拟 curl POST。真跑要求本地 LLM 已配置,这里只覆盖形状 + 关键字段(strategy 命名、
+    stats 保留 requested_strategy、judge_reason 说明未运行原因)。
+    """
+    from sag_api.core.config import settings
+    from sag_api.core.deps import get_engine_manager, get_llm
+    from sag_api.main import app
+    from sag_api.sag.dto import RetrievedSection, SearchOutcome
+
+    monkeypatch.setattr(settings, "sag_vector_provider", "lancedb")
+
+    class StubEngine:
+        async def provision(self, *_args, **_kwargs):
+            return None
+
+        async def search_many(self, targets, query, *, strategy=None, top_k=None):
+            source_config_id = targets[0][0] if targets else "cfg-0"
+            # Vector vs multi_es_fast: 用不同 heading 让两列可视化上真的不一样,
+            # 从而证明翻译层能触达 zleap 引擎、而不是折成同一个 pipeline。
+            heading = (
+                "vector-hit" if strategy == "vector" else "multi_es-hit"
+            )
+            return SearchOutcome(
+                query=query,
+                sections=[
+                    RetrievedSection(
+                        chunk_id=f"chunk-{strategy}",
+                        heading=heading,
+                        content="片段正文",
+                        score=0.8,
+                        source_config_id=source_config_id,
+                    )
+                ],
+                stats={
+                    "requested_strategy": strategy,
+                    "effective_strategy": strategy,
+                    "fallback_used": False,
+                    "candidates": 1,
+                    "relevant": 1,
+                },
+            )
+
+    class NoLLM:
+        configured = False
+
+    app.dependency_overrides[get_engine_manager] = lambda: StubEngine()
+    app.dependency_overrides[get_llm] = lambda: NoLLM()
+
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+                headers = await _register_eval(client)
+                source = await client.post(
+                    "/api/v1/sources",
+                    headers=headers,
+                    json={"name": "eval-compare 测试源"},
+                )
+                assert source.status_code == 201, source.text
+
+                response = await client.post(
+                    "/api/v1/search/eval-compare",
+                    headers=headers,
+                    json={
+                        "query": "外卖骑手收入",
+                        "strategies": ["vector", "multi_es_fast"],
+                        "source_ids": [source.json()["id"]],
+                        "top_k": 5,
+                        "judge": True,
+                    },
+                )
+    finally:
+        app.dependency_overrides.pop(get_engine_manager, None)
+        app.dependency_overrides.pop(get_llm, None)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["query"] == "外卖骑手收入"
+    assert [row["strategy"] for row in payload["results"]] == ["vector", "multi_es_fast"]
+    # 两列各自透传了本策略名,方便 UI 打标签。
+    assert payload["results"][0]["stats"]["requested_strategy"] == "vector"
+    assert payload["results"][1]["stats"]["requested_strategy"] == "multi_es_fast"
+    # 两列结果确实不同(证明翻译层没把 multi_es_fast 折成 vector)。
+    assert (
+        payload["results"][0]["sections"][0]["heading"]
+        != payload["results"][1]["sections"][0]["heading"]
+    )
+    # LLM 未配置时 judge 被显式禁用,且给出人可读的原因。
+    assert payload["judge_enabled"] is False
+    assert payload["judges"] == []
+    assert payload["judge_reason"] is not None
+
+
+async def _register_eval(client: httpx.AsyncClient) -> dict[str, str]:
+    """独立的注册辅助,避免和主 register 复用同一个邮箱触发唯一约束。"""
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "eval-compare@t.com", "password": "password123"},
+    )
+    assert response.status_code == 201, response.text
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}

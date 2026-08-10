@@ -13,13 +13,18 @@ from sse_starlette.sse import EventSourceResponse
 from sag_api.core.db import get_session
 from sag_api.core.deps import get_current_user, get_engine_manager, get_llm
 from sag_api.core.error_taxonomy import ErrorCode
-from sag_api.core.errors import ApiError
+from sag_api.core.errors import ApiError, ValidationError
+from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
 from sag_api.db.models import Source, User
 from sag_api.generation import LLMClient
 from sag_api.sag import EngineManager, RetrievedSection, SearchOutcome
 from sag_api.schemas.insight import EntityOut, GraphRelationOut
 from sag_api.schemas.search import (
+    EvalCompareRequest,
+    EvalCompareResponse,
+    EvalJudgeOut,
+    EvalStrategyResultOut,
     GlobalSearchRequest,
     SearchEventOut,
     SearchRequest,
@@ -27,6 +32,7 @@ from sag_api.schemas.search import (
     SearchSourceHitOut,
     SectionOut,
 )
+from sag_api.services.eval.llm_judge import judge_pairwise
 from sag_api.services.retrieval_service import (
     EventScoreMap,
     recall_event_scores,
@@ -397,4 +403,170 @@ async def global_search_stream(
     return EventSourceResponse(
         event_gen(),
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _run_one_strategy(
+    engine_manager: EngineManager,
+    sources: list[Source],
+    query: str,
+    strategy: str,
+    top_k: int | None,
+    source_refs: dict[str, Source],
+) -> EvalStrategyResultOut:
+    """一次跑一个策略,任何失败都吸掉转成 error 字段,不让 gather 把整个对比搞崩。"""
+    try:
+        outcome = await retrieve_relevant_sections(
+            engine_manager,
+            sources,
+            query,
+            strategy=strategy,
+            top_k=top_k,
+        )
+    except Exception as error:  # noqa: BLE001
+        log.warning("eval-compare 策略 %s 失败:%s", strategy, error)
+        return EvalStrategyResultOut(
+            strategy=strategy,  # type: ignore[arg-type]
+            sections=[],
+            stats={},
+            error=getattr(error, "message", None) or str(error),
+        )
+    section_outputs: list[SectionOut] = []
+    for section in outcome.sections:
+        source = source_refs.get(section.source_config_id or "")
+        section_outputs.append(
+            SectionOut(
+                **{
+                    **section.model_dump(),
+                    "source_id": source.id if source else section.source_id,
+                },
+                source_name=source.name if source else None,
+            )
+        )
+    return EvalStrategyResultOut(
+        strategy=strategy,  # type: ignore[arg-type]
+        sections=section_outputs,
+        stats=dict(outcome.stats),
+    )
+
+
+@global_router.post("/eval-compare", response_model=EvalCompareResponse)
+async def eval_compare(
+    body: EvalCompareRequest,
+    _user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+    engine_manager: EngineManager = Depends(get_engine_manager),
+    llm: LLMClient = Depends(get_llm),
+) -> EvalCompareResponse:
+    """把同一 query 在多个策略下各跑一次,可选让 LLM pairwise 打分。
+
+    - 策略里如包含当前 provider 不支持的能力,该策略结果会带 error,不影响其它策略。
+    - Judge 只在 settings.eval_llm_judge_enabled 与 body.judge 同时为真且 LLM 已配置时生效。
+    """
+    # 去重同时保留客户端给的顺序。
+    ordered_strategies: list[str] = []
+    seen: set[str] = set()
+    for strategy in body.strategies:
+        if strategy not in seen:
+            seen.add(strategy)
+            ordered_strategies.append(strategy)
+    if len(ordered_strategies) < 2:
+        raise ValidationError("eval-compare 至少需要两个不同策略")
+
+    sources = await search_source_candidates(session, body.source_ids)
+    await session.commit()  # 释放 DB 连接;检索阶段可能长跑
+
+    source_refs = {source.sag_source_config_id: source for source in sources}
+    if not sources:
+        empty_results = [
+            EvalStrategyResultOut(
+                strategy=strategy,  # type: ignore[arg-type]
+                sections=[],
+                stats={"sources": 0},
+            )
+            for strategy in ordered_strategies
+        ]
+        return EvalCompareResponse(
+            query=body.query,
+            results=empty_results,
+            judges=[],
+            judge_enabled=False,
+            judge_reason="没有可检索的信源",
+        )
+
+    results = await asyncio.gather(
+        *(
+            _run_one_strategy(
+                engine_manager,
+                sources,
+                body.query,
+                strategy,
+                body.top_k,
+                source_refs,
+            )
+            for strategy in ordered_strategies
+        )
+    )
+
+    # Pairwise judge:两两比,含 error 的一侧直接跳过。
+    judge_enabled = bool(
+        body.judge and settings.eval_llm_judge_enabled and llm.configured,
+    )
+    judge_reason: str | None = None
+    if not judge_enabled:
+        if not body.judge:
+            judge_reason = "本次请求关闭了 judge"
+        elif not settings.eval_llm_judge_enabled:
+            judge_reason = "后台已关闭 eval_llm_judge_enabled"
+        elif not llm.configured:
+            judge_reason = "LLM 未配置,无法执行 judge"
+
+    judges: list[EvalJudgeOut] = []
+    if judge_enabled:
+        raw_by_strategy = {
+            result.strategy: result for result in results if result.error is None
+        }
+        pairs: list[tuple[str, str]] = []
+        for a_index, a in enumerate(ordered_strategies):
+            for b in ordered_strategies[a_index + 1 :]:
+                if a in raw_by_strategy and b in raw_by_strategy:
+                    pairs.append((a, b))
+
+        async def one_pair(a: str, b: str) -> EvalJudgeOut | None:
+            a_sections = [
+                RetrievedSection(**section.model_dump())
+                for section in raw_by_strategy[a].sections
+            ]
+            b_sections = [
+                RetrievedSection(**section.model_dump())
+                for section in raw_by_strategy[b].sections
+            ]
+            verdict = await judge_pairwise(
+                llm,
+                body.query,
+                a,
+                a_sections,
+                b,
+                b_sections,
+            )
+            if verdict is None:
+                return None
+            return EvalJudgeOut(
+                a_strategy=a,  # type: ignore[arg-type]
+                b_strategy=b,  # type: ignore[arg-type]
+                winner=verdict.winner,
+                reason=verdict.reason,
+            )
+
+        pair_verdicts = await asyncio.gather(*(one_pair(a, b) for a, b in pairs))
+        judges = [verdict for verdict in pair_verdicts if verdict is not None]
+        if pairs and not judges:
+            judge_reason = "所有 pairwise judge 都失败,已回退空结果"
+
+    return EvalCompareResponse(
+        query=body.query,
+        results=list(results),
+        judges=judges,
+        judge_enabled=judge_enabled,
+        judge_reason=judge_reason,
     )

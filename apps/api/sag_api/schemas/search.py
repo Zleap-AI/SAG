@@ -68,3 +68,35 @@ class SearchResponse(BaseModel):
     summary: str = ""
     exploration_id: str | None = None
     stats: dict[str, Any]
+
+
+class EvalCompareRequest(BaseModel):
+    """/search/eval-compare 请求体:同一 query,多策略并排跑。"""
+
+    query: str = Field(min_length=1, max_length=4000)
+    strategies: list[SearchStrategy] = Field(min_length=2, max_length=4)
+    source_ids: list[str] | None = Field(default=None, max_length=256)
+    top_k: int | None = Field(default=None, ge=1, le=50)
+    judge: bool = True  # 前端可临时关掉;是否真的调 LLM 还看后台 settings 开关
+
+
+class EvalStrategyResultOut(BaseModel):
+    strategy: SearchStrategy
+    sections: list[SectionOut]
+    stats: dict[str, Any]
+    error: str | None = None
+
+
+class EvalJudgeOut(BaseModel):
+    a_strategy: SearchStrategy
+    b_strategy: SearchStrategy
+    winner: str  # "A" | "B" | "tie"
+    reason: str
+
+
+class EvalCompareResponse(BaseModel):
+    query: str
+    results: list[EvalStrategyResultOut]
+    judges: list[EvalJudgeOut] = Field(default_factory=list)
+    judge_enabled: bool
+    judge_reason: str | None = None  # 例:LLM 未配置 / 后台 flag 关闭

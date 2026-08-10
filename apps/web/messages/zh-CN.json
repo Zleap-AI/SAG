@@ -335,13 +335,16 @@
     "loadFailed": "知识库加载失败"
   },
   "SearchStrategies": {
-    "vectorLabel": "快速",
-    "vectorDescription": "基于语义相似度直接召回，响应更快。",
+    "vectorLabel": "快速(vector)",
+    "vectorDescription": "基于向量语义相似度直接召回,响应更快。",
+    "multiEsFastLabel": "快速(multi_es-fast)",
+    "multiEsFastDescription": "基于 BM25 实体召回与事件多跳的快速检索,跳过 LLM 精排。",
     "multiLabel": "精确",
-    "multiDescription": "结合实体关系与 LLM 精排，结果更完整。",
+    "multiDescription": "结合实体关系与 LLM 精排,结果更完整。",
     "mode": "检索模式",
     "modeAria": "检索模式：{strategy}",
-    "default": "默认"
+    "default": "默认",
+    "disabledSuffix": "(不可用)"
   },
   "RetrievalTest": {
     "failed": "检索失败",
@@ -352,7 +355,14 @@
     "run": "检索",
     "resultCount": "召回 {count, number} 条",
     "empty": "没有召回任何内容。换个说法，或确认文档已处理完成。",
-    "section": "片段"
+    "section": "片段",
+    "compareMode": "对比两种策略",
+    "runCompare": "对比检索",
+    "strategyA": "策略 A",
+    "strategyB": "策略 B",
+    "judgeToggle": "启用 LLM 评审",
+    "sameStrategyError": "请为 A / B 选择两种不同的策略",
+    "judgeMissing": "本次未生成评审结果"
   },
   "KnowledgeConfig": {
     "title": "知识库配置",
