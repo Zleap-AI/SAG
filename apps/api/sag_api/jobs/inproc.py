@@ -43,6 +43,11 @@ _MAINTENANCE_JOB_TYPES = {
     JobType.DELETE_DOCUMENT,
     JobType.REPROCESS_DOCUMENT,
 }
+# 停机时给正在执行的 job 一个到达安全检查点的窗口。fnOS 容器停机会
+# 先送 SIGTERM 再送 SIGKILL；这里的宽限期让 job 可以在数据库里提交
+# SUCCEEDED/FAILED，然后再取消其余 worker。测试可 monkeypatch 缩短。
+_STOP_GRACE_SECONDS = 5.0
+_STOP_CANCEL_SECONDS = 1.0
 
 
 def _now() -> datetime:
@@ -468,12 +473,15 @@ class InProcessAsyncQueue(JobQueue):
 
     def _schedule_retry(self, job_id: str, delay: float) -> None:
         """退避后重新入队（不阻塞 worker）。"""
+
         if self._stopping:
             return
 
         async def _later() -> None:
             try:
                 await asyncio.sleep(delay)
+                if self._stopping:
+                    return
                 await self.enqueue(job_id)
             except asyncio.CancelledError:
                 pass
@@ -501,6 +509,10 @@ class InProcessAsyncQueue(JobQueue):
         log.info("任务队列已启动（并发=%d）", self._concurrency)
 
     async def stop(self) -> None:
+        # ``_stopping`` gates the worker loop between iterations so a worker
+        # that has just finished one job does not pick up the next from the
+        # queue while the rest of shutdown is running.
+        self._stopping = True
         # Stop every task that can mutate maintenance state before reading that
         # state. In particular, a delete worker may finish maintenance while
         # shutdown is awaiting a database lookup; iterating the live set there
@@ -512,19 +524,69 @@ class InProcessAsyncQueue(JobQueue):
         retry_tasks = list(self._retry_tasks)
         for t in retry_tasks:
             t.cancel()
+
+        # Give any in-flight job a bounded chance to reach a safe boundary
+        # (commit SUCCEEDED/FAILED to the database) before cancelling it.
+        # fnOS container shutdown sends SIGTERM before SIGKILL, so a job that
+        # has already opened a database session should be allowed to finish
+        # rather than leaving RUNNING rows to be recovered next startup.
         workers = list(self._workers)
-        for worker in workers:
+        active_workers = {worker for worker in self._active_workers if not worker.done()}
+        idle_workers = [worker for worker in workers if worker not in active_workers]
+        for worker in idle_workers:
             worker.cancel()
 
         if maintenance_tasks:
             await asyncio.gather(*maintenance_tasks, return_exceptions=True)
         if retry_tasks:
             await asyncio.gather(*retry_tasks, return_exceptions=True)
-        if workers:
-            await asyncio.gather(*workers, return_exceptions=True)
+        if idle_workers:
+            await asyncio.gather(*idle_workers, return_exceptions=True)
+
+        if active_workers:
+            _, pending = await asyncio.wait(
+                active_workers, timeout=_STOP_GRACE_SECONDS
+            )
+            if pending:
+                log.warning(
+                    "任务队列优雅停机超时（%.1fs），取消 %d 个仍在执行的任务",
+                    _STOP_GRACE_SECONDS,
+                    len(pending),
+                )
+                for worker in pending:
+                    worker.cancel()
+                stopped, live = await asyncio.wait(
+                    pending, timeout=_STOP_CANCEL_SECONDS
+                )
+                if stopped:
+                    await asyncio.gather(*stopped, return_exceptions=True)
+                if live:
+                    # Fail before clearing worker state. The lifespan cleanup
+                    # sequence must not dispose shared engines or SQLite pools
+                    # underneath a task that ignored cancellation; the
+                    # container runtime remains the final termination boundary.
+                    log.error(
+                        "任务队列取消回收超时（%.1fs），仍有 %d 个 worker 未停止",
+                        _STOP_CANCEL_SECONDS,
+                        len(live),
+                    )
+                    raise RuntimeError(
+                        f"{len(live)} worker(s) did not stop after cancellation"
+                    )
+
+        # 不在停机阶段继续消费积压任务；数据库里的 QUEUED 记录会在下次启动时恢复。
+        while True:
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            else:
+                self._queue.task_done()
+
         self._source_maintenance_tasks.clear()
         self._retry_tasks.clear()
         self._workers.clear()
+        self._active_workers.clear()
 
         ready_source_ids = tuple(self._source_maintenance_ready)
         if ready_source_ids:
@@ -750,9 +812,15 @@ class InProcessAsyncQueue(JobQueue):
             log.info("恢复 %d 个未完成任务", len(rows))
 
     async def _worker_loop(self, idx: int) -> None:
-        while True:
+        while not self._stopping:
             _priority, _sequence, job_id = await self._queue.get()
+            if self._stopping:
+                self._queue.task_done()
+                return
             running = asyncio.create_task(self._run(job_id), name=f"sag-job-{job_id}")
+            worker_loop_task = asyncio.current_task()
+            if worker_loop_task is not None:
+                self._active_workers.add(worker_loop_task)
             try:
                 await running
             except asyncio.CancelledError:
@@ -762,8 +830,8 @@ class InProcessAsyncQueue(JobQueue):
             except Exception:  # noqa: BLE001
                 log.exception("worker#%d 处理 job=%s 异常", idx, job_id)
             finally:
-                if worker is not None:
-                    self._active_workers.discard(worker)
+                if worker_loop_task is not None:
+                    self._active_workers.discard(worker_loop_task)
                 self._queue.task_done()
 
     async def _run(self, job_id: str) -> None:

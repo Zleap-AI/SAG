@@ -18,7 +18,7 @@ from sag_api.core.errors import (
     ServiceUnavailableError,
     UpstreamError,
 )
-from sag_api.enums import DocumentStatus
+from sag_api.enums import DocumentStatus, JobType
 from sag_api.parsing import service
 from sag_api.parsing.mineru import MinerUClient, _assert_public_host, _interpret_poll_payload
 from sag_api.parsing.service import PreparedDocument
@@ -830,7 +830,8 @@ async def test_retryable_document_returns_to_pending_without_losing_checkpoint()
             return document
 
     await inproc._mark_document_waiting_retry(
-        FakeSession(), SimpleNamespace(document_id="document-1")
+        FakeSession(),
+        SimpleNamespace(document_id="document-1", type=JobType.PROCESS_DOCUMENT),
     )
 
     assert document.status == DocumentStatus.PENDING

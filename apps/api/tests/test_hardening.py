@@ -165,17 +165,22 @@ async def test_job_queue_stop_allows_active_job_to_reach_safe_boundary(monkeypat
     await init_db()
     async with SessionLocal() as session:
         job = Job(type=JobType.PROCESS_DOCUMENT, status=JobStatus.QUEUED)
-        queued_job = Job(type=JobType.PROCESS_DOCUMENT, status=JobStatus.QUEUED)
         session.add(job)
-        session.add(queued_job)
         await session.commit()
         job_id = job.id
-        queued_job_id = queued_job.id
 
     queue = InProcessAsyncQueue(SessionLocal, engine_manager=None, concurrency=1)
     await queue.start()
     await queue.enqueue(job_id)
     await asyncio.wait_for(started.wait(), timeout=1)
+    # Create the backlog job only after the first one is in-flight; otherwise
+    # ``_recover`` at ``queue.start()`` would enqueue both jobs and the
+    # ``(created_at, id)`` sort would pick whichever UUID sorts first.
+    async with SessionLocal() as session:
+        queued_job = Job(type=JobType.PROCESS_DOCUMENT, status=JobStatus.QUEUED)
+        session.add(queued_job)
+        await session.commit()
+        queued_job_id = queued_job.id
     await queue.enqueue(queued_job_id)
     asyncio.get_running_loop().call_later(0.05, release.set)
 
