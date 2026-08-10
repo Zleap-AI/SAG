@@ -369,17 +369,27 @@ async def retrieve_relevant_sections(
     """One retrieval contract for search UI and the Agent's search_context tool."""
 
     requested_limit = max(1, min(int(top_k or settings.search_top_k), 50))
-    candidate_limit = min(50, max(requested_limit * 3, requested_limit + 8))
+    base_candidate_limit = min(50, max(requested_limit * 3, requested_limit + 8))
     targets = [(source.sag_source_config_id, source) for source in sources]
-    outcome, lexical, hidden = await asyncio.gather(
+    # 先并行拿到 hidden 与 lexical——hidden 只是几条本地 DB 查询,通常 <50ms。
+    # 拿到之后再触发 semantic recall,以便根据被删/删除失败的文档数量放大候选池,
+    # 避免"删除失败的大文档占据 Top-N,把同信源正常文档全挤出候选池"这种情形。
+    hidden_task = asyncio.create_task(_hidden_document_derivatives(sources))
+    lexical_task = asyncio.create_task(_lexical_sections(engine_manager, sources, query))
+    hidden = await hidden_task
+    # 每一条 hidden source_id 都可能"占据"候选池中的多个 chunk（一个文档拆多个块）。
+    # 用一个保守的放大系数,兼顾召回质量与 ES kNN 的延迟上限。
+    hidden_source_count = len(hidden.source_ids) + len(hidden.source_config_ids)
+    hidden_headroom = min(150, hidden_source_count * 3)
+    candidate_limit = min(200, base_candidate_limit + hidden_headroom)
+    outcome, lexical = await asyncio.gather(
         engine_manager.search_many(
             targets,
             query,
             strategy=strategy,
             top_k=candidate_limit,
         ),
-        _lexical_sections(engine_manager, sources, query),
-        _hidden_document_derivatives(sources),
+        lexical_task,
     )
     def visible(section: RetrievedSection) -> bool:
         if section.source_id:
@@ -399,6 +409,9 @@ async def retrieve_relevant_sections(
         **outcome.stats,
         "requested_top_k": requested_limit,
         "candidate_top_k": candidate_limit,
+        "candidate_top_k_base": base_candidate_limit,
+        "candidate_top_k_headroom": hidden_headroom,
+        "hidden_sources": hidden_source_count,
         "candidates": reranked.candidate_count,
         "relevant": reranked.relevant_count,
         "filtered_irrelevant": reranked.filtered_count,

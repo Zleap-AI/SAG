@@ -1111,7 +1111,6 @@ async def test_reprocess_ready_document_replaces_all_previous_derived_data():
             source,
             document.id,
             job_queue=queue,
-            engine_manager=engine,
         )
 
         assert engine.deleted == []
@@ -1362,7 +1361,6 @@ async def test_concurrent_reprocess_requests_share_one_cleanup_job():
                 source,
                 document_id,
                 job_queue=queue,
-                engine_manager=object(),
             )
 
     first, second = await asyncio.gather(retry(), retry())
@@ -1444,7 +1442,6 @@ async def test_retrying_failed_reprocess_cleanup_stays_in_maintenance_flow():
             source,
             document.id,
             job_queue=queue,
-            engine_manager=object(),
         )
 
         assert retried.type == JobType.REPROCESS_DOCUMENT
@@ -1511,7 +1508,6 @@ async def test_delete_after_reprocess_request_uses_maintenance_cleanup():
             source,
             document.id,
             job_queue=queue,
-            engine_manager=object(),
         )
         delete_job = await delete_document(
             session,

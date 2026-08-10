@@ -14,7 +14,6 @@ from sag_api.db.models import Document, Job, Source
 from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs import JobQueue
 from sag_api.jobs.scheduling import DELETE_PRIORITY, RESUME_PRIORITY, set_scheduler
-from sag_api.sag import EngineManager
 
 
 async def list_documents(session: AsyncSession, source_id: str) -> list[Document]:
@@ -133,7 +132,6 @@ async def reprocess_document(
     document_id: str,
     *,
     job_queue: JobQueue,
-    engine_manager: EngineManager,
 ) -> Job:
     document = await get_document(session, source, document_id)
     if document.status in {DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED}:

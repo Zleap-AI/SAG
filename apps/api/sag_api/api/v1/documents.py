@@ -215,7 +215,6 @@ async def reprocess(
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
-    engine_manager: EngineManager = Depends(get_engine_manager),
 ) -> JobOut:
     source = await get_source(session, source_id)
     job = await reprocess_document(
@@ -223,7 +222,6 @@ async def reprocess(
         source,
         document_id,
         job_queue=job_queue,
-        engine_manager=engine_manager,
     )
     return JobOut.model_validate(job)
 
