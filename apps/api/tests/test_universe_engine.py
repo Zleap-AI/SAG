@@ -654,7 +654,11 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                 },
             )
             assert missing_expand_snapshot.status_code == 422
-            tampered = f"{cursor[:-1]}{'A' if cursor[-1] != 'A' else 'B'}"
+            encoded_payload, encoded_signature = cursor.split(".", 1)
+            tampered_signature = (
+                f"{'A' if encoded_signature[0] != 'A' else 'B'}{encoded_signature[1:]}"
+            )
+            tampered = f"{encoded_payload}.{tampered_signature}"
             tampered_response = await client.post(
                 "/api/v1/universe/expand",
                 headers=headers,

@@ -45,9 +45,18 @@ function run(command, args, options = {}) {
 }
 
 async function probeVersion() {
-  const manifest = await readFile(path.join(repoRoot, "packages/fnos/sag/manifest"), "utf8");
+  // The Native template's manifest carries version=__SAG_VERSION__ —
+  // a placeholder that the real release builder (build-fnos-native-package.mjs)
+  // replaces with the pyproject-derived version. The probe builder is
+  // for on-device Native runtime smoke tests, not for shipping, so when
+  // no --version is supplied and the manifest is still holding the
+  // placeholder, fall back to a synthetic version. This keeps validate-
+  // NativeTemplate happy (no unresolved __SAG_*__ tokens in the rendered
+  // package) without coupling probe builds to a release version.
+  const manifest = await readFile(path.join(repoRoot, "packages/fnos/native/sag/manifest"), "utf8");
   const version = /^version\s*=\s*(\S+)\s*$/m.exec(manifest)?.[1];
   if (!version) fail("could not determine package version");
+  if (version === "__SAG_VERSION__") return "0.0.0-fnos.0";
   return version;
 }
 
@@ -60,15 +69,39 @@ runtime="/var/apps/python312/target/bin/python3"
 server="$TRIM_APPDEST/server"
 vendor="$server/vendor"
 log="$TRIM_PKGVAR/native-p0.log"
+# Probe main enters as root (package privilege defaults.run-as=root)
+# and must drop to the sag package user before exec'ing the probe
+# server. Same setpriv-preferred / su-fallback drop pattern as the
+# release cmd/main uses. See scripts/validate-fnos-native-package.mjs
+# — the validator requires this pattern to be present.
+drop_priv() {
+  if command -v setpriv >/dev/null 2>&1; then
+    exec setpriv --reuid sag --regid sag --init-groups -- "$@"
+  elif command -v su >/dev/null 2>&1; then
+    _quoted=""
+    for _arg in "$@"; do
+      _q="\${_arg//\\'/\\'\\\\'\\'}"
+      _quoted="$_quoted '$_q'"
+    done
+    exec su -s /bin/sh sag -c "$_quoted"
+  else
+    echo "native probe cannot drop privileges: neither setpriv nor su present" >> "$log"
+    exit 1
+  fi
+}
 case "\${1:-}" in
   start)
     mkdir -p "$TRIM_PKGVAR"
+    chown sag:sag "$TRIM_PKGVAR" 2>/dev/null || :
+    if [ -d "$TRIM_APPDEST" ]; then chown sag:sag "$TRIM_APPDEST" 2>/dev/null || :; fi
+    touch "$log"; chown sag:sag "$log" 2>/dev/null || :
     if ! test -x "$runtime" || ! test -d "$server" || ! test -d "$vendor"; then
       echo "native probe prerequisites unavailable" >> "$log"
       exit 1
     fi
-    PYTHONPATH="$vendor:$server\${PYTHONPATH:+:$PYTHONPATH}" "$runtime" "$server/fnos-native-probe.py" serve --socket "$TRIM_APPDEST/app.sock" --output "$TRIM_PKGVAR/native-p0.json" >> "$log" 2>&1 &
+    ( PYTHONPATH="$vendor:$server\${PYTHONPATH:+:$PYTHONPATH}" drop_priv "$runtime" "$server/fnos-native-probe.py" serve --socket "$TRIM_APPDEST/app.sock" --output "$TRIM_PKGVAR/native-p0.json" ) >> "$log" 2>&1 &
     echo $! > "$pid_file"
+    chown sag:sag "$pid_file" 2>/dev/null || :
     ;;
   status)
     test -f "$pid_file"

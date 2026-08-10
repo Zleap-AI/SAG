@@ -28,13 +28,14 @@ const MAP: Record<
   pending: { variant: "outline", icon: CircleDashed },
   loading: { variant: "secondary", icon: Loader2, spin: true },
   extracting: { variant: "secondary", icon: Loader2, spin: true },
+  pausing: { variant: "secondary", icon: Loader2, spin: true },
   paused: { variant: "outline", icon: Pause },
+  deleting: { variant: "secondary", icon: Trash2, spin: true },
+  delete_failed: { variant: "destructive", icon: XCircle },
   ready: { variant: "success", icon: Check },
   failed: { variant: "destructive", icon: XCircle },
   requeueing: { variant: "secondary", icon: RefreshCw, spin: true },
-  pausing: { variant: "secondary", icon: Loader2, spin: true },
   resuming: { variant: "secondary", icon: Loader2, spin: true },
-  deleting: { variant: "secondary", icon: Trash2 },
   "waiting-retry": { variant: "outline", icon: RefreshCw, spin: true },
 };
 

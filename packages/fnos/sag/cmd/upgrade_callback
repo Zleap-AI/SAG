@@ -1,6 +1,0 @@
-#!/bin/bash
-
-set -eu
-
-script_dir="$(cd -P -- "$(dirname -- "$0")" && pwd -P)"
-exec "${script_dir}/install_callback"

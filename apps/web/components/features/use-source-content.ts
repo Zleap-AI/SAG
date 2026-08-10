@@ -65,8 +65,9 @@ export function useSourceContent(sourceId: string, active = true) {
         || !isLatestDocumentRefresh(requestId, refreshRequestRef.current)
       ) return;
 
+      const previousDocuments = documentsRef.current ?? [];
       const previousById = new Map(
-        (documentsRef.current ?? []).map((document) => [document.id, document]),
+        previousDocuments.map((document) => [document.id, document]),
       );
       // 记录文档后台处理的终态跃迁（ready / failed），这是上传后异步链路
       // 中最容易出问题的一环（如 embedding 上游失败），前端此前无埋点。
@@ -277,16 +278,18 @@ export function useSourceContent(sourceId: string, active = true) {
     const mutation = beginDocumentMutation(document, action);
     setMutations((current) => ({ ...current, [document.id]: mutation }));
     try {
+      let job: BackgroundJob | null = null;
       if (action === "delete") {
         await api.deleteDocument(mutationSourceId, document.id);
+      } else if (action === "reprocess") {
+        job = await api.reprocessDocument(mutationSourceId, document.id);
+      } else if (action === "pause") {
+        job = await api.pauseDocument(mutationSourceId, document.id);
       } else {
-        const job =
-          action === "reprocess"
-            ? await api.reprocessDocument(mutationSourceId, document.id)
-            : action === "pause"
-              ? await api.pauseDocument(mutationSourceId, document.id)
-              : await api.resumeDocument(mutationSourceId, document.id);
-        if (!isCurrentDocumentSource(mutationSourceId, sourceIdRef.current)) return false;
+        job = await api.resumeDocument(mutationSourceId, document.id);
+      }
+      if (!isCurrentDocumentSource(mutationSourceId, sourceIdRef.current)) return false;
+      if (job) {
         setMutations((current) => {
           const latest = current[document.id];
           return latest

@@ -165,17 +165,22 @@ async def test_job_queue_stop_allows_active_job_to_reach_safe_boundary(monkeypat
     await init_db()
     async with SessionLocal() as session:
         job = Job(type=JobType.PROCESS_DOCUMENT, status=JobStatus.QUEUED)
-        queued_job = Job(type=JobType.PROCESS_DOCUMENT, status=JobStatus.QUEUED)
         session.add(job)
-        session.add(queued_job)
         await session.commit()
         job_id = job.id
-        queued_job_id = queued_job.id
 
     queue = InProcessAsyncQueue(SessionLocal, engine_manager=None, concurrency=1)
     await queue.start()
     await queue.enqueue(job_id)
     await asyncio.wait_for(started.wait(), timeout=1)
+    # Create the backlog job only after the first one is in-flight; otherwise
+    # ``_recover`` at ``queue.start()`` would enqueue both jobs and the
+    # ``(created_at, id)`` sort would pick whichever UUID sorts first.
+    async with SessionLocal() as session:
+        queued_job = Job(type=JobType.PROCESS_DOCUMENT, status=JobStatus.QUEUED)
+        session.add(queued_job)
+        await session.commit()
+        queued_job_id = queued_job.id
     await queue.enqueue(queued_job_id)
     asyncio.get_running_loop().call_later(0.05, release.set)
 
@@ -574,6 +579,42 @@ async def test_document_cleanup_drains_and_blocks_same_source_processing(monkeyp
     await asyncio.wait_for(second_entered.wait(), timeout=1)
     release_second.set()
     await asyncio.gather(first, second)
+
+
+@pytest.mark.asyncio
+async def test_document_waiting_for_engine_admission_yields_to_maintenance():
+    from sag_api.core.config import settings
+    from sag_api.sag.dto import ProcessCheckpoint
+    from sag_api.sag.engine_manager import EngineManager, _Slot
+
+    class FakeEngine:
+        async def aclose(self):
+            pass
+
+    manager = EngineManager(settings)
+    manager._slots["source"] = _Slot(engine=FakeEngine())
+    await manager.begin_document_maintenance("source")
+    try:
+        async def should_pause():
+            return True
+
+        outcome = await asyncio.wait_for(
+            manager.process_document(
+                "source",
+                None,
+                checkpoint=ProcessCheckpoint(
+                    source_id="engine-document",
+                    chunk_ids=["chunk-1"],
+                ),
+                should_pause=should_pause,
+            ),
+            timeout=0.2,
+        )
+        assert outcome.paused is True
+        assert outcome.source_id == "engine-document"
+        assert outcome.chunk_ids == ["chunk-1"]
+    finally:
+        await manager.end_document_maintenance("source")
 
 
 @pytest.mark.asyncio

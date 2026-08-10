@@ -97,6 +97,9 @@ class StubWebSearchTool(Tool):
 
 @pytest.mark.asyncio
 async def test_search_tool_prefers_exact_body_window_over_semantic_boilerplate():
+    from sag_api.core.db import init_db
+
+    await init_db()
     class HybridEngine:
         graph_calls = 0
 
@@ -211,6 +214,9 @@ async def test_web_search_trace_uses_internet_scope_instead_of_mounted_knowledge
 
 @pytest.mark.asyncio
 async def test_search_tool_graph_capacity_covers_every_returned_section():
+    from sag_api.core.db import init_db
+
+    await init_db()
     class ManySectionEngine:
         graph_calls = 0
         event_limit = 0
@@ -264,6 +270,9 @@ async def test_search_tool_graph_capacity_covers_every_returned_section():
 
 @pytest.mark.asyncio
 async def test_search_tool_reuses_direct_event_recall_and_loads_traceable_evidence():
+    from sag_api.core.db import init_db
+
+    await init_db()
     class SparseEventEngine:
         event_score_calls = 0
         chunk_reads: list[tuple[str, str]] = []

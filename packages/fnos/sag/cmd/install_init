@@ -1,8 +1,0 @@
-#!/bin/bash
-
-set -eu
-
-# fnOS resolves the docker-project resource before install_callback. At this
-# phase TRIM_PKGETC is ready, but TRIM_PKGVAR may not exist yet.
-script_dir="$(cd -P -- "$(dirname -- "$0")" && pwd -P)"
-exec /bin/bash "${script_dir}/prepare_compose_env"

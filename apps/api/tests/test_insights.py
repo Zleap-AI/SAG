@@ -1,5 +1,6 @@
 """实体读路径：注入事件—实体图谱后验证 entities 端点（离线）。"""
 
+import asyncio
 import uuid
 
 import httpx
@@ -236,12 +237,21 @@ async def test_entity_read_path():
             invalid = await c.get(f"/api/v1/sources/{sid}/graph?event_limit=10001", headers=H)
             assert invalid.status_code == 422
 
-            # 删除文档必须同步清理统计与引擎中的块、事件及孤立实体。
+            # 删除请求先持久化为后台任务；完成后才清理统计与引擎派生数据。
             deleted = await c.delete(
                 f"/api/v1/sources/{sid}/documents/{document_id}",
                 headers=H,
             )
             assert deleted.status_code == 200
+            for _ in range(40):
+                document_response = await c.get(
+                    f"/api/v1/sources/{sid}/documents/{document_id}",
+                    headers=H,
+                )
+                if document_response.status_code == 404:
+                    break
+                await asyncio.sleep(0.05)
+            assert document_response.status_code == 404
             source_after_delete = (await c.get(f"/api/v1/sources/{sid}", headers=H)).json()
             assert source_after_delete["document_count"] == 0
             assert source_after_delete["chunk_count"] == 0

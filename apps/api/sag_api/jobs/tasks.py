@@ -19,8 +19,9 @@ from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
 from sag_api.core.errors import ApiError, NotFoundError
 from sag_api.core.logging import get_logger
 from sag_api.db.models import Document, Job, Source
-from sag_api.enums import DocumentStatus, JobType
-from sag_api.jobs.control import JobPaused
+from sag_api.enums import DocumentStatus, JobStatus, JobType
+from sag_api.jobs.control import JobPaused, JobYielded
+from sag_api.jobs.scheduling import SOURCE_MAINTENANCE
 from sag_api.parsing import prepare_document
 from sag_api.sag import EngineManager
 from sag_api.sag.dto import ProcessCheckpoint
@@ -36,6 +37,15 @@ _STATUS_TO_STAGE: dict[DocumentStatus, ErrorStage] = {
     DocumentStatus.PENDING: ErrorStage.PARSE,
     DocumentStatus.LOADING: ErrorStage.PARSE,
     DocumentStatus.EXTRACTING: ErrorStage.EXTRACT,
+}
+_CONTROL_TRANSITION_STATES = {
+    DocumentStatus.PAUSING,
+    DocumentStatus.DELETING,
+    DocumentStatus.DELETE_FAILED,
+}
+_DELETE_CONTROL_STATES = {
+    DocumentStatus.DELETING,
+    DocumentStatus.DELETE_FAILED,
 }
 
 
@@ -65,11 +75,12 @@ async def process_document(
     if source is None:
         raise NotFoundError("信源不存在")
     checkpoint = ProcessCheckpoint.from_payload(job.payload)
+    scheduler_yield_reason: str | None = None
 
     # A worker retry reuses the document row. Clear the previous attempt's
     # failure before parsing can block for a long time, so active processing
     # never carries a stale terminal error.
-    if document.error is not None:
+    if document.error is not None and document.status not in _CONTROL_TRANSITION_STATES:
         document.error = None
         await session.commit()
 
@@ -78,6 +89,9 @@ async def process_document(
         return dict(job.payload or {})
 
     async def on_stage(stage: str) -> None:
+        await session.refresh(document)
+        if document.status in _CONTROL_TRANSITION_STATES:
+            return
         if stage == "loading":
             document.status = DocumentStatus.LOADING
             document.progress = max(document.progress, 5)
@@ -91,6 +105,9 @@ async def process_document(
         await session.commit()
 
     async def on_parser_state(state: dict) -> None:
+        await session.refresh(document)
+        if document.status in _CONTROL_TRANSITION_STATES:
+            return
         document.status = DocumentStatus.LOADING
         document.progress = max(document.progress, 10)
         job.progress = document.progress / 100
@@ -100,23 +117,32 @@ async def process_document(
     async def on_checkpoint(value: ProcessCheckpoint) -> None:
         nonlocal checkpoint
         checkpoint = value
+        await session.refresh(document)
         job.payload = value.merge_payload(await refresh_payload())
         document.chunk_count = len(value.chunk_ids)
         document.event_count = value.event_count
         document.sag_source_id = value.source_id
         document.token_usage = value.token_usage
-        total = len(value.chunk_ids)
-        completed = len(value.processed_chunk_ids)
-        document.progress = 20 + round(80 * completed / total) if total else 20
-        job.progress = document.progress / 100
+        if document.status not in _CONTROL_TRANSITION_STATES:
+            total = len(value.chunk_ids)
+            completed = len(value.processed_chunk_ids)
+            document.progress = 20 + round(80 * completed / total) if total else 20
+            job.progress = document.progress / 100
         await session.commit()
 
     async def should_pause() -> bool:
+        nonlocal scheduler_yield_reason
         async with SessionLocal() as control_session:
             current_job = await control_session.get(Job, job.id)
             if current_job is None:
                 return True
-            return bool((current_job.payload or {}).get("pause_requested"))
+            if (current_job.payload or {}).get("pause_requested"):
+                scheduler_yield_reason = None
+                return True
+        if job_queue is not None and job_queue.source_maintenance_requested(source.id):
+            scheduler_yield_reason = SOURCE_MAINTENANCE
+            return True
+        return False
 
     try:
         prepared = None
@@ -149,13 +175,24 @@ async def process_document(
             document_title=Path(document.filename).stem.strip(),
         )
         if outcome.paused:
+            await session.refresh(document)
+            if (
+                scheduler_yield_reason == SOURCE_MAINTENANCE
+                and document.status not in _CONTROL_TRANSITION_STATES
+            ):
+                raise JobYielded(SOURCE_MAINTENANCE)
+            if document.status in _DELETE_CONTROL_STATES:
+                raise JobPaused()
             document.status = DocumentStatus.PAUSED
             document.error = None
             await session.commit()
             raise JobPaused()
-    except JobPaused:
+    except (JobPaused, JobYielded):
         raise
     except Exception as e:  # noqa: BLE001 - 记录到文档后再上抛给 worker
+        await session.refresh(document)
+        if document.status in _DELETE_CONTROL_STATES:
+            raise JobPaused() from e
         layer, stage = _classify_document_failure(e, document.status)
         document.status = DocumentStatus.FAILED
         document.error = getattr(e, "message", None) or str(e)
@@ -171,6 +208,13 @@ async def process_document(
         await session.commit()
         raise
 
+    await session.refresh(document)
+    if document.status in _DELETE_CONTROL_STATES:
+        raise JobPaused()
+    if document.status == DocumentStatus.PAUSING:
+        document.status = DocumentStatus.PAUSED
+        await session.commit()
+        raise JobPaused()
     document.status = DocumentStatus.READY
     document.chunk_count = outcome.chunk_count
     document.event_count = outcome.event_count
@@ -206,6 +250,138 @@ async def process_document(
             source_id=source.id,
             reason="document_processed",
         )
+
+
+async def delete_document_task(
+    session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None
+) -> None:
+    """清理已取得信源维护窗口的文档派生数据、文件和记录。"""
+    target_document_id = job.document_id or str((job.payload or {}).get("target_document_id") or "")
+    if not target_document_id:
+        raise NotFoundError("删除任务缺少文档")
+    document = await session.get(Document, target_document_id)
+    if document is None:
+        return
+    source = await session.get(Source, document.source_id)
+    if source is None:
+        raise NotFoundError("信源不存在")
+
+    await session.refresh(document)
+    derived_source_ids = {
+        value.strip()
+        for value in (job.payload or {}).get("derived_source_ids", [])
+        if isinstance(value, str) and value.strip()
+    }
+    if document.sag_source_id:
+        derived_source_ids.add(document.sag_source_id)
+    for derived_source_id in sorted(derived_source_ids):
+        await engine_manager.delete_document_data(
+            source.sag_source_config_id,
+            derived_source_id,
+            source=source,
+        )
+    path = document.storage_path
+    job.payload = {**(job.payload or {}), "target_document_id": document.id}
+    job.document_id = None
+    await session.flush()
+    await session.delete(document)
+    await session.flush()
+    from sag_api.services.document_service import _refresh_source_counts
+
+    await _refresh_source_counts(session, source)
+    await session.commit()
+    if path:
+        from sag_api.parsing.service import parsed_sidecar_paths
+
+        for candidate in [path, *parsed_sidecar_paths(path)]:
+            try:
+                if os.path.exists(candidate):
+                    os.remove(candidate)
+            except OSError:
+                pass
+    if job_queue is not None:
+        from sag_api.services.universe_service import schedule_universe_refresh
+
+        try:
+            await schedule_universe_refresh(
+                session,
+                job_queue,
+                source_id=source.id,
+                reason="document_deleted",
+            )
+        except Exception:  # noqa: BLE001 - 派生视图刷新不影响核心删除结果
+            log.exception("文档已删除，但知识宇宙刷新调度失败 source=%s", source.id)
+            # Core deletion was committed above. Roll back only the optional
+            # refresh scheduling transaction so the worker can still persist
+            # the delete Job's SUCCEEDED terminal state and release maintenance.
+            await session.rollback()
+
+
+async def reprocess_document_task(
+    session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None
+) -> None:
+    """在信源维护窗口内清理旧派生数据，再排入普通文档处理任务。"""
+    target_document_id = job.document_id or str(
+        (job.payload or {}).get("target_document_id") or ""
+    )
+    if not target_document_id:
+        raise NotFoundError("重新处理任务缺少文档")
+    document = await session.get(Document, target_document_id)
+    if document is None:
+        raise NotFoundError("文档不存在")
+    source = await session.get(Source, document.source_id)
+    if source is None:
+        raise NotFoundError("信源不存在")
+
+    payload = dict(job.payload or {})
+    derived_source_ids = sorted(
+        {
+            value.strip()
+            for value in payload.get("derived_source_ids", [])
+            if isinstance(value, str) and value.strip()
+        }
+    )
+    if not payload.get("cleanup_completed"):
+        for derived_source_id in derived_source_ids:
+            await engine_manager.delete_document_data(
+                source.sag_source_config_id,
+                derived_source_id,
+                source=source,
+            )
+
+    await session.refresh(document)
+    if document.status in _DELETE_CONTROL_STATES:
+        job.payload = {
+            **payload,
+            "cleanup_completed": True,
+        }
+        await session.commit()
+        return
+
+    process_job_id = payload.get("process_job_id")
+    process_job = (
+        await session.get(Job, process_job_id)
+        if isinstance(process_job_id, str) and process_job_id
+        else None
+    )
+    if process_job is None:
+        process_job = Job(
+            type=JobType.PROCESS_DOCUMENT,
+            source_id=source.id,
+            document_id=document.id,
+            status=JobStatus.QUEUED,
+        )
+        session.add(process_job)
+        await session.flush()
+    job.payload = {
+        **payload,
+        "cleanup_completed": True,
+        "process_job_id": process_job.id,
+    }
+    await session.commit()
+    await session.refresh(process_job)
+    if job_queue is not None:
+        await job_queue.enqueue(process_job.id)
 
 
 async def sync_source(session: AsyncSession, job: Job, *, engine_manager=None, job_queue=None) -> None:
@@ -271,6 +447,8 @@ async def index_universe(
 
 TASK_HANDLERS: dict[JobType, TaskHandler] = {
     JobType.PROCESS_DOCUMENT: process_document,
+    JobType.REPROCESS_DOCUMENT: reprocess_document_task,
+    JobType.DELETE_DOCUMENT: delete_document_task,
     JobType.SYNC_SOURCE: sync_source,
     JobType.INDEX_UNIVERSE: index_universe,
 }

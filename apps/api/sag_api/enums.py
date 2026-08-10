@@ -44,13 +44,18 @@ class DocumentStatus(StrEnum):
     PENDING = "pending"        # 已登记，待处理
     LOADING = "loading"        # ingest 中（解析 → 分块 → 入库 → 向量）
     EXTRACTING = "extracting"  # extract 中（事件 / 实体抽取）
+    PAUSING = "pausing"        # 已收到停止命令，等待在途分块完成
     PAUSED = "paused"          # 抽取已暂停，可从 chunk 断点继续
+    DELETING = "deleting"      # 已收到删除命令，后台正在停止并清理
+    DELETE_FAILED = "delete_failed"
     READY = "ready"            # 处理完成，可检索
     FAILED = "failed"
 
 
 class JobType(StrEnum):
     PROCESS_DOCUMENT = "process_document"
+    REPROCESS_DOCUMENT = "reprocess_document"
+    DELETE_DOCUMENT = "delete_document"
     SYNC_SOURCE = "sync_source"
     INDEX_UNIVERSE = "index_universe"
 

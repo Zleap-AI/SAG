@@ -1,5 +1,8 @@
 """HTTP 层冒烟：跑真实 ASGI 应用（含 lifespan / 后台队列），全程离线。"""
 
+import asyncio
+import uuid
+
 import httpx
 import pytest
 
@@ -83,3 +86,146 @@ async def test_end_to_end_offline():
                 "/api/v1/search", headers=H, json={"query": "hello", "source_ids": [sid]}
             )
             assert gs2.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_uploaded_document_reaches_ready_through_background_queue():
+    from sqlalchemy import select
+
+    from sag_api.core.db import SessionLocal
+    from sag_api.db.models import Document, Job, Source, User
+    from sag_api.enums import JobStatus, JobType
+    from sag_api.main import app
+    from sag_api.sag.dto import ProcessCheckpoint, ProcessOutcome
+
+    class OfflineDocumentEngine:
+        async def process_document(self, _config_id, _path, **kwargs):
+            await kwargs["on_stage"]("loading")
+            checkpoint = ProcessCheckpoint(
+                source_id="offline-engine-document",
+                chunk_ids=["chunk-1", "chunk-2"],
+                processed_chunk_ids=["chunk-1"],
+                event_count=1,
+                event_ids=["event-1"],
+                token_usage=100,
+            )
+            await kwargs["on_checkpoint"](checkpoint.model_copy(deep=True))
+            await kwargs["on_stage"]("extracting")
+            checkpoint.processed_chunk_ids = ["chunk-1", "chunk-2"]
+            checkpoint.event_count = 2
+            checkpoint.event_ids = ["event-1", "event-2"]
+            checkpoint.token_usage = 200
+            await kwargs["on_checkpoint"](checkpoint.model_copy(deep=True))
+            return ProcessOutcome(
+                source_id=checkpoint.source_id,
+                chunk_count=2,
+                event_count=2,
+                chunk_ids=checkpoint.chunk_ids,
+                processed_chunk_ids=checkpoint.processed_chunk_ids,
+                event_ids=checkpoint.event_ids,
+                token_usage=checkpoint.token_usage,
+            )
+
+        async def universe_overview_stats(self, *_args, **_kwargs):
+            return {
+                "event_count": 0,
+                "entity_count": 0,
+                "relation_count": 0,
+                "time_buckets": [],
+            }
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        app.state.job_queue._engine_manager = OfflineDocumentEngine()
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            registered = await client.post(
+                "/api/v1/auth/register",
+                json={
+                    "email": f"upload-{uuid.uuid4().hex}@t.com",
+                    "password": "password123",
+                    "name": "Upload Test",
+                },
+            )
+            assert registered.status_code == 201
+            user_id = registered.json()["user"]["id"]
+            headers = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+            created = await client.post(
+                "/api/v1/sources",
+                headers=headers,
+                json={"name": "上传主流程"},
+            )
+            assert created.status_code == 201
+            source_id = created.json()["id"]
+
+            uploaded = await client.post(
+                f"/api/v1/sources/{source_id}/documents",
+                headers=headers,
+                files={"file": ("flow.md", b"# Flow\n\ncontent", "text/markdown")},
+            )
+            assert uploaded.status_code == 201
+            assert uploaded.json()["status"] == "pending"
+            document_id = uploaded.json()["id"]
+
+            for _ in range(200):
+                response = await client.get(
+                    f"/api/v1/sources/{source_id}/documents/{document_id}",
+                    headers=headers,
+                )
+                assert response.status_code == 200
+                if response.json()["status"] == "ready":
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                pytest.fail("uploaded document did not reach ready")
+
+            body = response.json()
+            assert body["progress"] == 100
+            assert body["chunk_count"] == 2
+            assert body["event_count"] == 2
+            assert body["token_usage"] == 200
+
+            for _ in range(200):
+                async with SessionLocal() as session:
+                    document = await session.get(Document, document_id)
+                    source = await session.get(Source, source_id)
+                    job = await session.scalar(
+                        select(Job).where(
+                            Job.document_id == document_id,
+                            Job.type == JobType.PROCESS_DOCUMENT,
+                        )
+                    )
+                    if job.status == JobStatus.SUCCEEDED:
+                        break
+                await asyncio.sleep(0.01)
+            else:
+                pytest.fail("document job did not reach succeeded")
+
+            assert document.sag_source_id == "offline-engine-document"
+            assert source.document_count == 1
+            assert source.chunk_count == 2
+            assert source.event_count == 2
+
+            for _ in range(200):
+                async with SessionLocal() as session:
+                    active_universe_jobs = list(
+                        (
+                            await session.scalars(
+                                select(Job).where(
+                                    Job.type == JobType.INDEX_UNIVERSE,
+                                    Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+                                )
+                            )
+                        ).all()
+                    )
+                if not active_universe_jobs:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                pytest.fail("follow-up universe jobs did not finish")
+
+            async with SessionLocal() as session:
+                source = await session.get(Source, source_id)
+                user = await session.get(User, user_id)
+                await session.delete(source)
+                await session.delete(user)
+                await session.commit()
