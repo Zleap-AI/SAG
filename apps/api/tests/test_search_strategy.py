@@ -585,3 +585,251 @@ async def _register_eval(client: httpx.AsyncClient) -> dict[str, str]:
     )
     assert response.status_code == 201, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+@pytest.mark.asyncio
+async def test_vector_search_excludes_hidden_document_sources_before_top_k(
+    monkeypatch,
+):
+    from zleap.sag.core.storage import client as storage_client
+    from zleap.sag.modules.load.processor import DocumentProcessor
+
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager
+
+    class VectorClient:
+        def __init__(self):
+            self.filter_query = None
+
+        async def vector_search(
+            self,
+            *,
+            index,
+            field,
+            vector,
+            size,
+            filter_query,
+            **_kwargs,
+        ):
+            assert index == "source_chunks"
+            assert field == "content_vector"
+            assert vector == [0.1, 0.2]
+            assert size == 8
+            self.filter_query = filter_query
+            return [
+                {
+                    "chunk_id": "visible-chunk",
+                    "source_id": "visible-document",
+                    "source_config_id": "source-1",
+                    "heading": "健康文档",
+                    "content": "删除失败的文档不能占满候选。",
+                    "rank": 0,
+                    "_score": 0.9,
+                }
+            ]
+
+    manager = EngineManager(settings)
+    vector_client = VectorClient()
+
+    async def runtime_ready(_sources):
+        return None
+
+    async def generate_embedding(_processor, _query):
+        return [0.1, 0.2]
+
+    monkeypatch.setattr(manager, "_ensure_read_runtime", runtime_ready)
+    monkeypatch.setattr(DocumentProcessor, "generate_embedding", generate_embedding)
+    monkeypatch.setattr(storage_client, "get_es_client", lambda: vector_client)
+
+    outcome = await manager.search_many(
+        [("source-1", None), ("source-2", None)],
+        "目标主题",
+        strategy="vector",
+        top_k=8,
+        exclude_source_ids_by_config={
+            "source-1": ("hidden-a", "hidden-b"),
+            "source-2": ("hidden-c",),
+        },
+    )
+
+    assert [section.chunk_id for section in outcome.sections] == ["visible-chunk"]
+    assert vector_client.filter_query == {
+        "bool": {
+            "filter": [{"terms": {"source_config_id": ["source-1", "source-2"]}}],
+            "must_not": [
+                {
+                    "bool": {
+                        "filter": [
+                            {"term": {"source_config_id": "source-1"}},
+                            {"terms": {"source_id": ["hidden-a", "hidden-b"]}},
+                        ]
+                    }
+                },
+                {
+                    "bool": {
+                        "filter": [
+                            {"term": {"source_config_id": "source-2"}},
+                            {"terms": {"source_id": ["hidden-c"]}},
+                        ]
+                    }
+                },
+            ],
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_grep_excludes_hidden_document_source_before_limit():
+    from zleap.sag.db import get_session_factory
+    from zleap.sag.db.models import SourceChunk
+
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager
+
+    source_config_id = f"grep-prefilter-{uuid.uuid4().hex}"
+    manager = EngineManager(settings)
+    try:
+        await manager.provision(source_config_id)
+        async with get_session_factory()() as session:
+            session.add_all(
+                [
+                    SourceChunk(
+                        id=uuid.uuid4().hex,
+                        source_config_id=source_config_id,
+                        source_type="ARTICLE",
+                        source_id="hidden-document",
+                        heading="隐藏文档",
+                        content="唯一关键词",
+                        rank=0,
+                    ),
+                    SourceChunk(
+                        id=uuid.uuid4().hex,
+                        source_config_id=source_config_id,
+                        source_type="ARTICLE",
+                        source_id="visible-document",
+                        heading="健康文档",
+                        content="唯一关键词",
+                        rank=1,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        rows = await manager.grep_chunks(
+            source_config_id,
+            "唯一关键词",
+            limit=1,
+            exclude_source_ids=("hidden-document",),
+        )
+    finally:
+        await manager.aclose_all()
+
+    assert [row["source_id"] for row in rows] == ["visible-document"]
+
+
+@pytest.mark.asyncio
+async def test_multi_search_uses_prefiltered_batch_recall_when_sources_are_hidden(
+    monkeypatch,
+):
+    from sag_api.core.config import settings
+    from sag_api.sag import RetrievedSection, SearchOutcome
+    from sag_api.sag.engine_manager import EngineManager
+
+    manager = EngineManager(settings)
+    batch_calls = 0
+    legacy_calls = 0
+
+    async def batch_recall(
+        _targets,
+        query,
+        *,
+        top_k,
+        requested_sources,
+        exclude_source_ids_by_config,
+    ):
+        nonlocal batch_calls
+        batch_calls += 1
+        assert exclude_source_ids_by_config == {"source-1": ("hidden-document",)}
+        return SearchOutcome(
+            query=query,
+            sections=[
+                RetrievedSection(
+                    chunk_id="visible-chunk",
+                    heading="健康文档",
+                    content="精确模式在删除屏障期间安全降级。",
+                    score=0.9,
+                    source_id="visible-document",
+                    source_config_id="source-1",
+                )
+            ],
+            stats={"chunk_recall": "batch-vector"},
+        )
+
+    async def legacy_search(*_args, **_kwargs):
+        nonlocal legacy_calls
+        legacy_calls += 1
+        return SearchOutcome(query="目标主题", sections=[])
+
+    monkeypatch.setattr(manager, "_search_chunk_vectors", batch_recall)
+    monkeypatch.setattr(manager, "search", legacy_search)
+
+    outcome = await manager.search_many(
+        [("source-1", None)],
+        "目标主题",
+        strategy="multi_es_fast",
+        top_k=8,
+        exclude_source_ids_by_config={"source-1": ("hidden-document",)},
+    )
+
+    assert [section.chunk_id for section in outcome.sections] == ["visible-chunk"]
+    assert batch_calls == 1
+    assert legacy_calls == 0
+    assert outcome.stats["requested_strategy"] == "multi_es_fast"
+    assert outcome.stats["effective_strategy"] == "vector"
+
+
+@pytest.mark.asyncio
+async def test_visibility_prefilter_failure_never_falls_back_to_unfiltered_legacy(
+    monkeypatch,
+):
+    from sag_api.core.config import settings
+    from sag_api.sag import RetrievedSection, SearchOutcome
+    from sag_api.sag.engine_manager import EngineManager
+
+    manager = EngineManager(settings)
+    legacy_calls = 0
+
+    async def broken_prefilter(*_args, **_kwargs):
+        raise RuntimeError("vector backend unavailable")
+
+    async def unfiltered_legacy(*_args, **_kwargs):
+        nonlocal legacy_calls
+        legacy_calls += 1
+        return SearchOutcome(
+            query="目标主题",
+            sections=[
+                RetrievedSection(
+                    chunk_id="hidden-chunk",
+                    heading="隐藏文档",
+                    content="不能回退到未过滤候选。",
+                    score=0.99,
+                    source_id="hidden-document",
+                    source_config_id="source-1",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(manager, "_search_chunk_vectors", broken_prefilter)
+    monkeypatch.setattr(manager, "search", unfiltered_legacy)
+
+    outcome = await manager.search_many(
+        [("source-1", None)],
+        "目标主题",
+        strategy="multi_es_fast",
+        top_k=8,
+        exclude_source_ids_by_config={"source-1": ("hidden-document",)},
+    )
+
+    assert outcome.sections == []
+    assert legacy_calls == 0
+    assert outcome.stats["chunk_recall"] == "batch-vector-prefilter-failed"

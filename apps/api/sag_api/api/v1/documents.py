@@ -24,7 +24,7 @@ from sag_api.schemas.job import JobOut
 from sag_api.services.document_service import (
     create_document_from_upload,
     delete_document,
-    get_document,
+    get_public_document,
     ingest_content,
     list_documents,
     pause_document,
@@ -115,7 +115,9 @@ async def get_(
     session: AsyncSession = Depends(get_session),
 ) -> DocumentOut:
     source = await get_source(session, source_id)
-    return DocumentOut.model_validate(await get_document(session, source, document_id))
+    return DocumentOut.model_validate(
+        await get_public_document(session, source, document_id)
+    )
 
 
 @router.get("/{document_id}/file")
@@ -133,7 +135,7 @@ async def get_file(
     from sag_api.core.errors import NotFoundError
 
     source = await get_source(session, source_id)
-    document = await get_document(session, source, document_id)
+    document = await get_public_document(session, source, document_id)
     if not document.storage_path or not os.path.isfile(document.storage_path):
         raise NotFoundError("原始文件不存在或已被清理")
     return FileResponse(
@@ -157,7 +159,7 @@ async def get_preview(
     from fastapi.responses import FileResponse, Response
 
     source = await get_source(session, source_id)
-    document = await get_document(session, source, document_id)
+    document = await get_public_document(session, source, document_id)
     if not document.storage_path or not os.path.isfile(document.storage_path):
         raise NotFoundError("原始文件不存在或已被清理")
     if is_text_preview(document.filename, document.content_type):
@@ -190,7 +192,7 @@ async def get_parsed(
     from fastapi.responses import Response
 
     source = await get_source(session, source_id)
-    document = await get_document(session, source, document_id)
+    document = await get_public_document(session, source, document_id)
     if document.status != DocumentStatus.READY:
         if document.status == DocumentStatus.FAILED:
             raise ConflictError(document.error or "文档解析失败，暂无解析内容")
@@ -215,7 +217,6 @@ async def reprocess(
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
-    engine_manager: EngineManager = Depends(get_engine_manager),
 ) -> JobOut:
     source = await get_source(session, source_id)
     job = await reprocess_document(
@@ -223,7 +224,6 @@ async def reprocess(
         source,
         document_id,
         job_queue=job_queue,
-        engine_manager=engine_manager,
     )
     return JobOut.model_validate(job)
 

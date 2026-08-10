@@ -23,11 +23,13 @@ class SearchSource(Protocol):
 
 
 EventScoreMap = dict[tuple[str, str], float]
+DocumentSourceExclusions = dict[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True, slots=True)
 class _HiddenDerivatives:
     source_ids: frozenset[str] = frozenset()
+    source_keys: frozenset[tuple[str, str]] = frozenset()
     source_config_ids: frozenset[str] = frozenset()
     event_keys: frozenset[tuple[str, str]] = frozenset()
 
@@ -50,6 +52,7 @@ async def _hidden_document_derivatives(
     }
     hidden_document_ids: set[str] = set()
     hidden_source_ids: set[str] = set()
+    hidden_source_keys: set[tuple[str, str]] = set()
     hidden_configs: set[str] = set()
     hidden_event_keys: set[tuple[str, str]] = set()
     async with SessionLocal() as session:
@@ -107,9 +110,11 @@ async def _hidden_document_derivatives(
             histories = []
 
     for document in documents:
+        config_id = config_by_source.get(document.source_id)
         if document.sag_source_id:
             hidden_source_ids.add(document.sag_source_id)
-        config_id = config_by_source.get(document.source_id)
+            if config_id:
+                hidden_source_keys.add((config_id, document.sag_source_id))
         if config_id:
             hidden_configs.add(config_id)
     for job in [*active_control_jobs, *histories]:
@@ -118,7 +123,11 @@ async def _hidden_document_derivatives(
         if isinstance(checkpoint, dict):
             value = checkpoint.get("source_id")
             if isinstance(value, str) and value.strip():
-                hidden_source_ids.add(value.strip())
+                normalized_source_id = value.strip()
+                hidden_source_ids.add(normalized_source_id)
+                config_id = config_by_source.get(job.source_id or "")
+                if config_id:
+                    hidden_source_keys.add((config_id, normalized_source_id))
             config_id = config_by_source.get(job.source_id or "")
             if config_id:
                 hidden_event_keys.update(
@@ -126,19 +135,37 @@ async def _hidden_document_derivatives(
                     for event_id in checkpoint.get("event_ids", [])
                     if isinstance(event_id, str) and event_id.strip()
                 )
-        hidden_source_ids.update(
+        derived_source_ids = {
             value.strip()
             for value in payload.get("derived_source_ids", [])
             if isinstance(value, str) and value.strip()
-        )
+        }
+        hidden_source_ids.update(derived_source_ids)
         config_id = config_by_source.get(job.source_id or "")
         if config_id:
+            hidden_source_keys.update(
+                (config_id, source_id) for source_id in derived_source_ids
+            )
             hidden_configs.add(config_id)
     return _HiddenDerivatives(
         source_ids=frozenset(hidden_source_ids),
+        source_keys=frozenset(hidden_source_keys),
         source_config_ids=frozenset(hidden_configs),
         event_keys=frozenset(hidden_event_keys),
     )
+
+
+def _document_source_exclusions(
+    hidden: _HiddenDerivatives,
+) -> DocumentSourceExclusions:
+    """Scope hidden engine article IDs to their owning source config."""
+    values: dict[str, set[str]] = {}
+    for source_config_id, source_id in hidden.source_keys:
+        values.setdefault(source_config_id, set()).add(source_id)
+    return {
+        source_config_id: tuple(sorted(source_ids))
+        for source_config_id, source_ids in values.items()
+    }
 
 
 _QUERY_NOISE = (
@@ -323,6 +350,8 @@ async def _lexical_sections(
     engine_manager: Any,
     sources: list[SearchSource],
     query: str,
+    *,
+    exclude_source_ids_by_config: DocumentSourceExclusions | None = None,
 ) -> list[RetrievedSection]:
     grep_chunks = getattr(engine_manager, "grep_chunks", None)
     terms = query_terms(query)
@@ -334,11 +363,28 @@ async def _lexical_sections(
     async def one(source: SearchSource, term: str) -> list[RetrievedSection]:
         async with semaphore:
             try:
+                options: dict[str, Any] = {
+                    "source": source,
+                    "limit": 2,
+                }
+                if (
+                    getattr(
+                        engine_manager,
+                        "supports_document_source_exclusions",
+                        False,
+                    )
+                    and exclude_source_ids_by_config
+                ):
+                    options["exclude_source_ids"] = (
+                        exclude_source_ids_by_config.get(
+                            source.sag_source_config_id,
+                            (),
+                        )
+                    )
                 rows = await grep_chunks(
                     source.sag_source_config_id,
                     term,
-                    source=source,
-                    limit=2,
+                    **options,
                 )
             except Exception:  # noqa: BLE001
                 return []
@@ -374,16 +420,33 @@ async def retrieve_relevant_sections(
     targets = [(source.sag_source_config_id, source) for source in sources]
     total_start = time.perf_counter()
     engine_start = time.perf_counter()
-    outcome, lexical, hidden = await asyncio.gather(
-        engine_manager.search_many(
-            targets,
+    hidden = await _hidden_document_derivatives(sources)
+    exclusions = _document_source_exclusions(hidden)
+    search_options: dict[str, Any] = {
+        "strategy": strategy,
+        "top_k": candidate_limit,
+    }
+    if (
+        getattr(
+            engine_manager,
+            "supports_document_source_exclusions",
+            False,
+        )
+        and exclusions
+    ):
+        search_options["exclude_source_ids_by_config"] = exclusions
+    outcome, lexical = await asyncio.gather(
+        engine_manager.search_many(targets, query, **search_options),
+        _lexical_sections(
+            engine_manager,
+            sources,
             query,
-            strategy=strategy,
-            top_k=candidate_limit,
+            exclude_source_ids_by_config=exclusions,
         ),
-        _lexical_sections(engine_manager, sources, query),
-        _hidden_document_derivatives(sources),
     )
+    # A delete can commit while either engine query is in flight. Re-read the
+    # persisted barrier before returning evidence so the delete is linearized.
+    hidden = await _hidden_document_derivatives(sources)
     engine_latency_ms = round((time.perf_counter() - engine_start) * 1000, 2)
     def visible(section: RetrievedSection) -> bool:
         if section.source_id:

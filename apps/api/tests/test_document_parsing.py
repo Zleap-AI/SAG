@@ -398,6 +398,7 @@ async def test_concurrent_mineru_failure_creates_one_task_and_one_fallback(
 @pytest.mark.asyncio
 async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
     from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
     from sag_api.jobs import tasks
 
     document = SimpleNamespace(
@@ -429,7 +430,13 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
             pass
 
         async def execute(self, _statement):
-            pass
+            document.status = DocumentStatus.READY
+            document.chunk_count = 2
+            document.event_count = 1
+            document.sag_source_id = "engine-doc"
+            document.progress = 100
+            document.token_usage = 2468
+            return SimpleNamespace(rowcount=1)
 
         async def refresh(self, _instance, attribute_names=None):
             pass

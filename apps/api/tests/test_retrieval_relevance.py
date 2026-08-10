@@ -243,3 +243,102 @@ async def test_event_recall_excludes_events_from_logically_deleted_document():
         )
 
     assert scores == {("event-config", "visible-event"): 0.9}
+
+
+@pytest.mark.asyncio
+async def test_delete_failed_source_is_filtered_before_vector_top_k():
+    """A large hidden document must not starve a healthy peer from retrieval."""
+    from uuid import uuid4
+
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
+    from sag_api.sag import SearchOutcome
+    from sag_api.services.retrieval_service import retrieve_relevant_sections
+
+    await init_db()
+    config_id = f"prefilter-{uuid4().hex}"
+    async with SessionLocal() as session:
+        source = Source(name="prefilter", sag_source_config_id=config_id)
+        session.add(source)
+        await session.flush()
+        session.add_all(
+            [
+                Document(
+                    source_id=source.id,
+                    filename="hidden.pdf",
+                    content_type="application/pdf",
+                    size_bytes=10,
+                    storage_path="/tmp/prefilter-hidden.pdf",
+                    status=DocumentStatus.DELETE_FAILED,
+                    sag_source_id="engine-hidden-large",
+                ),
+                Document(
+                    source_id=source.id,
+                    filename="visible.pdf",
+                    content_type="application/pdf",
+                    size_bytes=10,
+                    storage_path="/tmp/prefilter-visible.pdf",
+                    status=DocumentStatus.READY,
+                    sag_source_id="engine-visible-peer",
+                ),
+            ]
+        )
+        await session.commit()
+
+        class VisibilityAwareFakeEngine:
+            supports_document_source_exclusions = True
+
+            async def search_many(
+                self,
+                _targets,
+                query,
+                *,
+                strategy=None,
+                top_k=None,
+                exclude_source_ids_by_config=None,
+            ):
+                del strategy
+                rows = [
+                    RetrievedSection(
+                        chunk_id=f"hidden-{index}",
+                        heading="目标主题",
+                        content="目标主题来自删除失败的大文档。",
+                        score=0.99 - index * 0.001,
+                        source_id="engine-hidden-large",
+                        source_config_id=config_id,
+                    )
+                    for index in range(25)
+                ]
+                rows.append(
+                    RetrievedSection(
+                        chunk_id="visible-26",
+                        heading="目标主题",
+                        content="目标主题来自仍然可用的健康文档。",
+                        score=0.8,
+                        source_id="engine-visible-peer",
+                        source_config_id=config_id,
+                    )
+                )
+                excluded = set(
+                    (exclude_source_ids_by_config or {}).get(config_id, ())
+                )
+                rows = [row for row in rows if row.source_id not in excluded]
+                return SearchOutcome(
+                    query=query,
+                    sections=rows[: int(top_k or 8)],
+                    stats={},
+                )
+
+            async def grep_chunks(self, *_args, **_kwargs):
+                return []
+
+        outcome = await retrieve_relevant_sections(
+            VisibilityAwareFakeEngine(),
+            [source],
+            "目标主题",
+            strategy="multi_es_fast",
+            top_k=8,
+        )
+
+    assert [section.chunk_id for section in outcome.sections] == ["visible-26"]

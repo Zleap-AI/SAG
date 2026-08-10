@@ -1,6 +1,253 @@
 import asyncio
+from uuid import uuid4
 
 import pytest
+
+
+@pytest.mark.asyncio
+async def test_pending_fast_delete_falls_back_when_process_is_claimed_mid_request(
+    monkeypatch,
+    tmp_path,
+):
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select, update
+
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.services.document_service import delete_document
+
+    class QueueSpy:
+        def __init__(self):
+            self.maintenance: list[tuple[str, str]] = []
+            self.enqueued: list[str] = []
+
+        def begin_source_maintenance(self, source_id: str, job_id: str):
+            self.maintenance.append((source_id, job_id))
+
+        async def enqueue(self, job_id: str):
+            self.enqueued.append(job_id)
+
+    await init_db()
+    path = tmp_path / "claimed-during-delete.pdf"
+    path.write_bytes(b"%PDF-1.4")
+    async with SessionLocal() as session:
+        source = Source(
+            name="pending-fast-delete-claim-race",
+            sag_source_config_id=f"pending-fast-delete-{uuid4().hex}",
+            document_count=1,
+        )
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename=path.name,
+            content_type="application/pdf",
+            size_bytes=path.stat().st_size,
+            storage_path=str(path),
+            status=DocumentStatus.PENDING,
+        )
+        session.add(document)
+        await session.flush()
+        process_job = Job(
+            type=JobType.PROCESS_DOCUMENT,
+            status=JobStatus.QUEUED,
+            source_id=source.id,
+            document_id=document.id,
+        )
+        session.add(process_job)
+        await session.commit()
+        source_id, document_id, process_job_id = (
+            source.id,
+            document.id,
+            process_job.id,
+        )
+
+        real_scalars = session.scalars
+        scalars_calls = 0
+
+        async def scalars_then_claim(statement, *args, **kwargs):
+            nonlocal scalars_calls
+            scalars_calls += 1
+            if scalars_calls == 3:
+                await session.commit()
+                async with SessionLocal() as worker_session:
+                    await worker_session.execute(
+                        update(Job)
+                        .where(
+                            Job.id == process_job_id,
+                            Job.status == JobStatus.QUEUED,
+                        )
+                        .values(
+                            status=JobStatus.RUNNING,
+                            started_at=datetime.now(UTC),
+                            attempts=1,
+                        )
+                    )
+                    await worker_session.commit()
+            return await real_scalars(statement, *args, **kwargs)
+
+        monkeypatch.setattr(session, "scalars", scalars_then_claim)
+        queue = QueueSpy()
+        delete_job = await delete_document(
+            session,
+            source,
+            document_id,
+            job_queue=queue,
+        )
+
+    async with SessionLocal() as session:
+        deleting_document = await session.get(Document, document_id)
+        stopped_process = await session.get(Job, process_job_id)
+        delete_jobs = list(
+            (
+                await session.scalars(
+                    select(Job).where(
+                        Job.source_id == source_id,
+                        Job.type == JobType.DELETE_DOCUMENT,
+                    )
+                )
+            ).all()
+        )
+        assert deleting_document is not None
+        assert deleting_document.status == DocumentStatus.DELETING
+        assert stopped_process is not None
+        assert stopped_process.status == JobStatus.RUNNING
+        assert stopped_process.payload["pause_requested"] is True
+        assert delete_job.status == JobStatus.QUEUED
+        assert [candidate.id for candidate in delete_jobs] == [delete_job.id]
+        assert queue.maintenance == [(source_id, delete_job.id)]
+        assert queue.enqueued == [delete_job.id]
+    assert path.exists()
+
+
+@pytest.mark.asyncio
+async def test_permanent_maintenance_window_failure_becomes_delete_failed():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+
+    class BrokenEngine:
+        async def begin_document_maintenance(self, *_args, **_kwargs):
+            raise ValueError("invalid maintenance configuration")
+
+        async def end_document_maintenance(self, *_args, **_kwargs):
+            raise AssertionError("a window that never opened must not be closed")
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="broken-maintenance-window",
+            sag_source_config_id=f"broken-window-{uuid4().hex}",
+        )
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="delete.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/delete.md",
+            status=DocumentStatus.DELETING,
+        )
+        session.add(document)
+        await session.flush()
+        job = Job(
+            type=JobType.DELETE_DOCUMENT,
+            status=JobStatus.QUEUED,
+            source_id=source.id,
+            document_id=document.id,
+        )
+        session.add(job)
+        await session.commit()
+        source_id, document_id, job_id = source.id, document.id, job.id
+
+    queue = InProcessAsyncQueue(SessionLocal, BrokenEngine(), concurrency=0)
+    queue.begin_source_maintenance(source_id, job_id)
+    queue._schedule_source_maintenance(source_id)
+    coordinator = queue._source_maintenance_tasks[source_id]
+    try:
+        await asyncio.wait_for(asyncio.shield(coordinator), timeout=1)
+        async with SessionLocal() as session:
+            failed_job = await session.get(Job, job_id)
+            failed_document = await session.get(Document, document_id)
+            assert failed_job.status == JobStatus.FAILED
+            assert failed_job.attempts == 1
+            assert failed_document.status == DocumentStatus.DELETE_FAILED
+            assert failed_document.error == "invalid maintenance configuration"
+        assert queue.source_maintenance_requested(source_id) is False
+    finally:
+        await queue.stop()
+
+
+@pytest.mark.asyncio
+async def test_retryable_maintenance_window_failure_is_bounded_and_retried():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.core.errors import ServiceUnavailableError
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+
+    class FlakyEngine:
+        def __init__(self):
+            self.begin_count = 0
+
+        async def begin_document_maintenance(self, *_args, **_kwargs):
+            self.begin_count += 1
+            if self.begin_count == 1:
+                raise ServiceUnavailableError("temporary maintenance outage")
+
+        async def end_document_maintenance(self, *_args, **_kwargs):
+            return None
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="flaky-maintenance-window",
+            sag_source_config_id=f"flaky-window-{uuid4().hex}",
+        )
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="delete.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/delete.md",
+            status=DocumentStatus.DELETING,
+        )
+        session.add(document)
+        await session.flush()
+        job = Job(
+            type=JobType.DELETE_DOCUMENT,
+            status=JobStatus.QUEUED,
+            source_id=source.id,
+            document_id=document.id,
+        )
+        session.add(job)
+        await session.commit()
+        source_id, document_id, job_id = source.id, document.id, job.id
+
+    engine = FlakyEngine()
+    queue = InProcessAsyncQueue(SessionLocal, engine, concurrency=0)
+    queue.begin_source_maintenance(source_id, job_id)
+    queue._schedule_source_maintenance(source_id)
+    coordinator = queue._source_maintenance_tasks[source_id]
+    try:
+        await asyncio.wait_for(asyncio.shield(coordinator), timeout=2)
+        async with SessionLocal() as session:
+            retried_job = await session.get(Job, job_id)
+            deleting_document = await session.get(Document, document_id)
+            assert retried_job.status == JobStatus.QUEUED
+            assert retried_job.attempts == 1
+            assert deleting_document.status == DocumentStatus.DELETING
+        assert engine.begin_count == 2
+        assert queue._source_maintenance_dispatched[source_id] == job_id
+        assert (await asyncio.wait_for(queue._queue.get(), timeout=1))[-1] == job_id
+    finally:
+        await queue.stop()
 
 
 @pytest.mark.asyncio
@@ -963,6 +1210,74 @@ async def test_stop_tracks_coordinator_while_it_closes_a_ghost_window():
     assert queue._source_maintenance_tasks == {}
     assert queue._source_maintenance_jobs == {}
     assert queue._source_maintenance_ready == set()
+
+
+@pytest.mark.asyncio
+async def test_maintenance_close_supervises_peer_enqueue_failure():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+    from sag_api.jobs.scheduling import SOURCE_MAINTENANCE, get_blocked_reason
+
+    class ReleasingEngine:
+        released = False
+
+        async def end_document_maintenance(self, *_args, **_kwargs):
+            self.released = True
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="durable-peer-release",
+            sag_source_config_id="durable-peer-release-config",
+        )
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="peer.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/peer.md",
+            status=DocumentStatus.EXTRACTING,
+        )
+        session.add(document)
+        await session.flush()
+        peer = Job(
+            type=JobType.PROCESS_DOCUMENT,
+            status=JobStatus.QUEUED,
+            source_id=source.id,
+            document_id=document.id,
+            payload={"_scheduler": {"blocked_reason": SOURCE_MAINTENANCE}},
+        )
+        session.add(peer)
+        await session.commit()
+        source_id, peer_job_id = source.id, peer.id
+
+    engine = ReleasingEngine()
+    queue = InProcessAsyncQueue(SessionLocal, engine, concurrency=1)
+    queue.begin_source_maintenance(source_id, "delete-completed")
+    queue._source_maintenance_ready.add(source_id)
+    scheduled: list[tuple[str, float]] = []
+
+    async def fail_enqueue(_job_id: str) -> None:
+        raise RuntimeError("transient enqueue failure")
+
+    queue.enqueue = fail_enqueue  # type: ignore[method-assign]
+    queue._schedule_retry = lambda job_id, delay: scheduled.append(  # type: ignore[method-assign]
+        (job_id, delay)
+    )
+
+    await queue.finish_source_maintenance(source_id, "delete-completed")
+
+    assert engine.released is True
+    assert scheduled == [(peer_job_id, 0.0)]
+    async with SessionLocal() as session:
+        resumed = await session.get(Job, peer_job_id)
+        assert resumed.status == JobStatus.QUEUED
+        assert get_blocked_reason(resumed.payload) is None
+        assert resumed.payload["resume_requested"] is True
     assert queue._source_maintenance_closing == set()
 
 

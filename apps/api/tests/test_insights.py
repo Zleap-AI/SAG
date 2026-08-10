@@ -248,10 +248,13 @@ async def test_entity_read_path():
                     f"/api/v1/sources/{sid}/documents/{document_id}",
                     headers=H,
                 )
-                if document_response.status_code == 404:
+                async with sf() as s:
+                    article_deleted = await s.get(Article, "d1") is None
+                if document_response.status_code == 404 and article_deleted:
                     break
                 await asyncio.sleep(0.05)
             assert document_response.status_code == 404
+            assert article_deleted
             source_after_delete = (await c.get(f"/api/v1/sources/{sid}", headers=H)).json()
             assert source_after_delete["document_count"] == 0
             assert source_after_delete["chunk_count"] == 0

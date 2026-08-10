@@ -39,6 +39,7 @@ log = get_logger("jobs")
 _BACKOFF_BASE_SECONDS = 2.0
 _RECOVERY_LOCK_RETRIES = 4
 _MAINTENANCE_CLOSE_RETRY_SECONDS = 0.5
+_RETRY_ENQUEUE_RETRY_SECONDS = 0.5
 _MAINTENANCE_JOB_TYPES = {
     JobType.DELETE_DOCUMENT,
     JobType.REPROCESS_DOCUMENT,
@@ -51,7 +52,10 @@ def _now() -> datetime:
 
 def _is_retryable(exc: Exception) -> bool:
     """瞬时故障（限流/超时/上游暂不可用）可重试；输入/配置类错误不重试。"""
-    return isinstance(exc, (ServiceUnavailableError, UpstreamError))
+    return isinstance(
+        exc,
+        (ServiceUnavailableError, UpstreamError, OperationalError),
+    )
 
 
 async def _mark_document_waiting_retry(session, job) -> None:
@@ -63,6 +67,34 @@ async def _mark_document_waiting_retry(session, job) -> None:
         return
     document.status = DocumentStatus.PENDING
     document.error = None
+
+
+async def _mark_reprocess_failed(session, document_id: str, message: str) -> None:
+    """Record reprocess failure without reviving a concurrent delete."""
+    await session.execute(
+        update(Document)
+        .where(
+            Document.id == document_id,
+            Document.status.not_in(
+                [DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED]
+            ),
+        )
+        .values(status=DocumentStatus.FAILED, error=message)
+    )
+
+
+async def _converge_document_paused(session, job) -> None:
+    """Finish a won pause transition without overwriting a concurrent resume."""
+    if job.type != JobType.PROCESS_DOCUMENT or not job.document_id:
+        return
+    await session.execute(
+        update(Document)
+        .where(
+            Document.id == job.document_id,
+            Document.status == DocumentStatus.PAUSING,
+        )
+        .values(status=DocumentStatus.PAUSED, error=None)
+    )
 
 
 class InProcessAsyncQueue(JobQueue):
@@ -132,6 +164,16 @@ class InProcessAsyncQueue(JobQueue):
                     raise
                 await asyncio.sleep(0.08 * (2**attempt))
 
+    async def enqueue_durably(self, job_id: str) -> None:
+        """Dispatch now when possible and supervise a retry after any failure."""
+        try:
+            await self.enqueue(job_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - durable row remains recoverable
+            log.exception("持久化任务首次派发失败，转后台重排 job=%s", job_id)
+            self._schedule_retry(job_id, 0.0)
+
     def begin_source_maintenance(self, source_id: str, job_id: str) -> None:
         self._source_maintenance_jobs.setdefault(source_id, set()).add(job_id)
 
@@ -153,6 +195,71 @@ class InProcessAsyncQueue(JobQueue):
                 self._source_maintenance_tasks.pop(source_id, None)
 
         task.add_done_callback(discard)
+
+    async def _record_source_maintenance_window_failure(
+        self,
+        source_id: str,
+        error: Exception,
+    ) -> bool:
+        """Bound maintenance admission failures and persist their final state."""
+        from sag_api.db.models import Job
+
+        registered_ids = set(self._source_maintenance_jobs.get(source_id, set()))
+        if not registered_ids:
+            return False
+
+        message = getattr(error, "message", None) or str(error)
+        retry_ids: set[str] = set()
+        async with self._session_factory() as session:
+            jobs = list(
+                (
+                    await session.scalars(
+                        select(Job).where(
+                            Job.id.in_(registered_ids),
+                            Job.source_id == source_id,
+                            Job.type.in_(_MAINTENANCE_JOB_TYPES),
+                            Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+                        )
+                    )
+                ).all()
+            )
+            for job in jobs:
+                job.attempts += 1
+                if _is_retryable(error) and job.attempts < settings.job_max_attempts:
+                    job.status = JobStatus.QUEUED
+                    job.finished_at = None
+                    job.error = (
+                        f"第 {job.attempts} 次建立信源维护窗口失败，将重试：{message}"
+                    )
+                    retry_ids.add(job.id)
+                    if job.type == JobType.DELETE_DOCUMENT and job.document_id:
+                        document = await session.get(Document, job.document_id)
+                        if document is not None:
+                            document.status = DocumentStatus.DELETING
+                            document.error = None
+                    continue
+
+                job.status = JobStatus.FAILED
+                job.error = message
+                job.finished_at = _now()
+                if job.type == JobType.DELETE_DOCUMENT and job.document_id:
+                    document = await session.get(Document, job.document_id)
+                    if document is not None:
+                        document.status = DocumentStatus.DELETE_FAILED
+                        document.error = message
+                elif job.type == JobType.REPROCESS_DOCUMENT and job.document_id:
+                    await _mark_reprocess_failed(session, job.document_id, message)
+            await session.commit()
+
+        active = self._source_maintenance_jobs.get(source_id)
+        if active is None:
+            return False
+        terminal_ids = registered_ids - retry_ids
+        active.difference_update(terminal_ids)
+        dispatched = self._source_maintenance_dispatched.get(source_id)
+        if dispatched in terminal_ids:
+            self._source_maintenance_dispatched.pop(source_id, None)
+        return bool(active)
 
     async def _coordinate_source_maintenance(self, source_id: str) -> None:
         """Wait for a maintenance window without consuming a job worker."""
@@ -210,9 +317,9 @@ class InProcessAsyncQueue(JobQueue):
                 else:
                     self._source_maintenance_ready.discard(source_id)
                 raise
-            except Exception:  # noqa: BLE001 - coordinator retries off-worker
-                log.exception("等待信源维护窗口失败，后台重试 source=%s", source_id)
+            except Exception as error:  # noqa: BLE001 - coordinator retries off-worker
                 if window_open and source is not None:
+                    log.exception("信源维护窗口内协调失败 source=%s", source_id)
                     self._source_maintenance_ready.add(source_id)
                     while source_id in self._source_maintenance_ready:
                         try:
@@ -231,6 +338,25 @@ class InProcessAsyncQueue(JobQueue):
                             await asyncio.sleep(delay)
                 else:
                     self._source_maintenance_ready.discard(source_id)
+
+                try:
+                    retry = await self._record_source_maintenance_window_failure(
+                        source_id,
+                        error,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - preserve fence until persisted
+                    log.exception(
+                        "持久化信源维护窗口失败状态异常，后台重试 source=%s",
+                        source_id,
+                    )
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 30.0)
+                    continue
+                if not retry:
+                    await self._close_source_maintenance(source_id)
+                    return
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30.0)
 
@@ -444,7 +570,7 @@ class InProcessAsyncQueue(JobQueue):
             else:
                 self._source_maintenance_jobs.pop(source_id, None)
             for ready_id in ready_ids:
-                await self.enqueue(ready_id)
+                await self.enqueue_durably(ready_id)
         finally:
             # Never leave a source permanently fenced if database or engine
             # cleanup is cancelled during shutdown.
@@ -470,7 +596,17 @@ class InProcessAsyncQueue(JobQueue):
         async def _later() -> None:
             try:
                 await asyncio.sleep(delay)
-                await self.enqueue(job_id)
+                retry_delay = _RETRY_ENQUEUE_RETRY_SECONDS
+                while True:
+                    try:
+                        await self.enqueue(job_id)
+                        return
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - durable row needs dispatch
+                        log.exception("延迟重排入队失败，后台重试 job=%s", job_id)
+                        await asyncio.sleep(retry_delay)
+                        retry_delay = min(max(retry_delay * 2, 0.0), 60.0)
             except asyncio.CancelledError:
                 pass
 
@@ -807,12 +943,23 @@ class InProcessAsyncQueue(JobQueue):
             if claim.rowcount != 1:
                 return
             await session.refresh(job)
+            claimed_started_at = job.started_at
 
             handler = TASK_HANDLERS.get(job.type)
             if handler is None:
-                job.status = JobStatus.FAILED
-                job.error = f"未知任务类型：{job.type}"
-                job.finished_at = _now()
+                await session.execute(
+                    update(Job)
+                    .where(
+                        Job.id == job_id,
+                        Job.status == JobStatus.RUNNING,
+                        Job.started_at == claimed_started_at,
+                    )
+                    .values(
+                        status=JobStatus.FAILED,
+                        error=f"未知任务类型：{job.type}",
+                        finished_at=_now(),
+                    )
+                )
                 await session.commit()
                 return
 
@@ -820,14 +967,28 @@ class InProcessAsyncQueue(JobQueue):
             claimed_source_id = job.source_id
             release_source_maintenance = False
             retry_source_maintenance = False
+            retry_delay_to_schedule: float | None = None
 
             try:
                 await handler(session, job, engine_manager=self._engine_manager, job_queue=self)
-                job.status = JobStatus.SUCCEEDED
-                job.progress = 1.0
-                job.finished_at = _now()
-                job.error = None
-                release_source_maintenance = claimed_type in _MAINTENANCE_JOB_TYPES
+                succeeded = await session.execute(
+                    update(Job)
+                    .where(
+                        Job.id == job_id,
+                        Job.status == JobStatus.RUNNING,
+                        Job.started_at == claimed_started_at,
+                    )
+                    .values(
+                        status=JobStatus.SUCCEEDED,
+                        progress=1.0,
+                        finished_at=_now(),
+                        error=None,
+                    )
+                )
+                release_source_maintenance = bool(
+                    succeeded.rowcount
+                    and claimed_type in _MAINTENANCE_JOB_TYPES
+                )
             except asyncio.CancelledError:
                 raise
             except JobDeleted:
@@ -837,81 +998,162 @@ class InProcessAsyncQueue(JobQueue):
             except JobYielded as yielded:
                 await session.rollback()
                 job = await session.get(Job, job_id)
-                if job is not None:
-                    job.payload = set_scheduler(
+                if (
+                    job is not None
+                    and job.status == JobStatus.PAUSED
+                    and job.started_at == claimed_started_at
+                ):
+                    await _converge_document_paused(session, job)
+                    log.info("任务已被并发暂停，忽略让行信号 job=%s", job_id)
+                elif job is not None:
+                    payload = set_scheduler(
                         job.payload,
                         blocked_reason=yielded.reason,
                     )
-                    job.status = JobStatus.QUEUED
-                    job.finished_at = None
-                    job.error = None
-                    log.info("任务临时让行 job=%s reason=%s", job_id, yielded.reason)
+                    yielded_update = await session.execute(
+                        update(Job)
+                        .where(
+                            Job.id == job_id,
+                            Job.status == JobStatus.RUNNING,
+                            Job.started_at == claimed_started_at,
+                        )
+                        .values(
+                            payload=payload,
+                            status=JobStatus.QUEUED,
+                            finished_at=None,
+                            error=None,
+                        )
+                    )
+                    if yielded_update.rowcount:
+                        log.info(
+                            "任务临时让行 job=%s reason=%s",
+                            job_id,
+                            yielded.reason,
+                        )
             except JobPaused:
                 await session.rollback()
                 job = await session.get(Job, job_id)
                 if job is not None:
-                    payload = dict(job.payload or {})
-                    payload.pop("pause_requested", None)
-                    job.payload = payload
-                    job.status = JobStatus.PAUSED
-                    job.finished_at = None
-                    job.error = None
-                    log.info("任务已暂停 job=%s progress=%.0f%%", job_id, job.progress * 100)
+                    paused = await session.execute(
+                        update(Job)
+                        .where(
+                            Job.id == job_id,
+                            Job.status.in_([JobStatus.RUNNING, JobStatus.PAUSED]),
+                            Job.started_at == claimed_started_at,
+                        )
+                        .values(
+                            status=JobStatus.PAUSED,
+                            finished_at=None,
+                            error=None,
+                        )
+                    )
+                    if paused.rowcount:
+                        await _converge_document_paused(session, job)
+                        log.info(
+                            "任务已暂停 job=%s progress=%.0f%%",
+                            job_id,
+                            job.progress * 100,
+                        )
             except Exception as e:  # noqa: BLE001
                 await session.rollback()
                 job = await session.get(Job, job_id)
+                if (
+                    job is not None
+                    and job.status == JobStatus.PAUSED
+                    and job.started_at == claimed_started_at
+                ):
+                    await _converge_document_paused(session, job)
+                    log.info("任务已被并发暂停，忽略 handler 失败 job=%s", job_id)
+                    await session.commit()
+                    return
                 msg = getattr(e, "message", None) or str(e)
                 attempts = job.attempts if job is not None else settings.job_max_attempts
                 delete_cleanup = bool(
                     job is not None and job.type == JobType.DELETE_DOCUMENT
                 )
                 retry = job is not None and (
-                    delete_cleanup
-                    or (
-                        _is_retryable(e)
-                        and attempts < settings.job_max_attempts
-                    )
+                    _is_retryable(e)
+                    and attempts < settings.job_max_attempts
                 )
-                if job is not None:
+                if job is not None and job.status == JobStatus.RUNNING:
                     if retry:
                         # 退避重排：状态回 QUEUED，延迟 base**attempts 秒后重新入队
-                        job.status = JobStatus.QUEUED
-                        job.progress = 0.0
-                        job.error = f"第 {attempts} 次失败，将重试：{msg}"
-                        await _mark_document_waiting_retry(session, job)
-                        if delete_cleanup and job.document_id:
-                            document = await session.get(Document, job.document_id)
-                            if document is not None:
-                                document.status = DocumentStatus.DELETING
-                                document.error = None
                         delay = min(_BACKOFF_BASE_SECONDS ** min(attempts, 10), 60.0)
-                        self._schedule_retry(job_id, delay)
-                        retry_source_maintenance = claimed_type in _MAINTENANCE_JOB_TYPES
-                        release_source_maintenance = bool(
-                            delete_cleanup and claimed_source_id
+                        retry_update = await session.execute(
+                            update(Job)
+                            .where(
+                                Job.id == job_id,
+                                Job.status == JobStatus.RUNNING,
+                                Job.started_at == claimed_started_at,
+                            )
+                            .values(
+                                status=JobStatus.QUEUED,
+                                progress=0.0,
+                                error=f"第 {attempts} 次失败，将重试：{msg}",
+                            )
                         )
-                        log.warning(
-                            "任务可重试 job=%s（第 %d/%d 次），%.1fs 后重排：%s",
-                            job_id, attempts, settings.job_max_attempts, delay, msg,
-                        )
+                        if retry_update.rowcount:
+                            await _mark_document_waiting_retry(session, job)
+                            if delete_cleanup and job.document_id:
+                                document = await session.get(Document, job.document_id)
+                                if document is not None:
+                                    document.status = DocumentStatus.DELETING
+                                    document.error = None
+                            retry_delay_to_schedule = delay
+                            retry_source_maintenance = (
+                                claimed_type in _MAINTENANCE_JOB_TYPES
+                            )
+                            release_source_maintenance = bool(
+                                delete_cleanup and claimed_source_id
+                            )
+                            log.warning(
+                                "任务可重试 job=%s（第 %d/%d 次），%.1fs 后重排：%s",
+                                job_id,
+                                attempts,
+                                settings.job_max_attempts,
+                                delay,
+                                msg,
+                            )
                     else:
-                        job.status = JobStatus.FAILED
-                        job.error = msg
-                        job.finished_at = _now()
-                        if job.type == JobType.DELETE_DOCUMENT and job.document_id:
-                            document = await session.get(Document, job.document_id)
-                            if document is not None:
-                                document.status = DocumentStatus.DELETE_FAILED
-                                document.error = msg
-                            release_source_maintenance = bool(claimed_source_id)
-                        elif job.type == JobType.REPROCESS_DOCUMENT and job.document_id:
-                            document = await session.get(Document, job.document_id)
-                            if document is not None:
-                                document.status = DocumentStatus.FAILED
-                                document.error = msg
-                            release_source_maintenance = bool(claimed_source_id)
-                        log.warning("任务失败 job=%s（尝试 %d 次）：%s", job_id, attempts, msg)
+                        failed_update = await session.execute(
+                            update(Job)
+                            .where(
+                                Job.id == job_id,
+                                Job.status == JobStatus.RUNNING,
+                                Job.started_at == claimed_started_at,
+                            )
+                            .values(
+                                status=JobStatus.FAILED,
+                                error=msg,
+                                finished_at=_now(),
+                            )
+                        )
+                        if failed_update.rowcount:
+                            if job.type == JobType.DELETE_DOCUMENT and job.document_id:
+                                document = await session.get(Document, job.document_id)
+                                if document is not None:
+                                    document.status = DocumentStatus.DELETE_FAILED
+                                    document.error = msg
+                                release_source_maintenance = bool(claimed_source_id)
+                            elif (
+                                job.type == JobType.REPROCESS_DOCUMENT
+                                and job.document_id
+                            ):
+                                await _mark_reprocess_failed(
+                                    session,
+                                    job.document_id,
+                                    msg,
+                                )
+                                release_source_maintenance = bool(claimed_source_id)
+                            log.warning(
+                                "任务失败 job=%s（尝试 %d 次）：%s",
+                                job_id,
+                                attempts,
+                                msg,
+                            )
             await session.commit()
+            if retry_delay_to_schedule is not None:
+                self._schedule_retry(job_id, retry_delay_to_schedule)
             if retry_source_maintenance and claimed_source_id:
                 if self._source_maintenance_dispatched.get(claimed_source_id) == job_id:
                     self._source_maintenance_dispatched.pop(claimed_source_id, None)

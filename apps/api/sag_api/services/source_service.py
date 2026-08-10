@@ -169,5 +169,7 @@ async def sync_source(session: AsyncSession, source_id: str, *, job_queue: JobQu
     session.add(job)
     await session.commit()
     await session.refresh(job)
-    await job_queue.enqueue(job.id)
+    from sag_api.services.document_service import _enqueue_persisted_job
+
+    await _enqueue_persisted_job(job_queue, job.id)
     return job
