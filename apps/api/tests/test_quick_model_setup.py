@@ -122,7 +122,7 @@ async def test_302_quick_model_setup(monkeypatch: pytest.MonkeyPatch):
                     "mineru_version": "2.5",
                     "mineru_api_key_set": True,
                     "document_extract_concurrency": 30,
-                    "search_strategy": "vector",
+                    "search_strategy": "multi_es_fast",
                     "search_top_k": 8,
                     "sag_language": "zh",
                 }
@@ -131,7 +131,7 @@ async def test_302_quick_model_setup(monkeypatch: pytest.MonkeyPatch):
                 assert config["locked_fields"] == []
                 assert body["capabilities"]["llm_configured"] is True
                 assert body["capabilities"]["llm_provider"] == "openai"
-                assert body["capabilities"]["search_strategy"] == "vector"
+                assert body["capabilities"]["search_strategy"] == "multi_es_fast"
                 assert settings.llm_api_key == fake_key
                 assert settings.embedding_api_key == fake_key
                 assert settings.mineru_api_key == fake_key
