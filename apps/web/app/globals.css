@@ -3692,7 +3692,7 @@
     font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
   }
 
-  /* 大文档分块渲染：屏幕外块跳过布局/绘制（配合 ChunkedMarkdown）。
+  /* 大文档分块渲染：屏幕外块跳过布局/绘制（配合 ChunkedMarkdown / ChunkedRawText）。
      contain-intrinsic-size 提供占位高度估算，避免滚动条大幅跳动；
      配合 ~5000 字符/块，一屏内典型高度约 900~1400px，估高 1200 靠中位数减小回跳。
 

@@ -193,3 +193,35 @@ export const ChunkedMarkdown = React.memo(function ChunkedMarkdown({
     </>
   );
 });
+
+/**
+ * 大文档原始文本分块渲染：与 `ChunkedMarkdown` 同一套切块 + `.md-block` 策略，
+ * 但不走 Markdown 解析，块内为纯文本 `<pre>`。用于详情面板「原始 Markdown」
+ * 模式，避免单块超长 `pre-wrap` 在面板拖宽时全量换行重排。
+ *
+ * 短文本（单块）直接渲染，不引入额外包裹；答案流 / 预览模式不受影响。
+ */
+export const ChunkedRawText = React.memo(function ChunkedRawText({
+  content,
+}: {
+  content: string;
+}) {
+  const blocks = React.useMemo(() => splitMarkdownBlocks(content), [content]);
+  // 与改前 TextBody raw 的 `<pre>` 字号/换行一致；m-0 避免多块相邻时浏览器默认 pre 外边距叠出缝隙。
+  const textClassName =
+    "m-0 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed";
+
+  if (blocks.length <= 1) {
+    return <pre className={textClassName}>{content}</pre>;
+  }
+  return (
+    <>
+      {blocks.map((block, index) => (
+        // 索引作 key 安全：blocks 由 content 纯函数派生，同一 content 顺序稳定。
+        <div key={index} className="md-block">
+          <pre className={textClassName}>{block}</pre>
+        </div>
+      ))}
+    </>
+  );
+});

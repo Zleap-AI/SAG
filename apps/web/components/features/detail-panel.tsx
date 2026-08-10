@@ -20,7 +20,7 @@ import type { CitationEventRef, Doc } from "@/lib/types";
 import { formatBytes, formatDate, formatTokenCount, relativeTime } from "@/lib/format";
 import { cleanCitationText, stripCitationTransportTokens } from "@/lib/citation-presentation";
 import { cn } from "@/lib/utils";
-import { ChunkedMarkdown } from "@/components/features/markdown-content";
+import { ChunkedMarkdown, ChunkedRawText } from "@/components/features/markdown-content";
 import { useApp } from "@/components/features/app-shell";
 import { DocStatusBadge } from "@/components/features/status-badge";
 import { Button } from "@/components/ui/button";
@@ -186,17 +186,15 @@ function TextBody({ text, mode }: { text: string; mode: "md" | "raw" }) {
   // 滚动条"双层套嵌导致的宽度抖动。但内部宽内容（大代码块/表格/长 URL）如果没有单独的
   // 横向出口，会顶穿容器；外层 overflow-x-hidden 会把它们裁掉表现为"右半边被截断"。
   // 这里仅开启 overflow-x-auto —— 只作用于宽元素的横向溢出，与外层纵向滚动互不干扰。
-  if (mode === "md") {
-    return (
-      <div className="w-full min-w-0 max-w-full overflow-x-auto rounded-md border bg-muted/30 p-4">
-        <ChunkedMarkdown content={text} />
-      </div>
-    );
-  }
+  // 外壳样式两种模式共用；md / raw 只换内层渲染器（ChunkedMarkdown / ChunkedRawText）。
   return (
-    <pre className="w-full min-w-0 max-w-full overflow-x-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-4 font-mono text-xs leading-relaxed">
-      {text}
-    </pre>
+    <div className="w-full min-w-0 max-w-full overflow-x-auto rounded-md border bg-muted/30 p-4">
+      {mode === "md" ? (
+        <ChunkedMarkdown content={text} />
+      ) : (
+        <ChunkedRawText content={text} />
+      )}
+    </div>
   );
 }
 
