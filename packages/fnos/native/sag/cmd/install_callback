@@ -2,18 +2,16 @@
 # install_callback — provision $TRIM_PKGVAR ownership, perms, and the
 # internal identity secret.
 #
-# Runs as ROOT (config/privilege defaults.run-as=root). By this point in
+# Runs as the sag package user (config/privilege defaults.run-as=package). By this point in
 # the lifecycle the fnpack framework has materialized $TRIM_PKGVAR
 # (== /vol1/@appdata/<pkg>) — it did not exist when install_init ran.
 # This callback:
 #
-#   1. Ensures $TRIM_PKGVAR exists, is owned by sag:sag, and is mode 0700
+#   1. Ensures $TRIM_PKGVAR exists and is mode 0700
 #      (so per-user data under $TRIM_PKGVAR/users/<key>/ is not
 #      traversable by other local accounts).
 #   2. Provisions $TRIM_PKGVAR/internal-secret as a 64-hex random blob
-#      owned by sag:sag, mode 0600. cmd/main exports this file to the
-#      gateway; the sag user must own it because main drops privileges
-#      to sag before exec'ing the gateway.
+#      with mode 0600.
 #   3. Scrubs any legacy residue at $TRIM_PKGETC/internal-secret. A
 #      prior release wrote the secret there; @appconf is a shared
 #      config volume whose perms fnpack does not re-normalize, so
@@ -84,12 +82,9 @@ case "$TRIM_PKGVAR" in
   *) die "TRIM_PKGVAR ($TRIM_PKGVAR) is not an absolute path" ;;
 esac
 
-# ---- 2. Materialize $TRIM_PKGVAR under sag:sag mode 0700 -----------------
+# ---- 2. Materialize $TRIM_PKGVAR under mode 0700 --------------------------
 LAST_STEP="pkgvar-mkdir"
 mkdir -p "$TRIM_PKGVAR" || die "cannot create $TRIM_PKGVAR (parent: $(ls -ld "$(dirname "$TRIM_PKGVAR")" 2>&1))"
-
-LAST_STEP="pkgvar-chown"
-chown sag:sag "$TRIM_PKGVAR" 2>/dev/null || log "chown sag:sag $TRIM_PKGVAR failed (non-fatal; may be a rare NAS ACL case)"
 
 LAST_STEP="pkgvar-chmod"
 chmod 0700 "$TRIM_PKGVAR" || die "cannot chmod 0700 $TRIM_PKGVAR"
@@ -121,21 +116,11 @@ if ! secret_ok "$secret"; then
   printf '%s' "$material" >"$secret" || die "cannot write $secret (disk full or read-only?)"
 fi
 
-# ---- 6. Ownership + mode on the secret ------------------------------------
-LAST_STEP="secret-chown"
-chown sag:sag "$secret" 2>/dev/null || log "chown sag:sag $secret failed (non-fatal)"
-
+# ---- 6. Mode on the secret -------------------------------------------------
 LAST_STEP="secret-chmod"
 chmod 0600 "$secret" || die "cannot chmod 0600 $secret"
 
-# ---- 7. Fixup ownership on any pre-existing subtree ----------------------
-# Overwrite installs from a prior root-era release may have left
-# root-owned dirs/files under $TRIM_PKGVAR. Recursive chown so the sag
-# runtime can read/write everything under its own data root.
-LAST_STEP="pkgvar-recursive-chown"
-chown -R sag:sag "$TRIM_PKGVAR" 2>/dev/null || log "recursive chown of $TRIM_PKGVAR failed (non-fatal)"
-
-# ---- 8. Post-condition ----------------------------------------------------
+# ---- 7. Post-condition ----------------------------------------------------
 LAST_STEP="post-condition"
 size="$(wc -c <"$secret" 2>/dev/null | tr -d ' \n\t')"
 case "$size" in
@@ -143,5 +128,5 @@ case "$size" in
   *) die "post-condition failed: internal-secret is $size bytes (want 64)" ;;
 esac
 
-log "install_callback complete (pkgvar=$TRIM_PKGVAR mode 0700 sag:sag, internal-secret 0600 sag:sag)"
+log "install_callback complete (pkgvar=$TRIM_PKGVAR mode 0700, internal-secret 0600)"
 exit 0

@@ -179,23 +179,12 @@ test("rendered native package rejects a manifest service port", async (t) => {
   await expectRejected(root, "x86", /service_port/i);
 });
 
-test("rendered native package rejects a package run-as default (must be root so install_callback can chown $TRIM_PKGVAR to sag)", async (t) => {
+test("rendered native package rejects a root run-as default", async (t) => {
   const root = await renderedPackage(t, "x86");
   await writeFile(path.join(root, "config/privilege"), JSON.stringify({
-    defaults: { "run-as": "package" }, username: "sag", groupname: "sag",
+    defaults: { "run-as": "root" }, username: "sag", groupname: "sag",
   }));
-  await expectRejected(root, "x86", /run-as.*root/i);
-});
-
-test("rendered native package rejects cmd/main missing the privilege drop", async (t) => {
-  const root = await renderedPackage(t, "x86");
-  const mainPath = path.join(root, "cmd/main");
-  const original = await readFile(mainPath, "utf8");
-  // Strip both fallbacks so no drop tool is referenced. The rest of
-  // the file stays intact; validator should now reject.
-  const stripped = original.replace(/\bsetpriv\b/g, "no_such_tool").replace(/\bsu\s+-s\b/g, "no_such_tool ");
-  await writeFile(mainPath, stripped);
-  await expectRejected(root, "x86", /setpriv|drop privileges/i);
+  await expectRejected(root, "x86", /run-as.*package/i);
 });
 
 test("rendered native package rejects platform all", async (t) => {
@@ -226,7 +215,7 @@ test("rendered native package rejects Docker Compose content", async (t) => {
 test("rendered native package rejects a non-sag package user", async (t) => {
   const root = await renderedPackage(t, "x86");
   await writeFile(path.join(root, "config/privilege"), JSON.stringify({
-    defaults: { "run-as": "root" }, username: "other", groupname: "other",
+    defaults: { "run-as": "package" }, username: "other", groupname: "other",
   }));
   await expectRejected(root, "x86", /username.*sag/i);
 });

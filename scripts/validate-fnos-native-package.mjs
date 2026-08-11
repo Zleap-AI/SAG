@@ -94,37 +94,12 @@ export async function validateNativeTemplate(root, platform) {
   if (!manifest.get("version")) fail("manifest must define version");
 
   const privilege = await readJson(root, "config/privilege");
-  // fnpack's privilege schema has no per-command override: whatever
-  // `defaults.run-as` is applies to every callback in cmd/, including
-  // install_init, install_callback, main, upgrade_init, and
-  // uninstall_callback. This package sets run-as=root so that:
-  //   * install_init runs BEFORE fnpack materializes $TRIM_PKGVAR and
-  //     stays out of it (see cmd/install_init).
-  //   * install_callback (root) mkdirs $TRIM_PKGVAR, chowns sag:sag,
-  //     and provisions the internal-secret file (see cmd/install_callback).
-  //   * main enters as root, sets up runtime state files, then drops
-  //     privileges to the sag user via setpriv (or su as fallback)
-  //     before exec'ing the long-lived gateway (python uvicorn) and
-  //     web (node) daemons. Neither daemon holds root.
-  // fnOS's own guidance is "优先使用 package 用户权限级别" — root is
-  // permitted when the install callbacks need it, and many upstream
-  // apps ship that way (Fndesk, 1Panel, EasyTier-Web, mihomo, ...).
-  // We enforce here that: privilege declares root, the sag user is
-  // still requested (fnpack auto-creates it), and cmd/main actually
-  // wires the privilege drop for its daemon exec paths.
-  if (privilege?.defaults?.["run-as"] !== "root") fail("privilege defaults run-as must be root (install_callback needs root to chown $TRIM_PKGVAR to sag; main drops to sag via setpriv before exec)");
+  // fnpack applies defaults.run-as to every lifecycle callback. Run all
+  // callbacks as the package user so neither installation nor runtime
+  // commands receive root privileges.
+  if (privilege?.defaults?.["run-as"] !== "package") fail("privilege defaults run-as must be package");
   if (privilege.username !== "sag") fail("privilege username must be sag");
   if (privilege.groupname !== "sag") fail("privilege groupname must be sag");
-
-  const mainSource = await readFile(path.join(root, "cmd/main"), "utf8");
-  // main runs as root but MUST drop to sag before exec'ing the
-  // gateway and web daemons. Guard the two well-known drop tools
-  // shipped on fnOS 1.2.x (setpriv verified present, su as fallback).
-  // A run-as=root package that forgets this ships root-owned daemons,
-  // which is the exact security regression we changed the privilege
-  // model to avoid.
-  if (!/\bsetpriv\b/.test(mainSource) && !/\bsu\s+-s\b/.test(mainSource))
-    fail("cmd/main must drop privileges via setpriv or su before exec'ing gateway/web daemons (run-as=root means main is entered as root)");
 
   const resource = await readJson(root, "config/resource");
   if (Object.hasOwn(resource, "docker-project")) fail("native package resource must not define docker-project");

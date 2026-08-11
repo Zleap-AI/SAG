@@ -13,8 +13,7 @@
 # behind by an unclean uninstall of a previous version. Everything here
 # is best-effort — a fresh install with no residue must exit 0.
 #
-# Runs as root (config/privilege defaults.run-as=root). cmd/main drops to
-# the sag package user before launching gateway/web via setpriv.
+# Runs as the sag package user (config/privilege defaults.run-as=package).
 
 set -u
 

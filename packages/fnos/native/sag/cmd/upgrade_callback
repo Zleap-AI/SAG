@@ -1,12 +1,11 @@
 #!/bin/sh
 # upgrade_callback — heal ownership/perm drift after an upgrade.
 #
-# Runs as ROOT (config/privilege defaults.run-as=root). fnpack invokes
+# Runs as the sag package user (config/privilege defaults.run-as=package). fnpack invokes
 # this callback after swapping in the new package payload. Delegate to
 # install_callback so an upgrade from any prior release lands with the
-# same guarantees a fresh install would: $TRIM_PKGVAR mode 0700 sag:sag,
-# internal-secret 0600 sag:sag, no root-owned residues under the data
-# root that would break sag's runtime access.
+# same guarantees a fresh install would: $TRIM_PKGVAR mode 0700 and
+# internal-secret 0600.
 
 set -u
 

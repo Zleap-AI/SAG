@@ -2,7 +2,7 @@
 # upgrade_init — pre-upgrade backup + install-side prep.
 #
 # fnpack invokes this callback under the same run-as as install_init
-# and main (this package: run-as=root). Two things went wrong in
+# and main (this package: run-as=package). Two things went wrong in
 # earlier upgrade paths that this script keeps guarding:
 #
 #   1. "$main" status writes its failure text ("SAG Native gateway
@@ -90,8 +90,8 @@ LAST_STEP="env-check"
 # Since install_init no longer touches $TRIM_PKGVAR (fnpack does not
 # guarantee it exists at that stage), the secret / perm work lives in
 # install_callback. Re-invoke it here so an upgrade path also converges
-# on the same $TRIM_PKGVAR mode 0700 sag:sag / internal-secret 0600
-# sag:sag guarantees a fresh install produces. Idempotent.
+# on the same $TRIM_PKGVAR mode 0700 / internal-secret 0600 guarantees
+# a fresh install produces. Idempotent.
 LAST_STEP="install_callback"
 if ! "$command_dir/install_callback"; then
   die "install_callback failed (see preceding install_callback lines in this log)"
