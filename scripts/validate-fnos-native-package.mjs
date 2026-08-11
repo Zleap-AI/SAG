@@ -75,7 +75,7 @@ export async function validateNativeTemplate(root, platform) {
   const requiredManifest = {
     appname: "sag",
     display_name: "SAG知识库",
-    desc: "让散落文档汇聚为可检索、可追溯的知识",
+    desc: "AI 知识库 · 让散落文档汇聚为可检索、可追溯的知识",
     os_min_version: "1.2.0302",
     source: "thirdparty",
     maintainer: "Zleap AI",
