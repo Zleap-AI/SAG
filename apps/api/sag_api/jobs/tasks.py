@@ -49,6 +49,31 @@ _DELETE_CONTROL_STATES = {
 }
 
 
+async def _yield_after_document_transition_lost(
+    session: AsyncSession,
+    document: Document,
+) -> None:
+    """Converge a winning pause/delete intent without overwriting it."""
+    document_id = document.id
+    await session.rollback()
+    current = await session.get(Document, document_id, populate_existing=True)
+    if current is not None and current.status == DocumentStatus.PAUSING:
+        paused = await session.execute(
+            update(Document)
+            .where(
+                Document.id == document_id,
+                Document.status == DocumentStatus.PAUSING,
+            )
+            .values(status=DocumentStatus.PAUSED, error=None)
+            .execution_options(synchronize_session=False)
+        )
+        if paused.rowcount == 1:
+            await session.commit()
+        else:
+            await session.rollback()
+    raise JobPaused()
+
+
 def _classify_document_failure(
     e: Exception, current_status: DocumentStatus
 ) -> tuple[ErrorLayer, ErrorStage]:
@@ -136,7 +161,9 @@ async def process_document(
             current_job = await control_session.get(Job, job.id)
             if current_job is None:
                 return True
-            if (current_job.payload or {}).get("pause_requested"):
+            if current_job.status == JobStatus.PAUSED or (
+                current_job.payload or {}
+            ).get("pause_requested"):
                 scheduler_yield_reason = None
                 return True
         if job_queue is not None and job_queue.source_maintenance_requested(source.id):
@@ -183,27 +210,54 @@ async def process_document(
                 raise JobYielded(SOURCE_MAINTENANCE)
             if document.status in _DELETE_CONTROL_STATES:
                 raise JobPaused()
-            document.status = DocumentStatus.PAUSED
-            document.error = None
+            expected_status = document.status
+            paused = await session.execute(
+                update(Document)
+                .where(
+                    Document.id == document.id,
+                    Document.status == expected_status,
+                )
+                .values(status=DocumentStatus.PAUSED, error=None)
+                .execution_options(synchronize_session=False)
+            )
+            if paused.rowcount != 1:
+                await _yield_after_document_transition_lost(session, document)
             await session.commit()
             raise JobPaused()
     except (JobPaused, JobYielded):
         raise
     except Exception as e:  # noqa: BLE001 - 记录到文档后再上抛给 worker
         await session.refresh(document)
-        if document.status in _DELETE_CONTROL_STATES:
-            raise JobPaused() from e
+        if (
+            document.status in _CONTROL_TRANSITION_STATES
+            or document.status == DocumentStatus.PAUSED
+        ):
+            await _yield_after_document_transition_lost(session, document)
         layer, stage = _classify_document_failure(e, document.status)
-        document.status = DocumentStatus.FAILED
-        document.error = getattr(e, "message", None) or str(e)
-        document.error_layer = layer.value
-        document.error_stage = stage.value
+        expected_status = document.status
+        message = getattr(e, "message", None) or str(e)
+        failed = await session.execute(
+            update(Document)
+            .where(
+                Document.id == document.id,
+                Document.status == expected_status,
+            )
+            .values(
+                status=DocumentStatus.FAILED,
+                error=message,
+                error_layer=layer.value,
+                error_stage=stage.value,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if failed.rowcount != 1:
+            await _yield_after_document_transition_lost(session, document)
         log.warning(
             "文档处理失败 doc=%s layer=%s stage=%s error=%s",
             document.id,
             layer.value,
             stage.value,
-            document.error,
+            message,
         )
         await session.commit()
         raise
@@ -215,13 +269,31 @@ async def process_document(
         document.status = DocumentStatus.PAUSED
         await session.commit()
         raise JobPaused()
-    document.status = DocumentStatus.READY
-    document.chunk_count = outcome.chunk_count
-    document.event_count = outcome.event_count
-    document.sag_source_id = outcome.source_id
-    document.progress = 100
-    document.token_usage = outcome.token_usage
-    document.error = None
+    completed = await session.execute(
+        update(Document)
+        .where(
+            Document.id == document.id,
+            Document.status.in_(
+                [
+                    DocumentStatus.PENDING,
+                    DocumentStatus.LOADING,
+                    DocumentStatus.EXTRACTING,
+                ]
+            ),
+        )
+        .values(
+            status=DocumentStatus.READY,
+            chunk_count=outcome.chunk_count,
+            event_count=outcome.event_count,
+            sag_source_id=outcome.source_id,
+            progress=100,
+            token_usage=outcome.token_usage,
+            error=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if completed.rowcount != 1:
+        await _yield_after_document_transition_lost(session, document)
     # 信源聚合计数用原子 SQL 更新，避免并发读改写丢失
     await session.execute(
         update(Source)
@@ -381,7 +453,9 @@ async def reprocess_document_task(
     await session.commit()
     await session.refresh(process_job)
     if job_queue is not None:
-        await job_queue.enqueue(process_job.id)
+        from sag_api.services.document_service import _enqueue_persisted_job
+
+        await _enqueue_persisted_job(job_queue, process_job.id)
 
 
 async def sync_source(session: AsyncSession, job: Job, *, engine_manager=None, job_queue=None) -> None:

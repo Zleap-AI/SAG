@@ -712,11 +712,11 @@ async def test_delete_failure_releases_source_maintenance_and_retries_cleanup():
         deleting = await session.get(Document, deleting_id)
         blocked = await session.get(Job, blocked_job_id)
         delete_job = await session.get(Job, delete_job_id)
-        assert deleting.status == DocumentStatus.DELETING
-        assert delete_job.status == JobStatus.QUEUED
+        assert deleting.status == DocumentStatus.DELETE_FAILED
+        assert delete_job.status == JobStatus.FAILED
         assert blocked.payload["resume_requested"] is True
         assert blocked.payload["_scheduler"] == {"priority": 10}
-    assert queue._retry_tasks
+    assert not queue._retry_tasks
     await queue.stop()
 
 
@@ -979,8 +979,20 @@ async def test_deleting_one_active_document_temporarily_yields_and_resumes_its_p
         engine.release_initial_batch.set()
         engine.release_cleanup.set()
         await queue.stop()
-        async with SessionLocal() as session:
-            source = await session.get(Source, source_id)
-            if source is not None:
-                await session.delete(source)
-                await session.commit()
+        # SQLite can retain a writer briefly while cancelled background
+        # refresh jobs unwind. Retry test cleanup so it cannot pollute the
+        # following Universe contract test with this synthetic source.
+        from sqlalchemy.exc import OperationalError
+
+        for attempt in range(5):
+            try:
+                async with SessionLocal() as session:
+                    source = await session.get(Source, source_id)
+                    if source is not None:
+                        await session.delete(source)
+                        await session.commit()
+                break
+            except OperationalError as error:
+                if "database is locked" not in str(error).lower() or attempt == 4:
+                    raise
+                await asyncio.sleep(0.05 * (2**attempt))

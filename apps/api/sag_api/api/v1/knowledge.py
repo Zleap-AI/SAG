@@ -17,7 +17,7 @@ from sag_api.schemas.chunk import (
     OutlineOut,
     ReadResponse,
 )
-from sag_api.services.document_service import get_document
+from sag_api.services.document_service import get_public_document
 from sag_api.services.source_service import get_source
 
 router = APIRouter(prefix="/sources/{source_id}", tags=["knowledge"])
@@ -33,7 +33,7 @@ async def outline(
 ) -> OutlineOut:
     """文档大纲：标题 + chunk_id，按阅读顺序排列。"""
     source = await get_source(session, source_id)
-    document = await get_document(session, source, document_id)
+    document = await get_public_document(session, source, document_id)
     if not document.sag_source_id:
         raise NotFoundError("文档尚无大纲，可能仍在处理中")
     rows = await engine_manager.list_chunk_headings(
@@ -92,7 +92,7 @@ async def read(
 ) -> ReadResponse:
     """按行分页读取原始文件。"""
     source = await get_source(session, source_id)
-    document = await get_document(session, source, document_id)
+    document = await get_public_document(session, source, document_id)
     if not document.storage_path or not os.path.isfile(document.storage_path):
         raise NotFoundError("原始文件不存在或已清理")
     try:

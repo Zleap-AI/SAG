@@ -1,6 +1,7 @@
 """R3 稳定硬化：就绪/存活探针、上传白名单、Job 退避重试、引擎 LRU 逐出。"""
 
 import asyncio
+from typing import Any
 
 import httpx
 import pytest
@@ -677,3 +678,203 @@ async def test_search_falls_back_to_vector():
     with pytest.raises(RuntimeError, match="vector down"):
         await em.search("scid", "q", strategy="vector")
     assert fv.calls == ["vector"]
+
+
+@pytest.mark.asyncio
+async def test_search_many_pushes_document_exclusions_into_vector_query(monkeypatch):
+    """真实 EngineManager 路径：exclude_source_ids_by_config 必须落到 ES must_not。
+
+    回归 PR #80 review：EngineManager 声明 supports_document_source_exclusions=True，
+    检索层会传排除条件；若只在后端调用侧丢弃、不在 ES 查询里应用，隐藏文档会先占满
+    top_k 再被过滤，正常文档无法补位，最终返回空。
+    """
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager, _Slot
+
+    captured: dict[str, Any] = {}
+
+    class FakeVectorSearchClient:
+        async def vector_search(self, *, index, field, vector, size, filter_query=None, routing=None):
+            captured["index"] = index
+            captured["field"] = field
+            captured["size"] = size
+            captured["filter_query"] = filter_query
+            captured["routing"] = routing
+            # 模拟 ES 已应用 must_not：正常文档补位到 top_k，隐藏文档不再出现。
+            return [
+                {
+                    "chunk_id": f"c{i}",
+                    "source_id": "visible-doc",
+                    "source_config_id": "scid-1",
+                    "heading": "h",
+                    "content": "x",
+                    "rank": i,
+                    "_score": 0.9 - 0.01 * i,
+                }
+                for i in range(size)
+            ]
+
+    class FakeProcessor:
+        async def generate_embedding(self, query):
+            return [0.1, 0.2, 0.3]
+
+    class FakeRepository:
+        INDEX_NAME = "source_chunks"
+
+        def __init__(self, client):
+            self.es_client = client
+
+        async def search_similar_by_content(self, **kwargs):  # noqa: D401
+            raise AssertionError("有排除时不应走无过滤的快速路径")
+
+    import sys
+    from types import ModuleType
+
+    fake_storage = ModuleType("zleap.sag.core.storage.client")
+    fake_storage.get_es_client = lambda: FakeVectorSearchClient()
+    fake_repos = ModuleType("zleap.sag.core.storage.repositories.source_chunk_repository")
+    fake_repos.SourceChunkRepository = FakeRepository
+    fake_loader = ModuleType("zleap.sag.modules.load.processor")
+    fake_loader.DocumentProcessor = FakeProcessor
+    fake_query = ModuleType("zleap.sag.core.storage.query")
+
+    class _Q:
+        def __init__(self, kind, **kwargs):
+            self.kind = kind
+            self.kwargs = kwargs
+
+        def to_dict(self):
+            def encode(value):
+                if isinstance(value, _Q):
+                    return {value.kind: {k: encode(v) for k, v in value.kwargs.items()}}
+                if isinstance(value, list):
+                    return [encode(v) for v in value]
+                return value
+
+            return {self.kind: {k: encode(v) for k, v in self.kwargs.items()}}
+
+    fake_query.Q = _Q
+    for name, module in (
+        ("zleap.sag.core.storage.client", fake_storage),
+        ("zleap.sag.core.storage.repositories.source_chunk_repository", fake_repos),
+        ("zleap.sag.modules.load.processor", fake_loader),
+        ("zleap.sag.core.storage.query", fake_query),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
+
+    class _DummyEngine:
+        async def aclose(self):
+            pass
+
+    manager_settings = settings.model_copy(
+        update={
+            "search_top_k": 5,
+            "search_source_candidate_limit": 4,
+        }
+    )
+    manager = EngineManager(manager_settings)
+    # 塞一个未关闭 slot 让 _ensure_read_runtime 快速返回
+    manager._slots["scid-1"] = _Slot(engine=_DummyEngine())
+
+    outcome = await manager.search_many(
+        [("scid-1", None)],
+        "test",
+        strategy="multi",
+        top_k=5,
+        exclude_source_ids_by_config={"scid-1": ("hidden-doc-a", "hidden-doc-b")},
+    )
+
+    assert captured["size"] == 5, "top_k 需完整下推到 ES,避免隐藏文档挤占后返回不足"
+    assert captured["filter_query"] is not None
+    bool_clause = captured["filter_query"].get("bool")
+    assert bool_clause is not None
+    filters = bool_clause.get("filter", [])
+    must_not = bool_clause.get("must_not", [])
+    assert any(
+        clause.get("terms", {}).get("source_config_id") == ["scid-1"]
+        for clause in filters
+    ), "必须仍限定 source_config_id"
+    assert must_not, "必须为待排除文档产出 must_not 子句"
+    hidden_terms: set[str] = set()
+    for clause in must_not:
+        for sub in clause.get("bool", {}).get("filter", []):
+            terms = sub.get("terms", {}).get("source_id")
+            if terms:
+                hidden_terms.update(terms)
+    assert hidden_terms == {"hidden-doc-a", "hidden-doc-b"}
+    # 正常文档补位到 top_k,证明 ES 侧已过滤,retrieval 层不再需要吞并空结果
+    assert len(outcome.sections) == 5
+    assert all(section.source_id == "visible-doc" for section in outcome.sections)
+
+
+@pytest.mark.asyncio
+async def test_search_many_without_exclusions_takes_fast_path(monkeypatch):
+    """无隐藏文档时走原有 search_similar_by_content,不构造 must_not。"""
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager, _Slot
+
+    called: dict[str, Any] = {}
+
+    class FakeVectorSearchClient:
+        async def vector_search(self, **kwargs):
+            raise AssertionError("无排除条件时不应走 vector_search 分支")
+
+    class FakeProcessor:
+        async def generate_embedding(self, query):
+            return [0.1]
+
+    class FakeRepository:
+        INDEX_NAME = "source_chunks"
+
+        def __init__(self, client):
+            self.es_client = client
+
+        async def search_similar_by_content(self, *, query_vector, k, source_config_ids):
+            called["k"] = k
+            called["source_config_ids"] = list(source_config_ids)
+            return [
+                {
+                    "chunk_id": "c1",
+                    "source_id": "s1",
+                    "source_config_id": source_config_ids[0],
+                    "heading": "h",
+                    "content": "x",
+                    "rank": 1,
+                    "_score": 0.8,
+                }
+            ]
+
+    import sys
+    from types import ModuleType
+
+    fake_storage = ModuleType("zleap.sag.core.storage.client")
+    fake_storage.get_es_client = lambda: FakeVectorSearchClient()
+    fake_repos = ModuleType("zleap.sag.core.storage.repositories.source_chunk_repository")
+    fake_repos.SourceChunkRepository = FakeRepository
+    fake_loader = ModuleType("zleap.sag.modules.load.processor")
+    fake_loader.DocumentProcessor = FakeProcessor
+    for name, module in (
+        ("zleap.sag.core.storage.client", fake_storage),
+        ("zleap.sag.core.storage.repositories.source_chunk_repository", fake_repos),
+        ("zleap.sag.modules.load.processor", fake_loader),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
+
+    class _DummyEngine:
+        async def aclose(self):
+            pass
+
+    manager = EngineManager(settings)
+    manager._slots["scid-1"] = _Slot(engine=_DummyEngine())
+
+    outcome = await manager.search_many(
+        [("scid-1", None)],
+        "test",
+        strategy="vector",
+        top_k=4,
+        exclude_source_ids_by_config=None,
+    )
+
+    assert called["source_config_ids"] == ["scid-1"]
+    assert called["k"] == 4
+    assert len(outcome.sections) == 1

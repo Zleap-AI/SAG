@@ -14,7 +14,15 @@ from sag_api.db.models import Document, Job, Source
 from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs import JobQueue
 from sag_api.jobs.scheduling import DELETE_PRIORITY, RESUME_PRIORITY, set_scheduler
-from sag_api.sag import EngineManager
+
+
+async def _enqueue_persisted_job(job_queue: JobQueue, job_id: str) -> None:
+    """Dispatch a committed job with queue-level retry supervision when available."""
+    durable = getattr(job_queue, "enqueue_durably", None)
+    if callable(durable):
+        await durable(job_id)
+        return
+    await job_queue.enqueue(job_id)
 
 
 async def list_documents(session: AsyncSession, source_id: str) -> list[Document]:
@@ -36,6 +44,21 @@ async def get_document(session: AsyncSession, source: Source, document_id: str) 
     if doc is None or doc.source_id != source.id:
         raise NotFoundError("文档不存在")
     return doc
+
+
+async def get_public_document(
+    session: AsyncSession,
+    source: Source,
+    document_id: str,
+) -> Document:
+    """Resolve a document for public reads after the logical-delete barrier."""
+    document = await get_document(session, source, document_id)
+    if document.status in {
+        DocumentStatus.DELETING,
+        DocumentStatus.DELETE_FAILED,
+    }:
+        raise NotFoundError("文档不存在")
+    return document
 
 
 async def create_document_from_upload(
@@ -80,7 +103,7 @@ async def create_document_from_upload(
     await session.refresh(document)
     await session.refresh(job)
 
-    await job_queue.enqueue(job.id)
+    await _enqueue_persisted_job(job_queue, job.id)
     return document, job
 
 
@@ -133,7 +156,6 @@ async def reprocess_document(
     document_id: str,
     *,
     job_queue: JobQueue,
-    engine_manager: EngineManager,
 ) -> Job:
     document = await get_document(session, source, document_id)
     if document.status in {DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED}:
@@ -243,7 +265,7 @@ async def reprocess_document(
     await session.refresh(job)
     if requires_maintenance:
         job_queue.begin_source_maintenance(source.id, job.id)
-    await job_queue.enqueue(job.id)
+    await _enqueue_persisted_job(job_queue, job.id)
     return job
 
 
@@ -311,15 +333,85 @@ async def _refresh_source_counts(session: AsyncSession, source: Source) -> None:
     source.event_count = int(event_count)
 
 
+async def _commit_document_job_transition(
+    session: AsyncSession,
+    document: Document,
+    job: Job,
+    *,
+    expected_document_status: DocumentStatus,
+    document_values: dict,
+    expected_job_status: JobStatus,
+    job_values: dict,
+) -> bool:
+    """Atomically claim one document control transition and its process job."""
+    claimed_document = await session.execute(
+        update(Document)
+        .where(
+            Document.id == document.id,
+            Document.status == expected_document_status,
+        )
+        .values(**document_values)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed_document.rowcount != 1:
+        await session.rollback()
+        return False
+
+    claimed_job = await session.execute(
+        update(Job)
+        .where(
+            Job.id == job.id,
+            Job.document_id == document.id,
+            Job.type == JobType.PROCESS_DOCUMENT,
+            Job.status == expected_job_status,
+        )
+        .values(**job_values)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed_job.rowcount != 1:
+        await session.rollback()
+        return False
+
+    await session.commit()
+    await session.refresh(document)
+    await session.refresh(job)
+    return True
+
+
+async def _raise_document_control_conflict(
+    session: AsyncSession,
+    document_id: str,
+    *,
+    action: str,
+    fallback: str,
+) -> None:
+    """Report the winning concurrent transition after a failed control CAS."""
+    await session.rollback()
+    current = await session.get(Document, document_id, populate_existing=True)
+    if current is None:
+        raise ConflictError("文档已删除，请刷新后重试")
+    if current.status in {DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED}:
+        raise ConflictError(f"文档正在删除或删除失败，无法{action}")
+    raise ConflictError(fallback)
+
+
 async def pause_document(session: AsyncSession, source: Source, document_id: str) -> Job:
     """协作式暂停：已开始的分块跑完并保存断点，不再领取新分块。"""
     document = await get_document(session, source, document_id)
     if document.status in {DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED}:
         raise ConflictError("文档正在删除或删除失败，无法停止抽取")
+    if document.status not in {
+        DocumentStatus.PENDING,
+        DocumentStatus.LOADING,
+        DocumentStatus.EXTRACTING,
+    }:
+        raise ConflictError("抽取任务已经结束或状态已变化，无法停止")
+    document_record_id = document.id
+    expected_document_status = document.status
     job = await session.scalar(
         select(Job)
         .where(
-            Job.document_id == document.id,
+            Job.document_id == document_record_id,
             Job.type == JobType.PROCESS_DOCUMENT,
             Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
         )
@@ -327,28 +419,49 @@ async def pause_document(session: AsyncSession, source: Source, document_id: str
         .limit(1)
     )
     if job is None:
-        raise ConflictError("当前文档没有可停止的抽取任务")
+        await _raise_document_control_conflict(
+            session,
+            document_record_id,
+            action="停止抽取",
+            fallback="当前文档没有可停止的抽取任务",
+        )
 
     if job.status == JobStatus.QUEUED:
-        paused = await session.execute(
-            update(Job)
-            .where(Job.id == job.id, Job.status == JobStatus.QUEUED)
-            .values(status=JobStatus.PAUSED)
-        )
-        if paused.rowcount == 1:
-            document.status = DocumentStatus.PAUSED
-            await session.commit()
-            await session.refresh(job)
+        if await _commit_document_job_transition(
+            session,
+            document,
+            job,
+            expected_document_status=expected_document_status,
+            document_values={"status": DocumentStatus.PAUSED},
+            expected_job_status=JobStatus.QUEUED,
+            job_values={"status": JobStatus.PAUSED},
+        ):
             return job
-        await session.refresh(job)
+        await _raise_document_control_conflict(
+            session,
+            document_record_id,
+            action="停止抽取",
+            fallback="文档或抽取任务状态已变化，请刷新后重试",
+        )
 
     if job.status != JobStatus.RUNNING:
         raise ConflictError("抽取任务已经结束，无法停止")
-    job.payload = {**(job.payload or {}), "pause_requested": True}
-    document.status = DocumentStatus.PAUSING
-    await session.commit()
-    await session.refresh(job)
-    return job
+    if await _commit_document_job_transition(
+        session,
+        document,
+        job,
+        expected_document_status=expected_document_status,
+        document_values={"status": DocumentStatus.PAUSING},
+        expected_job_status=JobStatus.RUNNING,
+        job_values={"status": JobStatus.PAUSED},
+    ):
+        return job
+    await _raise_document_control_conflict(
+        session,
+        document_record_id,
+        action="停止抽取",
+        fallback="文档或抽取任务状态已变化，请刷新后重试",
+    )
 
 
 async def resume_document(
@@ -362,10 +475,13 @@ async def resume_document(
     document = await get_document(session, source, document_id)
     if document.status in {DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED}:
         raise ConflictError("文档正在删除或删除失败，无法继续")
+    if document.status != DocumentStatus.PAUSED:
+        raise ConflictError("当前文档不是已暂停状态，无法继续")
+    document_record_id = document.id
     job = await session.scalar(
         select(Job)
         .where(
-            Job.document_id == document.id,
+            Job.document_id == document_record_id,
             Job.type == JobType.PROCESS_DOCUMENT,
             Job.status == JobStatus.PAUSED,
         )
@@ -373,26 +489,46 @@ async def resume_document(
         .limit(1)
     )
     if job is None:
-        raise ConflictError("当前文档没有可继续的暂停任务")
+        await _raise_document_control_conflict(
+            session,
+            document_record_id,
+            action="继续",
+            fallback="当前文档没有可继续的暂停任务",
+        )
 
     payload = dict(job.payload or {})
     payload.pop("pause_requested", None)
     payload["resume_requested"] = True
-    job.payload = set_scheduler(
+    resumed_payload = set_scheduler(
         payload,
         priority=RESUME_PRIORITY,
         blocked_reason=None,
     )
-    job.status = JobStatus.QUEUED
-    job.finished_at = None
-    job.error = None
-    document.status = (
+    resumed_status = (
         DocumentStatus.EXTRACTING if payload.get("process_checkpoint") else DocumentStatus.PENDING
     )
-    document.error = None
-    await session.commit()
-    await session.refresh(job)
-    await job_queue.enqueue(job.id)
+    if not await _commit_document_job_transition(
+        session,
+        document,
+        job,
+        expected_document_status=DocumentStatus.PAUSED,
+        document_values={"status": resumed_status, "error": None},
+        expected_job_status=JobStatus.PAUSED,
+        job_values={
+            "payload": resumed_payload,
+            "status": JobStatus.QUEUED,
+            "started_at": None,
+            "finished_at": None,
+            "error": None,
+        },
+    ):
+        await _raise_document_control_conflict(
+            session,
+            document_record_id,
+            action="继续",
+            fallback="文档或抽取任务状态已变化，请刷新后重试",
+        )
+    await _enqueue_persisted_job(job_queue, job.id)
     return job
 
 
@@ -457,6 +593,63 @@ async def delete_document(
     if metadata_only:
         path = document.storage_path
         target_document_id = document.id
+        candidate_job_ids = [candidate.id for candidate in active_jobs]
+        if candidate_job_ids:
+            fenced_jobs = await session.execute(
+                update(Job)
+                .where(
+                    Job.id.in_(candidate_job_ids),
+                    Job.document_id == target_document_id,
+                    Job.type == JobType.PROCESS_DOCUMENT,
+                    Job.status == JobStatus.QUEUED,
+                    Job.started_at.is_(None),
+                    Job.attempts == 0,
+                )
+                .values(status=JobStatus.PAUSED)
+                .execution_options(synchronize_session=False)
+            )
+            if fenced_jobs.rowcount != len(candidate_job_ids):
+                # A worker claimed the processor after the optimistic read.
+                # Roll back any partial fence and use cooperative deletion.
+                await session.rollback()
+                completed_jobs = list(
+                    (
+                        await session.scalars(
+                            select(Job)
+                            .where(
+                                Job.source_id == source_record_id,
+                                Job.type == JobType.DELETE_DOCUMENT,
+                                Job.status == JobStatus.SUCCEEDED,
+                            )
+                            .order_by(Job.created_at.desc(), Job.id.desc())
+                            .limit(100)
+                        )
+                    ).all()
+                )
+                completed = next(
+                    (
+                        candidate
+                        for candidate in completed_jobs
+                        if (candidate.payload or {}).get("target_document_id")
+                        == target_document_id
+                    ),
+                    None,
+                )
+                if completed is not None:
+                    return completed
+                current_source = await session.get(
+                    Source,
+                    source_record_id,
+                    populate_existing=True,
+                )
+                if current_source is None:
+                    raise NotFoundError("信源不存在")
+                return await delete_document(
+                    session,
+                    current_source,
+                    target_document_id,
+                    job_queue=job_queue,
+                )
         claimed = await session.execute(
             update(Document)
             .where(
@@ -551,7 +744,7 @@ async def delete_document(
                 raise ConflictError("文档状态已变化，请刷新后重试")
             if job_queue is not None:
                 job_queue.begin_source_maintenance(source_record_id, existing.id)
-                await job_queue.enqueue(existing.id)
+                await _enqueue_persisted_job(job_queue, existing.id)
             return existing
         await session.refresh(document)
 
@@ -567,7 +760,7 @@ async def delete_document(
         await session.refresh(existing)
         if job_queue is not None:
             job_queue.begin_source_maintenance(source.id, existing.id)
-            await job_queue.enqueue(existing.id)
+            await _enqueue_persisted_job(job_queue, existing.id)
         return existing
 
     delete_job = Job(
@@ -589,5 +782,5 @@ async def delete_document(
     await session.refresh(delete_job)
     if job_queue is not None:
         job_queue.begin_source_maintenance(source.id, delete_job.id)
-        await job_queue.enqueue(delete_job.id)
+        await _enqueue_persisted_job(job_queue, delete_job.id)
     return delete_job
