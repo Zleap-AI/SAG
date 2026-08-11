@@ -125,7 +125,7 @@ Use this manifest, with `__SAG_VERSION__` and `__SAG_PLATFORM__` intentionally r
 appname=sag
 version=__SAG_VERSION__
 display_name=SAG知识库
-desc=Self-hosted AI knowledge base and research workspace
+desc=自托管 AI 知识库与研究工作台
 platform=__SAG_PLATFORM__
 os_min_version=1.2.0302
 source=thirdparty

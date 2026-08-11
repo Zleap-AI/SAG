@@ -317,7 +317,7 @@ packages/fnos/native/sag/
 appname=sag
 version=1.6.0-fnos.1
 display_name=SAG知识库
-desc=Self-hosted AI knowledge base and research workspace
+desc=自托管 AI 知识库与研究工作台
 platform=x86
 os_min_version=1.2.0401
 source=thirdparty
