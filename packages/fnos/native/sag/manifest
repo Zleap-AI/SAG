@@ -1,7 +1,7 @@
 appname=sag
 version=__SAG_VERSION__
 display_name=SAG知识库
-desc=AI 知识库 · 让散落文档汇聚为可检索、可追溯的知识
+desc=<b>最强 AI 知识库 · 让散落文档汇聚为可检索、可追溯的知识</b><br><br><b>导入知识</b> - 添加文档,SAG 自动完成解析、分块、事件与实体抽取<br><img src="https://raw.githubusercontent.com/Zleap-AI/SAG/fnos/develop/docs/assets/readme/product-import.png" width=480 /><br><br><b>带引用的回答</b> - Agent 基于选定知识源作答,附带可点击的原文引用<br><img src="https://raw.githubusercontent.com/Zleap-AI/SAG/fnos/develop/docs/assets/readme/product-chat.png" width=480 /><br><br><b>探索模式</b> - 将整个知识库展开为可交互的知识宇宙,穿梭事件与实体<br><img src="https://raw.githubusercontent.com/Zleap-AI/SAG/fnos/develop/docs/assets/readme/product-explore-mode.gif" width=480 /><br><br><b>事件实体图谱</b> - 将来源切换为图谱视图,查看事件、实体及其关联<br><img src="https://raw.githubusercontent.com/Zleap-AI/SAG/fnos/develop/docs/assets/readme/product-graph.png" width=480 />
 platform=__SAG_PLATFORM__
 os_min_version=1.2.0302
 source=thirdparty
