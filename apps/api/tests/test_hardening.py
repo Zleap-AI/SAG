@@ -728,7 +728,7 @@ async def test_search_many_pushes_document_exclusions_into_vector_query(monkeypa
             raise AssertionError("有排除时不应走无过滤的快速路径")
 
     import sys
-    from types import ModuleType, SimpleNamespace
+    from types import ModuleType
 
     fake_storage = ModuleType("zleap.sag.core.storage.client")
     fake_storage.get_es_client = lambda: FakeVectorSearchClient()
