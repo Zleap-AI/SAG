@@ -12,15 +12,10 @@ const cmd = path.join(root, "packages/fnos/native/sag/cmd");
 const chatPage = path.join(root, "apps/web/app/(app)/chat/[[...id]]/page.tsx");
 const appSidebar = path.join(root, "apps/web/components/features/app-sidebar.tsx");
 
-// The package runs its callbacks as root (config/privilege
-// defaults.run-as=root). Rationale + community evidence: fnpack does
-// not guarantee $TRIM_PKGVAR exists during install_init, and the
-// framework materializes it before install_callback. install_callback
-// therefore owns mkdir/chown/perms/secret; install_init only reaps
-// stale processes/sockets from a prior install. main enters as root,
-// fixes up runtime-state ownership, then exec's the gateway (python)
-// and web (node) daemons via setpriv (or su fallback) so neither
-// long-lived process holds root.
+// The package runs every lifecycle callback as the sag package user
+// (config/privilege defaults.run-as=package). fnpack materializes the
+// package-owned data directory between install_init and install_callback,
+// so the callback can provision its secret without elevated privileges.
 
 function baseEnv(extra = {}) {
   return { ...process.env, ...extra };
@@ -84,10 +79,7 @@ test("install_init removes a stale $TRIM_APPDEST/app.sock left by a crashed prio
 });
 
 // -----------------------------------------------------------------
-// install_callback — owns $TRIM_PKGVAR mkdir/chown/perms and the
-// internal secret. Runs as root in production; tests run as a
-// non-root uid so chown is best-effort (non-fatal) and we only
-// verify the pieces that survive without root.
+// install_callback — owns $TRIM_PKGVAR mkdir/perms and the internal secret.
 // -----------------------------------------------------------------
 test("install_callback creates $TRIM_PKGVAR at mode 0700 and provisions the internal-secret", async (t) => {
   const fixture = await mkdtemp(path.join(os.tmpdir(), "sag-native-lifecycle-"));
@@ -202,13 +194,9 @@ test("install_callback scrubs a residue secret from the legacy @appconf path", a
   assert.match(await readFile(path.join(pkgvar, "internal-secret"), "utf8"), /^[0-9a-f]{64}$/);
 });
 
-test("install_callback recursively chowns $TRIM_PKGVAR (heals root-era residue subtrees)", async () => {
-  // The chown -R sag:sag runs after the secret is placed. This is
-  // what makes an upgrade FROM a root-era install actually usable: a
-  // subtree of root-owned files left behind by cmd/main running as
-  // root would otherwise stay unreadable to the sag daemons.
+test("install_callback does not require ownership-changing commands", async () => {
   const source = await readFile(path.join(cmd, "install_callback"), "utf8");
-  assert.match(source, /chown -R sag:sag "\$TRIM_PKGVAR"/);
+  assert.doesNotMatch(source, /chown -R sag:sag "\$TRIM_PKGVAR"/);
 });
 
 // -----------------------------------------------------------------
@@ -225,48 +213,21 @@ test("upgrade_callback under strict /bin/sh (dash on fnOS)", () => {
 });
 
 // -----------------------------------------------------------------
-// cmd/main — the privilege-drop is what keeps SAG's long-lived
-// daemons out of root even though main enters as root.
+// cmd/main launches daemons directly because fnpack already invokes it
+// as the package user.
 // -----------------------------------------------------------------
-test("cmd/main drops privileges to sag before exec'ing the gateway and web daemons", async () => {
+test("cmd/main launches the gateway and web daemons without a privilege drop", async () => {
   const source = await readFile(path.join(cmd, "main"), "utf8");
-  // The drop helper is called before each daemon launch. Grep for
-  // the actual invocation, not just the definition — a helper that
-  // exists but is never called would still ship root daemons.
-  assert.match(source, /drop_priv "\$node_runtime" "\$web_entry"/);
-  assert.match(source, /drop_priv "\$runtime" -m sag_api\.fnos\.cli gateway/);
+  assert.match(source, /HOSTNAME=127\.0\.0\.1 PORT="\$web_port" "\$node_runtime" "\$web_entry"/);
+  assert.match(source, /"\$runtime" -m sag_api\.fnos\.cli gateway/);
+  assert.doesNotMatch(source, /drop_priv "\$node_runtime"/);
 });
 
-test("cmd/main's drop_priv prefers setpriv and falls back to su (verified present on fnOS 1.2.0302)", async () => {
+test("main.prepare_secret self-heals a package-owned internal secret", async () => {
   const source = await readFile(path.join(cmd, "main"), "utf8");
-  assert.match(source, /command -v setpriv/);
-  assert.match(source, /setpriv --reuid sag --regid sag --init-groups --/);
-  assert.match(source, /command -v su/);
-  assert.match(source, /su -s \/bin\/sh sag -c/);
-  // runuser is intentionally NOT reached at runtime — the user
-  // confirmed it is not shipped on their 1.2.0302 box. Grepping for
-  // the bare word would also match main's own explanatory comment,
-  // so anchor to the two forms it would take if it were actually used.
-  assert.doesNotMatch(source, /command -v runuser/);
-  assert.doesNotMatch(source, /\brunuser --/);
-});
-
-test("cmd/main chowns run/log dirs and TRIM_APPDEST to sag before dropping (daemons need to write into them)", async () => {
-  const source = await readFile(path.join(cmd, "main"), "utf8");
-  assert.match(source, /chown -R sag:sag "\$run_dir" "\$log_dir"/);
-  assert.match(source, /chown sag:sag "\$TRIM_APPDEST"/);
-  assert.match(source, /chown sag:sag "\$gateway_log" "\$web_log"/);
-});
-
-test("main.prepare_secret self-heals the internal secret (root can rewrite root-era residue as sag)", async () => {
-  const source = await readFile(path.join(cmd, "main"), "utf8");
-  // main is the last line of defense even after install_callback.
-  // If a prior release left a root-owned or malformed secret,
-  // prepare_secret regenerates and chowns to sag so the drop child
-  // can actually read it.
   assert.match(source, /prepare_secret returns 0 iff main can safely hand the secret/);
   assert.match(source, /generate_secret_material/);
-  assert.match(source, /chown sag:sag "\$secret"/);
+  assert.doesNotMatch(source, /chown sag:sag "\$secret"/);
   // The old .19 composite line that hid causes must not reappear.
   assert.doesNotMatch(source, /internal identity secret is unavailable or has unsafe permissions/);
 });

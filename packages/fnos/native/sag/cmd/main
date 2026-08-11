@@ -18,12 +18,8 @@ secret="${TRIM_PKGVAR}/internal-secret"
 # fnpack invokes every callback in cmd/ (install_init, install_callback,
 # main, upgrade_init, uninstall_callback, ...) under a single
 # `defaults.run-as` — there is no per-command override. This package
-# sets run-as=root: install_init/install_callback do the chown+perm
-# work as root (see cmd/install_callback), and main drops privileges to
-# the sag package user via setpriv before exec'ing the gateway (python
-# uvicorn) and web (node) daemons. Root is retained ONLY for start-time
-# setup (mkdir, chown of runtime state files) and for stop/status
-# (kill + /proc reads). The long-lived daemons run as sag.
+# uses run-as=package, so its lifecycle commands and long-lived
+# gateway/web daemons all run directly as the sag package user.
 #
 # The internal secret lives in TRIM_PKGVAR (== /vol1/@appdata/<pkg> on
 # fnOS), NOT in TRIM_PKGETC (== /vol1/@appconf/<pkg>). fnpack treats
@@ -35,9 +31,7 @@ secret="${TRIM_PKGVAR}/internal-secret"
 #
 # The gateway UDS lives at $TRIM_APPDEST/app.sock — fnpack's own
 # gateway proxy reads from there based on the `gatewaySocket` field in
-# app/ui/config. TRIM_APPDEST itself is created by fnpack root-owned;
-# start-time we chown it to sag:sag so the uvicorn child (running as
-# sag) can bind the socket there.
+# app/ui/config. fnpack grants the package user access to package paths.
 
 log_error() { printf '%s\n' "$1" >> "${TRIM_TEMP_LOGFILE:-/dev/null}"; }
 
@@ -72,16 +66,14 @@ drop_priv() {
 }
 
 # prepare_secret returns 0 iff main can safely hand the secret to the
-# gateway. Called under root at the top of start. Under root we can
-# always self-heal:
+# gateway. Called as the package user at the top of start. It can heal
+# package-owned residue:
 #
 #   * missing / malformed / truncated → rewrite
-#   * root-owned residue from a prior release → rewrite then chown sag:sag
 #   * refuse a symlink (won't chase into someone else's dir)
 #
-# The write is 0600, owner sag:sag, so the sag-privileged uvicorn
-# child (SAG_FNOS_INTERNAL_SECRET_FILE=$secret) can read it after
-# drop_priv.
+# The write is 0600, so the gateway can read it through
+# SAG_FNOS_INTERNAL_SECRET_FILE.
 hex_ok() {
   case "$1" in
     "") return 1 ;;
@@ -121,10 +113,6 @@ prepare_secret() {
     return 1
   fi
   if secret_content_ok "$secret" && [ -r "$secret" ]; then
-    # Even on the fast path make sure ownership/mode are correct so a
-    # prior root-era write doesn't leave a root:root file that the sag
-    # child cannot read.
-    chown sag:sag "$secret" 2>/dev/null || :
     chmod 600 "$secret" 2>/dev/null || :
     return 0
   fi
@@ -144,7 +132,6 @@ prepare_secret() {
     log_error "SAG Native cannot write internal secret at $secret. $(ls -ld "$(dirname "$secret")" 2>&1)."
     return 1
   fi
-  chown sag:sag "$secret" 2>/dev/null || :
   chmod 600 "$secret" 2>/dev/null || :
   return 0
 }
@@ -274,37 +261,6 @@ case "${1:-}" in
       log_error "SAG Native cannot create run/log dirs under $TRIM_PKGVAR. UID=$(id -u 2>/dev/null || echo ?). Parent dir: $(ls -ld "$TRIM_PKGVAR" 2>&1)."
       exit 1
     }
-    # main runs as root; the daemons run as sag. Make sure sag can
-    # write into the run/log dirs (mostly redundant with the recursive
-    # chown in install_callback, but idempotent and cheap — and covers
-    # the case where main creates a subdir on first start after a
-    # release that didn't have it).
-    chown -R sag:sag "$run_dir" "$log_dir" 2>/dev/null || :
-
-    # TRIM_APPDEST holds the gateway UDS ($TRIM_APPDEST/app.sock). It
-    # is created by fnpack root-owned; the sag-privileged uvicorn
-    # child needs to bind a socket there. chown just the directory so
-    # sag can create the socket file, without touching the read-only
-    # payload files fnpack laid down.
-    if [ -n "${TRIM_APPDEST:-}" ] && [ -d "$TRIM_APPDEST" ]; then
-      chown sag:sag "$TRIM_APPDEST" 2>/dev/null || :
-    fi
-
-    # TRIM_PKGTMP holds per-user worker UDS files
-    # ($TRIM_PKGTMP/workers/<uid>-<name>.sock) plus the workers/
-    # directory itself, both created lazily by the sag-privileged
-    # gateway on the first API request for each fnOS user. fnpack
-    # materializes TRIM_PKGTMP root-owned mode 0700 (same as PKGVAR,
-    # confirmed on 1.2.0302), so without this chown the mkdir in
-    # WorkspacePaths.prepare() raises UnsafeWorkspacePath and every
-    # /app/sag/api/* call returns 503 "SAG is initializing". Chown
-    # just the directory (not recursive) — nothing under it is created
-    # by fnpack, everything is written at runtime by sag.
-    if [ -n "${TRIM_PKGTMP:-}" ] && [ -d "$TRIM_PKGTMP" ]; then
-      chown sag:sag "$TRIM_PKGTMP" 2>/dev/null || :
-      chmod 0700 "$TRIM_PKGTMP" 2>/dev/null || :
-    fi
-
     # Verify the gateway log is writable BEFORE we launch anything that
     # redirects into it. A silent redirect failure (read-only fs, wrong
     # owner, missing parent dir) would otherwise swallow the real error
@@ -314,11 +270,6 @@ case "${1:-}" in
       log_error "SAG Native cannot write gateway/web log at $log_dir. UID=$(id -u 2>/dev/null || echo ?). Dir: $(ls -ld "$log_dir" 2>&1)."
       exit 1
     fi
-    # Log files must be owned by sag: main opens the fd here (as root)
-    # and the daemon writes to it (as sag). Different processes append
-    # over time — the fd is short-lived, but the file persists.
-    chown sag:sag "$gateway_log" "$web_log" 2>/dev/null || :
-
     # Warm the operator if the socket dir is not writable by us so the
     # eventual PermissionError in uvicorn is not a surprise.
     _START_STEP="check-socket-dir"
@@ -349,16 +300,9 @@ case "${1:-}" in
     else
       web_port="$(select_web_port)" || { log_error "No free local port for SAG Native web service."; exit 1; }
       cd "$web_root"
-      # Launch the node child as sag via drop_priv in a subshell. The
-      # outer shell owns the redirect fd (>> "$web_log"), the subshell
-      # exec's setpriv/su which replaces itself with the node process
-      # under uid=sag. Env vars set on the command line propagate
-      # through setpriv (setpriv preserves env by default) and su
-      # (accepts an env prefix on the -c command).
-      ( SAG_NATIVE_SERVICE="web" HOSTNAME=127.0.0.1 PORT="$web_port" drop_priv "$node_runtime" "$web_entry" ) >> "$web_log" 2>&1 &
+      ( SAG_NATIVE_SERVICE="web" HOSTNAME=127.0.0.1 PORT="$web_port" "$node_runtime" "$web_entry" ) >> "$web_log" 2>&1 &
       write_pid "$web_pid" "$!"
       write_pid "$web_port_file" "$web_port"
-      chown sag:sag "$web_pid" "$web_port_file" 2>/dev/null || :
     fi
 
     _START_STEP="wait-web"
@@ -371,15 +315,9 @@ case "${1:-}" in
     _START_STEP="start-gateway"
     if ! valid_pid "$gateway_pid" "sag_api.fnos.cli"; then
       rm -f "$gateway_socket"
-      # Launch the python child as sag via drop_priv in a subshell,
-      # same pattern as the web launch above. Environment set by the
-      # outer shell (PATH / PYTHONPATH / SAG_FNOS_* exports below the
-      # check-socket-dir step) propagates because setpriv preserves
-      # env by default and su -c inherits the parent's environment.
-      ( drop_priv "$runtime" -m sag_api.fnos.cli gateway --socket "$gateway_socket" --web-origin "http://127.0.0.1:${web_port}" ) >> "$gateway_log" 2>&1 &
+      ( "$runtime" -m sag_api.fnos.cli gateway --socket "$gateway_socket" --web-origin "http://127.0.0.1:${web_port}" ) >> "$gateway_log" 2>&1 &
       gw_pid=$!
       write_pid "$gateway_pid" "$gw_pid"
-      chown sag:sag "$gateway_pid" 2>/dev/null || :
       # Give Python ~1s to import + settle, then check it is still alive.
       # A quick death (permission denied on sqlite, missing native dep,
       # config parse error, secret mode != 0600, etc.) would otherwise be
