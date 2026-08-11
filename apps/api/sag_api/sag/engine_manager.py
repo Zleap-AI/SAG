@@ -1001,10 +1001,51 @@ class EngineManager:
         async def recall() -> list[dict[str, Any]]:
             query_vector = await DocumentProcessor().generate_embedding(query)
             repository = SourceChunkRepository(get_es_client())
-            return await repository.search_similar_by_content(
-                query_vector=query_vector,
-                k=top_k,
-                source_config_ids=source_config_ids,
+            exclusions = {
+                source_config_id: sorted(
+                    {
+                        value.strip()
+                        for value in (exclude_source_ids_by_config or {}).get(
+                            source_config_id, ()
+                        )
+                        if isinstance(value, str) and value.strip()
+                    }
+                )
+                for source_config_id in source_config_ids
+            }
+            exclusions = {
+                source_config_id: source_ids
+                for source_config_id, source_ids in exclusions.items()
+                if source_ids
+            }
+            if not exclusions:
+                return await repository.search_similar_by_content(
+                    query_vector=query_vector,
+                    k=top_k,
+                    source_config_ids=source_config_ids,
+                )
+            from zleap.sag.core.storage.query import Q
+
+            filter_query = Q(
+                "bool",
+                filter=[Q("terms", source_config_id=source_config_ids)],
+                must_not=[
+                    Q(
+                        "bool",
+                        filter=[
+                            Q("term", source_config_id=source_config_id),
+                            Q("terms", source_id=list(source_ids)),
+                        ],
+                    )
+                    for source_config_id, source_ids in exclusions.items()
+                ],
+            ).to_dict()
+            return await repository.es_client.vector_search(
+                index=repository.INDEX_NAME,
+                field="content_vector",
+                vector=query_vector,
+                size=top_k,
+                filter_query=filter_query,
             )
 
         hits = await asyncio.wait_for(
