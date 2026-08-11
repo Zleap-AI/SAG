@@ -273,6 +273,8 @@ class _EngineLifecycleGate:
 
 
 class EngineManager:
+    supports_document_source_exclusions = True
+
     def __init__(self, settings: Settings):
         self._settings = settings
         self._slots: dict[str, _Slot] = {}
@@ -853,6 +855,7 @@ class EngineManager:
         *,
         strategy: str | None = None,
         top_k: int | None = None,
+        exclude_source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
     ) -> SearchOutcome:
         """在统一候选与并发边界内检索；单源失败不影响整体结果。"""
         strategy = self._effective_search_strategy(strategy)
@@ -860,15 +863,32 @@ class EngineManager:
         per_source_k = max(top_k, 4)
         requested_sources = len(targets)
         targets = targets[: self._settings.search_source_candidate_limit]
+        has_exclusions = any(
+            source_ids
+            for source_ids in (exclude_source_ids_by_config or {}).values()
+        )
 
-        if strategy == "vector" and targets:
+        if (strategy == "vector" or has_exclusions) and targets:
             try:
-                return await self._search_chunk_vectors(
+                outcome = await self._search_chunk_vectors(
                     targets,
                     query,
                     top_k=top_k,
                     requested_sources=requested_sources,
+                    exclude_source_ids_by_config=exclude_source_ids_by_config,
                 )
+                if has_exclusions and strategy != "vector":
+                    return SearchOutcome(
+                        query=outcome.query,
+                        sections=outcome.sections,
+                        stats={
+                            **outcome.stats,
+                            "requested_strategy": strategy,
+                            "effective_strategy": "vector",
+                            "fallback_used": True,
+                        },
+                    )
+                return outcome
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
@@ -884,10 +904,33 @@ class EngineManager:
                         "sources_requested": requested_sources,
                         "source_limit_applied": requested_sources > len(targets),
                         "candidates": 0,
-                        "chunk_recall": "batch-vector-timeout",
+                        "chunk_recall": (
+                            "batch-vector-prefilter-timeout"
+                            if has_exclusions
+                            else "batch-vector-timeout"
+                        ),
                     },
                 )
             except Exception as error:  # noqa: BLE001
+                if has_exclusions:
+                    log.warning(
+                        "带删除屏障的批量块召回失败，不回退未过滤检索：%s",
+                        error,
+                    )
+                    return SearchOutcome(
+                        query=query,
+                        sections=[],
+                        stats={
+                            "sources": len(targets),
+                            "sources_requested": requested_sources,
+                            "source_limit_applied": requested_sources > len(targets),
+                            "candidates": 0,
+                            "requested_strategy": strategy,
+                            "effective_strategy": "vector",
+                            "fallback_used": True,
+                            "chunk_recall": "batch-vector-prefilter-failed",
+                        },
+                    )
                 # Keep the established per-source engine path as a compatibility
                 # fallback for storage providers that cannot do a filtered batch kNN.
                 log.warning("批量块向量召回失败，回退逐信源检索：%s", error)
@@ -941,6 +984,7 @@ class EngineManager:
         *,
         top_k: int,
         requested_sources: int,
+        exclude_source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
     ) -> SearchOutcome:
         """Recall chunks across all selected sources with one query embedding."""
 
@@ -2808,6 +2852,7 @@ class EngineManager:
         *,
         source: Source | None = None,
         limit: int = 20,
+        exclude_source_ids: tuple[str, ...] = (),
     ) -> list[dict]:
         """精确文本匹配（LIKE，大小写不敏感）：语义检索之外的确定性查找。"""
         await self._ensure_read_runtime({source_config_id: source})
@@ -2816,6 +2861,21 @@ class EngineManager:
         from zleap.sag.db.models import SourceChunk
 
         needle = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        excluded = tuple(
+            sorted(
+                {
+                    value.strip()
+                    for value in exclude_source_ids
+                    if isinstance(value, str) and value.strip()
+                }
+            )
+        )
+        conditions = [
+            SourceChunk.source_config_id == source_config_id,
+            SourceChunk.content.ilike(f"%{needle}%", escape="\\"),
+        ]
+        if excluded:
+            conditions.append(SourceChunk.source_id.not_in(excluded))
         stmt = (
             select(
                 SourceChunk.id,
@@ -2823,10 +2883,7 @@ class EngineManager:
                 SourceChunk.content,
                 SourceChunk.source_id,
             )
-            .where(
-                SourceChunk.source_config_id == source_config_id,
-                SourceChunk.content.ilike(f"%{needle}%", escape="\\"),
-            )
+            .where(*conditions)
             .order_by(SourceChunk.rank)
             .limit(limit)
         )

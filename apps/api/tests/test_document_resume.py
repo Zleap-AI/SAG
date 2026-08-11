@@ -4,8 +4,46 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
+
+from sag_api.enums import DocumentStatus
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "hidden_status",
+    [DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED],
+)
+async def test_public_document_reads_hide_logically_deleted_rows(hidden_status):
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.core.errors import NotFoundError
+    from sag_api.db.models import Document, Source
+    from sag_api.services.document_service import get_document, get_public_document
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name=f"hidden-read-{uuid4().hex}",
+            sag_source_config_id=f"hidden-read-config-{uuid4().hex}",
+        )
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="hidden.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/hidden.md",
+            status=hidden_status,
+        )
+        session.add(document)
+        await session.commit()
+
+        assert await get_document(session, source, document.id) is not None
+        with pytest.raises(NotFoundError, match="文档不存在"):
+            await get_public_document(session, source, document.id)
 
 
 @pytest.mark.asyncio
@@ -636,12 +674,10 @@ async def test_pause_and_resume_document_service():
         await session.commit()
 
         paused_job = await pause_document(session, source, document.id)
-        assert paused_job.status == JobStatus.RUNNING
-        assert paused_job.payload["pause_requested"] is True
+        assert paused_job.status == JobStatus.PAUSED
         await session.refresh(document)
         assert document.status == DocumentStatus.PAUSING
 
-        paused_job.status = JobStatus.PAUSED
         document.status = DocumentStatus.PAUSED
         await session.commit()
 
@@ -1111,7 +1147,6 @@ async def test_reprocess_ready_document_replaces_all_previous_derived_data():
             source,
             document.id,
             job_queue=queue,
-            engine_manager=engine,
         )
 
         assert engine.deleted == []
@@ -1362,7 +1397,6 @@ async def test_concurrent_reprocess_requests_share_one_cleanup_job():
                 source,
                 document_id,
                 job_queue=queue,
-                engine_manager=object(),
             )
 
     first, second = await asyncio.gather(retry(), retry())
@@ -1444,7 +1478,6 @@ async def test_retrying_failed_reprocess_cleanup_stays_in_maintenance_flow():
             source,
             document.id,
             job_queue=queue,
-            engine_manager=object(),
         )
 
         assert retried.type == JobType.REPROCESS_DOCUMENT
@@ -1511,7 +1544,6 @@ async def test_delete_after_reprocess_request_uses_maintenance_cleanup():
             source,
             document.id,
             job_queue=queue,
-            engine_manager=object(),
         )
         delete_job = await delete_document(
             session,
@@ -1672,3 +1704,376 @@ async def test_duplicate_queue_entries_claim_job_once(monkeypatch):
         assert done.status == JobStatus.SUCCEEDED
         assert done.attempts == 1
         assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_pause_cannot_overwrite_delete_that_commits_after_job_lookup(monkeypatch):
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.core.errors import ConflictError
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.services.document_service import delete_document, pause_document
+
+    class FakeQueue:
+        def __init__(self):
+            self.ids: list[str] = []
+
+        async def enqueue(self, job_id: str):
+            self.ids.append(job_id)
+
+        def begin_source_maintenance(self, _source_id: str, _job_id: str):
+            return None
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="pause-delete-cas",
+            sag_source_config_id="pause-delete-cas-config",
+        )
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="pause-delete.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/pause-delete.md",
+            status=DocumentStatus.EXTRACTING,
+            sag_source_id="engine-pause-delete",
+        )
+        session.add(document)
+        await session.flush()
+        process_job = Job(
+            type=JobType.PROCESS_DOCUMENT,
+            source_id=source.id,
+            document_id=document.id,
+            status=JobStatus.RUNNING,
+        )
+        session.add(process_job)
+        await session.commit()
+        source_id, document_id, process_job_id = (
+            source.id,
+            document.id,
+            process_job.id,
+        )
+
+        queue = FakeQueue()
+        real_scalar = session.scalar
+        delete_injected = False
+
+        async def scalar_then_delete(statement, *args, **kwargs):
+            nonlocal delete_injected
+            result = await real_scalar(statement, *args, **kwargs)
+            if (
+                not delete_injected
+                and isinstance(result, Job)
+                and result.id == process_job_id
+            ):
+                delete_injected = True
+                await session.commit()
+                async with SessionLocal() as delete_session:
+                    deleting_source = await delete_session.get(Source, source_id)
+                    await delete_document(
+                        delete_session,
+                        deleting_source,
+                        document_id,
+                        job_queue=queue,
+                    )
+            return result
+
+        monkeypatch.setattr(session, "scalar", scalar_then_delete)
+
+        with pytest.raises(ConflictError, match="删除|状态"):
+            await pause_document(session, source, document_id)
+
+        await session.refresh(document)
+        assert document.status == DocumentStatus.DELETING
+
+
+@pytest.mark.asyncio
+async def test_resume_cannot_overwrite_delete_that_commits_after_job_lookup(monkeypatch):
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.core.errors import ConflictError
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.services.document_service import delete_document, resume_document
+
+    class FakeQueue:
+        def __init__(self):
+            self.ids: list[str] = []
+
+        async def enqueue(self, job_id: str):
+            self.ids.append(job_id)
+
+        def begin_source_maintenance(self, _source_id: str, _job_id: str):
+            return None
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="resume-delete-cas",
+            sag_source_config_id="resume-delete-cas-config",
+        )
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="resume-delete.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/resume-delete.md",
+            status=DocumentStatus.PAUSED,
+        )
+        session.add(document)
+        await session.flush()
+        process_job = Job(
+            type=JobType.PROCESS_DOCUMENT,
+            source_id=source.id,
+            document_id=document.id,
+            status=JobStatus.PAUSED,
+            payload={"process_checkpoint": {"source_id": "engine-resume-delete"}},
+        )
+        session.add(process_job)
+        await session.commit()
+        source_id, document_id, process_job_id = (
+            source.id,
+            document.id,
+            process_job.id,
+        )
+
+        queue = FakeQueue()
+        real_scalar = session.scalar
+        delete_injected = False
+
+        async def scalar_then_delete(statement, *args, **kwargs):
+            nonlocal delete_injected
+            result = await real_scalar(statement, *args, **kwargs)
+            if (
+                not delete_injected
+                and isinstance(result, Job)
+                and result.id == process_job_id
+            ):
+                delete_injected = True
+                await session.commit()
+                async with SessionLocal() as delete_session:
+                    deleting_source = await delete_session.get(Source, source_id)
+                    await delete_document(
+                        delete_session,
+                        deleting_source,
+                        document_id,
+                        job_queue=queue,
+                    )
+            return result
+
+        monkeypatch.setattr(session, "scalar", scalar_then_delete)
+
+        with pytest.raises(ConflictError, match="删除|状态"):
+            await resume_document(session, source, document_id, job_queue=queue)
+
+        await session.refresh(document)
+        await session.refresh(process_job)
+        assert document.status == DocumentStatus.DELETING
+        assert process_job.status == JobStatus.PAUSED
+
+
+@pytest.mark.asyncio
+async def test_pause_rejects_ready_document_while_job_completion_is_committing():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.core.errors import ConflictError
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.services.document_service import pause_document
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="pause-finish-cas",
+            sag_source_config_id="pause-finish-cas-config",
+        )
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="pause-finish.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/pause-finish.md",
+            status=DocumentStatus.READY,
+            progress=100,
+        )
+        session.add(document)
+        await session.flush()
+        session.add(
+            Job(
+                type=JobType.PROCESS_DOCUMENT,
+                source_id=source.id,
+                document_id=document.id,
+                status=JobStatus.RUNNING,
+                progress=0.99,
+            )
+        )
+        await session.commit()
+
+        with pytest.raises(ConflictError, match="结束|状态"):
+            await pause_document(session, source, document.id)
+
+
+@pytest.mark.parametrize("engine_mode", ["complete", "paused", "error"])
+@pytest.mark.asyncio
+async def test_process_exit_cannot_overwrite_concurrent_delete(
+    monkeypatch,
+    engine_mode,
+):
+    from types import SimpleNamespace
+
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.jobs.control import JobPaused
+    from sag_api.jobs.tasks import process_document
+    from sag_api.services.document_service import delete_document
+
+    class FakeEngine:
+        async def process_document(self, *_args, **_kwargs):
+            if engine_mode == "error":
+                raise RuntimeError("inflight extraction failed")
+            return SimpleNamespace(
+                paused=engine_mode == "paused",
+                chunk_count=1,
+                event_count=1,
+                source_id="engine-exit-delete",
+                token_usage=50,
+            )
+
+    class FakeQueue:
+        async def enqueue(self, _job_id: str):
+            return None
+
+        def begin_source_maintenance(self, _source_id: str, _job_id: str):
+            return None
+
+        def source_maintenance_requested(self, _source_id: str):
+            return False
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name=f"{engine_mode}-delete-cas",
+            sag_source_config_id=f"{engine_mode}-delete-cas-config",
+        )
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename=f"{engine_mode}-delete.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path=f"/tmp/{engine_mode}-delete.md",
+            status=DocumentStatus.EXTRACTING,
+        )
+        session.add(document)
+        await session.flush()
+        process_job = Job(
+            type=JobType.PROCESS_DOCUMENT,
+            source_id=source.id,
+            document_id=document.id,
+            status=JobStatus.RUNNING,
+            payload={
+                "process_checkpoint": {
+                    "source_id": "engine-exit-delete",
+                    "chunk_ids": ["chunk-1"],
+                    "processed_chunk_ids": [],
+                }
+            },
+        )
+        session.add(process_job)
+        await session.commit()
+        source_id, document_id = source.id, document.id
+
+        real_refresh = session.refresh
+        delete_injected = False
+
+        async def refresh_then_delete(instance, *args, **kwargs):
+            nonlocal delete_injected
+            await real_refresh(instance, *args, **kwargs)
+            if not delete_injected and isinstance(instance, Document):
+                delete_injected = True
+                await session.commit()
+                async with SessionLocal() as delete_session:
+                    deleting_source = await delete_session.get(Source, source_id)
+                    await delete_document(
+                        delete_session,
+                        deleting_source,
+                        document_id,
+                        job_queue=FakeQueue(),
+                    )
+
+        monkeypatch.setattr(session, "refresh", refresh_then_delete)
+
+        with pytest.raises(JobPaused):
+            await process_document(
+                session,
+                process_job,
+                engine_manager=FakeEngine(),
+                job_queue=FakeQueue(),
+            )
+
+        async with SessionLocal() as verification_session:
+            saved_document = await verification_session.get(Document, document_id)
+            assert saved_document.status == DocumentStatus.DELETING
+
+
+@pytest.mark.asyncio
+async def test_resume_uses_supervised_dispatch_after_persisting_queued_state():
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.services.document_service import resume_document
+
+    class DurableQueue:
+        def __init__(self):
+            self.ids: list[str] = []
+
+        async def enqueue(self, _job_id: str):
+            raise AssertionError("persisted resume must use supervised dispatch")
+
+        async def enqueue_durably(self, job_id: str):
+            self.ids.append(job_id)
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="resume-durable-dispatch",
+            sag_source_config_id="resume-durable-dispatch-config",
+        )
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="resume-durable-dispatch.md",
+            content_type="text/markdown",
+            size_bytes=10,
+            storage_path="/tmp/resume-durable-dispatch.md",
+            status=DocumentStatus.PAUSED,
+        )
+        session.add(document)
+        await session.flush()
+        process_job = Job(
+            type=JobType.PROCESS_DOCUMENT,
+            source_id=source.id,
+            document_id=document.id,
+            status=JobStatus.PAUSED,
+        )
+        session.add(process_job)
+        await session.commit()
+
+        queue = DurableQueue()
+        resumed = await resume_document(
+            session,
+            source,
+            document.id,
+            job_queue=queue,
+        )
+
+        assert resumed.status == JobStatus.QUEUED
+        assert queue.ids == [process_job.id]

@@ -14,6 +14,10 @@ class JobQueue(ABC):
     async def enqueue(self, job_id: str) -> None:
         """把一个已持久化的 Job 投入队列等待执行。"""
 
+    async def enqueue_durably(self, job_id: str) -> None:
+        """派发已提交任务；支持后台重排的队列可覆盖此默认实现。"""
+        await self.enqueue(job_id)
+
     @abstractmethod
     def begin_source_maintenance(self, source_id: str, job_id: str) -> None:
         """登记某个信源存在需要优先处理的维护任务。"""
