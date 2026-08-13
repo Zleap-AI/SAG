@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://arxiv.org/abs/2606.15971"><img alt="Paper" src="https://img.shields.io/badge/paper-arXiv%3A2606.15971-18181b" /></a>
   <a href="https://pypi.org/project/zleap-sag/"><img alt="PyPI" src="https://img.shields.io/pypi/v/zleap-sag?label=zleap--sag&color=18181b" /></a>
-  <img alt="SAG version" src="https://img.shields.io/badge/SAG-v1.5.3-18181b" />
+  <img alt="SAG version" src="https://img.shields.io/badge/SAG-v1.6.0-18181b" />
   <a href="https://github.com/Zleap-AI/SAG/releases/latest"><img alt="Desktop release" src="https://img.shields.io/github/v/release/Zleap-AI/SAG?label=desktop&color=18181b" /></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776ab" />
   <img alt="Node" src="https://img.shields.io/badge/Node-20%2B-339933" />
@@ -43,6 +43,10 @@ https://github.com/user-attachments/assets/9bb618e9-fef8-4d07-8a30-3f7d83beb0ff
 ## Project
 
 ### Changelog
+
+**August 13, 2026**
+
+Added OCTX source import and export with integrity validation, conflict handling, failure recovery, and compatible vector reuse for cross-instance knowledge base migration and backup. This release also improves continuous Chinese-term retrieval and document lifecycle controls for more reliable fast search and background processing.
 
 **July 31, 2026**
 
