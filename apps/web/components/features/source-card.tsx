@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import * as React from "react";
-import { FileText, Network, Puzzle, Trash2 } from "lucide-react";
+import { Download, FileText, Network, Puzzle, Trash2 } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import { toast } from "sonner";
 
@@ -12,8 +12,10 @@ import { relativeTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EditSourceDialog } from "@/components/features/edit-source-dialog";
+import { useOctxExports } from "@/components/features/octx-export-provider";
 import { useApp } from "@/components/features/app-shell";
 import { SourceIdCopy } from "@/components/features/source-id-copy";
+import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 export function SourceCard({ source, onChanged }: { source: Source; onChanged?: () => void }) {
@@ -32,6 +34,20 @@ export function SourceCard({ source, onChanged }: { source: Source; onChanged?: 
     }
   }
 
+  const { startExport, isSourceExporting } = useOctxExports();
+  const exportRunning = isSourceExporting(source.id);
+
+  const handleExport = React.useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (exportRunning) return;
+      toast.message(t("exporting"));
+      void startExport(source.id, source.name);
+    },
+    [exportRunning, source.id, source.name, startExport, t],
+  );
+
   return (
     <div className="group/source relative flex h-full min-w-0 flex-col rounded-lg border bg-card p-5 shadow-soft transition-all duration-150 ease-smooth hover:border-foreground/15 hover:shadow-lift">
       <Link
@@ -43,7 +59,7 @@ export function SourceCard({ source, onChanged }: { source: Source; onChanged?: 
       </Link>
 
       <div className="pointer-events-none relative z-10 flex h-full min-w-0 flex-col">
-        <div className="flex min-w-0 items-start justify-between gap-3 pr-20">
+        <div className="flex min-w-0 items-start justify-between gap-3 pr-28">
           <h3 className="min-w-0 break-words font-display text-lg font-medium leading-tight text-foreground">
             {source.name}
           </h3>
@@ -75,6 +91,23 @@ export function SourceCard({ source, onChanged }: { source: Source; onChanged?: 
       </div>
 
       <div className="absolute right-5 top-5 z-20 flex items-center gap-1 opacity-0 transition-opacity group-hover/source:opacity-100 group-focus-within/source:opacity-100">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={t("export")}
+              title={t("export")}
+              onClick={handleExport}
+              disabled={exportRunning}
+              className="bg-background/95 text-muted-foreground shadow-soft backdrop-blur-sm hover:text-foreground"
+            >
+              {exportRunning ? <Spinner className="size-4" /> : <Download className="size-4" />}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{t("export")}</TooltipContent>
+        </Tooltip>
         <EditSourceDialog
           source={source}
           onUpdated={onChanged}

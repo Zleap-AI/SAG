@@ -200,6 +200,12 @@ class ProcessOutcome(BaseModel):
         )
 
 
+class EventEntityQuality(BaseModel):
+    rejected_attempts: int = 0
+    eventless_after_contract: list[str] = Field(default_factory=list)
+    reason_counts: dict[str, int] = Field(default_factory=dict)
+
+
 class ProcessCheckpoint(BaseModel):
     """可持久化到 Job.payload 的文档处理断点。"""
 
@@ -210,6 +216,9 @@ class ProcessCheckpoint(BaseModel):
     event_ids: list[str] = []
     eventless_chunk_ids: list[str] = []
     token_usage: int = 0
+    event_entity_quality: EventEntityQuality = Field(
+        default_factory=EventEntityQuality
+    )
 
     @classmethod
     def from_payload(cls, payload: dict | None) -> ProcessCheckpoint:

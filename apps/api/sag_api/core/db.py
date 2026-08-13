@@ -58,14 +58,17 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 # 已存在的表需要补的新列（dev 轻量增量迁移；生产用 Alembic）。
 # create_all 只建新表、不改旧表，故对演进列做幂等 ADD COLUMN。
 _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
-    "agents": {"is_default": "BOOLEAN NOT NULL DEFAULT 0"},
+    "agents": {"is_default": "BOOLEAN NOT NULL DEFAULT FALSE"},
     "documents": {
         "progress": "INTEGER NOT NULL DEFAULT 0",
         "token_usage": "BIGINT NOT NULL DEFAULT 0",
         "error_layer": "VARCHAR(16)",
         "error_stage": "VARCHAR(16)",
+        "octx_installation_id": "VARCHAR(32)",
+        "octx_document_id": "VARCHAR(36)",
+        "is_active": "BOOLEAN NOT NULL DEFAULT TRUE",
     },
-    "threads": {"archived": "BOOLEAN NOT NULL DEFAULT 0"},
+    "threads": {"archived": "BOOLEAN NOT NULL DEFAULT FALSE"},
     "messages": {
         "attachments_json": "JSON",
         "steps_json": "JSON",
@@ -82,6 +85,7 @@ _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
 _INDEX_UPGRADES = (
     "CREATE INDEX IF NOT EXISTS ix_messages_thread_created_id ON messages (thread_id, created_at, id)",
     "CREATE INDEX IF NOT EXISTS ix_documents_source_sag_source ON documents (source_id, sag_source_id)",
+    "CREATE INDEX IF NOT EXISTS ix_documents_source_active_created ON documents (source_id, is_active, created_at)",
 )
 
 

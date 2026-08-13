@@ -59,6 +59,13 @@ async def lifespan(app: FastAPI):
     async with SessionLocal() as _session:
         await get_default_agent(_session)
 
+    from sag_api.services.octx_recovery_service import recover_octx_state
+
+    async with SessionLocal() as _session:
+        recovery = await recover_octx_state(_session)
+        if any(recovery.values()):
+            log.info("OCTX 启动恢复完成 %s", recovery)
+
     # zleap-sag 内部也调用 LiteLLM；全局 pre-call policy 让它与 Muse 生成链
     # 共享相同的 provider 参数，而不修改依赖包。
     install_zleap_sag_extract_compat()

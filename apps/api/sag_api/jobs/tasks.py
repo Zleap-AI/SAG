@@ -21,10 +21,23 @@ from sag_api.core.logging import get_logger
 from sag_api.db.models import Document, Job, Source
 from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs.control import JobPaused, JobYielded
+from sag_api.jobs.octx_tasks import (
+    export_octx,
+    gc_octx_installation,
+    gc_octx_transfers,
+    import_octx,
+    preflight_octx,
+)
 from sag_api.jobs.scheduling import SOURCE_MAINTENANCE
 from sag_api.parsing import prepare_document
 from sag_api.sag import EngineManager
 from sag_api.sag.dto import ProcessCheckpoint
+from sag_api.services.source_operation_service import (
+    acquire_operation_lease,
+    acquire_source_exclusive_lease,
+    acquire_source_processing_lease,
+    touch_source_revision,
+)
 
 log = get_logger("jobs")
 
@@ -74,9 +87,7 @@ async def _yield_after_document_transition_lost(
     raise JobPaused()
 
 
-def _classify_document_failure(
-    e: Exception, current_status: DocumentStatus
-) -> tuple[ErrorLayer, ErrorStage]:
+def _classify_document_failure(e: Exception, current_status: DocumentStatus) -> tuple[ErrorLayer, ErrorStage]:
     """推断失败的责任层与链路环节。
 
     优先信任领域异常自带的 layer/stage（LLM 分类、引擎翻译层都会填）；
@@ -89,7 +100,20 @@ def _classify_document_failure(
     return ErrorLayer.ENGINE, stage
 
 
-async def process_document(
+async def process_document(session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None) -> None:
+    document = await session.get(Document, job.document_id) if job.document_id else None
+    if document is None:
+        raise NotFoundError("文档不存在")
+    async with acquire_source_processing_lease(SessionLocal, document.source_id, job.id):
+        await _process_document_unlocked(
+            session,
+            job,
+            engine_manager=engine_manager,
+            job_queue=job_queue,
+        )
+
+
+async def _process_document_unlocked(
     session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None
 ) -> None:
     """解析、入库并按 chunk 并发抽取；每个 chunk 完成即保存断点。"""
@@ -161,9 +185,7 @@ async def process_document(
             current_job = await control_session.get(Job, job.id)
             if current_job is None:
                 return True
-            if current_job.status == JobStatus.PAUSED or (
-                current_job.payload or {}
-            ).get("pause_requested"):
+            if current_job.status == JobStatus.PAUSED or (current_job.payload or {}).get("pause_requested"):
                 scheduler_yield_reason = None
                 return True
         if job_queue is not None and job_queue.source_maintenance_requested(source.id):
@@ -203,10 +225,7 @@ async def process_document(
         )
         if outcome.paused:
             await session.refresh(document)
-            if (
-                scheduler_yield_reason == SOURCE_MAINTENANCE
-                and document.status not in _CONTROL_TRANSITION_STATES
-            ):
+            if scheduler_yield_reason == SOURCE_MAINTENANCE and document.status not in _CONTROL_TRANSITION_STATES:
                 raise JobYielded(SOURCE_MAINTENANCE)
             if document.status in _DELETE_CONTROL_STATES:
                 raise JobPaused()
@@ -228,10 +247,7 @@ async def process_document(
         raise
     except Exception as e:  # noqa: BLE001 - 记录到文档后再上抛给 worker
         await session.refresh(document)
-        if (
-            document.status in _CONTROL_TRANSITION_STATES
-            or document.status == DocumentStatus.PAUSED
-        ):
+        if document.status in _CONTROL_TRANSITION_STATES or document.status == DocumentStatus.PAUSED:
             await _yield_after_document_transition_lost(session, document)
         layer, stage = _classify_document_failure(e, document.status)
         expected_status = document.status
@@ -303,6 +319,7 @@ async def process_document(
             event_count=Source.event_count + outcome.event_count,
         )
     )
+    await touch_source_revision(session, source.id)
     await session.commit()
     log.info(
         "文档处理完成 doc=%s parser=%s cached=%s chunks=%d events=%d tokens=%d",
@@ -325,6 +342,15 @@ async def process_document(
 
 
 async def delete_document_task(
+    session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None
+) -> None:
+    if not job.source_id:
+        raise NotFoundError("删除任务缺少信源")
+    async with acquire_source_exclusive_lease(SessionLocal, job.source_id, f"document-delete:{job.id}"):
+        await _delete_document_task_unlocked(session, job, engine_manager=engine_manager, job_queue=job_queue)
+
+
+async def _delete_document_task_unlocked(
     session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None
 ) -> None:
     """清理已取得信源维护窗口的文档派生数据、文件和记录。"""
@@ -392,10 +418,17 @@ async def delete_document_task(
 async def reprocess_document_task(
     session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None
 ) -> None:
+    if not job.source_id:
+        raise NotFoundError("重新处理任务缺少信源")
+    async with acquire_source_exclusive_lease(SessionLocal, job.source_id, f"document-reprocess:{job.id}"):
+        await _reprocess_document_task_unlocked(session, job, engine_manager=engine_manager, job_queue=job_queue)
+
+
+async def _reprocess_document_task_unlocked(
+    session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None
+) -> None:
     """在信源维护窗口内清理旧派生数据，再排入普通文档处理任务。"""
-    target_document_id = job.document_id or str(
-        (job.payload or {}).get("target_document_id") or ""
-    )
+    target_document_id = job.document_id or str((job.payload or {}).get("target_document_id") or "")
     if not target_document_id:
         raise NotFoundError("重新处理任务缺少文档")
     document = await session.get(Document, target_document_id)
@@ -407,11 +440,7 @@ async def reprocess_document_task(
 
     payload = dict(job.payload or {})
     derived_source_ids = sorted(
-        {
-            value.strip()
-            for value in payload.get("derived_source_ids", [])
-            if isinstance(value, str) and value.strip()
-        }
+        {value.strip() for value in payload.get("derived_source_ids", []) if isinstance(value, str) and value.strip()}
     )
     if not payload.get("cleanup_completed"):
         for derived_source_id in derived_source_ids:
@@ -431,11 +460,7 @@ async def reprocess_document_task(
         return
 
     process_job_id = payload.get("process_job_id")
-    process_job = (
-        await session.get(Job, process_job_id)
-        if isinstance(process_job_id, str) and process_job_id
-        else None
-    )
+    process_job = await session.get(Job, process_job_id) if isinstance(process_job_id, str) and process_job_id else None
     if process_job is None:
         process_job = Job(
             type=JobType.PROCESS_DOCUMENT,
@@ -459,6 +484,17 @@ async def reprocess_document_task(
 
 
 async def sync_source(session: AsyncSession, job: Job, *, engine_manager=None, job_queue=None) -> None:
+    if not job.source_id:
+        raise NotFoundError("信源不存在")
+    async with acquire_operation_lease(
+        SessionLocal,
+        [f"source:{job.source_id}"],
+        owner=f"source-sync:{job.id}",
+    ):
+        await _sync_source_unlocked(session, job, job_queue=job_queue)
+
+
+async def _sync_source_unlocked(session: AsyncSession, job: Job, *, job_queue=None) -> None:
     """动态连接器同步：discover → fetch → 登记文档并入队处理（复用 ingest→extract 管线）。"""
     # 延迟导入避免与 jobs 包的循环依赖
     from sag_api.connectors import registry
@@ -501,9 +537,7 @@ async def sync_source(session: AsyncSession, job: Job, *, engine_manager=None, j
     log.info("同步完成 source=%s 发现=%d 抓取=%d", source.id, len(discovered), fetched)
 
 
-async def index_universe(
-    session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None
-) -> None:
+async def index_universe(session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None) -> None:
     """Rebuild one user's aggregate universe overview from authoritative graph data."""
     from sag_api.db.models import User
     from sag_api.services.universe_service import rebuild_universe_overview
@@ -525,4 +559,9 @@ TASK_HANDLERS: dict[JobType, TaskHandler] = {
     JobType.DELETE_DOCUMENT: delete_document_task,
     JobType.SYNC_SOURCE: sync_source,
     JobType.INDEX_UNIVERSE: index_universe,
+    JobType.OCTX_PREFLIGHT: preflight_octx,
+    JobType.OCTX_IMPORT: import_octx,
+    JobType.OCTX_EXPORT: export_octx,
+    JobType.OCTX_GC_INSTALLATION: gc_octx_installation,
+    JobType.OCTX_GC_TRANSFER: gc_octx_transfers,
 }

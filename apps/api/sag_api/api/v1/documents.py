@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, File, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
-from sag_api.core.db import get_session
+from sag_api.core.db import SessionLocal, get_session
 from sag_api.core.deps import get_current_user, get_engine_manager, get_job_queue
 from sag_api.core.errors import ConflictError, NotFoundError, ValidationError
 from sag_api.db.models import User
@@ -30,6 +30,10 @@ from sag_api.services.document_service import (
     pause_document,
     reprocess_document,
     resume_document,
+)
+from sag_api.services.source_operation_service import (
+    source_content_mutation,
+    source_upload_mutation,
 )
 from sag_api.services.source_service import get_source
 
@@ -65,7 +69,6 @@ async def upload(
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> DocumentOut:
-    source = await get_source(session, source_id)
     _check_extension(file.filename)
     max_upload_bytes = settings.max_upload_mb * 1024 * 1024
     data = await file.read(max_upload_bytes + 1)
@@ -73,15 +76,17 @@ async def upload(
         raise ValidationError("文件内容为空")
     if len(data) > max_upload_bytes:
         raise ValidationError(f"文件超过 {settings.max_upload_mb}MB 上限")
-    document, _job = await create_document_from_upload(
-        session,
-        source,
-        filename=file.filename or "upload",
-        content_type=file.content_type or "application/octet-stream",
-        data=data,
-        upload_dir=settings.upload_dir,
-        job_queue=job_queue,
-    )
+    async with source_upload_mutation(SessionLocal, source_id):
+        source = await get_source(session, source_id)
+        document, _job = await create_document_from_upload(
+            session,
+            source,
+            filename=file.filename or "upload",
+            content_type=file.content_type or "application/octet-stream",
+            data=data,
+            upload_dir=settings.upload_dir,
+            job_queue=job_queue,
+        )
     return DocumentOut.model_validate(document)
 
 
@@ -94,16 +99,17 @@ async def ingest(
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> DocumentOut:
     """统一写入接口：外部系统持续推送文本 / 消息进入信源。"""
-    source = await get_source(session, source_id)
-    document = await ingest_content(
-        session,
-        source,
-        text=body.text,
-        title=body.title,
-        messages=[m.model_dump() for m in body.messages] if body.messages else None,
-        upload_dir=settings.upload_dir,
-        job_queue=job_queue,
-    )
+    async with source_content_mutation(SessionLocal, source_id, "document-ingest"):
+        source = await get_source(session, source_id)
+        document = await ingest_content(
+            session,
+            source,
+            text=body.text,
+            title=body.title,
+            messages=[m.model_dump() for m in body.messages] if body.messages else None,
+            upload_dir=settings.upload_dir,
+            job_queue=job_queue,
+        )
     return DocumentOut.model_validate(document)
 
 
@@ -115,9 +121,7 @@ async def get_(
     session: AsyncSession = Depends(get_session),
 ) -> DocumentOut:
     source = await get_source(session, source_id)
-    return DocumentOut.model_validate(
-        await get_public_document(session, source, document_id)
-    )
+    return DocumentOut.model_validate(await get_public_document(session, source, document_id))
 
 
 @router.get("/{document_id}/file")
@@ -136,6 +140,8 @@ async def get_file(
 
     source = await get_source(session, source_id)
     document = await get_public_document(session, source, document_id)
+    if document.octx_installation_id:
+        raise NotFoundError("OCTX 数据包未包含原始文件，请查看解析内容")
     if not document.storage_path or not os.path.isfile(document.storage_path):
         raise NotFoundError("原始文件不存在或已被清理")
     return FileResponse(
@@ -160,6 +166,8 @@ async def get_preview(
 
     source = await get_source(session, source_id)
     document = await get_public_document(session, source, document_id)
+    if document.octx_installation_id:
+        raise NotFoundError("OCTX 数据包未包含原始文件，请查看解析内容")
     if not document.storage_path or not os.path.isfile(document.storage_path):
         raise NotFoundError("原始文件不存在或已被清理")
     if is_text_preview(document.filename, document.content_type):
@@ -218,13 +226,14 @@ async def reprocess(
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> JobOut:
-    source = await get_source(session, source_id)
-    job = await reprocess_document(
-        session,
-        source,
-        document_id,
-        job_queue=job_queue,
-    )
+    async with source_content_mutation(SessionLocal, source_id, "document-reprocess"):
+        source = await get_source(session, source_id)
+        job = await reprocess_document(
+            session,
+            source,
+            document_id,
+            job_queue=job_queue,
+        )
     return JobOut.model_validate(job)
 
 
@@ -235,6 +244,9 @@ async def pause(
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> JobOut:
+    # Pause is a control-plane signal to the worker that currently owns the
+    # source lease. Requiring a second lease here would make cooperative pause
+    # impossible; the worker observes this flag before its next chunk.
     source = await get_source(session, source_id)
     job = await pause_document(session, source, document_id)
     return JobOut.model_validate(job)
@@ -248,8 +260,9 @@ async def resume(
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> JobOut:
-    source = await get_source(session, source_id)
-    job = await resume_document(session, source, document_id, job_queue=job_queue)
+    async with source_content_mutation(SessionLocal, source_id, "document-resume"):
+        source = await get_source(session, source_id)
+        job = await resume_document(session, source, document_id, job_queue=job_queue)
     return JobOut.model_validate(job)
 
 
@@ -261,11 +274,12 @@ async def delete_(
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> Ok:
-    source = await get_source(session, source_id)
-    await delete_document(
-        session,
-        source,
-        document_id,
-        job_queue=job_queue,
-    )
+    async with source_content_mutation(SessionLocal, source_id, "document-delete"):
+        source = await get_source(session, source_id)
+        await delete_document(
+            session,
+            source,
+            document_id,
+            job_queue=job_queue,
+        )
     return Ok(detail="文档已删除")

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import messages from "@/messages/zh-CN.json";
 import type { Source } from "@/lib/types";
+import { OctxExportProvider } from "@/components/features/octx-export-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SourceCard } from "./source-card";
 
@@ -31,7 +32,9 @@ describe("source card", () => {
         messages={messages}
       >
         <TooltipProvider>
-          <SourceCard source={source} />
+          <OctxExportProvider>
+            <SourceCard source={source} />
+          </OctxExportProvider>
         </TooltipProvider>
       </NextIntlClientProvider>,
     );

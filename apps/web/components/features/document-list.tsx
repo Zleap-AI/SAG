@@ -15,6 +15,7 @@ import {
 } from "@/lib/document-activity";
 import type { Doc } from "@/lib/types";
 import { formatBytes, formatTokenCount, relativeTime } from "@/lib/format";
+import { hasRecordedTokenUsage } from "@/lib/document-metadata";
 import { useDetailPanel } from "@/components/features/detail-panel";
 import { useApp } from "@/components/features/app-shell";
 import { DocumentActivityBadge } from "@/components/features/status-badge";
@@ -166,8 +167,12 @@ export function DocumentList({
                     <span>{relativeTime(document.created_at, timezone, locale)}</span>
                     <span>·</span>
                     <span>{activity.progress}%</span>
-                    <span>·</span>
-                    <span>{t("tokens", { count: formatTokenCount(document.token_usage, locale) })}</span>
+                    {hasRecordedTokenUsage(document.token_usage) && (
+                      <>
+                        <span>·</span>
+                        <span>{t("tokens", { count: formatTokenCount(document.token_usage, locale) })}</span>
+                      </>
+                    )}
                   </div>
                   {activity.error && (
                     <p className="mt-0.5 truncate text-[11px] text-destructive" title={activity.error}>
@@ -235,8 +240,10 @@ export function DocumentList({
                 )}
                 <span>·</span>
                 <span>
-                  {activity.progress}% ·{" "}
-                  {t("tokens", { count: formatTokenCount(document.token_usage, locale) })}
+                  {activity.progress}%
+                  {hasRecordedTokenUsage(document.token_usage) && (
+                    <> · {t("tokens", { count: formatTokenCount(document.token_usage, locale) })}</>
+                  )}
                 </span>
                 {activity.error && (
                   <>

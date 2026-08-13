@@ -270,6 +270,60 @@ def test_document_output_redacts_database_details():
     assert document.error == "文档删除失败，请重试；若仍失败，请查看服务日志。"
 
 
+def test_document_output_marks_octx_documents_without_original_files():
+    from datetime import UTC, datetime
+
+    from sag_api.enums import DocumentStatus
+    from sag_api.schemas.document import DocumentOut
+
+    payload = {
+        "id": "doc-1",
+        "source_id": "source-1",
+        "filename": "report.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": 12,
+        "status": DocumentStatus.READY,
+        "chunk_count": 1,
+        "event_count": 1,
+        "progress": 100,
+        "token_usage": 0,
+        "error": None,
+        "octx_installation_id": "installation-1",
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+
+    imported = DocumentOut.model_validate(payload).model_dump()
+    assert imported["original_file_available"] is False
+    assert "octx_installation_id" not in imported
+
+    payload["octx_installation_id"] = None
+    uploaded = DocumentOut.model_validate(payload).model_dump()
+    assert uploaded["original_file_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_octx_document_preview_rejects_markdown_surrogate_as_original(monkeypatch):
+    from types import SimpleNamespace
+
+    from sag_api.api.v1 import documents as routes
+    from sag_api.core.errors import NotFoundError
+
+    imported = SimpleNamespace(octx_installation_id="installation-1")
+
+    async def fake_source(*_args, **_kwargs):
+        return SimpleNamespace(id="source-1")
+
+    async def fake_document(*_args, **_kwargs):
+        return imported
+
+    monkeypatch.setattr(routes, "get_source", fake_source)
+    monkeypatch.setattr(routes, "get_public_document", fake_document)
+
+    with pytest.raises(NotFoundError, match="OCTX 数据包未包含原始文件"):
+        await routes.get_preview("source-1", "doc-1", session=SimpleNamespace())
+
+
 @pytest.mark.asyncio
 async def test_llm_timeout_and_retries_reach_unified_client(monkeypatch):
     from sag_api.generation import llm as generation_llm

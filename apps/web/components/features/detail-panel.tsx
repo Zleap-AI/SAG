@@ -11,6 +11,8 @@ import {
   Code2,
   Download,
   Eye,
+  FileText,
+  PackageOpen,
   X,
 } from "lucide-react";
 
@@ -330,7 +332,13 @@ function ChunkView({
   );
 }
 
-function OriginalDocumentPreview({ doc }: { doc: Doc }) {
+function OriginalDocumentPreview({
+  doc,
+  onShowParsed,
+}: {
+  doc: Doc;
+  onShowParsed: () => void;
+}) {
   const locale = useLocale();
   const t = useTranslations("DetailPanel");
   const tRef = React.useRef(t);
@@ -352,6 +360,12 @@ function OriginalDocumentPreview({ doc }: { doc: Doc }) {
     let alive = true;
     let objectUrl: string | null = null;
     setState({ phase: "loading" });
+    if (doc.original_file_available === false) {
+      setState({ phase: "none" });
+      return () => {
+        alive = false;
+      };
+    }
     (async () => {
       try {
         const res = await fetch(previewUrl, {
@@ -387,7 +401,28 @@ function OriginalDocumentPreview({ doc }: { doc: Doc }) {
       alive = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [doc.content_type, doc.id, doc.source_id, locale, previewUrl]);
+  }, [doc.content_type, doc.id, doc.original_file_available, doc.source_id, locale, previewUrl]);
+
+  if (doc.original_file_available === false) {
+    return (
+      <div className="grid min-h-56 flex-1 place-items-center rounded-xl border border-dashed bg-muted/20 p-5">
+        <div className="flex max-w-md flex-col items-center text-center">
+          <div className="relative mb-4 grid size-12 place-items-center rounded-xl border bg-background shadow-sm">
+            <PackageOpen className="size-5 text-muted-foreground" />
+            <FileText className="absolute -bottom-1.5 -right-1.5 size-5 rounded-md border bg-background p-0.5 text-primary" />
+          </div>
+          <p className="text-sm font-medium text-foreground">{t("original.octxTitle")}</p>
+          <p className="mt-1.5 text-sm leading-6 text-muted-foreground">
+            {t("original.octxDescription")}
+          </p>
+          <Button type="button" variant="outline" size="sm" className="mt-4 gap-1.5" onClick={onShowParsed}>
+            <FileText className="size-3.5" />
+            {t("original.viewParsed")}
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   async function download() {
     try {
@@ -559,7 +594,7 @@ function ParsedDocumentPreview({ doc }: { doc: Doc }) {
   );
 }
 
-function DocumentPreview({ doc }: { doc: Doc }) {
+export function DocumentPreview({ doc }: { doc: Doc }) {
   const t = useTranslations("DetailPanel");
   const [previewMode, setPreviewMode] = React.useState<"parsed" | "original">(
     doc.status === "ready" ? "parsed" : "original",
@@ -591,7 +626,7 @@ function DocumentPreview({ doc }: { doc: Doc }) {
         forceMount
         className="mt-2 min-h-0 min-w-0 flex-1 data-[state=active]:flex data-[state=active]:flex-col data-[state=inactive]:hidden"
       >
-        <OriginalDocumentPreview doc={doc} />
+        <OriginalDocumentPreview doc={doc} onShowParsed={() => setPreviewMode("parsed")} />
       </TabsContent>
     </Tabs>
   );

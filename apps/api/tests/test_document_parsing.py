@@ -438,6 +438,9 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
             document.token_usage = 2468
             return SimpleNamespace(rowcount=1)
 
+        async def scalar(self, _statement):
+            return None
+
         async def refresh(self, _instance, attribute_names=None):
             pass
 

@@ -3,6 +3,14 @@
 from sag_api.db.models.agent import Agent, AgentBinding, Message, Thread
 from sag_api.db.models.document import Document
 from sag_api.db.models.job import Job
+from sag_api.db.models.octx import (
+    OctxAsset,
+    OctxInstallation,
+    OctxOperationLease,
+    OctxRelease,
+    OctxSourceBinding,
+    OctxTransfer,
+)
 from sag_api.db.models.setting import Setting
 from sag_api.db.models.source import Source
 from sag_api.db.models.universe import (
@@ -20,6 +28,12 @@ __all__ = [
     "Document",
     "Job",
     "Message",
+    "OctxAsset",
+    "OctxInstallation",
+    "OctxOperationLease",
+    "OctxRelease",
+    "OctxSourceBinding",
+    "OctxTransfer",
     "Setting",
     "Source",
     "Thread",

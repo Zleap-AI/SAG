@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import messages from "@/messages/zh-CN.json";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { OctxExportProvider } from "@/components/features/octx-export-provider";
 import SourceDetailPage from "./page";
 
 vi.mock("next/navigation", () => ({
@@ -42,7 +43,9 @@ describe("source detail page", () => {
         messages={messages}
       >
         <TooltipProvider>
-          <SourceDetailPage />
+          <OctxExportProvider>
+            <SourceDetailPage />
+          </OctxExportProvider>
         </TooltipProvider>
       </NextIntlClientProvider>,
     );

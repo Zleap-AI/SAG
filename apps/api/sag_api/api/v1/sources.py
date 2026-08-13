@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.connectors import registry
-from sag_api.core.db import get_session
+from sag_api.core.db import SessionLocal, get_session
 from sag_api.core.deps import get_current_user, get_engine_manager, get_job_queue
 from sag_api.db.models import User
 from sag_api.jobs import JobQueue
@@ -13,6 +14,7 @@ from sag_api.sag import EngineManager
 from sag_api.schemas.common import Ok
 from sag_api.schemas.job import JobOut
 from sag_api.schemas.source import ConnectorOut, SourceCreate, SourceOut, SourceUpdate
+from sag_api.services.source_operation_service import acquire_source_exclusive_lease
 from sag_api.services.source_service import (
     create_source,
     delete_source,
@@ -66,9 +68,7 @@ async def update_(
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> SourceOut:
-    return SourceOut.model_validate(
-        await update_source(session, source_id, body, job_queue=job_queue)
-    )
+    return SourceOut.model_validate(await update_source(session, source_id, body, job_queue=job_queue))
 
 
 @router.delete("/{source_id}", response_model=Ok)
@@ -81,13 +81,14 @@ async def delete_(
 ) -> Ok:
     from sag_api.core.config import settings
 
-    await delete_source(
-        session,
-        source_id,
-        engine_manager=engine_manager,
-        upload_dir=settings.upload_dir,
-        job_queue=job_queue,
-    )
+    async with acquire_source_exclusive_lease(SessionLocal, source_id, "source-delete"):
+        await delete_source(
+            session,
+            source_id,
+            engine_manager=engine_manager,
+            upload_dir=settings.upload_dir,
+            job_queue=job_queue,
+        )
     return Ok(detail="信源已删除")
 
 
@@ -104,6 +105,31 @@ async def get_chunk(
 
     source = await get_source(session, source_id)
     chunk = await engine_manager.get_chunk(source.sag_source_config_id, chunk_id, source=source)
+    if chunk is None:
+        from datetime import UTC, datetime
+
+        from sag_api.db.models import OctxInstallation
+        from sag_api.enums import OctxInstallationStatus
+
+        retained = (
+            (
+                await session.execute(
+                    select(OctxInstallation)
+                    .where(
+                        OctxInstallation.source_id == source.id,
+                        OctxInstallation.status == OctxInstallationStatus.RETAINED,
+                        OctxInstallation.retain_until > datetime.now(UTC),
+                    )
+                    .order_by(OctxInstallation.activated_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for installation in retained:
+            chunk = await engine_manager.get_chunk(installation.sag_source_config_id, chunk_id, source=None)
+            if chunk is not None:
+                break
     if chunk is None:
         raise NotFoundError("原文分块不存在")
     return {**chunk.model_dump(), "source_id": source.id, "source_name": source.name}

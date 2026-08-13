@@ -79,6 +79,12 @@ import {
   useIsLgUp,
 } from "@/components/features/detail-panel";
 import { KnowledgeProvider } from "@/components/features/knowledge-provider";
+import { OctxExportDecisionDialog } from "@/components/features/octx-export-decision-dialog";
+import { OctxExportProvider } from "@/components/features/octx-export-provider";
+import { OctxExportTaskCenter } from "@/components/features/octx-export-task-center";
+import { OctxImportDecisionDialog } from "@/components/features/octx-import-decision-dialog";
+import { OctxImportProvider } from "@/components/features/octx-import-provider";
+import { OctxImportTaskCenter } from "@/components/features/octx-import-task-center";
 import { PetWithPreference } from "@/components/features/pet";
 import { PetHeadAvatar } from "@/components/features/pet-head-avatar";
 import { QuickModelSetupDialog } from "@/components/features/quick-model-setup-dialog";
@@ -813,15 +819,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         },
       }}
     >
-      <SearchProvider
-        defaultStrategy={
-          isSearchStrategy(capabilities?.search_strategy)
-            ? capabilities.search_strategy
-            : DEFAULT_SEARCH_STRATEGY
-        }
-        disabledMap={capabilities?.search_strategies_disabled}
-      >
-        <KnowledgeProvider>
+      <OctxExportProvider>
+        <SearchProvider
+          defaultStrategy={
+            isSearchStrategy(capabilities?.search_strategy)
+              ? capabilities.search_strategy
+              : DEFAULT_SEARCH_STRATEGY
+          }
+          disabledMap={capabilities?.search_strategies_disabled}
+        >
+          <KnowledgeProvider>
+          <OctxImportProvider>
           <ConversationProvider
             agentId={agent.id}
             transport={CONVERSATION_TRANSPORT}
@@ -943,8 +951,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </TooltipProvider>
             </DetailPanelProvider>
           </ConversationProvider>
-        </KnowledgeProvider>
-      </SearchProvider>
+          <OctxImportDecisionDialog />
+          <OctxImportTaskCenter />
+          </OctxImportProvider>
+          </KnowledgeProvider>
+        </SearchProvider>
+        <OctxExportDecisionDialog />
+        <OctxExportTaskCenter />
+      </OctxExportProvider>
     </AppContext.Provider>
   );
 }

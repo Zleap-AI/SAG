@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
+import { tokenCookieName } from "@/lib/auth-cookie";
+
 const PUBLIC_PATHS = ["/login"];
 
 export function middleware(req: NextRequest) {
-  const token = req.cookies.get("sag_token")?.value;
+  const token = req.cookies.get(tokenCookieName(req.headers.get("host") ?? ""))?.value;
   const { pathname } = req.nextUrl;
 
   if (pathname === "/") {

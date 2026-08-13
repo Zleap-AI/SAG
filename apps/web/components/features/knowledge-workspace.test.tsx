@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import messages from "@/messages/zh-CN.json";
 import type { Source } from "@/lib/types";
-import { SourceRow } from "./knowledge-workspace";
+import { loadKnowledgeWorkspace, SourceRow } from "./knowledge-workspace";
 
 const source: Source = {
   id: "3fe9533639544615bc732d8d7a8f648e",
@@ -22,6 +22,28 @@ const source: Source = {
 };
 
 describe("knowledge source row", () => {
+  it("refreshes server statistics whenever the normal source list is entered", async () => {
+    const calls: string[] = [];
+
+    await loadKnowledgeWorkspace("normal", {
+      ensureLoaded: async () => { calls.push("ensure"); },
+      refresh: async () => { calls.push("refresh"); },
+    });
+
+    expect(calls).toEqual(["refresh"]);
+  });
+
+  it("keeps the compact workspace lazy until it is explicitly refreshed", async () => {
+    const calls: string[] = [];
+
+    await loadKnowledgeWorkspace("compact", {
+      ensureLoaded: async () => { calls.push("ensure"); },
+      refresh: async () => { calls.push("refresh"); },
+    });
+
+    expect(calls).toEqual(["ensure"]);
+  });
+
   it("exposes a source id copy control outside its navigation link", () => {
     const html = renderToStaticMarkup(
       <NextIntlClientProvider

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, computed_field, field_validator
 
 from sag_api.enums import DocumentStatus
 
@@ -39,8 +39,15 @@ class DocumentOut(BaseModel):
     error: str | None
     error_layer: str | None = None
     error_stage: str | None = None
+    octx_installation_id: str | None = Field(default=None, exclude=True)
     created_at: datetime
     updated_at: datetime
+
+    @computed_field
+    @property
+    def original_file_available(self) -> bool:
+        """OCTX packages can carry parsed concepts without original attachment bytes."""
+        return self.octx_installation_id is None
 
     @field_validator("error", mode="before")
     @classmethod

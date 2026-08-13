@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     document_extract_concurrency: int = Field(default=30, ge=1, le=50)  # 单文档 chunk 抽取并发
     document_chunk_max_tokens: int = Field(default=1_000, ge=100, le=100_000)
     document_chunk_mode: Literal["standard", "heading_strict"] = "standard"
+    document_event_entity_attempts: int = Field(default=2, ge=1, le=3)
     # 上传文档已有独立的知识型过滤要求；默认关闭上游基于标题/摘要的严格过滤，
     # 避免无摘要或标题缺失的书籍正文被误判为噪音。
     document_strict_filtering: bool = False
@@ -87,6 +88,26 @@ class Settings(BaseSettings):
         ".json",
         ".epub",
     }
+
+    # ── OCTX 信源导入导出 ───────────────────────────────────────────────
+    # 压缩包在一次性受限子进程中校验/打包；这些值是部署可调的硬上限，
+    # 不能只依赖 OCTX SDK 默认值或请求层 Content-Length。
+    octx_max_upload_mb: int = Field(default=2048, ge=1)
+    octx_max_entries: int = Field(default=10_000, ge=1)
+    octx_max_file_mb: int = Field(default=512, ge=1)
+    octx_max_uncompressed_mb: int = Field(default=4096, ge=1)
+    octx_max_compression_ratio: float = Field(default=100, gt=0)
+    octx_max_jsonl_line_mb: int = Field(default=16, ge=1)
+    octx_max_jsonl_records: int = Field(default=1_000_000, ge=1)
+    octx_max_issues: int = Field(default=1000, ge=1)
+    octx_worker_memory_mb: int = Field(default=2048, ge=128)
+    octx_worker_timeout_seconds: int = Field(default=1800, ge=1)
+    octx_transfer_ttl_hours: int = Field(default=24, ge=1)
+    octx_rollback_retention_days: int = Field(default=7, ge=0)
+    # OCTX 向量复用是可关闭的兼容加速层；关闭后沿用现有 Embedding 重建路径。
+    octx_arrow_vector_reuse_enabled: bool = True
+    octx_reused_vector_batch_size: int = Field(default=500, ge=50, le=2000)
+    octx_vector_progress_interval_seconds: float = Field(default=1.0, ge=0.1, le=10.0)
 
     # ── zleap-sag 后端选择 ─────────────────────────────────────────────
     # None → 零基础设施（LanceDB + 内置 SQLite，落在 data_dir）

@@ -25,6 +25,7 @@ dependencies = [
     "markitdown[docx,pdf,pptx,xls,xlsx]>=0.1.6,<0.2",
     "charset-normalizer>=3.3,<4",
     "mcp>=1.28,<2",
+    "octx[vectors]==0.1.4",
     "tzdata>=2024.1",
 ]
 

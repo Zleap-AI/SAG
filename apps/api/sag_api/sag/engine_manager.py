@@ -69,6 +69,31 @@ StageCallback = Callable[[str], Awaitable[None]]
 CheckpointCallback = Callable[[ProcessCheckpoint], Awaitable[None]]
 PauseCheck = Callable[[], Awaitable[bool]]
 
+_SQLITE_LOCK_RETRIES = 4
+
+
+async def _commit_with_sqlite_lock_retry(session: Any, pending: Any | None = None) -> None:
+    """Commit one SQLite write through short-lived writer contention.
+
+    PostgreSQL and non-lock failures are never retried. After a failed commit,
+    SQLAlchemy rolls pending inserts out of the unit of work, so callers may pass
+    the row that must be re-added before the next attempt.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    for attempt in range(_SQLITE_LOCK_RETRIES):
+        try:
+            await session.commit()
+            return
+        except OperationalError as error:
+            locked = "database is locked" in str(error).lower()
+            if not locked or attempt == _SQLITE_LOCK_RETRIES - 1:
+                raise
+            await session.rollback()
+            if pending is not None:
+                session.add(pending)
+            await asyncio.sleep(0.08 * (2**attempt))
+
 
 class _DocumentAdmissionYielded(Exception):
     """A processor waiting to enter the engine yielded to a control intent."""
@@ -474,23 +499,29 @@ class EngineManager:
         from sqlalchemy.exc import IntegrityError, SQLAlchemyError
         from zleap.sag.db import SourceConfig, get_session_factory
 
+        from sag_api.sag.octx_vector_protocol import configured_embedding_identity
+
         name = str(getattr(source, "name", "") or f"sag-{source_config_id[-8:]}")[:100]
         description = str(getattr(source, "description", "") or "created by sag EngineManager")[:255]
+        vector_identity = configured_embedding_identity(self._settings)
         try:
             session_factory = get_session_factory()
             async with session_factory() as session:
-                if await session.get(SourceConfig, source_config_id) is not None:
+                existing = await session.get(SourceConfig, source_config_id)
+                if existing is not None:
                     return
-                session.add(
-                    SourceConfig(
-                        id=source_config_id,
-                        name=name,
-                        description=description,
-                        target_config={},
-                    )
+                target_config = {}
+                if vector_identity is not None:
+                    target_config["octx_vector_identity"] = vector_identity
+                source_config = SourceConfig(
+                    id=source_config_id,
+                    name=name,
+                    description=description,
+                    target_config=target_config,
                 )
+                session.add(source_config)
                 try:
-                    await session.commit()
+                    await _commit_with_sqlite_lock_retry(session, source_config)
                 except IntegrityError:
                     # Another process may have provisioned the same source between
                     # our read and insert. Treat that race as success only when the
@@ -575,12 +606,7 @@ class EngineManager:
             candidates = [
                 (s.last_used, scid)
                 for scid, s in self._slots.items()
-                if (
-                    scid != keep
-                    and not s.lock.locked()
-                    and s.concurrent_users == 0
-                    and s.maintenance_requests == 0
-                )
+                if (scid != keep and not s.lock.locked() and s.concurrent_users == 0 and s.maintenance_requests == 0)
             ]
             if not candidates:
                 break  # 其余都在忙，暂不逐出
@@ -652,6 +678,31 @@ class EngineManager:
     async def provision(self, source_config_id: str, source: Source | None = None) -> None:
         """确保该源的引擎 schema 与父记录就绪（幂等）。"""
         await self._slot(source_config_id, source)
+
+    async def get_sag_session_factory(self, source_config_id: str, source: Source | None = None):
+        """Return the relational factory owned by an initialized SAG runtime."""
+        slot = await self._slot(source_config_id, source)
+        return slot.engine.resources.relational.session_factory()
+
+    @asynccontextmanager
+    async def maintenance(self, source_config_id: str, source: Source | None = None):
+        """Drain document processors and hold an exclusive OCTX mutation window."""
+        await self.begin_document_maintenance(source_config_id, source)
+        try:
+            while True:
+                slot = await self._slot(source_config_id, source)
+                async with self._lifecycle_gate.read():
+                    await slot.lock.acquire()
+                    if slot.closing:
+                        slot.lock.release()
+                        continue
+                    try:
+                        yield slot.engine
+                    finally:
+                        slot.lock.release()
+                    return
+        finally:
+            await self.end_document_maintenance(source_config_id, source)
 
     async def begin_document_maintenance(
         self,
@@ -798,6 +849,7 @@ class EngineManager:
                         chunk_mode=self._settings.document_chunk_mode,
                         document_title=document_title,
                         enable_strict_filtering=self._settings.document_strict_filtering,
+                        event_entity_attempts=self._settings.document_event_entity_attempts,
                     )
                     return await processor.process(
                         path,
@@ -920,10 +972,7 @@ class EngineManager:
         per_source_k = max(top_k, 4)
         requested_sources = len(targets)
         targets = targets[: self._settings.search_source_candidate_limit]
-        has_exclusions = any(
-            source_ids
-            for source_ids in (exclude_source_ids_by_config or {}).values()
-        )
+        has_exclusions = any(source_ids for source_ids in (exclude_source_ids_by_config or {}).values())
 
         if (strategy == "vector" or has_exclusions) and targets:
             try:
@@ -962,9 +1011,7 @@ class EngineManager:
                         "source_limit_applied": requested_sources > len(targets),
                         "candidates": 0,
                         "chunk_recall": (
-                            "batch-vector-prefilter-timeout"
-                            if has_exclusions
-                            else "batch-vector-timeout"
+                            "batch-vector-prefilter-timeout" if has_exclusions else "batch-vector-timeout"
                         ),
                     },
                 )
@@ -1080,13 +1127,7 @@ class EngineManager:
             t1 = time.perf_counter()
             exclusions = {
                 source_config_id: tuple(
-                    sorted(
-                        {
-                            value.strip()
-                            for value in source_ids
-                            if isinstance(value, str) and value.strip()
-                        }
-                    )
+                    sorted({value.strip() for value in source_ids if isinstance(value, str) and value.strip()})
                 )
                 for source_config_id in source_config_ids
                 if (
@@ -1097,9 +1138,7 @@ class EngineManager:
                 )
             }
             exclusions = {
-                source_config_id: source_ids
-                for source_config_id, source_ids in exclusions.items()
-                if source_ids
+                source_config_id: source_ids for source_config_id, source_ids in exclusions.items() if source_ids
             }
             if exclusions:
                 from zleap.sag.core.storage.query import Q
@@ -2292,10 +2331,7 @@ class EngineManager:
                 SourceEvent.created_time <= as_of_db,
             ]
             total_events = int(
-                await session.scalar(
-                    select(func.count()).select_from(SourceEvent).where(*base_filters)
-                )
-                or 0
+                await session.scalar(select(func.count()).select_from(SourceEvent).where(*base_filters)) or 0
             )
             first_ordinal = 0
             head = page[0] if page else None
@@ -2991,13 +3027,7 @@ class EngineManager:
 
         needle = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         excluded = tuple(
-            sorted(
-                {
-                    value.strip()
-                    for value in exclude_source_ids
-                    if isinstance(value, str) and value.strip()
-                }
-            )
+            sorted({value.strip() for value in exclude_source_ids if isinstance(value, str) and value.strip()})
         )
         conditions = [
             SourceChunk.source_config_id == source_config_id,

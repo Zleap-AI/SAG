@@ -65,6 +65,11 @@ class JobType(StrEnum):
     DELETE_DOCUMENT = "delete_document"
     SYNC_SOURCE = "sync_source"
     INDEX_UNIVERSE = "index_universe"
+    OCTX_PREFLIGHT = "octx_preflight"
+    OCTX_IMPORT = "octx_import"
+    OCTX_EXPORT = "octx_export"
+    OCTX_GC_INSTALLATION = "octx_gc_installation"
+    OCTX_GC_TRANSFER = "octx_gc_transfer"
 
 
 class JobStatus(StrEnum):
@@ -90,3 +95,53 @@ class MessageStatus(StrEnum):
 class BindingTargetType(StrEnum):
     SOURCE = "source"
     MCP_SERVER = "mcp_server"  # Phase C：挂载 MCP server 作为工具来源
+
+
+class OctxAssetOwnership(StrEnum):
+    LOCAL = "local"
+    IMPORTED = "imported"
+
+
+class OctxReleaseOrigin(StrEnum):
+    IMPORT = "import"
+    EXPORT = "export"
+
+
+class OctxInstallationStatus(StrEnum):
+    SHADOW = "shadow"
+    ACTIVE = "active"
+    RETAINED = "retained"
+    GC = "gc"
+    FAILED = "failed"
+
+
+class OctxTransferDirection(StrEnum):
+    IMPORT = "import"
+    EXPORT = "export"
+
+
+class OctxImportAction(StrEnum):
+    UPDATE = "update"
+    NEW = "new"
+    CANCEL = "cancel"
+
+
+class OctxExportAction(StrEnum):
+    EXPORT_READY_ONLY = "export_ready_only"
+    CANCEL = "cancel"
+
+
+class OctxTransferStatus(StrEnum):
+    UPLOADED = "uploaded"
+    VALIDATING = "validating"
+    DECISION_REQUIRED = "decision_required"
+    QUEUED = "queued"
+    IMPORTING = "importing"
+    INDEXING = "indexing"
+    SWITCHING = "switching"
+    EXPORTING = "exporting"
+    PACKAGING = "packaging"
+    READY = "ready"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"

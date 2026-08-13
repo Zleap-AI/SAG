@@ -6,6 +6,63 @@ import httpx
 import pytest
 
 
+@pytest.mark.asyncio
+async def test_source_creation_rolls_back_when_engine_provision_fails():
+    from sqlalchemy import select
+
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.core.errors import UpstreamError
+    from sag_api.db.models import Source
+    from sag_api.schemas.source import SourceCreate
+    from sag_api.services.source_service import create_source
+
+    class FailingEngineManager:
+        async def provision(self, *_args, **_kwargs):
+            raise UpstreamError("engine unavailable")
+
+    await init_db()
+    async with SessionLocal() as session:
+        with pytest.raises(UpstreamError, match="engine unavailable"):
+            await create_source(
+                session,
+                SourceCreate(name="must-not-be-partial"),
+                engine_manager=FailingEngineManager(),
+            )
+        stored = (
+            await session.execute(select(Source).where(Source.name == "must-not-be-partial"))
+        ).scalar_one_or_none()
+        assert stored is None
+
+
+@pytest.mark.asyncio
+async def test_source_config_commit_retries_transient_sqlite_lock(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    from sag_api.sag.engine_manager import _commit_with_sqlite_lock_retry
+
+    class Session:
+        def __init__(self):
+            self.commits = 0
+            self.rollbacks = 0
+
+        async def commit(self):
+            self.commits += 1
+            if self.commits < 3:
+                raise OperationalError("INSERT", {}, Exception("database is locked"))
+
+        async def rollback(self):
+            self.rollbacks += 1
+
+    async def no_wait(_delay):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+    session = Session()
+    await _commit_with_sqlite_lock_retry(session)
+    assert session.commits == 3
+    assert session.rollbacks == 2
+
+
 async def _register(c, email="hard@t.com"):
     r = await c.post("/api/v1/auth/register", json={"email": email, "password": "password123"})
     assert r.status_code == 201, r.text
@@ -374,6 +431,58 @@ async def test_document_cleanup_drains_and_blocks_same_source_processing(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_engine_maintenance_drains_writers_and_reopens_admission():
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager, _Slot
+
+    class FakeEngine:
+        async def aclose(self):
+            pass
+
+    manager = EngineManager(settings)
+    slot = _Slot(engine=FakeEngine())
+    manager._slots["source"] = slot
+    writer_entered = asyncio.Event()
+    release_writer = asyncio.Event()
+    maintenance_entered = asyncio.Event()
+    release_maintenance = asyncio.Event()
+    late_writer_entered = asyncio.Event()
+
+    async def writer():
+        async with manager.use_concurrently("source"):
+            writer_entered.set()
+            await release_writer.wait()
+
+    async def maintenance():
+        async with manager.maintenance("source"):
+            maintenance_entered.set()
+            assert slot.concurrent_users == 0
+            assert slot.concurrent_allowed.is_set() is False
+            await release_maintenance.wait()
+
+    async def late_writer():
+        async with manager.use_concurrently("source"):
+            late_writer_entered.set()
+
+    first = asyncio.create_task(writer())
+    await writer_entered.wait()
+    exclusive = asyncio.create_task(maintenance())
+    for _ in range(20):
+        if not slot.concurrent_allowed.is_set():
+            break
+        await asyncio.sleep(0)
+    late = asyncio.create_task(late_writer())
+    release_writer.set()
+    await maintenance_entered.wait()
+    assert late_writer_entered.is_set() is False
+    release_maintenance.set()
+    await exclusive
+    await asyncio.wait_for(late_writer_entered.wait(), timeout=1)
+    await asyncio.gather(first, late)
+    assert slot.concurrent_allowed.is_set() is True
+
+
+@pytest.mark.asyncio
 async def test_document_waiting_for_engine_admission_yields_to_maintenance():
     from sag_api.core.config import settings
     from sag_api.sag.dto import ProcessCheckpoint
@@ -387,6 +496,7 @@ async def test_document_waiting_for_engine_admission_yields_to_maintenance():
     manager._slots["source"] = _Slot(engine=FakeEngine())
     await manager.begin_document_maintenance("source")
     try:
+
         async def should_pause():
             return True
 
@@ -434,8 +544,16 @@ async def test_search_falls_back_to_vector():
                 {
                     "query": query,
                     "sections": [
-                        {"chunk_id": "c1", "source_id": "s", "source_config_id": "scid",
-                         "heading": "h", "content": "x", "rank": 1, "score": 0.9, "weight": 1}
+                        {
+                            "chunk_id": "c1",
+                            "source_id": "s",
+                            "source_config_id": "scid",
+                            "heading": "h",
+                            "content": "x",
+                            "rank": 1,
+                            "score": 0.9,
+                            "weight": 1,
+                        }
                     ],
                     "stats": {},
                 },
@@ -457,6 +575,7 @@ async def test_search_falls_back_to_vector():
     eng2 = FakeEngine(fail_multi=False, empty_multi=True)
     out2 = await run_case(eng2)
     assert eng2.calls == ["multi", "vector"] and len(out2.sections) == 1
+
     # vector 直查失败不回退
     class FailVector(FakeEngine):
         async def search(self, query, strategy=None, top_k=None):

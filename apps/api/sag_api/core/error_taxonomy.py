@@ -101,6 +101,55 @@ class ErrorCode(StrEnum):
     MCP_CONNECTION_FAILED = "mcp_connection_failed"
     """连接外部 MCP 服务器失败。"""
 
+    # —— OCTX 信源导入导出 ——
+    OCTX_INVALID_PACKAGE = "octx_invalid_package"
+    """OCTX 包格式、摘要或已声明能力校验失败。"""
+
+    OCTX_VALIDATION_INCOMPLETE = "octx_validation_incomplete"
+    """OCTX 校验未完整执行，不能据此导入。"""
+
+    OCTX_RESOURCE_LIMIT = "octx_resource_limit"
+    """OCTX 包超过上传、解压、记录、内存或运行时间限制。"""
+
+    OCTX_UNSUPPORTED_CAPABILITY = "octx_unsupported_capability"
+    """OCTX 包声明了 SAG 当前不支持的能力。"""
+
+    OCTX_REBUILD_CONFIGURATION_MISSING = "octx_rebuild_configuration_missing"
+    """knowledge-only 导入缺少 LLM 或 embedding 配置。"""
+
+    OCTX_RELEASE_DIGEST_CONFLICT = "octx_release_digest_conflict"
+    """同一 Asset 和版本对应了不同 package digest。"""
+
+    OCTX_DECISION_REQUIRED = "octx_decision_required"
+    """检测到相同 Asset，需要调用方选择更新、新建或取消。"""
+
+    OCTX_DECISION_STALE = "octx_decision_stale"
+    """冲突决策期间信源 revision 变化，需要重新预检。"""
+
+    OCTX_LOCAL_CHANGES_CONFLICT = "octx_local_changes_conflict"
+    """目标信源有未发布本地变更，更新需要额外确认。"""
+
+    OCTX_SOURCE_NOT_EXPORTABLE = "octx_source_not_exportable"
+    """信源存在未完成文档或并发 mutation，当前不能导出。"""
+
+    OCTX_SOURCE_REEXTRACT_REQUIRED = "octx_source_reextract_required"
+    """存量事项缺少有效实体关系，需要用户重新提取对应文档。"""
+
+    OCTX_SAG_MAPPING_CONFLICT = "octx_sag_mapping_conflict"
+    """OCTX 结构数据不满足 SAG 字段或关系约束。"""
+
+    OCTX_SHADOW_VALIDATION_FAILED = "octx_shadow_validation_failed"
+    """影子安装的关系、向量或检索烟测未通过。"""
+
+    OCTX_ARTIFACT_NOT_READY = "octx_artifact_not_ready"
+    """传输任务尚未生成可下载制品。"""
+
+    OCTX_ARTIFACT_MISSING = "octx_artifact_missing"
+    """数据库登记的 OCTX 制品已不存在。"""
+
+    OCTX_TRANSFER_CANCELLED = "octx_transfer_cancelled"
+    """OCTX 传输已由用户取消，Worker 必须停止后续副作用。"""
+
 
 class ErrorLayer(StrEnum):
     """责任归属：这个错误应该找谁排查。"""
@@ -167,3 +216,13 @@ class ErrorStage(StrEnum):
 
     UNKNOWN = "unknown"
     """未归类：尚未打上 stage 标记的错误。"""
+
+    # —— OCTX 信源导入导出链 ——
+    OCTX_UPLOAD = "octx_upload"
+    OCTX_VALIDATE = "octx_validate"
+    OCTX_RESOLVE = "octx_resolve"
+    OCTX_IMPORT = "octx_import"
+    OCTX_INDEX = "octx_index"
+    OCTX_SWITCH = "octx_switch"
+    OCTX_EXPORT = "octx_export"
+    OCTX_PUBLISH = "octx_publish"

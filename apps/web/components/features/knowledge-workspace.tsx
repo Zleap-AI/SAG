@@ -11,6 +11,7 @@ import {
   List,
   Plus,
   RotateCw,
+  Upload,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 
@@ -22,6 +23,7 @@ import { useApp } from "@/components/features/app-shell";
 import { CreateSourceDialog } from "@/components/features/create-source-dialog";
 import { EmptyState } from "@/components/features/empty-state";
 import { useKnowledgeWorkspace } from "@/components/features/knowledge-provider";
+import { useOctxImports } from "@/components/features/octx-import-provider";
 import { KnowledgeSourceWorkspace } from "@/components/features/knowledge-source-workspace";
 import { PageHeader } from "@/components/features/page-header";
 import { SourceCard } from "@/components/features/source-card";
@@ -29,11 +31,20 @@ import { SourceIdCopy } from "@/components/features/source-id-copy";
 import { SourceCreateForm } from "@/components/features/source-create-form";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import styles from "./knowledge-workspace.module.css";
 
 type View = "grid" | "list";
 type KnowledgeWorkspaceVariant = "normal" | "compact";
+
+export async function loadKnowledgeWorkspace(
+  variant: KnowledgeWorkspaceVariant,
+  loader: Pick<ReturnType<typeof useKnowledgeWorkspace>, "ensureLoaded" | "refresh">,
+) {
+  return variant === "normal" ? loader.refresh() : loader.ensureLoaded();
+}
 
 export function SourceRow({ source, first }: { source: Source; first: boolean }) {
   const t = useTranslations("Knowledge");
@@ -127,9 +138,30 @@ export function KnowledgeWorkspace({
     initialScreen: "documents" | "add";
   } | null>(null);
 
+  const importFileRef = React.useRef<HTMLInputElement | null>(null);
+  const octxImport = useOctxImports();
+  const importRunning = octxImport.tasks.some((task) =>
+    !["ready", "failed", "cancelled", "expired", "decision_required"].includes(task.transfer.status),
+  );
+
+  const openImportPicker = React.useCallback(() => {
+    if (importRunning) return;
+    importFileRef.current?.click();
+  }, [importRunning]);
+
+  const onImportFileChange = React.useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      if (!file) return;
+      void octxImport.startImport(file);
+    },
+    [octxImport],
+  );
+
   React.useEffect(() => {
-    if (active) void ensureLoaded();
-  }, [active, ensureLoaded]);
+    if (active) void loadKnowledgeWorkspace(variant, { ensureLoaded, refresh });
+  }, [active, ensureLoaded, refresh, variant]);
 
   React.useEffect(() => {
     if (variant !== "normal") return;
@@ -288,6 +320,13 @@ export function KnowledgeWorkspace({
 
   return (
     <div className={cn(styles.workspace, "flex flex-col gap-6 p-4 md:p-6")}>
+      <input
+        ref={importFileRef}
+        type="file"
+        accept=".octx,application/vnd.octx+zip,application/zip"
+        className="hidden"
+        onChange={onImportFileChange}
+      />
       <PageHeader
         title={t("title")}
         description={t("description")}
@@ -308,6 +347,26 @@ export function KnowledgeWorkspace({
                 <List />
               </ToggleGroupItem>
             </ToggleGroup>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={openImportPicker}
+                  disabled={importRunning}
+                  aria-label={t("importOctx")}
+                  title={t("importOctx")}
+                >
+                  {importRunning ? (
+                    <Spinner className="size-4" />
+                  ) : (
+                    <Upload className="size-4" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{t("importOctx")}</TooltipContent>
+            </Tooltip>
             <CreateSourceDialog
               onCreated={addSource}
               trigger={

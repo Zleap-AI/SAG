@@ -30,7 +30,13 @@ export function UploadZone({
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [drag, setDrag] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
-  const [progress, setProgress] = React.useState<{ name: string; pct: number; idx: number; total: number } | null>(null);
+  const [progress, setProgress] = React.useState<{
+    name: string;
+    pct: number;
+    idx: number;
+    total: number;
+    waiting: boolean;
+  } | null>(null);
 
   const extOf = (name: string) => {
     const i = name.lastIndexOf(".");
@@ -49,12 +55,21 @@ export function UploadZone({
         toast.error(t("unsupportedType", { name: file.name }));
         continue;
       }
+      let waitingTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         const idx = ok + 1;
-        setProgress({ name: file.name, pct: 0, idx, total: files.length });
-        const doc = await api.uploadDocumentWithProgress(sourceId, file, (pct) =>
-          setProgress((p) => (p ? { ...p, pct } : p)),
+        setProgress({ name: file.name, pct: 0, idx, total: files.length, waiting: false });
+        const doc = await api.uploadDocumentWithProgress(
+          sourceId,
+          file,
+          (pct) => setProgress((p) => (p ? { ...p, pct } : p)),
+          () => {
+            waitingTimer = setTimeout(() => {
+              setProgress((p) => (p ? { ...p, waiting: true } : p));
+            }, 500);
+          },
         );
+        if (waitingTimer) clearTimeout(waitingTimer);
         ok += 1;
         getDiagnosticsStore().record("knowledge.upload", {
           source_id: sourceId,
@@ -67,6 +82,7 @@ export function UploadZone({
           event_count: doc.event_count,
         });
       } catch (err) {
+        if (waitingTimer) clearTimeout(waitingTimer);
         toast.error(t("fileFailed", {
           name: file.name,
           error: err instanceof ApiError ? err.message : t("uploadFailed"),
@@ -141,6 +157,12 @@ export function UploadZone({
                 {progress.pct}%
               </span>
             </div>
+            {progress.waiting ? (
+              <div className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+                <Spinner className="size-3" />
+                <span>{t("waitingForCleanup")}</span>
+              </div>
+            ) : null}
           </div>
         ) : (
           <div className="text-xs text-muted-foreground">

@@ -89,11 +89,15 @@ async def create_source(
     await session.commit()
     await session.refresh(source)
 
-    # 预建引擎 schema（幂等）；失败不阻断创建，处理文档时会重试
+    # Source 与知识引擎父记录必须同时可用。预建失败时补偿删除主库记录，
+    # 避免接口成功却留下无法上传、检索的半成品信源。
     try:
         await engine_manager.provision(source.sag_source_config_id, source)
     except ApiError as e:
-        log.warning("信源引擎预建失败 %s：%s", source.sag_source_config_id, e.message)
+        log.warning("信源引擎预建失败，回滚信源 %s：%s", source.sag_source_config_id, e.message)
+        await session.delete(source)
+        await session.commit()
+        raise
     return source
 
 

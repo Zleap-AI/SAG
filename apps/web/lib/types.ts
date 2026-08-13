@@ -69,6 +69,8 @@ export interface Doc {
   error_layer?: string | null;
   /** 失败链路环节（parse / load / extract / persist 等），仅失败时有值。 */
   error_stage?: string | null;
+  /** False when an OCTX package contains parsed content but not the original attachment bytes. */
+  original_file_available?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -702,4 +704,89 @@ export interface Capabilities {
   max_upload_mb: number;
   allowed_upload_exts?: string[];
   timezone: string;
+}
+
+export type OctxTransferDirection = "import" | "export";
+
+export type OctxTransferStatus =
+  | "uploaded"
+  | "validating"
+  | "decision_required"
+  | "queued"
+  | "importing"
+  | "indexing"
+  | "switching"
+  | "exporting"
+  | "packaging"
+  | "ready"
+  | "failed"
+  | "cancelled"
+  | "expired";
+
+export type OctxImportAction = "update" | "new" | "cancel";
+export type OctxExportAction = "export_ready_only" | "cancel";
+
+export interface OctxExcludedDocument {
+  id: string;
+  filename: string;
+  status: string;
+}
+
+export interface OctxTransferError {
+  code?: string;
+  message?: string;
+  layer?: string;
+  stage?: string;
+  retryable?: boolean;
+  details?: {
+    documents?: Array<{ id: string; filename: string; event_count: number }>;
+    event_count?: number;
+    recovery_action?: string;
+  };
+}
+
+export interface OctxTransfer {
+  id: string;
+  direction: OctxTransferDirection;
+  status: OctxTransferStatus;
+  progress: number;
+  asset: { id: string; name?: string | null } | null;
+  release:
+    | { id: string | null; version: string | null; package_digest: string | null }
+    | null;
+  target_source_id: string | null;
+  installation_id: string | null;
+  allowed_actions: string[];
+  decision_token: string | null;
+  conflicts: Record<string, unknown>[];
+  excluded_documents: OctxExcludedDocument[];
+  record_counts: Record<string, number>;
+  capabilities: Record<string, unknown>;
+  progress_detail?: {
+    phase?: string;
+    completed_documents?: number;
+    total_documents?: number;
+    current_document?: string | null;
+    current_kind?: "chunks" | "events" | "entities" | "event_entities" | null;
+    current_batch_size?: number;
+    completed_vectors?: number;
+    total_vectors?: number;
+    vector_mode?: "reuse" | "generate" | "mixed";
+    written_records?: number;
+    role_total_records?: number;
+    reused_records?: number;
+    generated_records?: number;
+    reusable_vector_roles?: string[];
+    batch_state?: "started" | "completed" | null;
+    duration_seconds?: number;
+    kind?: string | null;
+    completed?: number;
+    total?: number;
+  };
+  validation_report: Record<string, unknown> | null;
+  warnings: unknown[];
+  error: OctxTransferError | null;
+  cancellation_requested: boolean;
+  created_at: string;
+  updated_at: string;
 }

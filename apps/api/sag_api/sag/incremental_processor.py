@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
@@ -20,6 +21,7 @@ from zleap.sag.modules.load.loader import DocumentLoader
 from zleap.sag.modules.load.parser import MarkdownParser
 
 from sag_api.core.logging import get_logger
+from sag_api.sag.chunk_heading_vectors import complete_loaded_chunk_heading_vectors
 from sag_api.sag.dto import ProcessCheckpoint, ProcessOutcome
 
 CheckpointCallback = Callable[[ProcessCheckpoint], Awaitable[None]]
@@ -263,6 +265,30 @@ def _normalize_extraction_response(response: Any, allowed_types: set[str]) -> in
     return normalized
 
 
+def _strengthen_event_entity_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Require an Event body and Entity without mutating PromptManager state."""
+
+    strengthened = copy.deepcopy(dict(schema))
+    definitions = strengthened.get("definitions")
+    event = definitions.get("event") if isinstance(definitions, dict) else None
+    if not isinstance(event, dict):
+        return strengthened
+    required = event.get("required")
+    required_fields = list(required) if isinstance(required, list) else []
+    for field in ("entities", "content"):
+        if field not in required_fields:
+            required_fields.append(field)
+    event["required"] = required_fields
+    properties = event.get("properties")
+    entities = properties.get("entities") if isinstance(properties, dict) else None
+    if isinstance(entities, dict):
+        entities["minItems"] = 1
+    content = properties.get("content") if isinstance(properties, dict) else None
+    if isinstance(content, dict):
+        content["minLength"] = 1
+    return strengthened
+
+
 def _first_task_error(group: BaseExceptionGroup) -> Exception:
     for error in group.exceptions:
         if isinstance(error, BaseExceptionGroup):
@@ -270,6 +296,32 @@ def _first_task_error(group: BaseExceptionGroup) -> Exception:
         if isinstance(error, Exception):
             return error
     return RuntimeError(str(group))
+
+
+class EventEntityContractViolation(ValueError):
+    """Raised before persistence when an extracted Event is not exportable."""
+
+
+def _require_event_entities(events: list[Any]) -> None:
+    missing_content = [
+        str(getattr(event, "id", "unknown"))
+        for event in events
+        if not str(getattr(event, "content", "") or "").strip()
+    ]
+    missing_entities = [
+        str(getattr(event, "id", "unknown"))
+        for event in events
+        if not list(getattr(event, "event_associations", None) or [])
+    ]
+    problems = []
+    if missing_content:
+        problems.append("empty content: " + ", ".join(missing_content[:20]))
+    if missing_entities:
+        problems.append("no valid entity associations: " + ", ".join(missing_entities[:20]))
+    if problems:
+        raise EventEntityContractViolation(
+            "extracted events violate persistence contract; " + "; ".join(problems)
+        )
 
 
 class IncrementalDocumentProcessor:
@@ -283,6 +335,7 @@ class IncrementalDocumentProcessor:
         chunk_mode: Literal["standard", "heading_strict"] = "standard",
         document_title: str | None = None,
         enable_strict_filtering: bool = False,
+        event_entity_attempts: int = 2,
     ) -> None:
         self._engine = engine
         self._source_config_id = source_config_id
@@ -291,6 +344,8 @@ class IncrementalDocumentProcessor:
         self._chunk_mode = chunk_mode
         self._document_title = (document_title or "").strip()
         self._enable_strict_filtering = enable_strict_filtering
+        self._event_entity_attempts = max(1, min(3, event_entity_attempts))
+        self._event_entity_rejection_counts: dict[str, int] = {}
 
     async def process(
         self,
@@ -322,6 +377,16 @@ class IncrementalDocumentProcessor:
             )
             current.source_id = getattr(loaded, "source_id", None)
             current.chunk_ids = list(getattr(loaded, "chunk_ids", []) or [])
+            completed_heading_vectors = await complete_loaded_chunk_heading_vectors(
+                current.chunk_ids,
+                self._source_config_id,
+            )
+            if completed_heading_vectors:
+                log.info(
+                    "已为无标题切片补全标题向量 source_config_id=%s count=%d",
+                    self._source_config_id,
+                    completed_heading_vectors,
+                )
             current.processed_chunk_ids = []
             current.event_count = 0
             current.event_ids = []
@@ -392,6 +457,20 @@ class IncrementalDocumentProcessor:
                                 current.eventless_chunk_ids.remove(chunk_id)
                         elif chunk_id not in current.eventless_chunk_ids:
                             current.eventless_chunk_ids.append(chunk_id)
+                        rejected = self._event_entity_rejection_counts.pop(chunk_id, 0)
+                        if rejected:
+                            quality = current.event_entity_quality
+                            quality.rejected_attempts += rejected
+                            quality.reason_counts["entities_missing"] = (
+                                quality.reason_counts.get("entities_missing", 0)
+                                + rejected
+                            )
+                            if (
+                                not event_ids
+                                and chunk_id not in quality.eventless_after_contract
+                                and len(quality.eventless_after_contract) < 100
+                            ):
+                                quality.eventless_after_contract.append(chunk_id)
                         current.token_usage += token_usage
                         # zleap-sag replaces an article's visible event set on
                         # every chunk save. Restore the complete checkpoint
@@ -416,79 +495,159 @@ class IncrementalDocumentProcessor:
         template = getattr(self._engine, "_extractor", None)
         if template is None:
             raise RuntimeError("抽取引擎尚未初始化")
-        extractor = EventExtractor(
-            prompt_manager=template.prompt_manager,
-            model_config=template.model_config,
-        )
-
         token_usage = 0
-        chunk_failure: Exception | None = None
-        client = await extractor._get_llm_client()
-        chat_owner = _llm_chat_owner(client)
-        original_chat = chat_owner.chat
+        for attempt in range(1, self._event_entity_attempts + 1):
+            extractor = EventExtractor(
+                prompt_manager=template.prompt_manager,
+                model_config=template.model_config,
+            )
+            chunk_failure: Exception | None = None
+            contract_failure: EventEntityContractViolation | None = None
+            client = await extractor._get_llm_client()
+            chat_owner = _llm_chat_owner(client)
+            original_chat = chat_owner.chat
+            original_chat_with_schema = getattr(client, "chat_with_schema", None)
 
-        async def tracked_chat(*args: Any, **kwargs: Any):
-            nonlocal token_usage
-            response = await original_chat(*args, **kwargs)
-            used = _response_token_usage(response)
-            if used <= 0:
-                messages = args[0] if args else kwargs.get("messages", [])
-                input_chars = sum(
-                    len(
-                        str(
-                            message.get("content", "") if isinstance(message, dict) else getattr(message, "content", "")
+            async def tracked_chat(
+                *args: Any, _original_chat: Any = original_chat, **kwargs: Any
+            ):
+                nonlocal token_usage
+                response = await _original_chat(*args, **kwargs)
+                used = _response_token_usage(response)
+                if used <= 0:
+                    messages = args[0] if args else kwargs.get("messages", [])
+                    input_chars = sum(
+                        len(
+                            str(
+                                message.get("content", "")
+                                if isinstance(message, dict)
+                                else getattr(message, "content", "")
+                            )
                         )
+                        for message in messages
                     )
-                    for message in messages
+                    used = max(
+                        1,
+                        (
+                            input_chars
+                            + len(str(getattr(response, "content", "")))
+                            + 2
+                        )
+                        // 3,
+                    )
+                token_usage += used
+                messages = args[0] if args else kwargs.get("messages", [])
+                normalized_entities = _normalize_extraction_response(
+                    response,
+                    _entity_types_from_messages(messages),
                 )
-                used = max(1, (input_chars + len(str(getattr(response, "content", ""))) + 2) // 3)
-            token_usage += used
-            messages = args[0] if args else kwargs.get("messages", [])
-            normalized_entities = _normalize_extraction_response(
-                response,
-                _entity_types_from_messages(messages),
-            )
-            if normalized_entities:
-                log.info(
-                    "已归一化模型实体类型字段 chunk=%s count=%d",
-                    chunk_id,
-                    normalized_entities,
+                if normalized_entities:
+                    log.info(
+                        "已归一化模型实体类型字段 chunk=%s count=%d",
+                        chunk_id,
+                        normalized_entities,
+                    )
+                return response
+
+            if callable(original_chat_with_schema):
+
+                async def strengthened_chat_with_schema(
+                    *args: Any,
+                    _original_chat_with_schema: Any = original_chat_with_schema,
+                    **kwargs: Any,
+                ) -> Any:
+                    call_args = list(args)
+                    if "response_schema" in kwargs:
+                        kwargs = {
+                            **kwargs,
+                            "response_schema": _strengthen_event_entity_schema(
+                                kwargs["response_schema"]
+                            ),
+                        }
+                    elif len(call_args) >= 2:
+                        call_args[1] = _strengthen_event_entity_schema(call_args[1])
+                    return await _original_chat_with_schema(*call_args, **kwargs)
+
+                client.chat_with_schema = strengthened_chat_with_schema
+
+            # zleap-sag 0.7.x 的批处理层会吞掉单块异常并返回空列表；记录原始
+            # 异常，避免将 LLM/Schema 失败误记为成功的无事项 Chunk。
+            original_extract_from_chunk = getattr(extractor, "extract_from_chunk", None)
+            if callable(original_extract_from_chunk):
+
+                async def tracked_extract_from_chunk(
+                    *args: Any,
+                    _original_extract_from_chunk: Any = original_extract_from_chunk,
+                    **kwargs: Any,
+                ):
+                    nonlocal chunk_failure
+                    try:
+                        return await _original_extract_from_chunk(*args, **kwargs)
+                    except Exception as error:  # noqa: BLE001 - 保留 SAG 原始异常类型
+                        chunk_failure = error
+                        raise
+
+                extractor.extract_from_chunk = tracked_extract_from_chunk
+
+            original_save_events = getattr(extractor, "_save_events", None)
+            if callable(original_save_events):
+
+                async def guarded_save_events(
+                    events: list[Any],
+                    config: ExtractConfig,
+                    _original_save_events: Any = original_save_events,
+                ):
+                    nonlocal contract_failure
+                    try:
+                        _require_event_entities(events)
+                    except EventEntityContractViolation as error:
+                        contract_failure = error
+                        raise
+                    return await _original_save_events(events, config)
+
+                extractor._save_events = guarded_save_events
+
+            requirements = _KNOWLEDGE_EVENT_REQUIREMENTS
+            if attempt > 1:
+                requirements += (
+                    "\n上一次结果包含正文为空或无有效实体的事项。每个事项（包括子事项）"
+                    "必须提供非空 content，并至少关联一个可验证实体；否则不要返回该事项。"
                 )
-            return response
-
-        # zleap-sag 0.7.x 的批处理层会把单块异常记录成失败后返回空列表，调用方
-        # 因而无法区分“正常无事项”和“LLM/Schema 失败”。Muse 每次只交给这个
-        # extractor 一个 chunk，可以在实例边界记录原始异常并在 extract() 返回后
-        # 重新抛出，避免把失败块写入成功断点。无需修改 site-packages。
-        original_extract_from_chunk = getattr(extractor, "extract_from_chunk", None)
-        if callable(original_extract_from_chunk):
-
-            async def tracked_extract_from_chunk(*args: Any, **kwargs: Any):
-                nonlocal chunk_failure
-                try:
-                    return await original_extract_from_chunk(*args, **kwargs)
-                except Exception as error:  # noqa: BLE001 - 保留 SAG 原始异常类型
-                    chunk_failure = error
+            chat_owner.chat = tracked_chat
+            try:
+                events = await extractor.extract(
+                    ExtractConfig(
+                        source_config_id=self._source_config_id,
+                        chunk_ids=[chunk_id],
+                        max_concurrency=1,
+                        custom_requirements=requirements,
+                        enable_strict_filtering=self._enable_strict_filtering,
+                    )
+                )
+                if chunk_failure is not None:
+                    raise chunk_failure
+                return [event.id for event in events], token_usage
+            except Exception:
+                if contract_failure is None:
                     raise
-
-            extractor.extract_from_chunk = tracked_extract_from_chunk
-
-        chat_owner.chat = tracked_chat
-        try:
-            events = await extractor.extract(
-                ExtractConfig(
-                    source_config_id=self._source_config_id,
-                    chunk_ids=[chunk_id],
-                    max_concurrency=1,
-                    custom_requirements=_KNOWLEDGE_EVENT_REQUIREMENTS,
-                    enable_strict_filtering=self._enable_strict_filtering,
+                log.warning(
+                    "事项实体契约校验失败 chunk=%s attempt=%d/%d error=%s",
+                    chunk_id,
+                    attempt,
+                    self._event_entity_attempts,
+                    contract_failure,
                 )
-            )
-            if chunk_failure is not None:
-                raise chunk_failure
-        finally:
-            chat_owner.chat = original_chat
-        return [event.id for event in events], token_usage
+                self._event_entity_rejection_counts[chunk_id] = (
+                    self._event_entity_rejection_counts.get(chunk_id, 0) + 1
+                )
+                if attempt == self._event_entity_attempts:
+                    return [], token_usage
+            finally:
+                chat_owner.chat = original_chat
+                if callable(original_chat_with_schema):
+                    client.chat_with_schema = original_chat_with_schema
+
+        return [], token_usage
 
     async def _restore_checkpoint_events(self, event_ids: list[str]) -> None:
         """分块提交结束后，恢复当前断点已经产出的全部事件。
