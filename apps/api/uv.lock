@@ -3364,8 +3364,8 @@ requires-dist = [
     { name = "trafilatura", specifier = ">=1.8" },
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
-    { name = "zleap-sag", specifier = ">=0.7.1" },
-    { name = "zleap-sag", extras = ["postgres"], marker = "extra == 'postgres'", specifier = ">=0.7.1" },
+    { name = "zleap-sag", specifier = "==0.7.1" },
+    { name = "zleap-sag", extras = ["postgres"], marker = "extra == 'postgres'", specifier = "==0.7.1" },
 ]
 provides-extras = ["postgres", "dev", "desktop"]
 
