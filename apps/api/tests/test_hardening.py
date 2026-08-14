@@ -6,6 +6,13 @@ import httpx
 import pytest
 
 
+def test_test_runtime_disables_background_engine_warmup():
+    """Shared SQLite tests must not provision sources left by earlier cases."""
+    from sag_api.core.config import settings
+
+    assert settings.engine_warmup_count == 0
+
+
 @pytest.mark.asyncio
 async def test_source_creation_rolls_back_when_engine_provision_fails():
     from sqlalchemy import select

@@ -12,6 +12,10 @@ os.environ.setdefault("SAG_DATA_DIR", f"{_TMP}/sag")
 os.environ.setdefault("SAG_UPLOAD_DIR", f"{_TMP}/uploads")
 os.environ.setdefault("SAG_DEBUG", "false")
 os.environ.setdefault("SAG_SAG_LANGUAGE", "zh")
+# The suite intentionally shares one temporary SQLite database. Startup warmup
+# would otherwise provision sources persisted by earlier cases in the background
+# while the current case is writing, introducing cross-test lock contention.
+os.environ["SAG_ENGINE_WARMUP_COUNT"] = "0"
 # 强制离线：即使存在带真实 key 的 .env，也保证测试确定性（不发起 LLM 调用）
 os.environ["SAG_LLM_API_KEY"] = ""
 os.environ["SAG_LLM_BASE_URL"] = ""
