@@ -19,7 +19,7 @@
   "scripts": {
     "clean": "node ./scripts/clean.mjs",
     "typecheck": "tsc --noEmit",
-    "build": "npm run clean && tsc",
+    "build": "npm run clean && tsc && node ./scripts/verify-preload.mjs",
     "dev": "npm run build && node ./scripts/dev.mjs",
     "build:web": "node ./scripts/build-web.mjs",
     "build:backend": "node ./scripts/build-backend.mjs",

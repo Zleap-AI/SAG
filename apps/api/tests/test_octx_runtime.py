@@ -8,6 +8,91 @@ import pytest
 from starlette.datastructures import UploadFile
 
 
+def test_desktop_main_prepares_frozen_multiprocessing_before_uvicorn(monkeypatch):
+    """A frozen child must dispatch to multiprocessing instead of starting a second API."""
+    from sag_api import desktop
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        desktop.multiprocessing,
+        "freeze_support",
+        lambda: calls.append("freeze_support"),
+    )
+    monkeypatch.setattr(
+        desktop.uvicorn,
+        "run",
+        lambda *_args, **_kwargs: calls.append("uvicorn"),
+    )
+
+    desktop.main()
+
+    assert calls == ["freeze_support", "uvicorn"]
+
+
+def test_worker_pipe_eof_reports_non_empty_exit_diagnostics():
+    """A crashed worker must not degrade into an empty EOFError in the UI."""
+    from sag_api.octx.runner import _worker_exit_error
+
+    error = _worker_exit_error("build", exitcode=7, memory_mb=2048)
+
+    assert error.error_type == "OctxWorkerExited"
+    assert error.exitcode == 7
+    assert str(error) == "OCTX build worker exited unexpectedly (exit_code=7)"
+
+
+@pytest.mark.parametrize("exitcode", (-9, -6))
+def test_worker_oom_like_exit_is_classified_as_resource_limit(exitcode):
+    """A SIGKILL/SIGABRT child exit must fail only the task as a resource limit."""
+    from sag_api.octx.runner import OctxWorkerResourceLimitError, _worker_exit_error
+
+    error = _worker_exit_error("build", exitcode=exitcode, memory_mb=2048)
+
+    assert isinstance(error, OctxWorkerResourceLimitError)
+    assert error.error_type == "OctxWorkerMemoryLimit"
+    assert error.exitcode == exitcode
+    assert "2048 MB" in str(error)
+
+
+def test_worker_reported_memory_error_is_classified_as_resource_limit():
+    """A caught Python MemoryError must use the same bounded-task failure path."""
+    from sag_api.octx.runner import OctxWorkerResourceLimitError, _worker_reported_error
+
+    error = _worker_reported_error(
+        "build",
+        {"error_type": "MemoryError", "message": "", "report": None},
+        memory_mb=2048,
+    )
+
+    assert isinstance(error, OctxWorkerResourceLimitError)
+    assert error.error_type == "OctxWorkerMemoryLimit"
+    assert "2048 MB" in str(error)
+
+
+@pytest.mark.asyncio
+async def test_runner_maps_worker_memory_limit_to_non_retryable_resource_error(monkeypatch):
+    """Worker OOM must fail only the task with a stable user-facing error code."""
+    from sag_api.core.config import Settings
+    from sag_api.core.errors import ApiError
+    from sag_api.octx import runner as runner_module
+    from sag_api.octx.runner import OctxRunner, OctxWorkerResourceLimitError
+
+    async def raise_memory_limit(*_args, **_kwargs):
+        raise OctxWorkerResourceLimitError("bounded worker OOM", exitcode=-9)
+
+    monkeypatch.setattr(runner_module.asyncio, "to_thread", raise_memory_limit)
+
+    with pytest.raises(ApiError) as caught:
+        await OctxRunner(Settings(_env_file=None))._execute("build", {})
+
+    assert caught.value.to_envelope()["error"] == {
+        "code": "octx_resource_limit",
+        "message": "bounded worker OOM",
+        "layer": "api",
+        "stage": "octx_publish",
+        "retryable": False,
+    }
+
+
 def test_octx_runtime_modules_are_present():
     """Missing an adapter module would push unsafe file handling into API handlers."""
     for name in ("limits", "storage", "errors", "runner"):

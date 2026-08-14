@@ -17,6 +17,59 @@ from sag_api.octx.storage import StoredUpload
 logger = logging.getLogger(__name__)
 
 
+class OctxWorkerExitedError(RuntimeError):
+    """The isolated OCTX process exited before returning a result."""
+
+    error_type = "OctxWorkerExited"
+
+    def __init__(self, message: str, *, exitcode: int | None = None) -> None:
+        super().__init__(message)
+        self.exitcode = exitcode
+        self.report = None
+
+
+class OctxWorkerResourceLimitError(OctxWorkerExitedError):
+    """The isolated OCTX process exhausted its bounded memory budget."""
+
+    error_type = "OctxWorkerMemoryLimit"
+
+
+def _worker_exit_error(
+    operation: str,
+    *,
+    exitcode: int | None,
+    memory_mb: int,
+) -> OctxWorkerExitedError:
+    # On POSIX, multiprocessing reports signal exits as negative numbers.
+    # SIGKILL is the usual OS/cgroup OOM termination; macOS malloc failures may
+    # abort with SIGABRT. The Windows status is STATUS_NO_MEMORY as signed int.
+    if exitcode in {-9, -6, -1073741801}:
+        return OctxWorkerResourceLimitError(
+            f"OCTX {operation} worker exceeded the {memory_mb} MB memory safety limit (exit_code={exitcode})",
+            exitcode=exitcode,
+        )
+    return OctxWorkerExitedError(
+        f"OCTX {operation} worker exited unexpectedly (exit_code={exitcode})",
+        exitcode=exitcode,
+    )
+
+
+def _worker_reported_error(
+    operation: str,
+    message: dict[str, Any],
+    *,
+    memory_mb: int,
+) -> RuntimeError:
+    if message.get("error_type") == "MemoryError":
+        return OctxWorkerResourceLimitError(
+            f"OCTX {operation} worker exceeded the {memory_mb} MB memory safety limit",
+        )
+    error = RuntimeError(f"{message['error_type']}: {message['message']}")
+    error.error_type = message["error_type"]
+    error.report = message.get("report")
+    return error
+
+
 def _summarize_report_issues(report: dict[str, Any], limit: int = 30) -> list[dict[str, Any]]:
     if not isinstance(report, dict):
         return []
@@ -120,6 +173,7 @@ class BuiltPackage:
 
 
 def _run_process(operation: str, payload: dict[str, Any], *, timeout_seconds: int) -> dict[str, Any]:
+    memory_mb = int(payload.get("memory_mb") or 0)
     context = multiprocessing.get_context("spawn")
     parent, child = context.Pipe(duplex=False)
     process = context.Process(target=worker_entry, args=(child, operation, payload))
@@ -133,15 +187,23 @@ def _run_process(operation: str, payload: dict[str, Any], *, timeout_seconds: in
                 process.kill()
                 process.join(2)
             raise TimeoutError(f"OCTX {operation} exceeded {timeout_seconds}s")
-        message = parent.recv()
+        try:
+            message = parent.recv()
+        except EOFError as error:
+            process.join(2)
+            if process.is_alive():
+                process.terminate()
+                process.join(2)
+            raise _worker_exit_error(
+                operation,
+                exitcode=process.exitcode,
+                memory_mb=memory_mb,
+            ) from error
     finally:
         parent.close()
         process.join(2)
     if not message["ok"]:
-        error = RuntimeError(f"{message['error_type']}: {message['message']}")
-        error.error_type = message["error_type"]
-        error.report = message.get("report")
-        raise error
+        raise _worker_reported_error(operation, message, memory_mb=memory_mb)
     return message["result"]
 
 
@@ -184,7 +246,7 @@ class OctxRunner:
                 payload,
                 timeout_seconds=self.settings.octx_worker_timeout_seconds,
             )
-        except TimeoutError as error:
+        except (TimeoutError, OctxWorkerResourceLimitError) as error:
             raise ApiError(
                 str(error),
                 code=ErrorCode.OCTX_RESOURCE_LIMIT,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 
 import uvicorn
@@ -19,6 +20,10 @@ def _port() -> int:
 
 
 def main() -> None:
+    # PyInstaller children re-enter this executable. Dispatch multiprocessing
+    # bootstrap arguments before Uvicorn starts, otherwise an OCTX worker would
+    # launch a second API server and collide with the desktop sidecar port.
+    multiprocessing.freeze_support()
     uvicorn.run(
         "sag_api.main:app",
         host=os.getenv("SAG_DESKTOP_HOST", "127.0.0.1"),

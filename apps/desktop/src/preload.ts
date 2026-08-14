@@ -1,10 +1,16 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-import {
-  DESKTOP_CHANNELS,
-  type DesktopDiagnosticsInfo,
-  type UpdateState,
-} from "./channels";
+import type { DesktopDiagnosticsInfo, UpdateState } from "./channels";
+
+// A sandboxed Electron preload only supports a limited require() surface and
+// cannot load local CommonJS modules. Keep these stable IPC names self-contained
+// so the bridge is available in packaged builds.
+const DESKTOP_CHANNELS = {
+  appInfo: "desktop:app-info",
+  checkForUpdates: "desktop:check-for-updates",
+  diagnosticsInfo: "desktop:diagnostics-info",
+  updateState: "desktop:update-state",
+} as const;
 
 export interface SagDesktopBridge {
   readonly isDesktop: true;
