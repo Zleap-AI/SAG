@@ -594,12 +594,14 @@ async function startOctxDocumentExport(
   documentId: string,
   version?: string,
 ): Promise<OctxTransfer> {
+  const transferId = crypto.randomUUID().replaceAll("-", "");
   const submit = () =>
     request<OctxTransfer>(
       `/api/v1/sources/${sourceId}/documents/${documentId}/octx-exports`,
       {
         method: "POST",
         body: JSON.stringify(version ? { version } : {}),
+        headers: { "X-OCTX-Transfer-ID": transferId },
       },
     );
   try {

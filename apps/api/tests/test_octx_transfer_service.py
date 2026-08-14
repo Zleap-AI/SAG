@@ -1873,6 +1873,109 @@ async def test_document_export_freezes_one_ready_document_and_serializes_source(
 
 
 @pytest.mark.asyncio
+async def test_document_export_client_transfer_id_reuses_completed_request(
+    transfer_sessions,
+):
+    """A lost response must not create a second release after the first export finishes."""
+    from sqlalchemy import func, select
+
+    from sag_api.db.models import Document, Job, OctxTransfer, Source
+    from sag_api.enums import DocumentStatus, OctxTransferStatus
+    from sag_api.services.octx_transfer_service import create_document_export_transfer
+
+    class Queue:
+        def __init__(self):
+            self.ids: list[str] = []
+
+        async def enqueue(self, job_id: str) -> None:
+            self.ids.append(job_id)
+
+    queue = Queue()
+    transfer_id = "b" * 32
+    async with transfer_sessions() as session:
+        source = Source(name="Documents", sag_source_config_id="idempotent-document-export")
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="one.pdf",
+            storage_path="/tmp/one.pdf",
+            status=DocumentStatus.READY,
+            sag_source_id="article-one",
+            is_active=True,
+        )
+        session.add(document)
+        await session.commit()
+
+        first = await create_document_export_transfer(
+            session,
+            source.id,
+            document.id,
+            version="1.0.0",
+            job_queue=queue,
+            transfer_id=transfer_id,
+            requested_by_user_id="user-1",
+        )
+        first.status = OctxTransferStatus.READY
+        await session.commit()
+
+        repeated = await create_document_export_transfer(
+            session,
+            source.id,
+            document.id,
+            version="1.0.0",
+            job_queue=queue,
+            transfer_id=transfer_id,
+            requested_by_user_id="user-1",
+        )
+
+        assert repeated.id == first.id == transfer_id
+        assert len(queue.ids) == 1
+        assert await session.scalar(select(func.count()).select_from(OctxTransfer)) == 1
+        assert await session.scalar(select(func.count()).select_from(Job)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", ["1.0.0-alpha.1", "1.0.0-foo"])
+async def test_document_export_preserves_octx_semver_prerelease(
+    transfer_sessions,
+    version,
+):
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
+    from sag_api.services.octx_transfer_service import create_document_export_transfer
+
+    class Queue:
+        async def enqueue(self, _job_id: str) -> None:
+            return None
+
+    async with transfer_sessions() as session:
+        source = Source(name="Documents", sag_source_config_id="semver-document-export")
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="one.pdf",
+            storage_path="/tmp/one.pdf",
+            status=DocumentStatus.READY,
+            sag_source_id="article-one",
+            is_active=True,
+        )
+        session.add(document)
+        await session.commit()
+
+        transfer = await create_document_export_transfer(
+            session,
+            source.id,
+            document.id,
+            version=version,
+            job_queue=Queue(),
+        )
+
+        assert transfer.checkpoint["selected_version"] == version
+
+
+@pytest.mark.asyncio
 async def test_document_export_rejects_non_ready_document(transfer_sessions):
     from sag_api.core.errors import ConflictError
     from sag_api.db.models import Document, Source

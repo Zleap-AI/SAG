@@ -59,6 +59,7 @@ from sag_api.octx.decision_token import (
     verify_export_decision_token,
 )
 from sag_api.octx.runner import BuildPackageRequest, OctxRunner
+from sag_api.octx.semver import bump_semver_patch, parse_semver, validate_semver
 from sag_api.octx.storage import FileSignature, OctxStorage, StoredUpload
 from sag_api.sag.octx_importer import (
     build_structured_plan,
@@ -1305,8 +1306,43 @@ async def create_document_export_transfer(
     *,
     version: str | None,
     job_queue: JobQueue,
+    transfer_id: str | None = None,
     requested_by_user_id: str | None = None,
 ) -> OctxTransfer:
+    try:
+        requested_version = validate_semver(version) if version is not None else None
+    except ValueError as error:
+        raise ValidationError("OCTX export version must be SemVer") from error
+
+    normalized_transfer_id: str | None = None
+    if transfer_id is not None:
+        try:
+            normalized_transfer_id = uuid.UUID(hex=transfer_id).hex
+        except ValueError as error:
+            raise ValidationError("invalid OCTX transfer id") from error
+        existing = await session.get(OctxTransfer, normalized_transfer_id)
+        if existing is not None:
+            checkpoint = dict(existing.checkpoint or {})
+            existing_owner = str(checkpoint.get("requested_by_user_id") or "")
+            same_request = (
+                existing.direction is OctxTransferDirection.EXPORT
+                and existing.target_source_id == source_id
+                and str(checkpoint.get("export_scope") or "source") == "document"
+                and str(checkpoint.get("document_id") or "") == document_id
+                and (
+                    requested_version is None
+                    or requested_version == checkpoint.get("selected_version")
+                )
+                and (
+                    not requested_by_user_id
+                    or not existing_owner
+                    or requested_by_user_id == existing_owner
+                )
+            )
+            if not same_request:
+                raise ConflictError("OCTX transfer id already belongs to another operation")
+            return existing
+
     active = await session.scalar(
         select(OctxTransfer)
         .where(
@@ -1331,11 +1367,7 @@ async def create_document_export_transfer(
             and str(checkpoint.get("document_id") or "") == document_id
         ):
             active_version = str(checkpoint.get("selected_version") or "")
-            if version is not None:
-                try:
-                    requested_version = str(Version(version))
-                except InvalidVersion as error:
-                    raise ValidationError("OCTX export version must be SemVer") from error
+            if requested_version is not None:
                 if active_version and requested_version != active_version:
                     raise ConflictError(f"OCTX export {active_version} is already active for this source")
             return active
@@ -1358,17 +1390,15 @@ async def create_document_export_transfer(
 
     binding = await session.get(OctxDocumentBinding, document.id)
     active_release = await session.get(OctxRelease, binding.active_release_id) if binding else None
-    if version is not None:
-        try:
-            selected_version = str(Version(version))
-        except InvalidVersion as error:
-            raise ValidationError("OCTX export version must be SemVer") from error
+    if requested_version is not None:
+        selected_version = requested_version
     elif active_release is None:
         selected_version = "1.0.0"
     else:
-        current = Version(active_release.version)
-        selected_version = f"{current.major}.{current.minor}.{current.micro + 1}"
-    if active_release is not None and Version(selected_version) <= Version(active_release.version):
+        selected_version = bump_semver_patch(active_release.version)
+    if active_release is not None and parse_semver(selected_version) <= parse_semver(
+        active_release.version
+    ):
         raise ConflictError("OCTX export version must be greater than the active release")
 
     ready = [
@@ -1396,6 +1426,7 @@ async def create_document_export_transfer(
     if requested_by_user_id:
         checkpoint["requested_by_user_id"] = requested_by_user_id
     transfer = OctxTransfer(
+        id=normalized_transfer_id or new_id(),
         direction=OctxTransferDirection.EXPORT,
         status=OctxTransferStatus.QUEUED,
         progress=0.0,

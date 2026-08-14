@@ -114,6 +114,36 @@ async def test_octx_diagnostic_snapshot_correlates_job_and_environment(
 
 
 @pytest.mark.asyncio
+async def test_octx_diagnostic_snapshot_includes_preflight_job(diagnostic_sessions):
+    from sag_api.db.models import Job, OctxTransfer
+    from sag_api.enums import JobStatus, JobType, OctxTransferDirection, OctxTransferStatus
+    from sag_api.services.octx_diagnostics_service import build_octx_diagnostic_snapshot
+
+    async with diagnostic_sessions() as session:
+        transfer = OctxTransfer(
+            direction=OctxTransferDirection.IMPORT,
+            status=OctxTransferStatus.FAILED,
+            checkpoint={},
+        )
+        session.add(transfer)
+        await session.flush()
+        preflight = Job(
+            type=JobType.OCTX_PREFLIGHT,
+            status=JobStatus.FAILED,
+            payload={"transfer_id": transfer.id},
+            error="invalid manifest",
+            attempts=1,
+        )
+        session.add(preflight)
+        await session.commit()
+
+        snapshot = await build_octx_diagnostic_snapshot(session, transfer.id)
+
+    assert [job["id"] for job in snapshot["jobs"]] == [preflight.id]
+    assert snapshot["jobs"][0]["type"] == "octx_preflight"
+
+
+@pytest.mark.asyncio
 async def test_document_export_binding_is_independent_from_source_binding(
     diagnostic_sessions,
 ):

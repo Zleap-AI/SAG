@@ -69,6 +69,7 @@ async def create_document_export(
     source_id: str,
     document_id: str,
     body: OctxExportCreate,
+    transfer_id: str | None = Header(default=None, alias="X-OCTX-Transfer-ID"),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
@@ -80,6 +81,7 @@ async def create_document_export(
             document_id,
             version=body.version,
             job_queue=job_queue,
+            transfer_id=transfer_id,
             requested_by_user_id=user.id,
         )
     return OctxTransferOut.from_transfer(transfer)

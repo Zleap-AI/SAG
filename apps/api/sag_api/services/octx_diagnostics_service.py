@@ -138,7 +138,7 @@ async def build_octx_diagnostic_snapshot(
     jobs_result = await session.execute(
         select(Job)
         .where(
-            Job.type.in_((JobType.OCTX_IMPORT, JobType.OCTX_EXPORT)),
+            Job.type.in_((JobType.OCTX_PREFLIGHT, JobType.OCTX_IMPORT, JobType.OCTX_EXPORT)),
             Job.payload["transfer_id"].as_string() == transfer_id,
         )
         .order_by(Job.created_at.desc())
