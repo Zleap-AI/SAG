@@ -1,6 +1,7 @@
 """Exercise aggregate overview and keyset expansion against the real graph store."""
 
 import asyncio
+import time
 import uuid
 from datetime import datetime, timedelta
 
@@ -193,14 +194,19 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
 
             rebuilt = await client.post("/api/v1/universe/rebuild", headers=headers)
             assert rebuilt.status_code == 202, rebuilt.text
-            for _ in range(500):
+            deadline = time.monotonic() + 60
+            while True:
                 job_response = await client.get(
                     f"/api/v1/jobs/{rebuilt.json()['id']}", headers=headers
                 )
                 assert job_response.status_code == 200, job_response.text
                 if job_response.json()["status"] in {"succeeded", "failed"}:
                     break
-                await asyncio.sleep(0.01)
+                assert time.monotonic() < deadline, (
+                    f"universe rebuild did not finish within 60 seconds: "
+                    f"{job_response.text}"
+                )
+                await asyncio.sleep(0.05)
             assert job_response.json()["status"] == "succeeded", job_response.text
             rebuilt = await client.get("/api/v1/universe/manifest", headers=headers)
             assert rebuilt.status_code == 200, rebuilt.text
