@@ -6,11 +6,20 @@ import { describe, expect, it, vi } from "vitest";
 import messages from "@/messages/zh-CN.json";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { OctxExportProvider } from "@/components/features/octx-export-provider";
+import { dismissFolderImportDialog } from "@/components/features/folder-import-dialog";
 import SourceDetailPage from "./page";
 
 vi.mock("next/navigation", () => ({
   useParams: () => ({ id: "3fe9533639544615bc732d8d7a8f648e" }),
   useRouter: () => ({ replace: vi.fn() }),
+}));
+
+vi.mock("@/components/ui/dialog", () => ({
+  Dialog: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  DialogContent: ({ children }: { children: React.ReactNode }) => <section>{children}</section>,
+  DialogDescription: ({ children }: { children: React.ReactNode }) => <p>{children}</p>,
+  DialogHeader: ({ children }: { children: React.ReactNode }) => <header>{children}</header>,
+  DialogTitle: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
 }));
 
 vi.mock("@/components/features/use-source-content", () => ({
@@ -35,6 +44,17 @@ vi.mock("@/components/features/use-source-content", () => ({
 }));
 
 describe("source detail page", () => {
+  it("cancels an active folder import before dismissing the parent dialog", () => {
+    const actions: string[] = [];
+
+    dismissFolderImportDialog(
+      { dismiss: () => actions.push("cancel") },
+      (open) => actions.push(`open:${open}`),
+    );
+
+    expect(actions).toEqual(["cancel", "open:false"]);
+  });
+
   it("shows the loaded source id with a copy action", () => {
     const html = renderToStaticMarkup(
       <NextIntlClientProvider
@@ -55,5 +75,27 @@ describe("source detail page", () => {
       'title="3fe9533639544615bc732d8d7a8f648e"',
     );
     expect(html).toContain('aria-label="复制信源 ID"');
+  });
+
+  it("keeps single-file upload and adds the guided folder workflow", () => {
+    const html = renderToStaticMarkup(
+      <NextIntlClientProvider
+        locale="zh-CN"
+        timeZone="Asia/Shanghai"
+        messages={messages}
+      >
+        <TooltipProvider>
+          <OctxExportProvider>
+            <SourceDetailPage />
+          </OctxExportProvider>
+        </TooltipProvider>
+      </NextIntlClientProvider>,
+    );
+
+    expect(html).toContain("拖拽文件到此处，或点击选择");
+    expect(html).toContain("选择文件夹");
+    expect(html).toContain("扫描结果");
+    expect(html).toContain("检查冲突");
+    expect(html).toContain("最终确认");
   });
 });

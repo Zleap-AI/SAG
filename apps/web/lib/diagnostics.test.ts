@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DiagnosticsStore, sanitize } from "./diagnostics";
+import { DiagnosticsStore, folderImportDiagnosticData, sanitize } from "./diagnostics";
 
 describe("sanitize", () => {
   it("passes through primitives", () => {
@@ -109,6 +109,55 @@ describe("sanitize", () => {
 });
 
 describe("DiagnosticsStore", () => {
+  it("records only safe folder-import metadata", () => {
+    const store = new DiagnosticsStore();
+    const data = folderImportDiagnosticData({
+      batch_id: "batch-1",
+      request_id: "request-1",
+      filename: "report.md",
+      eligible_count: 2,
+      conflict_count: 1,
+      rejected_count: 3,
+      duration_ms: 42,
+      outcome: "completed",
+      relative_path: "private/customer/report.md",
+      display_path: "private/customer/report.md",
+      access_token: "secret-token-value",
+      ignored: "not-recorded",
+    });
+    store.record("knowledge.folder_scan", data);
+
+    expect(sanitize({ access_token: "secret-token-value" })).toEqual({ access_token: "[REDACTED]" });
+    expect(store.snapshot()[0].data).toEqual({
+      batch_id: "batch-1",
+      request_id: "request-1",
+      filename: "report.md",
+      eligible_count: 2,
+      conflict_count: 1,
+      rejected_count: 3,
+      duration_ms: 42,
+      outcome: "completed",
+    });
+    expect(store.snapshot()[0].data).not.toHaveProperty("relative_path");
+    expect(store.snapshot()[0].data).not.toHaveProperty("access_token");
+  });
+
+  it("reduces filenames to basenames and omits structured folder-import values", () => {
+    const data = folderImportDiagnosticData({
+      filename: "/private/customer/acme-report.md",
+      outcome: {
+        relative_path: "private/customer/acme-report.md",
+        access_token: "secret-token-value",
+      },
+      batch_id: ["batch-1"],
+      attempt: 2,
+    });
+
+    expect(data).toEqual({ filename: "acme-report.md", attempt: 2 });
+    expect(data).not.toHaveProperty("outcome");
+    expect(data).not.toHaveProperty("batch_id");
+  });
+
   it("records entries with auto-incrementing sequence", () => {
     const store = new DiagnosticsStore();
     store.record("app.init", { version: "1.0" });

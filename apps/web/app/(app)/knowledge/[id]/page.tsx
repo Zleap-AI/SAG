@@ -21,6 +21,11 @@ import {
 import { useApp } from "@/components/features/app-shell";
 import { DocumentList } from "@/components/features/document-list";
 import { EmptyState } from "@/components/features/empty-state";
+import {
+  dismissFolderImportDialog,
+  FolderImportDialog,
+  type FolderImportDialogHandle,
+} from "@/components/features/folder-import-dialog";
 import { RetrievalTestDialog } from "@/components/features/retrieval-test-dialog";
 import { SourceIdCopy } from "@/components/features/source-id-copy";
 import { SourceGraph } from "@/components/features/source-graph";
@@ -87,6 +92,7 @@ export default function SourceDetailPage() {
   }, [notFound, router]);
 
   const [addOpen, setAddOpen] = React.useState(false);
+  const folderImportDialogRef = React.useRef<FolderImportDialogHandle>(null);
   const [retrievalOpen, setRetrievalOpen] = React.useState(false);
   const isFileSource = !source || source.connector_kind === "file_upload";
 
@@ -329,7 +335,13 @@ export default function SourceDetailPage() {
         </div>
       </div>
 
-      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+      <Dialog
+        open={addOpen}
+        onOpenChange={(open) => {
+          if (open) setAddOpen(true);
+          else dismissFolderImportDialog(folderImportDialogRef.current, setAddOpen);
+        }}
+      >
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>
@@ -343,15 +355,38 @@ export default function SourceDetailPage() {
           </DialogHeader>
           {source &&
             (source.connector_kind === "file_upload" ? (
-              <UploadZone
-                sourceId={id}
-                onUploaded={() => {
-                  setAddOpen(false);
-                  void refresh();
-                }}
-                maxMb={capabilities?.max_upload_mb ?? 25}
-                allowedExts={capabilities?.allowed_upload_exts}
-              />
+              <div className="flex flex-col gap-4">
+                <UploadZone
+                  sourceId={id}
+                  onUploaded={() => {
+                    dismissFolderImportDialog(
+                      folderImportDialogRef.current,
+                      setAddOpen,
+                    );
+                    void refresh();
+                  }}
+                  maxMb={capabilities?.max_upload_mb ?? 25}
+                  allowedExts={capabilities?.allowed_upload_exts}
+                />
+                <FolderImportDialog
+                  ref={folderImportDialogRef}
+                  sourceId={id}
+                  existingDocumentNames={(documents ?? []).map(
+                    (document) => document.filename,
+                  )}
+                  allowedExts={capabilities?.allowed_upload_exts ?? []}
+                  maxMb={capabilities?.max_upload_mb ?? 25}
+                  onFinished={(result) => {
+                    if (result.attempted > 0) void refresh();
+                  }}
+                  onClose={() =>
+                    dismissFolderImportDialog(
+                      folderImportDialogRef.current,
+                      setAddOpen,
+                    )
+                  }
+                />
+              </div>
             ) : (
               <SyncPanel
                 sourceId={id}

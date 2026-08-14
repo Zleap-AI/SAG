@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal, get_session
 from sag_api.core.deps import get_current_user, get_engine_manager, get_job_queue
-from sag_api.core.errors import ConflictError, NotFoundError, ValidationError
+from sag_api.core.errors import ApiError, ConflictError, NotFoundError, ValidationError
+from sag_api.core.logging import get_logger
 from sag_api.db.models import User
 from sag_api.enums import DocumentStatus
 from sag_api.jobs import JobQueue
@@ -38,6 +40,7 @@ from sag_api.services.source_operation_service import (
 from sag_api.services.source_service import get_source
 
 router = APIRouter(prefix="/sources/{source_id}/documents", tags=["documents"])
+log = get_logger("documents")
 
 
 def _check_extension(filename: str | None) -> None:
@@ -49,6 +52,11 @@ def _check_extension(filename: str | None) -> None:
     if "." not in name or ("." + name.rsplit(".", 1)[1]) not in allowed:
         pretty = "、".join(sorted(e.lstrip(".") for e in allowed))
         raise ValidationError(f"不支持的文件类型。可上传：{pretty}")
+
+
+def _upload_filename(filename: str | None) -> str:
+    """Strip client paths from multipart filenames on POSIX and Windows."""
+    return (filename or "upload").replace("\\", "/").rsplit("/", maxsplit=1)[-1] or "upload"
 
 
 @router.get("", response_model=list[DocumentOut])
@@ -64,28 +72,83 @@ async def list_(
 @router.post("", response_model=DocumentOut, status_code=201)
 async def upload(
     source_id: str,
+    request: Request = None,
     file: UploadFile = File(...),
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> DocumentOut:
-    _check_extension(file.filename)
-    max_upload_bytes = settings.max_upload_mb * 1024 * 1024
-    data = await file.read(max_upload_bytes + 1)
-    if not data:
-        raise ValidationError("文件内容为空")
-    if len(data) > max_upload_bytes:
-        raise ValidationError(f"文件超过 {settings.max_upload_mb}MB 上限")
-    async with source_upload_mutation(SessionLocal, source_id):
-        source = await get_source(session, source_id)
-        document, _job = await create_document_from_upload(
-            session,
-            source,
-            filename=file.filename or "upload",
-            content_type=file.content_type or "application/octet-stream",
-            data=data,
-            upload_dir=settings.upload_dir,
-            job_queue=job_queue,
+    folder_import_header = request.headers.get("X-SAG-Folder-Import-Id") if request else None
+    filename = _upload_filename(file.filename)
+    request_id = getattr(request.state, "request_id", None) if request else None
+    folder_import_id: str | None = None
+    if folder_import_header is not None:
+        try:
+            folder_import_id = str(uuid.UUID(folder_import_header))
+        except ValueError:
+            log.warning(
+                "folder_import_upload operation=upload outcome=rejected reason=invalid_batch_id "
+                "batch_id=invalid source_id=%s filename=%r byte_count=unknown request_id=%s",
+                source_id,
+                filename,
+                request_id,
+            )
+            raise ValidationError("文件夹导入批次标识无效") from None
+
+    data: bytes | None = None
+    try:
+        _check_extension(filename)
+        max_upload_bytes = settings.max_upload_mb * 1024 * 1024
+        data = await file.read(max_upload_bytes + 1)
+        if not data:
+            raise ValidationError("文件内容为空")
+        if len(data) > max_upload_bytes:
+            raise ValidationError(f"文件超过 {settings.max_upload_mb}MB 上限")
+        if folder_import_id is not None:
+            log.info(
+                "folder_import_upload operation=upload outcome=started batch_id=%s source_id=%s "
+                "filename=%r byte_count=%s request_id=%s",
+                folder_import_id,
+                source_id,
+                filename,
+                len(data),
+                request_id,
+            )
+        async with source_upload_mutation(SessionLocal, source_id):
+            source = await get_source(session, source_id)
+            document, _job = await create_document_from_upload(
+                session,
+                source,
+                filename=filename,
+                content_type=file.content_type or "application/octet-stream",
+                data=data,
+                upload_dir=settings.upload_dir,
+                job_queue=job_queue,
+            )
+    except ApiError as exc:
+        if folder_import_id is not None:
+            log.warning(
+                "folder_import_upload operation=upload outcome=rejected batch_id=%s source_id=%s "
+                "filename=%r byte_count=%s request_id=%s error_class=%s",
+                folder_import_id,
+                source_id,
+                filename,
+                len(data) if data is not None else "unknown",
+                request_id,
+                type(exc).__name__,
+            )
+        raise
+
+    if folder_import_id is not None:
+        log.info(
+            "folder_import_upload operation=upload outcome=accepted batch_id=%s source_id=%s "
+            "filename=%r byte_count=%s document_id=%s request_id=%s",
+            folder_import_id,
+            source_id,
+            filename,
+            len(data),
+            document.id,
+            request_id,
         )
     return DocumentOut.model_validate(document)
 

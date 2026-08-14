@@ -87,6 +87,15 @@ export class ApiError extends Error {
   }
 }
 
+export interface UploadDocumentOptions {
+  folderImportId?: string;
+}
+
+export interface UploadDocumentResult {
+  document: Doc;
+  requestId?: string;
+}
+
 export interface GlobalSearchBody {
   query: string;
   source_ids?: string[];
@@ -710,12 +719,16 @@ export const api = {
     file: File,
     onProgress: (pct: number) => void,
     onUploadComplete?: () => void,
+    options?: UploadDocumentOptions,
   ) =>
-    new Promise<Doc>((resolve, reject) => {
+    new Promise<UploadDocumentResult>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${API_BASE}/api/v1/sources/${sid}/documents`);
       xhr.setRequestHeader("Authorization", `Bearer ${getToken() ?? ""}`);
       xhr.setRequestHeader("Accept-Language", readClientLocale());
+      if (options?.folderImportId) {
+        xhr.setRequestHeader("X-SAG-Folder-Import-Id", options.folderImportId);
+      }
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable)
           onProgress(Math.round((e.loaded / e.total) * 100));
@@ -723,11 +736,17 @@ export const api = {
       xhr.upload.onload = () => onUploadComplete?.();
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300)
-          resolve(JSON.parse(xhr.responseText));
+          resolve({
+            document: JSON.parse(xhr.responseText),
+            requestId: xhr.getResponseHeader("X-Request-Id") ?? undefined,
+          });
         else {
           let msg = clientErrorMessage("uploadFailed");
+          let requestId: string | undefined;
           try {
-            msg = JSON.parse(xhr.responseText)?.error?.message ?? msg;
+            const error = JSON.parse(xhr.responseText)?.error;
+            msg = error?.message ?? msg;
+            requestId = error?.request_id;
           } catch {
             /* noop */
           }
@@ -736,6 +755,7 @@ export const api = {
               xhr.status,
               "upload_failed",
               serverErrorMessage("upload_failed", msg, xhr.status),
+              requestId,
             ),
           );
         }

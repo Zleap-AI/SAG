@@ -15,6 +15,8 @@ export type DiagEventType =
   | "knowledge.upload"
   | "knowledge.create"
   | "knowledge.process"
+  | "knowledge.folder_scan"
+  | "knowledge.folder_upload"
   | "octx.export"
   | "qa.ask"
   | "qa.event"
@@ -122,6 +124,43 @@ export function sanitize(value: unknown): unknown {
   }
 
   return value;
+}
+
+const FOLDER_IMPORT_STRING_FIELDS = new Set([
+  "batch_id",
+  "request_id",
+  "filename",
+  "outcome",
+  "error_code",
+]);
+
+const FOLDER_IMPORT_NUMBER_FIELDS = new Set([
+  "size_bytes",
+  "eligible_count",
+  "conflict_count",
+  "rejected_count",
+  "duration_ms",
+  "attempt",
+]);
+
+function folderImportDiagnosticValue(key: string, value: unknown): string | number | undefined {
+  if (FOLDER_IMPORT_STRING_FIELDS.has(key)) {
+    if (typeof value !== "string") return undefined;
+    return key === "filename" ? value.split(/[\\/]/).pop() : value;
+  }
+  if (FOLDER_IMPORT_NUMBER_FIELDS.has(key) && typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  return undefined;
+}
+
+/** Returns only metadata that is safe to associate with a folder import event. */
+export function folderImportDiagnosticData(data: Record<string, unknown>): Record<string, unknown> {
+  const safeData = Object.fromEntries(Object.entries(data).flatMap(([key, value]) => {
+    const safeValue = folderImportDiagnosticValue(key, value);
+    return safeValue === undefined ? [] : [[key, safeValue]];
+  }));
+  return sanitize(safeData) as Record<string, unknown>;
 }
 
 const DEFAULT_MAX_ENTRIES = 500;

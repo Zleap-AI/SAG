@@ -59,7 +59,7 @@ export function UploadZone({
       try {
         const idx = ok + 1;
         setProgress({ name: file.name, pct: 0, idx, total: files.length, waiting: false });
-        const doc = await api.uploadDocumentWithProgress(
+        const { document: doc } = await api.uploadDocumentWithProgress(
           sourceId,
           file,
           (pct) => setProgress((p) => (p ? { ...p, pct } : p)),

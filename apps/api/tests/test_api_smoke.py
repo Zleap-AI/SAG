@@ -1,6 +1,7 @@
 """HTTP 层冒烟：跑真实 ASGI 应用（含 lifespan / 后台队列），全程离线。"""
 
 import asyncio
+import logging
 import uuid
 
 import httpx
@@ -86,6 +87,143 @@ async def test_end_to_end_offline():
                 "/api/v1/search", headers=H, json={"query": "hello", "source_ids": [sid]}
             )
             assert gs2.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_folder_import_upload_logs_batch_document_and_request_ids(caplog):
+    from sag_api.main import app
+
+    batch_id = "018f5f7e-89ab-7def-8123-0123456789a0"
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        caplog.set_level(logging.INFO, logger="sag.documents")
+        documents_log = logging.getLogger("sag.documents")
+        documents_log.addHandler(caplog.handler)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            registered = await client.post(
+                "/api/v1/auth/register",
+                json={
+                    "email": f"folder-import-{uuid.uuid4().hex}@t.com",
+                    "password": "password123",
+                    "name": "Folder Import Test",
+                },
+            )
+            assert registered.status_code == 201
+            headers = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+            source = await client.post("/api/v1/sources", headers=headers, json={"name": "批次导入"})
+            assert source.status_code == 201
+
+            uploaded = await client.post(
+                f"/api/v1/sources/{source.json()['id']}/documents",
+                headers={**headers, "X-SAG-Folder-Import-Id": batch_id},
+                files={"file": ("batch.md", b"# Batch\n\ncontent", "text/markdown")},
+            )
+
+    assert uploaded.status_code == 201
+    request_id = uploaded.headers["X-Request-Id"]
+    document_id = uploaded.json()["id"]
+    messages = [record.getMessage() for record in caplog.records if record.name == "sag.documents"]
+    documents_log.removeHandler(caplog.handler)
+    assert any(
+        "folder_import_upload" in message
+        and "outcome=accepted" in message
+        and f"batch_id={batch_id}" in message
+        and f"document_id={document_id}" in message
+        and f"request_id={request_id}" in message
+        for message in messages
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batch_id", ["not-a-uuid", ""])
+async def test_folder_import_upload_rejects_malformed_batch_before_document_persistence(batch_id):
+    from sag_api.main import app
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            registered = await client.post(
+                "/api/v1/auth/register",
+                json={
+                    "email": f"invalid-folder-import-{uuid.uuid4().hex}@t.com",
+                    "password": "password123",
+                    "name": "Invalid Folder Import Test",
+                },
+            )
+            assert registered.status_code == 201
+            headers = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+            source = await client.post("/api/v1/sources", headers=headers, json={"name": "无效批次"})
+            assert source.status_code == 201
+            source_id = source.json()["id"]
+            before = await client.get(f"/api/v1/sources/{source_id}/documents", headers=headers)
+            assert before.status_code == 200
+
+            uploaded = await client.post(
+                f"/api/v1/sources/{source_id}/documents",
+                headers={**headers, "X-SAG-Folder-Import-Id": batch_id},
+                files={"file": ("rejected.md", b"# Rejected\n\ncontent", "text/markdown")},
+            )
+            after = await client.get(f"/api/v1/sources/{source_id}/documents", headers=headers)
+
+    assert uploaded.status_code == 422
+    assert after.status_code == 200
+    assert {document["id"] for document in after.json()} == {
+        document["id"] for document in before.json()
+    }
+
+
+@pytest.mark.asyncio
+async def test_folder_import_upload_strips_client_paths_from_logs_and_document_name(caplog):
+    from sag_api.main import app
+
+    batch_id = "018f5f7e-89ab-7def-8123-0123456789a0"
+    uploaded_files = [
+        ("/private/client-folder/posix.md", "posix.md"),
+        ("C:\\private\\client-folder\\windows.md", "windows.md"),
+    ]
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        caplog.set_level(logging.INFO, logger="sag.documents")
+        documents_log = logging.getLogger("sag.documents")
+        documents_log.addHandler(caplog.handler)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            registered = await client.post(
+                "/api/v1/auth/register",
+                json={
+                    "email": f"path-folder-import-{uuid.uuid4().hex}@t.com",
+                    "password": "password123",
+                    "name": "Folder Import Path Test",
+                },
+            )
+            assert registered.status_code == 201
+            headers = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+            source = await client.post("/api/v1/sources", headers=headers, json={"name": "路径批次导入"})
+            assert source.status_code == 201
+            source_id = source.json()["id"]
+
+            for supplied_filename, expected_filename in uploaded_files:
+                response = await client.post(
+                    f"/api/v1/sources/{source_id}/documents",
+                    headers={**headers, "X-SAG-Folder-Import-Id": batch_id},
+                    files={"file": (supplied_filename, b"# Path\n\ncontent", "text/markdown")},
+                )
+                assert response.status_code == 201
+                assert response.json()["filename"] == expected_filename
+
+            listed = await client.get(f"/api/v1/sources/{source_id}/documents", headers=headers)
+
+    assert listed.status_code == 200
+    assert {document["filename"] for document in listed.json()} == {"posix.md", "windows.md"}
+    messages = [record.getMessage() for record in caplog.records if record.name == "sag.documents"]
+    documents_log.removeHandler(caplog.handler)
+    for supplied_filename, expected_filename in uploaded_files:
+        assert all(supplied_filename not in message for message in messages)
+        assert any(
+            "folder_import_upload" in message
+            and "outcome=accepted" in message
+            and f"filename='{expected_filename}'" in message
+            for message in messages
+        )
 
 
 @pytest.mark.asyncio
