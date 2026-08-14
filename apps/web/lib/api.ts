@@ -589,6 +589,39 @@ async function startOctxExport(
   }
 }
 
+async function startOctxDocumentExport(
+  sourceId: string,
+  documentId: string,
+  version?: string,
+): Promise<OctxTransfer> {
+  const submit = () =>
+    request<OctxTransfer>(
+      `/api/v1/sources/${sourceId}/documents/${documentId}/octx-exports`,
+      {
+        method: "POST",
+        body: JSON.stringify(version ? { version } : {}),
+      },
+    );
+  try {
+    return await submit();
+  } catch (error) {
+    if (!isRetryableOctxExportStartError(error)) throw error;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  try {
+    return await submit();
+  } catch (error) {
+    if (!isRetryableOctxExportStartError(error)) throw error;
+    throw new ApiError(
+      error.status,
+      "octx_export_start_busy",
+      clientErrorMessage("octxExportStartBusy"),
+      error.requestId,
+      { layer: error.layer, stage: error.stage, retryable: true },
+    );
+  }
+}
+
 export const api = {
   // auth / system
   register: (b: { email: string; password: string; name?: string }) =>
@@ -1024,8 +1057,11 @@ export const api = {
 
   // OCTX 数据包导入/导出
   startOctxExport,
+  startOctxDocumentExport,
   getOctxTransfer: (transferId: string) =>
     request<OctxTransfer>(`/api/v1/octx/transfers/${transferId}`),
+  getOctxTransferDiagnostics: (transferId: string) =>
+    request<Record<string, unknown>>(`/api/v1/octx/transfers/${transferId}/diagnostics`),
   cancelOctxTransfer: (transferId: string) =>
     request<OctxTransfer>(`/api/v1/octx/transfers/${transferId}`, {
       method: "DELETE",

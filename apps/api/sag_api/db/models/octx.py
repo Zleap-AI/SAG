@@ -81,6 +81,25 @@ class OctxSourceBinding(TimestampMixin, Base):
     workspace_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
 
+class OctxDocumentBinding(TimestampMixin, Base):
+    """Stable producer identity for an independently exported document."""
+
+    __tablename__ = "octx_document_bindings"
+
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    asset_id: Mapped[str] = mapped_column(
+        ForeignKey("octx_assets.id", ondelete="RESTRICT"), index=True
+    )
+    active_release_id: Mapped[str] = mapped_column(
+        ForeignKey("octx_releases.id", ondelete="RESTRICT")
+    )
+    content_revision: Mapped[int] = mapped_column(BigInteger, default=0)
+    released_revision: Mapped[int] = mapped_column(BigInteger, default=0)
+    workspace_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+
 class OctxInstallation(IDMixin, TimestampMixin, Base):
     __tablename__ = "octx_installations"
     __table_args__ = (

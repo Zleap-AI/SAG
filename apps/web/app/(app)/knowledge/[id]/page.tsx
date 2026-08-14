@@ -320,6 +320,7 @@ export default function SourceDetailPage() {
           ) : (
             <DocumentList
               sourceId={id}
+              sourceName={source.name}
               documents={documents}
               activities={documentActivities}
               onAction={mutateDocument}

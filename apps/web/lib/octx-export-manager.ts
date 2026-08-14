@@ -13,10 +13,12 @@ export interface OctxExportManagerDependencies {
   save: (value: string) => void;
   getTransfer: (transferId: string) => Promise<OctxTransfer>;
   startExport: (sourceId: string) => Promise<OctxTransfer>;
+  startDocumentExport?: (sourceId: string, documentId: string) => Promise<OctxTransfer>;
   decideExport: (transferId: string, decisionToken: string) => Promise<OctxTransfer>;
   cancelDecision: (transferId: string, decisionToken: string) => Promise<OctxTransfer>;
   cancelTransfer: (transferId: string) => Promise<OctxTransfer>;
   download: (task: PersistedOctxExportTask) => Promise<void>;
+  recordEvent?: (type: "octx.export", data: Record<string, unknown>) => void;
   now: () => string;
 }
 
@@ -54,6 +56,13 @@ export class OctxExportTaskManager {
     filenameHint?: string,
   ): Promise<PersistedOctxExportTask> {
     const transfer = await this.dependencies.startExport(sourceId);
+    this.dependencies.recordEvent?.("octx.export", {
+      action: "created",
+      transfer_id: transfer.id,
+      source_id: sourceId,
+      scope: "source",
+      status: transfer.status,
+    });
     const metadata: NewOctxExportTask = {
       transferId: transfer.id,
       sourceId,
@@ -62,6 +71,36 @@ export class OctxExportTaskManager {
       createdAt: this.dependencies.now(),
     };
     return this.reconcile(metadata, transfer);
+  }
+
+  async startDocument(
+    sourceId: string,
+    sourceName: string,
+    documentId: string,
+    documentName: string,
+  ): Promise<PersistedOctxExportTask> {
+    if (!this.dependencies.startDocumentExport) {
+      throw new Error("Document OCTX export is unavailable");
+    }
+    const transfer = await this.dependencies.startDocumentExport(sourceId, documentId);
+    this.dependencies.recordEvent?.("octx.export", {
+      action: "created",
+      transfer_id: transfer.id,
+      source_id: sourceId,
+      document_id: documentId,
+      scope: "document",
+      status: transfer.status,
+    });
+    return this.reconcile(
+      {
+        transferId: transfer.id,
+        sourceId,
+        sourceName,
+        filenameHint: documentName,
+        createdAt: this.dependencies.now(),
+      },
+      transfer,
+    );
   }
 
   async refresh(): Promise<void> {
@@ -110,8 +149,13 @@ export class OctxExportTaskManager {
   async downloadAgain(transferId: string): Promise<void> {
     const task = this.tasks.find((item) => item.transferId === transferId);
     if (!task || task.transfer.status !== "ready") return;
-    await this.dependencies.download(task);
-    this.markDownloaded(transferId);
+    try {
+      await this.dependencies.download(task);
+      this.markDownloaded(transferId);
+    } catch (error) {
+      this.markDownloadFailed(task, error);
+      throw error;
+    }
   }
 
   dismiss(transferId: string): void {
@@ -141,14 +185,34 @@ export class OctxExportTaskManager {
     try {
       await this.dependencies.download(task);
       this.markDownloaded(task.transferId);
-    } catch {
-      // Keep autoDownloaded=false so the visible task offers a manual retry.
+    } catch (error) {
+      this.markDownloadFailed(task, error);
     }
+  }
+
+  private markDownloadFailed(task: PersistedOctxExportTask, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    this.tasks = this.tasks.map((item) =>
+      item.transferId === task.transferId
+        ? { ...item, autoDownloaded: false, downloadError: message.slice(0, 1000) }
+        : item,
+    );
+    this.dependencies.recordEvent?.("octx.export", {
+      action: "download_failed",
+      transfer_id: task.transferId,
+      source_id: task.sourceId,
+      scope: task.transfer.export_scope ?? "source",
+      error_type: error instanceof Error ? error.name : typeof error,
+      error_message: message,
+    });
+    this.persistAndEmit();
   }
 
   private markDownloaded(transferId: string): void {
     this.tasks = this.tasks.map((task) =>
-      task.transferId === transferId ? { ...task, autoDownloaded: true } : task,
+      task.transferId === transferId
+        ? { ...task, autoDownloaded: true, downloadError: undefined }
+        : task,
     );
     this.persistAndEmit();
   }

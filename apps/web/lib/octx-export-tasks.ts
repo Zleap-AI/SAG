@@ -17,6 +17,7 @@ export interface PersistedOctxExportTask {
   sourceId: string;
   sourceName: string;
   filenameHint?: string;
+  downloadError?: string;
   autoDownloaded: boolean;
   createdAt: string;
   transfer: OctxTransfer;
@@ -53,6 +54,7 @@ function isTask(value: unknown): value is PersistedOctxExportTask {
     typeof task.sourceId === "string" &&
     typeof task.sourceName === "string" &&
     (task.filenameHint === undefined || typeof task.filenameHint === "string") &&
+    (task.downloadError === undefined || typeof task.downloadError === "string") &&
     typeof task.autoDownloaded === "boolean" &&
     typeof task.createdAt === "string" &&
     isTransfer(task.transfer) &&
@@ -86,6 +88,7 @@ export function mergeExportTransfer(
     sourceId: existing?.sourceId ?? metadata.sourceId,
     sourceName: existing?.sourceName ?? metadata.sourceName,
     filenameHint: existing?.filenameHint ?? metadata.filenameHint,
+    downloadError: existing?.downloadError,
     autoDownloaded: existing?.autoDownloaded ?? false,
     createdAt: existing?.createdAt ?? metadata.createdAt,
     transfer,

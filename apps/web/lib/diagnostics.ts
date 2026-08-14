@@ -15,6 +15,7 @@ export type DiagEventType =
   | "knowledge.upload"
   | "knowledge.create"
   | "knowledge.process"
+  | "octx.export"
   | "qa.ask"
   | "qa.event"
   | "qa.complete"

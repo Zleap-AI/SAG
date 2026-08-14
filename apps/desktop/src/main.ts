@@ -1,4 +1,5 @@
 import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { release as osRelease, version as osVersion } from "node:os";
 import path from "node:path";
 
 import {
@@ -167,6 +168,9 @@ function registerIpc(): void {
       version: app.getVersion(),
       platform: process.platform,
       arch: process.arch,
+      osRelease: osRelease(),
+      osVersion: osVersion(),
+      packaged: app.isPackaged,
       electron: process.versions.electron ?? "unknown",
       chrome: process.versions.chrome ?? "unknown",
       node: process.versions.node ?? "unknown",

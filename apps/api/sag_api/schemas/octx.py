@@ -46,6 +46,9 @@ class OctxTransferOut(BaseModel):
     record_counts: dict = Field(default_factory=dict)
     capabilities: dict = Field(default_factory=dict)
     progress_detail: dict = Field(default_factory=dict)
+    export_scope: str = "source"
+    document_id: str | None = None
+    document_name: str | None = None
     validation_report: dict | None = None
     warnings: list = Field(default_factory=list)
     error: dict | None = None
@@ -80,6 +83,9 @@ class OctxTransferOut(BaseModel):
             record_counts=dict(checkpoint.get("record_counts") or {}),
             capabilities=dict(checkpoint.get("capabilities") or {}),
             progress_detail=dict(checkpoint.get("progress_detail") or {}),
+            export_scope=str(checkpoint.get("export_scope") or "source"),
+            document_id=checkpoint.get("document_id"),
+            document_name=checkpoint.get("document_name"),
             validation_report=transfer.validation_report,
             warnings=list(transfer.warnings or []),
             error=transfer.error,

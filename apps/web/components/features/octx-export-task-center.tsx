@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Download, FileWarning, X } from "lucide-react";
+import { Download, FileJson, FileWarning, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 
 import {
@@ -34,11 +34,13 @@ export function OctxExportTaskList({
   tasks,
   onCancel,
   onDownload,
+  onDiagnostics,
   onDismiss,
 }: {
   tasks: PersistedOctxExportTask[];
   onCancel: (transferId: string) => void;
   onDownload: (transferId: string) => void;
+  onDiagnostics: (transferId: string) => void;
   onDismiss: (transferId: string) => void;
 }) {
   const t = useTranslations("SourceCard");
@@ -76,6 +78,11 @@ export function OctxExportTaskList({
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{task.sourceName}</p>
+                  {transfer.export_scope === "document" && (
+                    <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                      {t("documentExportBadge")} · {transfer.document_name ?? task.filenameHint}
+                    </p>
+                  )}
                   <p className="mt-0.5 text-xs text-muted-foreground">
                     {progressLabel}
                   </p>
@@ -103,6 +110,18 @@ export function OctxExportTaskList({
                     >
                       <Download className="size-3.5" />
                       {t("exportDownloadAgain")}
+                    </Button>
+                  )}
+                  {(transfer.status === "failed" || task.downloadError) && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => onDiagnostics(task.transferId)}
+                    >
+                      <FileJson className="size-3.5" />
+                      {t("exportDiagnostics")}
                     </Button>
                   )}
                   {isTerminalExportStatus(transfer.status) && (
@@ -153,6 +172,11 @@ export function OctxExportTaskList({
                   {transfer.error?.message ?? t("exportFailed")}
                 </p>
               )}
+              {task.downloadError && (
+                <p className="mt-2 break-words text-xs text-destructive">
+                  {t("exportDownloadFailed")}: {task.downloadError}
+                </p>
+              )}
             </div>
           );
         })}
@@ -162,12 +186,13 @@ export function OctxExportTaskList({
 }
 
 export function OctxExportTaskCenter() {
-  const { tasks, cancelTransfer, dismissTransfer, downloadAgain } = useOctxExports();
+  const { tasks, cancelTransfer, dismissTransfer, downloadAgain, downloadDiagnostics } = useOctxExports();
   return (
     <OctxExportTaskList
       tasks={tasks}
       onCancel={(transferId) => void cancelTransfer(transferId)}
       onDownload={(transferId) => void downloadAgain(transferId)}
+      onDiagnostics={(transferId) => void downloadDiagnostics(transferId)}
       onDismiss={dismissTransfer}
     />
   );

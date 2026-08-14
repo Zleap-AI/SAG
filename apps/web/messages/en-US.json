@@ -235,6 +235,10 @@
     "exportCancel": "Cancel",
     "exportDismiss": "Dismiss",
     "exportDownloadAgain": "Download again",
+    "exportDiagnostics": "Export diagnostics",
+    "exportDiagnosticsReady": "Diagnostics exported. Send the file to support for analysis.",
+    "exportDownloadFailed": "Package download failed",
+    "documentExportBadge": "Single-document export",
     "exportReextractRequired": "Re-extract these documents before exporting again",
     "exportMissingEvents": "{count, plural, one {# event} other {# events}}",
     "exportGoToDocuments": "Go to documents",
@@ -307,6 +311,7 @@
     "pause": "Stop extraction",
     "resume": "Resume extraction",
     "reprocess": "Reprocess",
+    "exportOctx": "Export this document as .octx",
     "delete": "Delete"
   },
   "Knowledge": {

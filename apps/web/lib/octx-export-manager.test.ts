@@ -123,6 +123,34 @@ describe("OCTX export task manager", () => {
     expect(download).not.toHaveBeenCalled();
   });
 
+  it("records the real automatic download failure for support diagnostics", async () => {
+    const recordEvent = vi.fn();
+    const manager = new OctxExportTaskManager({
+      load: () => null,
+      save: vi.fn(),
+      getTransfer: vi.fn(),
+      startExport: vi.fn().mockResolvedValue(transfer("transfer-1", "ready", 1)),
+      decideExport: vi.fn(),
+      cancelDecision: vi.fn(),
+      cancelTransfer: vi.fn(),
+      download: vi.fn().mockRejectedValue(new Error("desktop download bridge failed")),
+      recordEvent,
+      now: () => "2026-08-11T02:00:00Z",
+    });
+
+    await manager.start("source-1", "产品手册");
+
+    expect(manager.snapshot()[0]).toMatchObject({
+      autoDownloaded: false,
+      downloadError: "desktop download bridge failed",
+    });
+    expect(recordEvent).toHaveBeenCalledWith("octx.export", expect.objectContaining({
+      transfer_id: "transfer-1",
+      action: "download_failed",
+      error_type: "Error",
+    }));
+  });
+
   it("keeps the last server state when a refresh request temporarily fails", async () => {
     const previous = task(transfer("transfer-1", "packaging", 0.6));
     const manager = new OctxExportTaskManager({

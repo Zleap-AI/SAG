@@ -67,6 +67,9 @@ class OctxStorage:
     def workspace_dir(self, source_id: str) -> Path:
         return self.root / "workspaces" / self._component(source_id)
 
+    def document_workspace_dir(self, document_id: str) -> Path:
+        return self.root / "document-workspaces" / self._component(document_id)
+
     def resolve_key(self, key: str) -> Path:
         logical = PurePosixPath(key)
         if logical.is_absolute() or not logical.parts or any(

@@ -235,6 +235,10 @@
     "exportCancel": "取消",
     "exportDismiss": "关闭",
     "exportDownloadAgain": "重新下载",
+    "exportDiagnostics": "导出诊断日志",
+    "exportDiagnosticsReady": "诊断日志已导出，请发送给研发排查",
+    "exportDownloadFailed": "数据包下载失败",
+    "documentExportBadge": "单文档导出",
     "exportReextractRequired": "请重新提取以下文档后再导出",
     "exportMissingEvents": "{count, number} 个事项",
     "exportGoToDocuments": "前往文档列表",
@@ -307,6 +311,7 @@
     "pause": "停止抽取",
     "resume": "继续抽取",
     "reprocess": "重新处理",
+    "exportOctx": "导出此文档为 .octx",
     "delete": "删除"
   },
   "Knowledge": {

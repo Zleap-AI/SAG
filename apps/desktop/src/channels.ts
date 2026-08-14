@@ -18,6 +18,9 @@ export interface DesktopDiagnosticsInfo {
   version: string;
   platform: string;
   arch: string;
+  osRelease: string;
+  osVersion: string;
+  packaged: boolean;
   electron: string;
   chrome: string;
   node: string;

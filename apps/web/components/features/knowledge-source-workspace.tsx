@@ -235,6 +235,7 @@ export function KnowledgeSourceWorkspace({
             ) : (
               <DocumentList
                 sourceId={sourceId}
+                sourceName={source.name}
                 documents={documents}
                 activities={documentActivities}
                 onAction={mutateDocument}

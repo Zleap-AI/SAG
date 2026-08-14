@@ -5,6 +5,7 @@ from sag_api.db.models.document import Document
 from sag_api.db.models.job import Job
 from sag_api.db.models.octx import (
     OctxAsset,
+    OctxDocumentBinding,
     OctxInstallation,
     OctxOperationLease,
     OctxRelease,
@@ -29,6 +30,7 @@ __all__ = [
     "Job",
     "Message",
     "OctxAsset",
+    "OctxDocumentBinding",
     "OctxInstallation",
     "OctxOperationLease",
     "OctxRelease",

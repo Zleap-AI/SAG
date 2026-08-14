@@ -783,6 +783,9 @@ export interface OctxTransfer {
     completed?: number;
     total?: number;
   };
+  export_scope?: "source" | "document";
+  document_id?: string | null;
+  document_name?: string | null;
   validation_report: Record<string, unknown> | null;
   warnings: unknown[];
   error: OctxTransferError | null;

@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { FileText, Pause, Play, RefreshCw, Trash2 } from "lucide-react";
+import { Download, FileText, Pause, Play, RefreshCw, Trash2 } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import { toast } from "sonner";
 
@@ -20,9 +20,11 @@ import { useDetailPanel } from "@/components/features/detail-panel";
 import { useApp } from "@/components/features/app-shell";
 import { DocumentActivityBadge } from "@/components/features/status-badge";
 import { Button } from "@/components/ui/button";
+import { useOctxExports } from "@/components/features/octx-export-provider";
 
 export function DocumentList({
   sourceId,
+  sourceName,
   documents,
   activities,
   onAction,
@@ -30,6 +32,7 @@ export function DocumentList({
   onOpenDocument,
 }: {
   sourceId: string;
+  sourceName: string;
   documents: Doc[];
   activities: Record<string, DocumentActivity>;
   onAction: (document: Doc, action: DocumentAction) => Promise<boolean>;
@@ -40,6 +43,8 @@ export function DocumentList({
   const locale = useLocale();
   const { open } = useDetailPanel();
   const { timezone } = useApp();
+  const { startDocumentExport, isSourceExporting } = useOctxExports();
+  const exportRunning = isSourceExporting(sourceId);
 
   async function perform(document: Doc, action: DocumentAction) {
     try {
@@ -87,6 +92,25 @@ export function DocumentList({
     const buttonClass = compact ? "size-7" : undefined;
     return (
       <div className="flex shrink-0 items-center gap-0.5">
+        {document.status === "ready" && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className={buttonClass}
+            title={t("exportOctx")}
+            disabled={activity.busy || exportRunning}
+            onClick={() =>
+              void startDocumentExport(
+                sourceId,
+                sourceName,
+                document.id,
+                document.filename,
+              )
+            }
+          >
+            <Download className="size-4" />
+          </Button>
+        )}
         {document.status === "extracting" && (
           <Button
             variant="ghost"

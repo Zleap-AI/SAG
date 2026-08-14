@@ -60,6 +60,7 @@ describe("OCTX export task center", () => {
           ]}
           onCancel={vi.fn()}
           onDownload={vi.fn()}
+          onDiagnostics={vi.fn()}
           onDismiss={vi.fn()}
         />
       </NextIntlClientProvider>,
@@ -87,6 +88,7 @@ describe("OCTX export task center", () => {
           ]}
           onCancel={vi.fn()}
           onDownload={vi.fn()}
+          onDiagnostics={vi.fn()}
           onDismiss={vi.fn()}
         />
       </NextIntlClientProvider>,
@@ -116,6 +118,7 @@ describe("OCTX export task center", () => {
           ]}
           onCancel={vi.fn()}
           onDownload={vi.fn()}
+          onDiagnostics={vi.fn()}
           onDismiss={vi.fn()}
         />
       </NextIntlClientProvider>,
@@ -126,6 +129,7 @@ describe("OCTX export task center", () => {
     expect(html).toContain("2 个事项");
     expect(html).toContain('href="/knowledge/source-1"');
     expect(html).toContain("前往文档列表");
+    expect(html).toContain("导出诊断日志");
   });
 
   it("offers dismissal for terminal tasks without replacing active cancellation", () => {
@@ -140,6 +144,7 @@ describe("OCTX export task center", () => {
           ]}
           onCancel={vi.fn()}
           onDownload={vi.fn()}
+          onDiagnostics={vi.fn()}
           onDismiss={vi.fn()}
         />
       </NextIntlClientProvider>,

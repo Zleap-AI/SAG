@@ -27,6 +27,7 @@ from sag_api.db.models import (
     Document,
     Job,
     OctxAsset,
+    OctxDocumentBinding,
     OctxInstallation,
     OctxRelease,
     OctxSourceBinding,
@@ -73,6 +74,7 @@ from sag_api.services.octx_conflict_service import (
     confirm_import_decision,
     resolve_import_conflict,
 )
+from sag_api.services.octx_diagnostics_service import append_octx_trace
 
 if TYPE_CHECKING:
     from sag_api.jobs import JobQueue
@@ -178,6 +180,7 @@ async def create_import_transfer(
     storage: OctxStorage,
     job_queue: JobQueue,
     transfer_id: str | None = None,
+    requested_by_user_id: str | None = None,
 ) -> OctxTransfer:
     filename = str(upload.filename or "")
     if not filename.casefold().endswith(".octx"):
@@ -191,6 +194,11 @@ async def create_import_transfer(
         if existing is not None:
             if existing.direction is not OctxTransferDirection.IMPORT:
                 raise ConflictError("OCTX transfer id already belongs to another operation")
+            existing_owner = str(
+                (existing.checkpoint or {}).get("requested_by_user_id") or ""
+            )
+            if requested_by_user_id and existing_owner and existing_owner != requested_by_user_id:
+                raise ConflictError("OCTX transfer id already belongs to another user")
             return existing
     else:
         normalized_transfer_id = new_id()
@@ -199,6 +207,11 @@ async def create_import_transfer(
         direction=OctxTransferDirection.IMPORT,
         status=OctxTransferStatus.UPLOADED,
         progress=0.0,
+        checkpoint=(
+            {"requested_by_user_id": requested_by_user_id}
+            if requested_by_user_id
+            else {}
+        ),
         expires_at=datetime.now(UTC) + timedelta(hours=settings.octx_transfer_ttl_hours),
     )
     stored = await storage.stream_upload(upload, transfer.id)
@@ -207,6 +220,12 @@ async def create_import_transfer(
     transfer.staging_key = stored.key
     transition_transfer(transfer, OctxTransferStatus.VALIDATING)
     transfer.progress = 0.02
+    append_octx_trace(
+        transfer,
+        stage="upload",
+        state="completed",
+        details={"size_bytes": stored.signature.size},
+    )
     session.add(transfer)
     job = await _create_job(session, transfer, JobType.OCTX_PREFLIGHT)
     await session.commit()
@@ -1113,6 +1132,7 @@ async def create_export_transfer(
     *,
     version: str | None,
     job_queue: JobQueue,
+    requested_by_user_id: str | None = None,
 ) -> OctxTransfer:
     active = await session.scalar(
         select(OctxTransfer)
@@ -1132,6 +1152,9 @@ async def create_export_transfer(
         .limit(1)
     )
     if active is not None:
+        active_scope = str((active.checkpoint or {}).get("export_scope") or "source")
+        if active_scope != "source":
+            raise ConflictError("another OCTX export is already active for this source")
         active_version = str((active.checkpoint or {}).get("selected_version") or "")
         if version is not None:
             try:
@@ -1187,7 +1210,16 @@ async def create_export_transfer(
             package_version=active_release.version,
             package_digest=active_release.package_digest,
             artifact_key=active_release.artifact_key,
-            checkpoint={"asset_name": active_asset.name, "reused_original": True},
+            checkpoint={
+                "asset_name": active_asset.name,
+                "reused_original": True,
+                "export_scope": "source",
+                **(
+                    {"requested_by_user_id": requested_by_user_id}
+                    if requested_by_user_id
+                    else {}
+                ),
+            },
         )
         session.add(transfer)
         await session.commit()
@@ -1215,6 +1247,9 @@ async def create_export_transfer(
         selected_version=selected_version,
         asset_name=source.name,
     )
+    if requested_by_user_id:
+        checkpoint["requested_by_user_id"] = requested_by_user_id
+    checkpoint["export_scope"] = "source"
     transfer = OctxTransfer(
         direction=OctxTransferDirection.EXPORT,
         status=(OctxTransferStatus.DECISION_REQUIRED if excluded else OctxTransferStatus.QUEUED),
@@ -1260,6 +1295,112 @@ async def create_export_transfer(
     await session.refresh(transfer)
     if job is not None:
         await job_queue.enqueue(job.id)
+    return transfer
+
+
+async def create_document_export_transfer(
+    session: AsyncSession,
+    source_id: str,
+    document_id: str,
+    *,
+    version: str | None,
+    job_queue: JobQueue,
+    requested_by_user_id: str | None = None,
+) -> OctxTransfer:
+    active = await session.scalar(
+        select(OctxTransfer)
+        .where(
+            OctxTransfer.direction == OctxTransferDirection.EXPORT,
+            OctxTransfer.target_source_id == source_id,
+            OctxTransfer.status.not_in(
+                [
+                    OctxTransferStatus.READY,
+                    OctxTransferStatus.FAILED,
+                    OctxTransferStatus.CANCELLED,
+                    OctxTransferStatus.EXPIRED,
+                ]
+            ),
+        )
+        .order_by(OctxTransfer.created_at.desc(), OctxTransfer.id.desc())
+        .limit(1)
+    )
+    if active is not None:
+        checkpoint = dict(active.checkpoint or {})
+        if (
+            str(checkpoint.get("export_scope") or "source") == "document"
+            and str(checkpoint.get("document_id") or "") == document_id
+        ):
+            return active
+        raise ConflictError("another OCTX export is already active for this source")
+
+    source = await session.get(Source, source_id)
+    if source is None:
+        raise NotFoundError("source not found")
+    document = await session.get(Document, document_id)
+    if document is None or document.source_id != source_id or not document.is_active:
+        raise NotFoundError("document not found")
+    if document.status is not DocumentStatus.READY or not document.sag_source_id:
+        raise ConflictError(
+            "only READY documents can be exported as OCTX",
+            code=ErrorCode.OCTX_SOURCE_NOT_EXPORTABLE,
+            layer=ErrorLayer.API,
+            stage=ErrorStage.OCTX_EXPORT,
+            retryable=document.status not in {DocumentStatus.FAILED},
+        )
+
+    binding = await session.get(OctxDocumentBinding, document.id)
+    active_release = await session.get(OctxRelease, binding.active_release_id) if binding else None
+    if version is not None:
+        try:
+            selected_version = str(Version(version))
+        except InvalidVersion as error:
+            raise ValidationError("OCTX export version must be SemVer") from error
+    elif active_release is None:
+        selected_version = "1.0.0"
+    else:
+        current = Version(active_release.version)
+        selected_version = f"{current.major}.{current.minor}.{current.micro + 1}"
+    if active_release is not None and Version(selected_version) <= Version(active_release.version):
+        raise ConflictError("OCTX export version must be greater than the active release")
+
+    ready = [
+        {
+            "id": document.id,
+            "article_id": str(document.sag_source_id),
+            "status": document.status.value,
+        }
+    ]
+    content_revision = binding.content_revision if binding is not None else 0
+    checkpoint = _export_checkpoint(
+        ready=ready,
+        excluded=[],
+        source_revision=content_revision,
+        selected_version=selected_version,
+        asset_name=document.filename,
+    )
+    checkpoint.update(
+        {
+            "export_scope": "document",
+            "document_id": document.id,
+            "document_name": document.filename,
+        }
+    )
+    if requested_by_user_id:
+        checkpoint["requested_by_user_id"] = requested_by_user_id
+    transfer = OctxTransfer(
+        direction=OctxTransferDirection.EXPORT,
+        status=OctxTransferStatus.QUEUED,
+        progress=0.0,
+        target_source_id=source_id,
+        checkpoint=checkpoint,
+        expires_at=datetime.now(UTC) + timedelta(hours=settings.octx_transfer_ttl_hours),
+    )
+    session.add(transfer)
+    await session.flush()
+    job = await _create_job(session, transfer, JobType.OCTX_EXPORT, source_id=source_id)
+    await session.commit()
+    await session.refresh(transfer)
+    await job_queue.enqueue(job.id)
     return transfer
 
 
@@ -1337,6 +1478,9 @@ async def submit_export_decision(
             selected_version=str(previous.get("selected_version") or "1.0.0"),
             asset_name=source.name,
         )
+        checkpoint["export_scope"] = str(previous.get("export_scope") or "source")
+        if previous.get("requested_by_user_id"):
+            checkpoint["requested_by_user_id"] = previous["requested_by_user_id"]
         if not ready:
             checkpoint["allowed_actions"] = []
             checkpoint["decision_stale"] = True
@@ -1439,10 +1583,26 @@ async def execute_export(
             "total": len(selected_documents),
         },
     }
+    append_octx_trace(
+        transfer,
+        stage="selection_frozen",
+        state="completed",
+        details={
+            "document_count": len(selected_documents),
+            "excluded_count": len((transfer.checkpoint or {}).get("excluded_documents") or []),
+        },
+    )
     await session.commit()
     await _ensure_transfer_active(session, transfer, stage="before_snapshot")
     attempt_dir, workspace = _prepare_export_attempt(storage, transfer.id, attempt=attempt)
-    persistent_workspace = storage.workspace_dir(source.id)
+    export_scope = str((transfer.checkpoint or {}).get("export_scope") or "source")
+    export_document_id = str((transfer.checkpoint or {}).get("document_id") or "")
+    if export_scope == "document":
+        if not export_document_id or len(selected_documents) != 1 or selected_documents[0].id != export_document_id:
+            raise ConflictError("OCTX document export selection is invalid")
+        persistent_workspace = storage.document_workspace_dir(export_document_id)
+    else:
+        persistent_workspace = storage.workspace_dir(source.id)
     producer_ids = persistent_workspace / "producer-ids.json"
     if sag_session_factory is None:
         sag_session_factory = await engine_manager.get_sag_session_factory(
@@ -1488,6 +1648,15 @@ async def execute_export(
             **dict(transfer.checkpoint or {}),
             "progress_detail": dict(detail),
         }
+        trace = list((transfer.checkpoint or {}).get("diagnostic_trace") or [])
+        trace_stage = "snapshot_vectors" if detail.get("phase") == "vectors" else "snapshot_structured"
+        if not trace or trace[-1].get("stage") != trace_stage:
+            append_octx_trace(
+                transfer,
+                stage=trace_stage,
+                state="started",
+                details={"kind": detail.get("kind"), "total": detail.get("total")},
+            )
         await session.commit()
 
     async with engine_manager.maintenance(source.sag_source_config_id, source=source):
@@ -1516,6 +1685,12 @@ async def execute_export(
         "vector_roles": sorted(stats.vector_roles),
         "progress_detail": {"phase": "packaging", "kind": "validate_package"},
     }
+    append_octx_trace(
+        transfer,
+        stage="package_validation",
+        state="started",
+        details={"vector_role_count": len(stats.vector_roles)},
+    )
     await session.commit()
     output = attempt_dir / "release.octx"
     try:
@@ -1523,7 +1698,7 @@ async def execute_export(
             BuildPackageRequest(
                 workspace=workspace,
                 output=output,
-                name=source.name,
+                name=str((transfer.checkpoint or {}).get("asset_name") or source.name),
                 version=str((transfer.checkpoint or {}).get("selected_version") or "1.0.0"),
                 capabilities={
                     "sag-structured": "0.1",
@@ -1545,6 +1720,7 @@ async def execute_export(
         **dict(transfer.checkpoint or {}),
         "progress_detail": {"phase": "publishing", "kind": "artifact"},
     }
+    append_octx_trace(transfer, stage="artifact_publish", state="started")
     await session.commit()
     await _ensure_transfer_active(session, transfer, stage="before_publish")
     artifact_key = storage.publish_release(built.output, built.asset_id, built.version, built.package_digest)
@@ -1564,7 +1740,7 @@ async def execute_export(
     if asset is None:
         asset = OctxAsset(
             id=built.asset_id,
-            name=source.name[:200],
+            name=str((transfer.checkpoint or {}).get("asset_name") or source.name)[:200],
             ownership=OctxAssetOwnership.LOCAL,
             producer_source_id=source.id,
         )
@@ -1582,7 +1758,10 @@ async def execute_export(
             version=built.version,
             package_digest=built.package_digest,
             manifest={
-                "asset": {"id": built.asset_id, "name": source.name},
+                "asset": {
+                    "id": built.asset_id,
+                    "name": str((transfer.checkpoint or {}).get("asset_name") or source.name),
+                },
                 "release": {
                     "version": built.version,
                     "package_digest": built.package_digest,
@@ -1594,28 +1773,52 @@ async def execute_export(
         )
         session.add(release)
         await session.flush()
-    binding = await session.get(OctxSourceBinding, source.id)
-    if binding is None:
-        binding = OctxSourceBinding(
-            source_id=source.id,
-            asset_id=asset.id,
-            active_release_id=release.id,
-            content_revision=1,
-            released_revision=1,
-            workspace_key=f"workspaces/{source.id}",
-        )
-        session.add(binding)
+    if export_scope == "document":
+        document_binding = await session.get(OctxDocumentBinding, export_document_id)
+        if document_binding is None:
+            document_binding = OctxDocumentBinding(
+                document_id=export_document_id,
+                asset_id=asset.id,
+                active_release_id=release.id,
+                content_revision=1,
+                released_revision=1,
+                workspace_key=f"document-workspaces/{export_document_id}",
+            )
+            session.add(document_binding)
+        else:
+            document_binding.asset_id = asset.id
+            document_binding.active_release_id = release.id
+            document_binding.released_revision = document_binding.content_revision
+            document_binding.workspace_key = f"document-workspaces/{export_document_id}"
     else:
-        binding.asset_id = asset.id
-        binding.active_release_id = release.id
-        binding.released_revision = binding.content_revision
-        binding.workspace_key = f"workspaces/{source.id}"
+        binding = await session.get(OctxSourceBinding, source.id)
+        if binding is None:
+            binding = OctxSourceBinding(
+                source_id=source.id,
+                asset_id=asset.id,
+                active_release_id=release.id,
+                content_revision=1,
+                released_revision=1,
+                workspace_key=f"workspaces/{source.id}",
+            )
+            session.add(binding)
+        else:
+            binding.asset_id = asset.id
+            binding.active_release_id = release.id
+            binding.released_revision = binding.content_revision
+            binding.workspace_key = f"workspaces/{source.id}"
     transfer.asset_id = asset.id
     transfer.release_id = release.id
     transfer.package_version = release.version
     transfer.package_digest = release.package_digest
     transfer.artifact_key = release.artifact_key
     transfer.validation_report = dict(built.report)
+    append_octx_trace(
+        transfer,
+        stage="ready",
+        state="completed",
+        details={"package_digest": release.package_digest},
+    )
     await _commit_export_ready(session, transfer)
     return transfer
 

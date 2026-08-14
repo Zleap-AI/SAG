@@ -446,10 +446,12 @@ async def test_structured_import_activates_source_only_after_shadow_is_ready(tra
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("trusted_vectors", [True, False])
+@pytest.mark.parametrize("export_scope", ["source", "document"])
 async def test_export_transfer_builds_immutable_fully_validated_release(
     transfer_sessions,
     tmp_path,
     trusted_vectors,
+    export_scope,
 ):
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
@@ -469,7 +471,13 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
     )
 
     from sag_api.core.config import Settings
-    from sag_api.db.models import Document, OctxRelease, OctxSourceBinding, Source
+    from sag_api.db.models import (
+        Document,
+        OctxDocumentBinding,
+        OctxRelease,
+        OctxSourceBinding,
+        Source,
+    )
     from sag_api.enums import DocumentStatus, OctxTransferStatus
     from sag_api.octx.runner import OctxRunner
     from sag_api.octx.storage import OctxStorage
@@ -481,6 +489,7 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
     from sag_api.sag.octx_vector_protocol import embedding_identity
     from sag_api.sag.octx_vector_rebuilder import rebuild_vectors
     from sag_api.services.octx_transfer_service import (
+        create_document_export_transfer,
         create_export_transfer,
         execute_export,
     )
@@ -598,18 +607,31 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
             source = Source(name="Export", sag_source_config_id="src_export")
             session.add(source)
             await session.flush()
-            session.add(
-                Document(
-                    source_id=source.id,
-                    filename="export.md",
-                    storage_path=str(tmp_path / "export.md"),
-                    status=DocumentStatus.READY,
-                    sag_source_id=article_id,
-                    is_active=True,
-                )
+            document = Document(
+                source_id=source.id,
+                filename="export.md",
+                storage_path=str(tmp_path / "export.md"),
+                status=DocumentStatus.READY,
+                sag_source_id=article_id,
+                is_active=True,
             )
+            session.add(document)
             await session.commit()
-            transfer = await create_export_transfer(session, source.id, version=None, job_queue=queue)
+            if export_scope == "document":
+                transfer = await create_document_export_transfer(
+                    session,
+                    source.id,
+                    document.id,
+                    version=None,
+                    job_queue=queue,
+                )
+            else:
+                transfer = await create_export_transfer(
+                    session,
+                    source.id,
+                    version=None,
+                    job_queue=queue,
+                )
 
             class Embedding:
                 model = "test/embedding"
@@ -635,9 +657,14 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
                 attempt=1,
             )
             assert transfer.status is OctxTransferStatus.READY
-            binding = await session.get(OctxSourceBinding, source.id)
             release = await session.get(OctxRelease, transfer.release_id)
-            assert binding.active_release_id == release.id
+            if export_scope == "document":
+                binding = await session.get(OctxDocumentBinding, document.id)
+                assert binding.active_release_id == release.id
+                assert await session.get(OctxSourceBinding, source.id) is None
+            else:
+                binding = await session.get(OctxSourceBinding, source.id)
+                assert binding.active_release_id == release.id
             artifact = storage.resolve_key(release.artifact_key)
             with open_octx(artifact) as package:
                 assert package.manifest["capabilities"]["sag-structured"]["version"] == "0.1"
@@ -646,6 +673,32 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
                 assert len(list(package.iter_documents())) == 1
             validation = validate_octx(artifact)
             assert validation.valid and validation.fully_validated
+
+            if export_scope == "document":
+                first_asset_id = transfer.asset_id
+                repeated_transfer = await create_document_export_transfer(
+                    session,
+                    source.id,
+                    document.id,
+                    version=None,
+                    job_queue=queue,
+                )
+                await execute_export(
+                    session,
+                    repeated_transfer,
+                    storage=storage,
+                    runner=OctxRunner(
+                        Settings(_env_file=None, octx_worker_timeout_seconds=30)
+                    ),
+                    engine_manager=EngineManager(),
+                    sag_session_factory=sag_sessions,
+                    embedding_client=Embedding(),
+                    vector_store=VectorStore(),
+                    attempt=1,
+                )
+                assert repeated_transfer.asset_id == first_asset_id
+                assert repeated_transfer.package_version == "1.0.1"
+                assert await session.get(OctxSourceBinding, source.id) is None
 
             roundtrip_plan = tmp_path / "roundtrip.sqlite3"
             roundtrip_namespace = str(__import__("uuid").uuid4())
@@ -1698,6 +1751,125 @@ async def test_repeated_export_request_reuses_active_transfer(
         assert len(queue.ids) == 1
         assert await session.scalar(select(func.count(OctxTransfer.id))) == 1
         assert await session.scalar(select(func.count(Job.id))) == 1
+
+
+@pytest.mark.asyncio
+async def test_document_export_freezes_one_ready_document_and_serializes_source(
+    transfer_sessions,
+):
+    from sag_api.core.errors import ConflictError
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus, OctxTransferStatus
+    from sag_api.services.octx_transfer_service import (
+        create_document_export_transfer,
+        create_export_transfer,
+    )
+
+    class Queue:
+        def __init__(self):
+            self.ids: list[str] = []
+
+        async def enqueue(self, job_id: str) -> None:
+            self.ids.append(job_id)
+
+    queue = Queue()
+    async with transfer_sessions() as session:
+        source = Source(name="Documents", sag_source_config_id="document-export")
+        session.add(source)
+        await session.flush()
+        first = Document(
+            source_id=source.id,
+            filename="first.pdf",
+            storage_path="/tmp/first.pdf",
+            status=DocumentStatus.READY,
+            sag_source_id="article-first",
+            is_active=True,
+        )
+        second = Document(
+            source_id=source.id,
+            filename="second.pdf",
+            storage_path="/tmp/second.pdf",
+            status=DocumentStatus.READY,
+            sag_source_id="article-second",
+            is_active=True,
+        )
+        session.add_all([first, second])
+        await session.commit()
+
+        transfer = await create_document_export_transfer(
+            session,
+            source.id,
+            first.id,
+            version=None,
+            job_queue=queue,
+        )
+        repeated = await create_document_export_transfer(
+            session,
+            source.id,
+            first.id,
+            version=None,
+            job_queue=queue,
+        )
+
+        assert transfer.status is OctxTransferStatus.QUEUED
+        assert repeated.id == transfer.id
+        assert transfer.checkpoint["export_scope"] == "document"
+        assert transfer.checkpoint["document_id"] == first.id
+        assert transfer.checkpoint["selected_document_ids"] == [first.id]
+        assert transfer.checkpoint["selected_article_ids"] == ["article-first"]
+        assert transfer.checkpoint["asset_name"] == "first.pdf"
+        assert len(queue.ids) == 1
+
+        with pytest.raises(ConflictError):
+            await create_document_export_transfer(
+                session,
+                source.id,
+                second.id,
+                version=None,
+                job_queue=queue,
+            )
+        with pytest.raises(ConflictError):
+            await create_export_transfer(
+                session,
+                source.id,
+                version=None,
+                job_queue=queue,
+            )
+
+
+@pytest.mark.asyncio
+async def test_document_export_rejects_non_ready_document(transfer_sessions):
+    from sag_api.core.errors import ConflictError
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
+    from sag_api.services.octx_transfer_service import create_document_export_transfer
+
+    class Queue:
+        async def enqueue(self, _job_id: str) -> None:
+            raise AssertionError("non-ready document must not be queued")
+
+    async with transfer_sessions() as session:
+        source = Source(name="Documents", sag_source_config_id="not-ready-export")
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="extracting.pdf",
+            storage_path="/tmp/extracting.pdf",
+            status=DocumentStatus.EXTRACTING,
+            is_active=True,
+        )
+        session.add(document)
+        await session.commit()
+
+        with pytest.raises(ConflictError):
+            await create_document_export_transfer(
+                session,
+                source.id,
+                document.id,
+                version=None,
+                job_queue=Queue(),
+            )
 
 
 @pytest.mark.asyncio
