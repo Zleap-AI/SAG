@@ -151,6 +151,13 @@
     "more": "More",
     "collapse": "Collapse"
   },
+  "DesktopUpdate": {
+    "available": "Update {version} available",
+    "downloading": "Downloading update {percent, number}%",
+    "restart": "Restart to update to {version}",
+    "installUnavailable": "The update has not finished downloading",
+    "installFailed": "Unable to start the update. Try again later."
+  },
   "ArchivedThreads": {
     "title": "Archived conversations",
     "description": "Recently archived conversations appear first and can be restored or permanently deleted.",

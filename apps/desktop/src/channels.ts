@@ -1,6 +1,8 @@
 export const DESKTOP_CHANNELS = {
   appInfo: "desktop:app-info",
   checkForUpdates: "desktop:check-for-updates",
+  getUpdateState: "desktop:get-update-state",
+  installUpdate: "desktop:install-update",
   updateState: "desktop:update-state",
   diagnosticsInfo: "desktop:diagnostics-info",
 } as const;

@@ -10,6 +10,8 @@ import { desktopConfig } from "./config";
 
 export interface UpdaterController {
   check(): Promise<{ supported: boolean }>;
+  getState(): UpdateState;
+  install(): { started: boolean };
   dispose(): void;
 }
 
@@ -18,11 +20,13 @@ export function createUpdaterController(
 ): UpdaterController {
   let delayTimer: NodeJS.Timeout | null = null;
   let intervalTimer: NodeJS.Timeout | null = null;
+  let currentState: UpdateState = { status: "idle" };
   const supported =
     app.isPackaged
     && existsSync(path.join(process.resourcesPath, "app-update.yml"));
 
   const publish = (state: UpdateState) => {
+    currentState = state;
     const window = getWindow();
     if (window && !window.isDestroyed()) {
       window.webContents.send(DESKTOP_CHANNELS.updateState, state);
@@ -90,6 +94,14 @@ export function createUpdaterController(
 
   return {
     check,
+    getState: () => currentState,
+    install: () => {
+      if (!supported || currentState.status !== "downloaded") {
+        return { started: false };
+      }
+      autoUpdater.quitAndInstall(false, true);
+      return { started: true };
+    },
     dispose: () => {
       if (delayTimer) clearTimeout(delayTimer);
       if (intervalTimer) clearInterval(intervalTimer);

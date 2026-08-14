@@ -23,19 +23,25 @@ export interface SagDesktopDiagnosticsInfo {
   }>;
 }
 
+export type SagDesktopUpdateState =
+  | { status: "idle" }
+  | { status: "checking" }
+  | { status: "available"; version: string }
+  | { status: "not-available" }
+  | { status: "downloading"; percent: number }
+  | { status: "downloaded"; version: string }
+  | { status: "error"; message: string };
+
 export interface SagDesktopBridge {
   readonly isDesktop: true;
   readonly platform: string;
   appInfo(): Promise<{ version: string; platform: string; arch: string }>;
   checkForUpdates(): Promise<{ supported: boolean }>;
+  getUpdateState(): Promise<SagDesktopUpdateState>;
+  installUpdate(): Promise<{ started: boolean }>;
   getDiagnosticsInfo(): Promise<SagDesktopDiagnosticsInfo>;
   onUpdateState(
-    listener: (state: {
-      status: string;
-      version?: string;
-      percent?: number;
-      message?: string;
-    }) => void,
+    listener: (state: SagDesktopUpdateState) => void,
   ): () => void;
 }
 

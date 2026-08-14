@@ -26,6 +26,7 @@ import {
 import { useApp } from "@/components/features/app-shell";
 import { useConversationIndex } from "@/components/features/chat/conversation-provider";
 import { WorkspaceSectionIcon } from "@/components/features/workspace-section-icon";
+import { DesktopUpdateIndicator } from "@/components/features/desktop-update-indicator";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -348,6 +349,7 @@ export function AppSidebar({ contained = false }: { contained?: boolean }) {
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
+          <DesktopUpdateIndicator />
           <SidebarMenuItem>
             <SidebarMenuButton
               asChild

@@ -151,6 +151,13 @@
     "more": "更多",
     "collapse": "收起"
   },
+  "DesktopUpdate": {
+    "available": "发现新版本 {version}",
+    "downloading": "正在下载更新 {percent, number}%",
+    "restart": "重启以更新 {version}",
+    "installUnavailable": "更新尚未下载完成",
+    "installFailed": "无法启动更新，请稍后重试"
+  },
   "ArchivedThreads": {
     "title": "归档会话",
     "description": "最近归档的会话优先显示，可恢复或永久删除。",
