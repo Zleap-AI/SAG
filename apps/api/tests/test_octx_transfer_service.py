@@ -616,6 +616,17 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
                 is_active=True,
             )
             session.add(document)
+            if export_scope == "document":
+                session.add(
+                    Document(
+                        source_id=source.id,
+                        filename="unselected.md",
+                        storage_path=str(tmp_path / "unselected.md"),
+                        status=DocumentStatus.READY,
+                        sag_source_id=str(__import__("uuid").uuid4()),
+                        is_active=True,
+                    )
+                )
             await session.commit()
             if export_scope == "document":
                 transfer = await create_document_export_transfer(
@@ -645,17 +656,32 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
                 async def fetch_vector_fields(self, index, ids, fields):
                     return {record_id: {field: [0.1, 0.2] for field in fields} for record_id in ids}
 
-            await execute_export(
-                session,
-                transfer,
-                storage=storage,
-                runner=OctxRunner(Settings(_env_file=None, octx_worker_timeout_seconds=30)),
-                engine_manager=EngineManager(),
-                sag_session_factory=sag_sessions,
-                embedding_client=Embedding(),
-                vector_store=VectorStore(),
-                attempt=1,
-            )
+            document_queries: list[str] = []
+
+            def capture_document_query(orm_execute_state):
+                if orm_execute_state.is_select and "FROM documents" in str(orm_execute_state.statement):
+                    document_queries.append(str(orm_execute_state.statement))
+
+            event.listen(session.sync_session, "do_orm_execute", capture_document_query)
+            try:
+                await execute_export(
+                    session,
+                    transfer,
+                    storage=storage,
+                    runner=OctxRunner(
+                        Settings(_env_file=None, octx_worker_timeout_seconds=30)
+                    ),
+                    engine_manager=EngineManager(),
+                    sag_session_factory=sag_sessions,
+                    embedding_client=Embedding(),
+                    vector_store=VectorStore(),
+                    attempt=1,
+                )
+            finally:
+                event.remove(session.sync_session, "do_orm_execute", capture_document_query)
+            if export_scope == "document":
+                assert len(document_queries) == 1
+                assert "documents.id IN" in document_queries[0]
             assert transfer.status is OctxTransferStatus.READY
             release = await session.get(OctxRelease, transfer.release_id)
             if export_scope == "document":
@@ -1800,14 +1826,14 @@ async def test_document_export_freezes_one_ready_document_and_serializes_source(
             session,
             source.id,
             first.id,
-            version=None,
+            version="1.2.3",
             job_queue=queue,
         )
         repeated = await create_document_export_transfer(
             session,
             source.id,
             first.id,
-            version=None,
+            version="1.2.3",
             job_queue=queue,
         )
 
@@ -1819,6 +1845,15 @@ async def test_document_export_freezes_one_ready_document_and_serializes_source(
         assert transfer.checkpoint["selected_article_ids"] == ["article-first"]
         assert transfer.checkpoint["asset_name"] == "first.pdf"
         assert len(queue.ids) == 1
+
+        with pytest.raises(ConflictError, match="OCTX export 1.2.3 is already active for this source"):
+            await create_document_export_transfer(
+                session,
+                source.id,
+                first.id,
+                version="1.2.4",
+                job_queue=queue,
+            )
 
         with pytest.raises(ConflictError):
             await create_document_export_transfer(

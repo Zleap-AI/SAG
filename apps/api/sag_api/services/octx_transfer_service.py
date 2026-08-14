@@ -1330,6 +1330,14 @@ async def create_document_export_transfer(
             str(checkpoint.get("export_scope") or "source") == "document"
             and str(checkpoint.get("document_id") or "") == document_id
         ):
+            active_version = str(checkpoint.get("selected_version") or "")
+            if version is not None:
+                try:
+                    requested_version = str(Version(version))
+                except InvalidVersion as error:
+                    raise ValidationError("OCTX export version must be SemVer") from error
+                if active_version and requested_version != active_version:
+                    raise ConflictError(f"OCTX export {active_version} is already active for this source")
             return active
         raise ConflictError("another OCTX export is already active for this source")
 
@@ -1542,24 +1550,22 @@ async def execute_export(
     source = await session.get(Source, transfer.target_source_id)
     if source is None:
         raise NotFoundError("source not found")
-    documents = (
+    checkpoint = dict(transfer.checkpoint or {})
+    selected_document_ids = tuple(checkpoint.get("selected_document_ids") or ())
+    selected_article_ids = tuple(checkpoint.get("selected_article_ids") or ())
+    selected_documents = (
         (
             await session.execute(
-                select(Document)
-                .where(
+                select(Document).where(
                     Document.source_id == source.id,
                     Document.is_active.is_(True),
+                    Document.id.in_(selected_document_ids),
                 )
-                .order_by(Document.created_at, Document.id)
             )
         )
         .scalars()
         .all()
     )
-    checkpoint = dict(transfer.checkpoint or {})
-    selected_document_ids = tuple(checkpoint.get("selected_document_ids") or ())
-    selected_article_ids = tuple(checkpoint.get("selected_article_ids") or ())
-    selected_documents = [document for document in documents if document.id in selected_document_ids]
     selected_documents.sort(key=lambda document: selected_document_ids.index(document.id))
     if (
         not selected_document_ids

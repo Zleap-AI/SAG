@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 import { api, ApiError } from "@/lib/api";
+import type { SagDesktopDiagnosticsInfo } from "@/lib/desktop-bridge";
 import { OctxExportTaskManager } from "@/lib/octx-export-manager";
 import { exportDismissDelay } from "@/lib/octx-export-dismissal";
 import { getDiagnosticsStore, sanitize } from "@/lib/diagnostics";
@@ -60,15 +61,22 @@ function downloadJson(value: unknown, filename: string) {
   triggerDownload(blob, filename);
 }
 
-function redactLocalHomePaths(content: string): string {
-  return content
-    .replace(/\/(?:Users|home)\/[^\s"']+/g, "[LOCAL_PATH]")
-    .replace(/[A-Za-z]:\\Users\\[^\s"']+/g, "[LOCAL_PATH]")
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-    .replace(
-      /(api[_-]?key|token|password|secret|credential)(\s*[:=]\s*)[^\s,;]+/gi,
-      "$1$2[REDACTED]",
-    );
+export function projectDesktopDiagnostics(
+  info: SagDesktopDiagnosticsInfo,
+): Record<string, string | number | boolean> {
+  return {
+    version: info.version,
+    platform: info.platform,
+    arch: info.arch,
+    os_release: info.osRelease,
+    os_version: info.osVersion,
+    packaged: info.packaged,
+    electron: info.electron,
+    chrome: info.chrome,
+    node: info.node,
+    log_file_count: info.logFiles.length,
+    has_truncated_logs: info.logFiles.some((file) => file.truncated),
+  };
 }
 
 export function OctxExportProvider({ children }: { children: React.ReactNode }) {
@@ -217,29 +225,10 @@ export function OctxExportProvider({ children }: { children: React.ReactNode }) 
         if (window.sagDesktop?.getDiagnosticsInfo) {
           try {
             const info = await window.sagDesktop.getDiagnosticsInfo();
+            desktop = projectDesktopDiagnostics(info);
+          } catch {
             desktop = {
-              version: info.version,
-              platform: info.platform,
-              arch: info.arch,
-              os_release: info.osRelease,
-              os_version: info.osVersion,
-              packaged: info.packaged,
-              electron: info.electron,
-              chrome: info.chrome,
-              node: info.node,
-              log_files: info.logFiles.map((file) => ({
-                name: file.name,
-                size_bytes: file.sizeBytes,
-                truncated: file.truncated,
-                content: redactLocalHomePaths(file.content),
-              })),
-            };
-          } catch (desktopError) {
-            desktop = {
-              collection_error:
-                desktopError instanceof Error
-                  ? desktopError.message
-                  : String(desktopError),
+              collection_error: "desktop_diagnostics_unavailable",
             };
           }
         }
