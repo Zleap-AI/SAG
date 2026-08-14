@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from decimal import Decimal
 from types import SimpleNamespace
@@ -182,6 +183,305 @@ async def test_export_snapshot_creates_fully_validated_structured_workspace(tmp_
         assert exported_events[0]["title"] == original_event_title
         assert exported_events[0]["content"] == "Exported event"
         assert len(list(package.iter_entities())) == 1
+
+
+@pytest.mark.asyncio
+async def test_export_snapshot_preserves_selected_parent_event_identity(tmp_path):
+    """A selected child must retain its selected parent's stored OCTX identity."""
+    from octx import create_octx
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from zleap.sag.db.base import Base
+    from zleap.sag.db.models import (
+        Article,
+        ArticleParseStatus,
+        Entity,
+        EntityType,
+        EventEntity,
+        SourceChunk,
+        SourceConfig,
+        SourceEvent,
+    )
+
+    from sag_api.sag.octx_importer import build_structured_plan
+    from sag_api.sag.octx_snapshot import export_snapshot
+
+    source_config_id = "parent-identity-source"
+    article_id = str(uuid.uuid4())
+    chunk_id = str(uuid.uuid4())
+    entity_id = str(uuid.uuid4())
+    entity_type_id = str(uuid.uuid4())
+    first_id, second_id = sorted(
+        str(uuid.uuid5(uuid.NAMESPACE_URL, name)) for name in ("selected-child", "selected-parent")
+    )
+    child_event_id = first_id
+    parent_event_id = second_id
+    child_record_id = "018f5f7e-89ab-7def-8123-0123456789c1"
+    parent_record_id = "018f5f7e-89ab-7def-8123-0123456789c2"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'parent-identity.db'}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    async with sessions() as session:
+        session.add(SourceConfig(id=source_config_id, name="Parent identity", target_config={}))
+        session.add(
+            Article(
+                id=article_id,
+                source_config_id=source_config_id,
+                title="Selected document",
+                content="Selected document content.",
+                status="COMPLETED",
+                parse_status=ArticleParseStatus.COMPLETED,
+            )
+        )
+        session.add(
+            SourceChunk(
+                id=chunk_id,
+                source_config_id=source_config_id,
+                source_type="ARTICLE",
+                source_id=article_id,
+                article_id=article_id,
+                content="Selected document content.",
+                rank=0,
+                chunk_length=26,
+            )
+        )
+        session.add(
+            EntityType(
+                id=entity_type_id,
+                scope="source",
+                source_config_id=source_config_id,
+                type="topic",
+                name="Topic",
+                weight=Decimal("1.00"),
+                similarity_threshold=Decimal("0.800"),
+            )
+        )
+        session.add(
+            Entity(
+                id=entity_id,
+                source_config_id=source_config_id,
+                entity_type_id=entity_type_id,
+                type="topic",
+                name="Parent identity",
+                normalized_name="parent identity",
+            )
+        )
+        session.add_all(
+            [
+                SourceEvent(
+                    id=parent_event_id,
+                    source_config_id=source_config_id,
+                    source_type="ARTICLE",
+                    source_id=article_id,
+                    article_id=article_id,
+                    title="Parent event",
+                    summary="Parent event",
+                    content="Parent event content.",
+                    rank=0,
+                    level=0,
+                    chunk_id=chunk_id,
+                    extra_data={"octx": {"record_id": parent_record_id}},
+                ),
+                SourceEvent(
+                    id=child_event_id,
+                    source_config_id=source_config_id,
+                    source_type="ARTICLE",
+                    source_id=article_id,
+                    article_id=article_id,
+                    parent_id=parent_event_id,
+                    title="Child event",
+                    summary="Child event",
+                    content="Child event content.",
+                    rank=1,
+                    level=1,
+                    chunk_id=chunk_id,
+                    extra_data={"octx": {"record_id": child_record_id}},
+                ),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                EventEntity(id=str(uuid.uuid4()), event_id=parent_event_id, entity_id=entity_id, weight=Decimal("1")),
+                EventEntity(id=str(uuid.uuid4()), event_id=child_event_id, entity_id=entity_id, weight=Decimal("1")),
+            ]
+        )
+        await session.commit()
+
+    try:
+        await export_snapshot(
+            SimpleNamespace(id="source-local", name="Parent identity", sag_source_config_id=source_config_id),
+            [SimpleNamespace(sag_source_id=article_id, filename="selected.md", is_active=True)],
+            tmp_path / "parent-identity-workspace",
+            selected_article_ids=[article_id],
+            producer_state_path=tmp_path / "parent-identity-producer-ids.json",
+            session_factory=sessions,
+        )
+    finally:
+        await engine.dispose()
+
+    event_records = [
+        json.loads(line)
+        for line in (tmp_path / "parent-identity-workspace/data/events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    child_record = next(record for record in event_records if record["id"] == child_record_id)
+    assert child_record["parent_id"] == parent_record_id
+    assert parent_record_id in {record["id"] for record in event_records}
+
+    package_path = create_octx(
+        tmp_path / "parent-identity-workspace",
+        output=tmp_path / "parent-identity.octx",
+        name="Parent identity",
+        capabilities={"sag-structured": "0.1"},
+    ).output
+    build_structured_plan(package_path, tmp_path / "parent-identity-plan.sqlite3", str(uuid.uuid4()))
+
+
+@pytest.mark.asyncio
+async def test_document_snapshot_detaches_parent_outside_selected_article(tmp_path):
+    """A child whose parent is outside the selected documents becomes a root Event."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from zleap.sag.db.base import Base
+    from zleap.sag.db.models import (
+        Article,
+        ArticleParseStatus,
+        Entity,
+        EntityType,
+        EventEntity,
+        SourceChunk,
+        SourceConfig,
+        SourceEvent,
+    )
+
+    from sag_api.sag.octx_snapshot import export_snapshot
+
+    source_config_id = "cross-document-parent-source"
+    parent_article_id = str(uuid.uuid4())
+    child_article_id = str(uuid.uuid4())
+    parent_chunk_id = str(uuid.uuid4())
+    child_chunk_id = str(uuid.uuid4())
+    parent_event_id = str(uuid.uuid4())
+    child_event_id = str(uuid.uuid4())
+    entity_id = str(uuid.uuid4())
+    entity_type_id = str(uuid.uuid4())
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'cross-document-parent.db'}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    async with sessions() as session:
+        session.add(SourceConfig(id=source_config_id, name="Cross document parent", target_config={}))
+        for article_id, title in ((parent_article_id, "Parent document"), (child_article_id, "Child document")):
+            session.add(
+                Article(
+                    id=article_id,
+                    source_config_id=source_config_id,
+                    title=title,
+                    content=f"{title} content.",
+                    status="COMPLETED",
+                    parse_status=ArticleParseStatus.COMPLETED,
+                )
+            )
+        for chunk_id, article_id, content in (
+            (parent_chunk_id, parent_article_id, "Parent document content."),
+            (child_chunk_id, child_article_id, "Child document content."),
+        ):
+            session.add(
+                SourceChunk(
+                    id=chunk_id,
+                    source_config_id=source_config_id,
+                    source_type="ARTICLE",
+                    source_id=article_id,
+                    article_id=article_id,
+                    content=content,
+                    rank=0,
+                    chunk_length=len(content),
+                )
+            )
+        session.add(
+            EntityType(
+                id=entity_type_id,
+                scope="source",
+                source_config_id=source_config_id,
+                type="topic",
+                name="Topic",
+                weight=Decimal("1.00"),
+                similarity_threshold=Decimal("0.800"),
+            )
+        )
+        session.add(
+            Entity(
+                id=entity_id,
+                source_config_id=source_config_id,
+                entity_type_id=entity_type_id,
+                type="topic",
+                name="Cross document parent",
+                normalized_name="cross document parent",
+            )
+        )
+        session.add_all(
+            [
+                SourceEvent(
+                    id=parent_event_id,
+                    source_config_id=source_config_id,
+                    source_type="ARTICLE",
+                    source_id=parent_article_id,
+                    article_id=parent_article_id,
+                    title="Parent event",
+                    summary="Parent event",
+                    content="Parent event content.",
+                    rank=0,
+                    level=0,
+                    chunk_id=parent_chunk_id,
+                ),
+                SourceEvent(
+                    id=child_event_id,
+                    source_config_id=source_config_id,
+                    source_type="ARTICLE",
+                    source_id=child_article_id,
+                    article_id=child_article_id,
+                    parent_id=parent_event_id,
+                    title="Child event",
+                    summary="Child event",
+                    content="Child event content.",
+                    rank=0,
+                    level=1,
+                    chunk_id=child_chunk_id,
+                ),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                EventEntity(id=str(uuid.uuid4()), event_id=parent_event_id, entity_id=entity_id, weight=Decimal("1")),
+                EventEntity(id=str(uuid.uuid4()), event_id=child_event_id, entity_id=entity_id, weight=Decimal("1")),
+            ]
+        )
+        await session.commit()
+
+    try:
+        await export_snapshot(
+            SimpleNamespace(id="source-local", name="Cross document parent", sag_source_config_id=source_config_id),
+            [SimpleNamespace(sag_source_id=child_article_id, filename="child.md", is_active=True)],
+            tmp_path / "cross-document-parent-workspace",
+            selected_article_ids=[child_article_id],
+            producer_state_path=tmp_path / "cross-document-parent-producer-ids.json",
+            session_factory=sessions,
+        )
+    finally:
+        await engine.dispose()
+
+    event_records = [
+        json.loads(line)
+        for line in (tmp_path / "cross-document-parent-workspace/data/events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert len(event_records) == 1
+    child_record = event_records[0]
+    assert "parent_id" not in child_record
+    assert child_record["level"] == 0
+    event_ids = {record["id"] for record in event_records}
+    assert {record["parent_id"] for record in event_records if record.get("parent_id")} <= event_ids
 
 
 @pytest.mark.asyncio

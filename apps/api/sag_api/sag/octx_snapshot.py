@@ -10,8 +10,9 @@ from decimal import Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from sqlalchemy import exists, func, select
+from sqlalchemy import and_, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import aliased
 
 from sag_api.octx.errors import OctxSourceReextractRequiredError
 from sag_api.sag.octx_ids import ProducerIdMap
@@ -361,13 +362,23 @@ async def export_snapshot(
                 (data / "events.jsonl").open("x", encoding="utf-8") as event_output,
                 (relations / "chunk-events.jsonl").open("x", encoding="utf-8") as relation_output,
             ):
-                event_rows = await session.stream_scalars(
-                    select(SourceEvent)
+                parent_event = aliased(SourceEvent)
+                event_rows = await session.stream(
+                    select(SourceEvent, parent_event)
+                    .outerjoin(
+                        parent_event,
+                        and_(
+                            parent_event.id == SourceEvent.parent_id,
+                            parent_event.source_config_id == source_config_id,
+                            parent_event.article_id.in_(selected_ids),
+                            parent_event.not_deleted(),
+                        ),
+                    )
                     .where(*selected_event_filter)
                     .order_by(SourceEvent.id)
                     .execution_options(yield_per=500)
                 )
-                async for event in event_rows:
+                async for event, selected_parent in event_rows:
                     event_id = ids.exchange_id("event", event.id, extra_data=_octx_extra(event.extra_data))
                     record = {
                         "id": event_id,
@@ -381,9 +392,15 @@ async def export_snapshot(
                         "end_time": event.end_time,
                     }
                     record.update({key: value for key, value in optional.items() if value})
-                    if event.parent_id:
-                        record["parent_id"] = ids.exchange_id("event", event.parent_id)
+                    if selected_parent is not None:
+                        record["parent_id"] = ids.exchange_id(
+                            "event",
+                            selected_parent.id,
+                            extra_data=_octx_extra(selected_parent.extra_data),
+                        )
                         record["level"] = int(event.level)
+                    elif event.parent_id:
+                        record["level"] = 0
                     _write_jsonl(event_output, record)
                     for role in ("event.title", "event.content"):
                         vector_manifest.add(
