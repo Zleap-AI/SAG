@@ -340,6 +340,7 @@ async def test_export_snapshot_preserves_selected_parent_event_identity(tmp_path
 @pytest.mark.asyncio
 async def test_document_snapshot_detaches_parent_outside_selected_article(tmp_path):
     """A child whose parent is outside the selected documents becomes a root Event."""
+    from octx import create_octx
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
     from zleap.sag.db.base import Base
     from zleap.sag.db.models import (
@@ -479,9 +480,17 @@ async def test_document_snapshot_detaches_parent_outside_selected_article(tmp_pa
     assert len(event_records) == 1
     child_record = event_records[0]
     assert "parent_id" not in child_record
-    assert child_record["level"] == 0
+    assert "level" not in child_record
     event_ids = {record["id"] for record in event_records}
     assert {record["parent_id"] for record in event_records if record.get("parent_id")} <= event_ids
+
+    result = create_octx(
+        tmp_path / "cross-document-parent-workspace",
+        output=tmp_path / "cross-document-parent.octx",
+        name="Cross document parent",
+        capabilities={"sag-structured": "0.1"},
+    )
+    assert result.report.valid is True
 
 
 @pytest.mark.asyncio

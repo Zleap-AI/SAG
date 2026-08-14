@@ -399,8 +399,6 @@ async def export_snapshot(
                             extra_data=_octx_extra(selected_parent.extra_data),
                         )
                         record["level"] = int(event.level)
-                    elif event.parent_id:
-                        record["level"] = 0
                     _write_jsonl(event_output, record)
                     for role in ("event.title", "event.content"):
                         vector_manifest.add(
