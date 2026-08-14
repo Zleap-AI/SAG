@@ -101,6 +101,49 @@ class ErrorCode(StrEnum):
     MCP_CONNECTION_FAILED = "mcp_connection_failed"
     """连接外部 MCP 服务器失败。"""
 
+    # —— fnOS 宿主开放能力 ——
+    NAS_HOST_AUTH_EXPIRED = "nas_host_auth_expired"
+    """fnOS 宿主调用凭证缺失或失效。"""
+
+    NAS_SCOPE_MISSING = "nas_scope_missing"
+    """fnOS 应用包或宿主 token 缺少所需 API Scope。"""
+
+    NAS_HOST_API_NOT_FOUND = "nas_host_api_not_found"
+    """当前 fnOS 版本未提供请求的开放能力。"""
+
+    NAS_HOST_REQUEST_REJECTED = "nas_host_request_rejected"
+    """fnOS 宿主拒绝了不合法的开放 API 请求。"""
+
+    NAS_HOST_API_UNAVAILABLE = "nas_host_api_unavailable"
+    """fnOS 宿主开放 API 暂时不可用。"""
+
+    NAS_HOST_RESPONSE_INVALID = "nas_host_response_invalid"
+    """fnOS 宿主返回了不符合协议的响应。"""
+
+    NAS_ADMINISTRATOR_REQUIRED = "nas_administrator_required"
+    """当前操作只允许经过验证的 fnOS 管理员执行。"""
+
+    NAS_FOLDER_REVOKED = "nas_folder_revoked"
+    """NAS 目录授权已被移除或目录不再可读。"""
+
+    NAS_FOLDER_PATH_INVALID = "nas_folder_path_invalid"
+    """手动授权目录不是允许的具体卷内目录。"""
+
+    NAS_FOLDER_UNREADABLE = "nas_folder_unreadable"
+    """SAG 包用户无法读取或进入手动授权目录。"""
+
+    NAS_SELECTION_EXPIRED = "nas_selection_expired"
+    """NAS 扫描选择已过期、失效或不属于当前用户和信源。"""
+
+    NAS_FILE_CHANGED = "nas_file_changed"
+    """NAS 文件在扫描后发生变化，需要重新扫描。"""
+
+    NAS_FILE_UNREADABLE = "nas_file_unreadable"
+    """当前 fnOS 用户不再具备 NAS 文件读权限。"""
+
+    DOCUMENT_BUSY = "document_busy"
+    """文档正处于处理、暂停或删除状态，暂不能替换。"""
+
 
 class ErrorLayer(StrEnum):
     """责任归属：这个错误应该找谁排查。"""

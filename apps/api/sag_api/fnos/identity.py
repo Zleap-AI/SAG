@@ -143,6 +143,29 @@ def parse_gateway_identity(headers: Mapping[str, str]) -> GatewayIdentity:
     )
 
 
+def _read_internal_secret(path: Path) -> bytes:
+    try:
+        metadata = path.stat()
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise AuthError("fnOS 内部身份密钥文件权限无效")
+        encoded = path.read_text(encoding="ascii")
+    except (OSError, UnicodeError) as error:
+        raise AuthError("fnOS 内部身份密钥文件无效") from error
+    if not _SECRET_RE.fullmatch(encoded):
+        raise AuthError("fnOS 内部身份密钥文件无效")
+    key = bytes.fromhex(encoded)
+    if len(key) != 32:
+        raise AuthError("fnOS 内部身份密钥文件无效")
+    return key
+
+
+def derive_fnos_internal_key(secret_file: Path, purpose: bytes) -> bytes:
+    """Derive a domain-separated private key from the validated gateway secret."""
+    if not isinstance(purpose, bytes) or not purpose:
+        raise ValueError("fnOS internal key purpose must be non-empty bytes")
+    return hmac.new(_read_internal_secret(secret_file), purpose, hashlib.sha256).digest()
+
+
 class InternalIdentitySigner:
     """Signs gateway identity for the API's local, private hop."""
 
@@ -157,19 +180,7 @@ class InternalIdentitySigner:
 
     @classmethod
     def from_file(cls, path: Path, max_age_seconds: int = 30) -> InternalIdentitySigner:
-        try:
-            metadata = path.stat()
-            if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
-                raise AuthError("fnOS 内部身份密钥文件权限无效")
-            encoded = path.read_text(encoding="ascii")
-        except (OSError, UnicodeError) as error:
-            raise AuthError("fnOS 内部身份密钥文件无效") from error
-        if not _SECRET_RE.fullmatch(encoded):
-            raise AuthError("fnOS 内部身份密钥文件无效")
-        key = bytes.fromhex(encoded)
-        if len(key) != 32:
-            raise AuthError("fnOS 内部身份密钥文件无效")
-        return cls(key, max_age_seconds=max_age_seconds)
+        return cls(_read_internal_secret(path), max_age_seconds=max_age_seconds)
 
     def _payload(self, identity: GatewayIdentity, request_id: str, timestamp: int) -> bytes:
         identity = _identity(identity.uid, identity.username, identity.is_admin)

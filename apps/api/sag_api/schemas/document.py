@@ -39,6 +39,8 @@ class DocumentOut(BaseModel):
     error: str | None
     error_layer: str | None = None
     error_stage: str | None = None
+    origin_kind: str | None = None
+    origin_display_path: str | None = None
     created_at: datetime
     updated_at: datetime
 

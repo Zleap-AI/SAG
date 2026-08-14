@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
@@ -181,6 +182,18 @@ def create_app() -> FastAPI:
     app.add_middleware(CORSMiddleware, **cors_kwargs)
     # 请求追踪（放在 CORS 之后添加 → 更外层执行，最先分配 request_id）
     app.add_middleware(RequestContextMiddleware)
+
+    if settings.auth_mode == "fnos":
+        from sag_api.fnos.nas_registry import FnOSNasScanRegistry
+        from sag_api.fnos.open_api import FnOSOpenAPIClient
+        from sag_api.services.fnos_nas_access import FnOSNasAccessService
+        from sag_api.services.fnos_nas_scanner import FnOSNasScanner
+
+        secret_file = Path(settings.fnos_internal_secret_file)
+        open_api = FnOSOpenAPIClient()
+        app.state.fnos_nas_registry = FnOSNasScanRegistry(secret_file=secret_file)
+        app.state.fnos_nas_access = FnOSNasAccessService(open_api, secret_file=secret_file)
+        app.state.fnos_nas_scanner = FnOSNasScanner(open_api, app.state.fnos_nas_registry)
 
     @app.exception_handler(ApiError)
     async def _handle_api_error(request: Request, exc: ApiError) -> JSONResponse:

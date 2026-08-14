@@ -35,6 +35,13 @@ import type {
   BackgroundJob,
   ExplorationDetail,
   ExplorationSession,
+  FnOSNasFolder,
+  FnOSNasImportAccepted,
+  FnOSNasImportProgress,
+  FnOSNasImportRequest,
+  FnOSNasScanRequest,
+  FnOSNasScanResult,
+  FnOSNasStatus,
 } from "./types";
 
 /** 浏览器通过局域网 IP 打开前端时，自动将 API 指向同主机 8000 端口。 */
@@ -614,6 +621,34 @@ export const api = {
     request<{ id: string; type: string }>(`/api/v1/sources/${id}/sync`, {
       method: "POST",
     }),
+
+  // fnOS NAS document discovery and one-time import
+  fnosNasStatus: () => request<FnOSNasStatus>("/api/v1/fnos/nas/status"),
+  registerFnOSNasLegacyFolder: (path: string) =>
+    request<FnOSNasFolder>("/api/v1/fnos/nas/legacy-folders", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+  deleteFnOSNasLegacyFolder: (id: string) =>
+    request<void>(`/api/v1/fnos/nas/legacy-folders/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  scanFnOSNas: (body: FnOSNasScanRequest, signal?: AbortSignal) =>
+    request<FnOSNasScanResult>("/api/v1/fnos/nas/scan", {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    }),
+  createFnOSNasImport: (body: FnOSNasImportRequest) =>
+    request<FnOSNasImportAccepted>("/api/v1/fnos/nas/imports", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  getFnOSNasImport: (id: string, signal?: AbortSignal) =>
+    request<FnOSNasImportProgress>(
+      `/api/v1/fnos/nas/imports/${encodeURIComponent(id)}`,
+      { signal },
+    ),
 
   // 文档
   listDocuments: (sid: string) =>

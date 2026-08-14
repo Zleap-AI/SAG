@@ -4,6 +4,9 @@ import ts from "typescript";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  test: {
+    setupFiles: ["./test/setup.ts"],
+  },
   plugins: [
     {
       name: "transform-test-tsx",

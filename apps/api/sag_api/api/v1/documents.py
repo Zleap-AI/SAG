@@ -31,20 +31,10 @@ from sag_api.services.document_service import (
     reprocess_document,
     resume_document,
 )
+from sag_api.services.document_validation import validate_document_file
 from sag_api.services.source_service import get_source
 
 router = APIRouter(prefix="/sources/{source_id}/documents", tags=["documents"])
-
-
-def _check_extension(filename: str | None) -> None:
-    """按白名单校验上传扩展名（空白名单 = 不限制）。"""
-    allowed = settings.allowed_upload_exts
-    if not allowed:
-        return
-    name = (filename or "").lower()
-    if "." not in name or ("." + name.rsplit(".", 1)[1]) not in allowed:
-        pretty = "、".join(sorted(e.lstrip(".") for e in allowed))
-        raise ValidationError(f"不支持的文件类型。可上传：{pretty}")
 
 
 @router.get("", response_model=list[DocumentOut])
@@ -66,12 +56,11 @@ async def upload(
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> DocumentOut:
     source = await get_source(session, source_id)
-    _check_extension(file.filename)
+    # Preserve the pre-read extension rejection so unsupported files are not
+    # buffered before the same shared validation runs with their real size.
+    validate_document_file(file.filename, 1, settings)
     data = await file.read()
-    if not data:
-        raise ValidationError("文件内容为空")
-    if len(data) > settings.max_upload_mb * 1024 * 1024:
-        raise ValidationError(f"文件超过 {settings.max_upload_mb}MB 上限")
+    validate_document_file(file.filename, len(data), settings)
     document, _job = await create_document_from_upload(
         session,
         source,

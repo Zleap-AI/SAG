@@ -15,3 +15,11 @@ test("fnOS delivery builds only the Native x86 FPK", async () => {
   assert.doesNotMatch(workflow, /publish_confirmation/);
   assert.doesNotMatch(workflow, /docker\/|docker build|build-push-action|ghcr\.io/i);
 });
+
+test("fnOS delivery delegates patch-only version resolution to the shared policy", async () => {
+  const workflow = await readFile(path.join(root, ".github/workflows/fnos-release.yml"), "utf8");
+  assert.match(workflow, /node scripts\/fnos-version\.mjs --fallback-base "\$BASE"/);
+  assert.match(workflow, /fnos-v\$SAG_VERSION/);
+  assert.match(workflow, /sag-\$SAG_VERSION-x86\.fpk/);
+  assert.doesNotMatch(workflow, /fnos\.<N>|fnos build number|VERSION="\$\{BASE\}-fnos\./i);
+});

@@ -2,6 +2,7 @@
 
 from sag_api.db.models.agent import Agent, AgentBinding, Message, Thread
 from sag_api.db.models.document import Document
+from sag_api.db.models.fnos_nas import FnOSNasLegacyFolder
 from sag_api.db.models.job import Job
 from sag_api.db.models.setting import Setting
 from sag_api.db.models.source import Source
@@ -18,6 +19,7 @@ __all__ = [
     "Agent",
     "AgentBinding",
     "Document",
+    "FnOSNasLegacyFolder",
     "Job",
     "Message",
     "Setting",

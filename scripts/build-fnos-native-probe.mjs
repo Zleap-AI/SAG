@@ -7,6 +7,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { assertCurrentFnOSVersion } from "./fnos-version.mjs";
 import { validateNativeTemplate } from "./validate-fnos-native-package.mjs";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -34,7 +35,7 @@ function parseArgs(argv) {
   }
   if (!platforms[result.platform]) fail("--platform must be x86 or arm");
   if (!result.output?.endsWith(".fpk")) fail("--output must use the .fpk suffix");
-  if (result.version && !/^[0-9]+\.[0-9]+\.[0-9]+-fnos\.[0-9]+$/.test(result.version)) fail("--version must match <major>.<minor>.<patch>-fnos.<number>");
+  if (result.version) assertCurrentFnOSVersion(result.version);
   return result;
 }
 
@@ -56,8 +57,8 @@ async function probeVersion() {
   const manifest = await readFile(path.join(repoRoot, "packages/fnos/native/sag/manifest"), "utf8");
   const version = /^version\s*=\s*(\S+)\s*$/m.exec(manifest)?.[1];
   if (!version) fail("could not determine package version");
-  if (version === "__SAG_VERSION__") return "0.0.0-fnos.0";
-  return version;
+  if (version === "__SAG_VERSION__") return "0.0.0-fnos";
+  return assertCurrentFnOSVersion(version);
 }
 
 function mainScript() {
