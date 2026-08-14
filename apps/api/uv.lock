@@ -2012,7 +2012,7 @@ wheels = [
 
 [[package]]
 name = "octx"
-version = "0.1.4"
+version = "0.1.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonschema" },
@@ -2020,9 +2020,9 @@ dependencies = [
     { name = "rfc8785" },
     { name = "uuid6" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/85/9f/01a1fbcab4975470f33558ef8bdc554e9b5200a4f92360e490947b828bd6/octx-0.1.4.tar.gz", hash = "sha256:8223109954e723d3953e40d49afbecee07eebfd342928f51c9340adf392fdaf9", size = 175665, upload-time = "2026-08-12T11:56:57.379Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/12/57/22696b57f7a6a62de1310908485727a16dc694b1f3940afc9cab9423846b/octx-0.1.5.tar.gz", hash = "sha256:4ad009250f8b0692e2f10804600406a341ff445f6acb390186cd31cc51357859", size = 177714, upload-time = "2026-08-14T07:53:50.628Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/39/66/ba11bf61eb5299e33fe32224234d109a2bd4a2a92be63f170b3cb0aac0de/octx-0.1.4-py3-none-any.whl", hash = "sha256:58115fe65e17441d842580fe0aaafcdc2cba39731e393586f0d691aac3fa3509", size = 81256, upload-time = "2026-08-12T11:56:55.708Z" },
+    { url = "https://files.pythonhosted.org/packages/c3/eb/9da1461699dfbdfa19517dbb8eb7a2d0ccef40e1bf9611b0435a2f009227/octx-0.1.5-py3-none-any.whl", hash = "sha256:568cdece2bddda6620cee16d763f0a1c0b38ad33a34d810b2b63108542563947", size = 81933, upload-time = "2026-08-14T07:53:49.122Z" },
 ]
 
 [package.optional-dependencies]
@@ -3349,7 +3349,7 @@ requires-dist = [
     { name = "litellm", specifier = ">=1.92,<2" },
     { name = "markitdown", extras = ["docx", "pdf", "pptx", "xls", "xlsx"], specifier = ">=0.1.6,<0.2" },
     { name = "mcp", specifier = ">=1.28,<2" },
-    { name = "octx", extras = ["vectors"], specifier = "==0.1.4" },
+    { name = "octx", extras = ["vectors"], specifier = "==0.1.5" },
     { name = "orjson", specifier = ">=3.11.6,<4" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pydantic-settings", specifier = ">=2.3" },
