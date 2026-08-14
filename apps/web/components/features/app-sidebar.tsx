@@ -27,6 +27,7 @@ import { useApp } from "@/components/features/app-shell";
 import { useConversationIndex } from "@/components/features/chat/conversation-provider";
 import { WorkspaceSectionIcon } from "@/components/features/workspace-section-icon";
 import { DesktopUpdateIndicator } from "@/components/features/desktop-update-indicator";
+import { AppVersionBadge } from "@/components/features/app-version-badge";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -67,7 +68,10 @@ function Brand() {
               className="size-8 shrink-0 rounded-[9px] shadow-sm ring-1 ring-black/10 dark:ring-white/10"
             />
             <div className="grid flex-1 text-left leading-tight group-data-[collapsible=icon]:hidden">
-              <span className="truncate text-base font-semibold">{PRODUCT_NAME}</span>
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate text-base font-semibold">{PRODUCT_NAME}</span>
+                <AppVersionBadge />
+              </span>
               <span className="truncate text-xs text-muted-foreground">{t("brandTagline")}</span>
             </div>
           </Link>
