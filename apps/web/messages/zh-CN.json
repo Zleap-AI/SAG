@@ -274,6 +274,7 @@
   },
   "UploadZone": {
     "unsupportedType": "{name}：不支持的文件类型",
+    "fileTooLarge": "{name}：超过单文件 {maxMb, number}MB 上限",
     "fileFailed": "{name}：{error}",
     "uploadFailed": "上传失败",
     "uploaded": "已完成 {count, number} 个文件上传，已进入后台处理",

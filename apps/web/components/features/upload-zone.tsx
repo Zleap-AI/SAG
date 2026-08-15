@@ -55,6 +55,11 @@ export function UploadZone({
         toast.error(t("unsupportedType", { name: file.name }));
         continue;
       }
+      // 客户端先行拦截：超过单文件上限即时提示，避免超大文件白传后被服务端拒绝
+      if (file.size > maxMb * 1024 * 1024) {
+        toast.error(t("fileTooLarge", { name: file.name, maxMb }));
+        continue;
+      }
       let waitingTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         const idx = ok + 1;

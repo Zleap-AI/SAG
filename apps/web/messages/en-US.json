@@ -274,6 +274,7 @@
   },
   "UploadZone": {
     "unsupportedType": "{name}: Unsupported file type",
+    "fileTooLarge": "{name}: exceeds the {maxMb, number} MB file limit",
     "fileFailed": "{name}: {error}",
     "uploadFailed": "Upload failed",
     "uploaded": "{count, plural, one {# file uploaded} other {# files uploaded}}. Background processing has started.",
