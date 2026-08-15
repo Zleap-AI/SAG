@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -16,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
-from sag_api.core.errors import ApiError, NotFoundError
+from sag_api.core.errors import ApiError, NotFoundError, ValidationError
 from sag_api.core.logging import get_logger
 from sag_api.db.models import Document, Job, Source
 from sag_api.enums import DocumentStatus, JobStatus, JobType
@@ -29,6 +30,15 @@ from sag_api.sag.dto import ProcessCheckpoint
 log = get_logger("jobs")
 
 TaskHandler = Callable[[AsyncSession, Job], Awaitable[None]]
+
+_NAS_TERMINAL_STATES = {"created", "updated", "skipped", "failed"}
+_NAS_FAILURE_REASONS = {
+    "nas_folder_revoked": "authorization_revoked",
+    "nas_file_unreadable": "file_unreadable",
+    "nas_file_changed": "file_changed",
+    "document_busy": "document_busy",
+    "validation_error": "unsafe_or_unsupported",
+}
 
 # 文档失败时的当前状态 → 链路环节。这是「唯一知道 stage 的地方」的兜底映射：
 # 当异常本身没带 stage（非 ApiError，例如逃逸的 jsonschema 错误）时，用文档处在
@@ -406,6 +416,40 @@ async def reprocess_document_task(
         raise NotFoundError("信源不存在")
 
     payload = dict(job.payload or {})
+    replacement = payload.get("replacement")
+    if isinstance(replacement, dict):
+        final_path = Path(str(replacement.get("final_path") or ""))
+        staged_path = Path(str(replacement.get("staged_path") or ""))
+        expected_sha256 = str(replacement.get("sha256") or "")
+        expected_size = replacement.get("size_bytes")
+        if final_path != Path(document.storage_path) or not expected_sha256 or type(expected_size) is not int:
+            raise NotFoundError("替换文件检查点无效")
+        if replacement.get("state") == "staged":
+            backup_path = Path(
+                str(replacement.get("backup_path") or f"{final_path}.nas-backup-{job.id}")
+            )
+            if staged_path.exists():
+                if _file_digest(staged_path) != (expected_sha256, expected_size):
+                    raise NotFoundError("替换文件检查点已损坏")
+                if final_path.exists() and not backup_path.exists():
+                    os.link(final_path, backup_path)
+                os.replace(staged_path, final_path)
+            if not final_path.exists() or _file_digest(final_path) != (expected_sha256, expected_size):
+                raise NotFoundError("替换文件检查点已丢失")
+            document.size_bytes = expected_size
+            document.origin_size_bytes = expected_size
+            document.origin_mtime_ns = replacement.get("mtime_ns")
+            document.origin_sha256 = expected_sha256
+            document.origin_path = replacement.get("origin_path")
+            document.origin_display_path = replacement.get("origin_display_path")
+            replacement = {
+                **replacement,
+                "state": "installed",
+                "backup_path": str(backup_path),
+            }
+            payload = {**payload, "replacement": replacement}
+            job.payload = payload
+            await session.commit()
     derived_source_ids = sorted(
         {
             value.strip()
@@ -452,10 +496,34 @@ async def reprocess_document_task(
     }
     await session.commit()
     await session.refresh(process_job)
+    if isinstance(replacement, dict):
+        from sag_api.parsing.service import parsed_sidecar_paths
+
+        final_path = str(replacement.get("final_path") or "")
+        backup_path = str(replacement.get("backup_path") or "")
+        for candidate in [*parsed_sidecar_paths(final_path), backup_path]:
+            if not candidate:
+                continue
+            try:
+                os.remove(candidate)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                log.warning("替换文档旧文件清理失败 job=%s", job.id)
     if job_queue is not None:
         from sag_api.services.document_service import _enqueue_persisted_job
 
         await _enqueue_persisted_job(job_queue, process_job.id)
+
+
+def _file_digest(path: Path) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
 
 
 async def sync_source(session: AsyncSession, job: Job, *, engine_manager=None, job_queue=None) -> None:
@@ -519,10 +587,186 @@ async def index_universe(
     await session.commit()
 
 
+def _build_fnos_nas_importer(job_queue):
+    """Build the fnOS importer lazily so non-fnOS deployments stay decoupled."""
+    from sag_api.fnos.open_api import FnOSOpenAPIClient
+    from sag_api.services.fnos_nas_access import FnOSNasAccessService
+    from sag_api.services.fnos_nas_import import FnOSNasImporter
+
+    open_api = FnOSOpenAPIClient()
+    access = FnOSNasAccessService(
+        open_api,
+        secret_file=Path(settings.fnos_internal_secret_file),
+    )
+    return FnOSNasImporter(
+        access,
+        open_api,
+        upload_dir=settings.upload_dir,
+        job_queue=job_queue,
+    )
+
+
+def _persisted_nas_entry(value: object):
+    from sag_api.fnos.nas_registry import NasScanEntry
+
+    if not isinstance(value, dict):
+        raise ValueError("invalid NAS import entry")
+    strings = {
+        key: value.get(key)
+        for key in (
+            "canonical_root",
+            "canonical_path",
+            "display_path",
+            "folder_source",
+        )
+    }
+    if (
+        any(not isinstance(item, str) or not item for item in strings.values())
+        or strings["folder_source"] not in {"host_api", "legacy_manual"}
+        or type(value.get("size_bytes")) is not int
+        or value["size_bytes"] < 0
+        or type(value.get("mtime_ns")) is not int
+        or value["mtime_ns"] < 0
+    ):
+        raise ValueError("invalid NAS import entry")
+    return NasScanEntry(
+        canonical_root=strings["canonical_root"],
+        canonical_path=strings["canonical_path"],
+        display_path=strings["display_path"],
+        size_bytes=value["size_bytes"],
+        mtime_ns=value["mtime_ns"],
+        folder_source=strings["folder_source"],
+    )
+
+
+def _nas_failure_reason(error: Exception) -> str:
+    if isinstance(error, ApiError):
+        return _NAS_FAILURE_REASONS.get(str(error.code), "import_failed")
+    return "copy_failed"
+
+
+def _nas_result(entry: dict) -> dict[str, object | None]:
+    display_path = entry.get("display_path")
+    return {
+        "display_path": display_path if isinstance(display_path, str) else "",
+        "outcome": entry.get("state")
+        if entry.get("state") in _NAS_TERMINAL_STATES
+        else "failed",
+        "document_id": entry.get("document_id")
+        if isinstance(entry.get("document_id"), str)
+        else None,
+        "reason": entry.get("reason") if isinstance(entry.get("reason"), str) else None,
+    }
+
+
+async def _checkpoint_nas_import(session: AsyncSession, job: Job, entries: list[dict]) -> None:
+    counts = {state: 0 for state in _NAS_TERMINAL_STATES}
+    for entry in entries:
+        state = entry.get("state")
+        if state in counts:
+            counts[state] += 1
+    completed = sum(counts.values())
+    total = len(entries)
+    results = [_nas_result(entry) for entry in entries if entry.get("state") in counts]
+    job.payload = {
+        **(job.payload or {}),
+        "entries": entries,
+        "summary": {
+            "total": total,
+            "completed": completed,
+            "created": counts["created"],
+            "updated": counts["updated"],
+            "skipped": counts["skipped"],
+            "failed": counts["failed"],
+        },
+        "results": results,
+    }
+    job.progress = max(job.progress, completed / total if total else 1.0)
+    await session.commit()
+
+
+async def import_nas_documents(
+    session: AsyncSession,
+    job: Job,
+    *,
+    engine_manager=None,
+    job_queue=None,
+) -> None:
+    """Import one persisted NAS selection at a time with durable item checkpoints."""
+    del engine_manager
+    payload = job.payload or {}
+    owner_uid = payload.get("owner_uid")
+    raw_entries = payload.get("entries")
+    if type(owner_uid) is not int or owner_uid < 1 or not isinstance(raw_entries, list):
+        raise ValidationError("NAS 导入任务数据无效")
+    if job_queue is None:
+        raise RuntimeError("NAS import job requires a queue")
+
+    from sag_api.fnos.identity import GatewayIdentity
+
+    identity = GatewayIdentity(owner_uid, "", True)
+    importer = _build_fnos_nas_importer(job_queue)
+    entries = [dict(value) if isinstance(value, dict) else {} for value in raw_entries]
+    for index, stored in enumerate(entries):
+        if stored.get("state") in _NAS_TERMINAL_STATES:
+            continue
+        stored["state"] = "copying"
+        stored.pop("document_id", None)
+        stored.pop("reason", None)
+        await _checkpoint_nas_import(session, job, entries)
+        try:
+            entry = _persisted_nas_entry(stored)
+        except (ValueError, TypeError, KeyError):
+            stored["state"] = "failed"
+            stored["document_id"] = None
+            stored["reason"] = "unsafe_or_unsupported"
+            log.warning(
+                "NAS 导入条目失败 job=%s index=%d reason=%s",
+                job.id,
+                index,
+                stored["reason"],
+            )
+            await _checkpoint_nas_import(session, job, entries)
+            continue
+        try:
+            outcome = await importer.import_one(
+                session,
+                job,
+                entry,
+                identity=identity,
+            )
+        except (ApiError, OSError) as error:
+            stored["state"] = "failed"
+            stored["document_id"] = None
+            stored["reason"] = _nas_failure_reason(error)
+            log.warning(
+                "NAS 导入条目失败 job=%s index=%d reason=%s",
+                job.id,
+                index,
+                stored["reason"],
+            )
+        else:
+            if outcome.outcome not in _NAS_TERMINAL_STATES - {"failed"}:
+                raise RuntimeError("NAS importer returned an invalid outcome")
+            stored["state"] = outcome.outcome
+            stored["document_id"] = outcome.document_id
+            stored["reason"] = outcome.reason
+        await _checkpoint_nas_import(session, job, entries)
+
+    await _checkpoint_nas_import(session, job, entries)
+    log.info(
+        "NAS 导入批次完成 job=%s total=%d failed=%d",
+        job.id,
+        len(entries),
+        sum(entry.get("state") == "failed" for entry in entries),
+    )
+
+
 TASK_HANDLERS: dict[JobType, TaskHandler] = {
     JobType.PROCESS_DOCUMENT: process_document,
     JobType.REPROCESS_DOCUMENT: reprocess_document_task,
     JobType.DELETE_DOCUMENT: delete_document_task,
     JobType.SYNC_SOURCE: sync_source,
     JobType.INDEX_UNIVERSE: index_universe,
+    JobType.IMPORT_NAS_DOCUMENTS: import_nas_documents,
 }

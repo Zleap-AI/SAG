@@ -272,8 +272,14 @@ async def test_fnos_mode_requires_signed_internal_identity_and_disables_local_au
     app.dependency_overrides[get_session] = session_override
 
     @app.get("/protected")
-    async def protected(user: User = Depends(get_current_user)) -> dict[str, str]:
-        return {"id": user.id, "name": user.name}
+    async def protected(request: Request, user: User = Depends(get_current_user)) -> dict[str, object]:
+        identity = request.state.fnos_identity
+        return {
+            "id": user.id,
+            "name": user.name,
+            "fnos_uid": identity.uid,
+            "fnos_is_admin": identity.is_admin,
+        }
 
     @app.exception_handler(ApiError)
     async def api_error(_request: Request, error: ApiError):
@@ -315,7 +321,12 @@ async def test_fnos_mode_requires_signed_internal_identity_and_disables_local_au
         empty_setup = await client.post("/api/v1/auth/session", json={})
 
     assert missing_internal.status_code == 401
-    assert signed.json() == {"id": "fnos_1000", "name": "Alice"}
+    assert signed.json() == {
+        "id": "fnos_1000",
+        "name": "Alice",
+        "fnos_uid": 1000,
+        "fnos_is_admin": False,
+    }
     assert replayed_signed.status_code == 401
     assert rejected.status_code == 401
     assert session.json() == {"setup_required": False, "user": None}

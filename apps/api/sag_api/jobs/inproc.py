@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import re
+import shutil
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
@@ -49,6 +52,8 @@ _MAINTENANCE_JOB_TYPES = {
 # SUCCEEDED/FAILED，然后再取消其余 worker。测试可 monkeypatch 缩短。
 _STOP_GRACE_SECONDS = 5.0
 _STOP_CANCEL_SECONDS = 1.0
+_NAS_STAGE_ORPHAN_GRACE_SECONDS = 24 * 60 * 60
+_SAG_ID_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
 
 
 def _now() -> datetime:
@@ -61,6 +66,95 @@ def _is_retryable(exc: Exception) -> bool:
         exc,
         (ServiceUnavailableError, UpstreamError, OperationalError),
     )
+
+
+async def _reconcile_nas_stage_directories(session, *, now: float | None = None) -> None:
+    """Remove only precisely identified, SAG-owned NAS staging directories."""
+    from sag_api.db.models import Job
+
+    stage_root = (Path(settings.upload_dir) / ".nas-stage").absolute()
+    try:
+        if stage_root.is_symlink():
+            log.warning("NAS 暂存目录是符号链接，跳过启动清理")
+            return
+        children = list(stage_root.iterdir())
+    except FileNotFoundError:
+        return
+    except OSError:
+        log.warning("NAS 暂存目录无法读取，跳过启动清理")
+        return
+
+    candidates = [
+        child
+        for child in children
+        if _SAG_ID_PATTERN.fullmatch(child.name)
+        and child.is_dir()
+        and not child.is_symlink()
+    ]
+    if not candidates:
+        return
+
+    candidate_ids = {child.name for child in candidates}
+    import_jobs = []
+    ordered_ids = sorted(candidate_ids)
+    for offset in range(0, len(ordered_ids), 500):
+        import_jobs.extend(
+            (
+                await session.scalars(
+                    select(Job).where(
+                        Job.id.in_(ordered_ids[offset : offset + 500]),
+                        Job.type == JobType.IMPORT_NAS_DOCUMENTS,
+                    )
+                )
+            ).all()
+        )
+    active_import_ids = {
+        job.id
+        for job in import_jobs
+        if job.status in {JobStatus.QUEUED, JobStatus.RUNNING}
+    }
+    terminal_import_ids = {job.id for job in import_jobs} - active_import_ids
+
+    active_replacements = list(
+        (
+            await session.scalars(
+                select(Job).where(
+                    Job.type == JobType.REPROCESS_DOCUMENT,
+                    Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+                )
+            )
+        ).all()
+    )
+    referenced_ids: set[str] = set()
+    for job in active_replacements:
+        replacement = (job.payload or {}).get("replacement")
+        if not isinstance(replacement, dict):
+            continue
+        raw_path = replacement.get("staged_path")
+        if not isinstance(raw_path, str) or not raw_path:
+            continue
+        staged_path = Path(raw_path).absolute()
+        if (
+            staged_path.parent.parent == stage_root
+            and _SAG_ID_PATTERN.fullmatch(staged_path.parent.name)
+        ):
+            referenced_ids.add(staged_path.parent.name)
+
+    cutoff = (now if now is not None else _now().timestamp()) - _NAS_STAGE_ORPHAN_GRACE_SECONDS
+    removed = 0
+    for candidate in candidates:
+        if candidate.name in active_import_ids or candidate.name in referenced_ids:
+            continue
+        try:
+            terminal = candidate.name in terminal_import_ids
+            if not terminal and candidate.stat().st_mtime >= cutoff:
+                continue
+            shutil.rmtree(candidate)
+            removed += 1
+        except OSError:
+            log.warning("NAS 暂存目录清理失败 id=%s", candidate.name)
+    if removed:
+        log.info("清理 %d 个 NAS 暂存任务目录", removed)
 
 
 async def _mark_document_waiting_retry(session, job) -> None:
@@ -944,6 +1038,11 @@ class InProcessAsyncQueue(JobQueue):
             )
         ]
         rows.sort(key=lambda value: (value.created_at, value.id))
+        try:
+            async with self._session_factory() as session:
+                await _reconcile_nas_stage_directories(session)
+        except Exception:  # noqa: BLE001 - staging cleanup must not block startup
+            log.exception("NAS 暂存目录启动清理失败，继续恢复任务")
         for job in rows:
             await self.enqueue(job.id)
         if rows:

@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     fnos_username: str = ""
     fnos_username_isolation: bool = False
     fnos_internal_secret_file: str = ""
+    fnos_open_api_socket: str = "/var/run/trim_open_gateway_apiscope.socket"
+    fnos_open_api_timeout_seconds: float = Field(default=5.0, ge=0.5, le=30.0)
     # 业务展示时区；数据库与 API 时间戳始终使用 UTC。
     timezone: str = "Asia/Shanghai"
     # NoDecode 让逗号分隔值先进入下方 validator，避免 settings 源强制按 JSON 解码。

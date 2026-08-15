@@ -2,12 +2,13 @@ name: fnOS Delivery
 
 on:
   workflow_dispatch:
-    # No inputs: version is derived automatically from the latest semver
-    # base tag on the repo + the next available fnOS build number
-    # (highest existing `fnos-v<base>-fnos.N` release, incremented). The
-    # workflow still refuses to run from any branch other than
-    # fnos/develop, so an accidental trigger from a topic branch fails
-    # fast before doing any work.
+    # No inputs: the fnOS release line advances its own semantic patch
+    # version. Historical `fnos-vx.y.z-fnos.N` tags are migration inputs,
+    # but every new release is named `fnos-vx.y.z-fnos`.
+
+concurrency:
+  group: fnos-release
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -36,10 +37,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # The latest semver tag on the repo (excluding fnOS tags) is the
-          # base version.  Tags must match v<major>.<minor>.<patch>.
+          # Public semver is only the bootstrap base when no fnOS release
+          # exists. Tags must match exactly v<major>.<minor>.<patch>.
           base="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
-            | grep -Ev -- '-fnos\.' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
             | head -1 \
             | sed 's/^v//')"
           test -n "$base" || { echo "No base version tag found"; exit 1; }
@@ -55,33 +56,12 @@ jobs:
           set -euo pipefail
           BASE="${{ steps.find-base.outputs.base }}"
 
-          # Auto-increment the fnOS build number for this base. Start at
-          # 1 when no previous fnOS release exists for the current base
-          # (e.g. right after a base version bump). Otherwise: bump the
-          # highest existing `fnos-v<base>-fnos.N` release by one.
-          N=1
-          existing="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' 2>/dev/null || true)"
-          highest=""
-          if [ -n "$existing" ]; then
-            highest="$(echo "$existing" | grep -E "^fnos-v${BASE//./\\.}-fnos\\.[0-9]+\$" \
-              | sed 's/^fnos-v.*-fnos\.//' \
-              | sort -n \
-              | tail -1 || true)"
-            if [ -n "$highest" ] && [ "$highest" -ge 1 ] 2>/dev/null; then
-              N=$((highest + 1))
-            fi
-          fi
-          VERSION="${BASE}-fnos.${N}"
-          echo "Auto-derived version: $VERSION (highest existing fnos build for $BASE: ${highest:-none})"
-
-          # Validate format: <semver>-fnos.<positive int>
-          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+-fnos\.[1-9][0-9]*$'; then
-            echo "VERSION '$VERSION' does not match <major>.<minor>.<patch>-fnos.<N>"
-            exit 1
-          fi
+          existing="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName --jq '.[].tagName' 2>/dev/null || true)"
+          VERSION="$(printf '%s\n' "$existing" | node scripts/fnos-version.mjs --fallback-base "$BASE")"
+          echo "Auto-derived fnOS version: $VERSION"
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "base_version=$BASE" >> "$GITHUB_OUTPUT"
+          echo "base_version=${VERSION%-fnos}" >> "$GITHUB_OUTPUT"
 
   native-x86:
     name: Build & publish Native x86 FPK

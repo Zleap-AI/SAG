@@ -6,11 +6,10 @@ import { useTranslations } from "next-intl";
 import { AnimatePresence, motion } from "motion/react";
 
 import { cn } from "@/lib/utils";
-import { useApp } from "@/components/features/app-shell";
 import { CompactDocumentDetailWorkspace } from "@/components/features/document-detail-workspace";
+import { DocumentAddPanel } from "@/components/features/document-add-panel";
 import { DocumentList } from "@/components/features/document-list";
 import { SyncPanel } from "@/components/features/sync-panel";
-import { UploadZone } from "@/components/features/upload-zone";
 import { useSourceContent } from "@/components/features/use-source-content";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -31,7 +30,6 @@ export function KnowledgeSourceWorkspace({
   onSourceChanged?: () => void | Promise<void>;
 }) {
   const t = useTranslations("Knowledge");
-  const { capabilities } = useApp();
   const {
     source,
     documents,
@@ -172,11 +170,10 @@ export function KnowledgeSourceWorkspace({
             </p>
             {source &&
               (isFileSource ? (
-                <UploadZone
+                <DocumentAddPanel
                   sourceId={sourceId}
-                  onUploaded={() => void finishMutation()}
-                  maxMb={capabilities?.max_upload_mb ?? 25}
-                  allowedExts={capabilities?.allowed_upload_exts}
+                  sourceName={source.name}
+                  onCompleted={finishMutation}
                   compact
                 />
               ) : (

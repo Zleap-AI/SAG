@@ -5,11 +5,19 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { assertCurrentFnOSVersion } from "./fnos-version.mjs";
+
 const requiredIcons = [
   "ICON.PNG",
   "ICON_256.PNG",
   "app/ui/images/icon_64.png",
   "app/ui/images/icon_256.png",
+];
+const requiredOpenApiScopes = [
+  "trim.file.sharedAccess",
+  "trim.file.userAcl",
+  "trim.file.path",
+  "trim.system.getPlatformConfig",
 ];
 
 function fail(message) {
@@ -84,6 +92,7 @@ export async function validateNativeTemplate(root, platform) {
     ctl_stop: "true",
     desktop_uidir: "ui",
     desktop_applaunchname: "sag.Application",
+    micro_app: "true",
   };
   for (const [key, value] of Object.entries(requiredManifest)) {
     if (manifest.get(key) !== value) fail(`manifest ${key} must be ${value}`);
@@ -91,7 +100,11 @@ export async function validateNativeTemplate(root, platform) {
   if (manifest.has("service_port")) fail("manifest must not define service_port");
   if (manifest.get("platform") === "all") fail("manifest platform must not be all");
   if (manifest.get("platform") !== platform) fail(`manifest platform must be ${platform}`);
-  if (!manifest.get("version")) fail("manifest must define version");
+  try {
+    assertCurrentFnOSVersion(manifest.get("version"));
+  } catch {
+    fail("manifest version must match x.y.z-fnos");
+  }
 
   const privilege = await readJson(root, "config/privilege");
   // fnpack applies defaults.run-as to every lifecycle callback. Run all
@@ -103,7 +116,15 @@ export async function validateNativeTemplate(root, platform) {
 
   const resource = await readJson(root, "config/resource");
   if (Object.hasOwn(resource, "docker-project")) fail("native package resource must not define docker-project");
-  if (Object.keys(resource).length !== 0) fail("native package resource must be empty");
+  if (Object.keys(resource).length !== 1 || !Array.isArray(resource["api-scope"])) {
+    fail("native package resource api-scope must contain the exact four required scopes");
+  }
+  if (
+    resource["api-scope"].length !== requiredOpenApiScopes.length
+    || resource["api-scope"].some((scope, index) => scope !== requiredOpenApiScopes[index])
+  ) {
+    fail("native package resource api-scope must contain the exact four required scopes");
+  }
 
   const ui = await readJson(root, "app/ui/config");
   const urls = ui?.[".url"];

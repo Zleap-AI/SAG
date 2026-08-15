@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import Literal, TypedDict
 
 from sqlalchemy import case, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.errors import ConflictError, NotFoundError
@@ -14,6 +18,28 @@ from sag_api.db.models import Document, Job, Source
 from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs import JobQueue
 from sag_api.jobs.scheduling import DELETE_PRIORITY, RESUME_PRIORITY, set_scheduler
+
+
+@dataclass(frozen=True)
+class StagedDocumentOrigin:
+    kind: str
+    key: str
+    path: str
+    display_path: str
+    size_bytes: int
+    mtime_ns: int
+    sha256: str
+
+
+class ReplacementCheckpoint(TypedDict):
+    state: Literal["staged", "installed"]
+    staged_path: str
+    final_path: str
+    size_bytes: int
+    mtime_ns: int
+    sha256: str
+    origin_path: str
+    origin_display_path: str
 
 
 async def _enqueue_persisted_job(job_queue: JobQueue, job_id: str) -> None:
@@ -105,6 +131,153 @@ async def create_document_from_upload(
 
     await _enqueue_persisted_job(job_queue, job.id)
     return document, job
+
+
+async def register_document_from_staged_file(
+    session: AsyncSession,
+    source: Source,
+    *,
+    staged_path: str | Path,
+    filename: str,
+    content_type: str,
+    size_bytes: int,
+    origin: StagedDocumentOrigin,
+    upload_dir: str | Path,
+    job_queue: JobQueue,
+) -> tuple[Document, Job | None]:
+    """Atomically adopt an already-copied private file and create its process job."""
+    staged = Path(staged_path)
+    existing = await session.scalar(
+        select(Document).where(
+            Document.source_id == source.id,
+            Document.origin_kind == origin.kind,
+            Document.origin_key == origin.key,
+        )
+    )
+    if existing is not None:
+        staged.unlink(missing_ok=True)
+        return existing, None
+
+    doc_id = new_id()
+    safe_name = os.path.basename(filename) or "upload"
+    destination_dir = Path(upload_dir) / source.id
+    destination_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    final_path = destination_dir / f"{doc_id}_{safe_name}"
+    os.replace(staged, final_path)
+    document = Document(
+        id=doc_id,
+        source_id=source.id,
+        filename=safe_name,
+        content_type=content_type or "application/octet-stream",
+        size_bytes=size_bytes,
+        storage_path=str(final_path),
+        status=DocumentStatus.PENDING,
+        origin_kind=origin.kind,
+        origin_key=origin.key,
+        origin_path=origin.path,
+        origin_display_path=origin.display_path,
+        origin_size_bytes=origin.size_bytes,
+        origin_mtime_ns=origin.mtime_ns,
+        origin_sha256=origin.sha256,
+    )
+    process_job = Job(
+        type=JobType.PROCESS_DOCUMENT,
+        source_id=source.id,
+        document_id=document.id,
+        status=JobStatus.QUEUED,
+    )
+    session.add_all([document, process_job])
+    await session.execute(
+        update(Source).where(Source.id == source.id).values(document_count=Source.document_count + 1)
+    )
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        final_path.unlink(missing_ok=True)
+        existing = await session.scalar(
+            select(Document).where(
+                Document.source_id == source.id,
+                Document.origin_kind == origin.kind,
+                Document.origin_key == origin.key,
+            )
+        )
+        if existing is not None:
+            return existing, None
+        raise
+    except BaseException:
+        await session.rollback()
+        final_path.unlink(missing_ok=True)
+        raise
+    await session.refresh(document)
+    await session.refresh(process_job)
+    await _enqueue_persisted_job(job_queue, process_job.id)
+    return document, process_job
+
+
+async def stage_document_replacement(
+    session: AsyncSession,
+    source: Source,
+    document: Document,
+    *,
+    staged_path: str | Path,
+    origin: StagedDocumentOrigin,
+    job_queue: JobQueue,
+) -> Job:
+    """Fence a ready document and durably checkpoint its private replacement."""
+    from sag_api.core.error_taxonomy import ErrorCode
+
+    if document.status is not DocumentStatus.READY:
+        raise ConflictError("文档当前状态不允许替换", code=ErrorCode.DOCUMENT_BUSY)
+    derived_source_ids = await _document_derived_source_ids(session, document)
+    replacement: ReplacementCheckpoint = {
+        "state": "staged",
+        "staged_path": str(staged_path),
+        "final_path": document.storage_path,
+        "size_bytes": origin.size_bytes,
+        "mtime_ns": origin.mtime_ns,
+        "sha256": origin.sha256,
+        "origin_path": origin.path,
+        "origin_display_path": origin.display_path,
+    }
+    claimed = await session.execute(
+        update(Document)
+        .where(Document.id == document.id, Document.status == DocumentStatus.READY)
+        .values(
+            status=DocumentStatus.PENDING,
+            progress=0,
+            chunk_count=0,
+            event_count=0,
+            token_usage=0,
+            sag_source_id=None,
+            error=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        await session.rollback()
+        raise ConflictError("文档当前状态不允许替换", code=ErrorCode.DOCUMENT_BUSY)
+    job = Job(
+        type=JobType.REPROCESS_DOCUMENT,
+        source_id=source.id,
+        document_id=document.id,
+        status=JobStatus.QUEUED,
+        payload=set_scheduler(
+            {
+                "target_document_id": document.id,
+                "derived_source_ids": sorted(derived_source_ids),
+                "replacement": replacement,
+            },
+            priority=DELETE_PRIORITY,
+        ),
+    )
+    session.add(job)
+    await _refresh_source_counts(session, source)
+    await session.commit()
+    await session.refresh(job)
+    job_queue.begin_source_maintenance(source.id, job.id)
+    await _enqueue_persisted_job(job_queue, job.id)
+    return job
 
 
 def _format_messages(messages: list[dict]) -> str:

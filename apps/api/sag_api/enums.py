@@ -58,6 +58,7 @@ class JobType(StrEnum):
     DELETE_DOCUMENT = "delete_document"
     SYNC_SOURCE = "sync_source"
     INDEX_UNIVERSE = "index_universe"
+    IMPORT_NAS_DOCUMENTS = "import_nas_documents"
 
 
 class JobStatus(StrEnum):

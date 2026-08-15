@@ -10,6 +10,15 @@ const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const template = path.join(repoRoot, "packages/fnos/native/sag");
 const validator = path.join(repoRoot, "scripts/validate-fnos-native-package.mjs");
 const builder = path.join(repoRoot, "scripts/build-fnos-native-probe.mjs");
+const releaseBuilder = path.join(repoRoot, "scripts/build-fnos-native-package.mjs");
+const webPackage = path.join(repoRoot, "apps/web/package.json");
+const webLockfile = path.join(repoRoot, "apps/web/package-lock.json");
+const requiredOpenApiScopes = [
+  "trim.file.sharedAccess",
+  "trim.file.userAcl",
+  "trim.file.path",
+  "trim.system.getPlatformConfig",
+];
 
 async function renderedPackage(t, platform) {
   const root = await mkdtemp(path.join(os.tmpdir(), "sag-native-package-test-"));
@@ -20,7 +29,7 @@ async function renderedPackage(t, platform) {
   await writeFile(
     path.join(destination, "manifest"),
     manifest
-      .replace("__SAG_VERSION__", "1.6.0-fnos.1")
+      .replace("__SAG_VERSION__", "1.6.0-fnos")
       .replace("__SAG_PLATFORM__", platform),
   );
   return destination;
@@ -129,7 +138,32 @@ test("rendered x86 and ARM packages satisfy the native package contract", async 
   for (const platform of ["x86", "arm"]) {
     const root = await renderedPackage(t, platform);
     await validateNativeTemplate(root, platform);
+    const manifest = await readFile(path.join(root, "manifest"), "utf8");
+    const resource = JSON.parse(await readFile(path.join(root, "config/resource"), "utf8"));
+    assert.match(manifest, /^micro_app=true$/m);
+    assert.match(manifest, /^os_min_version=1\.2\.0302$/m);
+    assert.deepEqual(resource["api-scope"], requiredOpenApiScopes);
   }
+});
+
+test("rendered package rejects the legacy numbered fnOS suffix", async (t) => {
+  const root = await renderedPackage(t, "x86");
+  const manifestPath = path.join(root, "manifest");
+  const manifest = await readFile(manifestPath, "utf8");
+  await writeFile(manifestPath, manifest.replace("1.6.0-fnos", "1.6.0-fnos.1"));
+  await expectRejected(root, "x86", /version.*x\.y\.z-fnos/i);
+});
+
+test("web package locks the fnOS SDK as a production dependency", async () => {
+  const packageJson = JSON.parse(await readFile(webPackage, "utf8"));
+  const lockfile = JSON.parse(await readFile(webLockfile, "utf8"));
+  assert.equal(typeof packageJson.dependencies?.["@trimjs/web-app"], "string");
+  assert.equal(
+    lockfile.packages?.[""]?.dependencies?.["@trimjs/web-app"],
+    packageJson.dependencies["@trimjs/web-app"],
+  );
+  assert.equal(typeof lockfile.packages?.["node_modules/@trimjs/web-app"]?.version, "string");
+  assert.notEqual(lockfile.packages["node_modules/@trimjs/web-app"].dev, true);
 });
 
 test("rendered x86 and ARM packages accept the documented unified-gateway entry", async (t) => {
@@ -171,6 +205,32 @@ test("rendered native package rejects a Docker resource", async (t) => {
   const root = await renderedPackage(t, "x86");
   await writeFile(path.join(root, "config/resource"), JSON.stringify({ "docker-project": {} }));
   await expectRejected(root, "x86", /docker-project/i);
+});
+
+test("rendered native package rejects a missing Open API scope", async (t) => {
+  const root = await renderedPackage(t, "x86");
+  await writeFile(path.join(root, "config/resource"), JSON.stringify({
+    "api-scope": requiredOpenApiScopes.slice(0, -1),
+  }));
+  await expectRejected(root, "x86", /api-scope.*exact four/i);
+});
+
+test("rendered native package rejects an unrelated Open API scope", async (t) => {
+  const root = await renderedPackage(t, "x86");
+  await writeFile(path.join(root, "config/resource"), JSON.stringify({
+    "api-scope": [...requiredOpenApiScopes, "trim.file.userAccess"],
+  }));
+  await expectRejected(root, "x86", /api-scope.*exact four/i);
+});
+
+test("rendered native package rejects micro_app=false", async (t) => {
+  const root = await renderedPackage(t, "x86");
+  const manifestPath = path.join(root, "manifest");
+  await writeFile(
+    manifestPath,
+    (await readFile(manifestPath, "utf8")).replace("micro_app=true", "micro_app=false"),
+  );
+  await expectRejected(root, "x86", /manifest micro_app must be true/i);
 });
 
 test("rendered native package rejects a manifest service port", async (t) => {
@@ -242,11 +302,29 @@ test("probe builder accepts an explicit package version for device replacement",
   const fixture = await fakeProbeBuild(t);
   const result = buildProbe([
     "--platform", "x86",
-    "--version", "1.5.0-fnos.2",
+    "--version", "1.5.4-fnos",
     "--output", fixture.output,
   ], fixture.env);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(await readFile(path.join(fixture.captured, "manifest"), "utf8"), /^version=1\.5\.0-fnos\.2$/m);
+  assert.match(await readFile(path.join(fixture.captured, "manifest"), "utf8"), /^version=1\.5\.4-fnos$/m);
+});
+
+test("native builders reject legacy numbered fnOS versions before reading inputs", () => {
+  const cases = [
+    [builder, ["--platform", "x86", "--version", "1.5.4-fnos.1", "--output", "/tmp/legacy-probe.fpk"]],
+    [releaseBuilder, [
+      "--platform", "x86", "--vendor", "/missing/vendor", "--web", "/missing/web",
+      "--version", "1.5.4-fnos.1", "--output", "/tmp/legacy-package.fpk",
+    ]],
+  ];
+  for (const [executable, args] of cases) {
+    const result = spawnSync(process.execPath, [executable, ...args], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /version.*x\.y\.z-fnos/i);
+  }
 });
 
 test("probe builder exports locked production dependencies and installs ARM binary wheels", async (t) => {

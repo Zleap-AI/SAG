@@ -69,6 +69,13 @@ _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
         "token_usage": "BIGINT NOT NULL DEFAULT 0",
         "error_layer": "VARCHAR(16)",
         "error_stage": "VARCHAR(16)",
+        "origin_kind": "VARCHAR(32)",
+        "origin_key": "VARCHAR(64)",
+        "origin_path": "VARCHAR(2048)",
+        "origin_display_path": "VARCHAR(2048)",
+        "origin_size_bytes": "BIGINT",
+        "origin_mtime_ns": "BIGINT",
+        "origin_sha256": "VARCHAR(64)",
     },
     "threads": {"archived": "BOOLEAN NOT NULL DEFAULT 0"},
     "messages": {
@@ -88,6 +95,8 @@ _INDEX_UPGRADES = (
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_auth_singleton ON users (auth_singleton)",
     "CREATE INDEX IF NOT EXISTS ix_messages_thread_created_id ON messages (thread_id, created_at, id)",
     "CREATE INDEX IF NOT EXISTS ix_documents_source_sag_source ON documents (source_id, sag_source_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_documents_source_origin "
+    "ON documents (source_id, origin_kind, origin_key)",
 )
 
 

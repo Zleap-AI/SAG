@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import BigInteger, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -12,6 +12,12 @@ class Document(IDMixin, TimestampMixin, Base):
     __tablename__ = "documents"
     __table_args__ = (
         Index("ix_documents_source_sag_source", "source_id", "sag_source_id"),
+        UniqueConstraint(
+            "source_id",
+            "origin_kind",
+            "origin_key",
+            name="ux_documents_source_origin",
+        ),
     )
 
     source_id: Mapped[str] = mapped_column(
@@ -35,3 +41,11 @@ class Document(IDMixin, TimestampMixin, Base):
     error_stage: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # zleap-sag ingest 返回的 source_id（用于溯源）
     sag_source_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # NAS 来源私有元数据。公开 schema 仅暴露 kind 和语义化展示路径。
+    origin_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    origin_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    origin_path: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    origin_display_path: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    origin_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    origin_mtime_ns: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    origin_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)

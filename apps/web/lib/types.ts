@@ -75,6 +75,109 @@ export interface Doc {
   updated_at: string;
 }
 
+export type FnOSNasMode = "automatic" | "legacy_manual" | "unavailable";
+export type FnOSNasFolderSource = "host_api" | "legacy_manual";
+export type FnOSNasFileState =
+  | "new"
+  | "changed"
+  | "imported"
+  | "unsupported"
+  | "too_large"
+  | "unreadable";
+
+export interface FnOSNasLimits {
+  max_files: number;
+  max_import_files: number;
+  max_import_bytes: number;
+  max_file_bytes: number;
+}
+
+export interface FnOSNasFolder {
+  id: string;
+  display_path: string;
+  source: FnOSNasFolderSource;
+  readable: boolean;
+}
+
+export interface FnOSNasStatus {
+  eligible: boolean;
+  mode: FnOSNasMode;
+  system_version: string | null;
+  automatic_authorization: boolean;
+  folders: FnOSNasFolder[];
+  limits: FnOSNasLimits;
+  reason: string | null;
+}
+
+export interface FnOSNasScanFile {
+  selection_token: string | null;
+  name: string;
+  display_path: string;
+  extension: string;
+  size_bytes: number;
+  modified_at: string;
+  state: FnOSNasFileState;
+  selected_by_default: boolean;
+  document_id: string | null;
+}
+
+export interface FnOSNasScanSummary {
+  visited: number;
+  eligible: number;
+  new: number;
+  changed: number;
+  imported: number;
+  unsupported: number;
+  too_large: number;
+  unreadable: number;
+}
+
+export interface FnOSNasScanResult {
+  scan_id: string;
+  folder: string;
+  files: FnOSNasScanFile[];
+  summary: FnOSNasScanSummary;
+  truncated: boolean;
+  truncated_reason: string | null;
+  selection_expires_at: string;
+}
+
+export interface FnOSNasScanRequest {
+  source_id: string;
+  folder_id: string;
+  recursive: boolean;
+}
+
+export interface FnOSNasImportRequest {
+  source_id: string;
+  selection_tokens: string[];
+}
+
+export interface FnOSNasImportAccepted {
+  job_id: string;
+  accepted: number;
+}
+
+export interface FnOSNasImportItem {
+  display_path: string;
+  outcome: "created" | "updated" | "skipped" | "failed";
+  document_id: string | null;
+  reason: string | null;
+}
+
+export interface FnOSNasImportProgress {
+  id: string;
+  status: "queued" | "running" | "paused" | "succeeded" | "failed";
+  progress: number;
+  total: number;
+  completed: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  failed: number;
+  results: FnOSNasImportItem[];
+}
+
 export interface CitationEventRef {
   id?: string | null;
   title: string;

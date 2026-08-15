@@ -18,23 +18,17 @@ import {
 } from "lucide-react";
 
 import { useApp } from "@/components/features/app-shell";
+import { DocumentAddPanel } from "@/components/features/document-add-panel";
 import { DocumentList } from "@/components/features/document-list";
 import { EmptyState } from "@/components/features/empty-state";
 import { RetrievalTestDialog } from "@/components/features/retrieval-test-dialog";
+import { ResponsiveDocumentAdd } from "@/components/features/responsive-document-add";
 import { SourceIdCopy } from "@/components/features/source-id-copy";
 import { SourceGraph } from "@/components/features/source-graph";
 import { SyncPanel } from "@/components/features/sync-panel";
-import { UploadZone } from "@/components/features/upload-zone";
 import { useSourceContent } from "@/components/features/use-source-content";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   Tooltip,
   TooltipContent,
@@ -295,40 +289,34 @@ export default function SourceDetailPage() {
         </div>
       </div>
 
-      <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>
-              {isFileSource ? t("addDocument") : t("syncSource")}
-            </DialogTitle>
-            <DialogDescription>
-              {isFileSource
-                ? t("addDialogDescription")
-                : t("syncDialogDescription")}
-            </DialogDescription>
-          </DialogHeader>
-          {source &&
-            (source.connector_kind === "file_upload" ? (
-              <UploadZone
-                sourceId={id}
-                onUploaded={() => {
-                  setAddOpen(false);
-                  void refresh();
-                }}
-                maxMb={capabilities?.max_upload_mb ?? 25}
-                allowedExts={capabilities?.allowed_upload_exts}
-              />
-            ) : (
-              <SyncPanel
-                sourceId={id}
-                onSynced={() => {
-                  setAddOpen(false);
-                  void refresh();
-                }}
-              />
-            ))}
-        </DialogContent>
-      </Dialog>
+      <ResponsiveDocumentAdd
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        title={isFileSource ? t("addDocument") : t("syncSource")}
+        description={
+          isFileSource ? t("addDialogDescription") : t("syncDialogDescription")
+        }
+      >
+        {source &&
+          (source.connector_kind === "file_upload" ? (
+            <DocumentAddPanel
+              sourceId={id}
+              sourceName={source.name}
+              onCompleted={() => {
+                setAddOpen(false);
+                return refresh();
+              }}
+            />
+          ) : (
+            <SyncPanel
+              sourceId={id}
+              onSynced={() => {
+                setAddOpen(false);
+                void refresh();
+              }}
+            />
+          ))}
+      </ResponsiveDocumentAdd>
 
       {source && (
         <RetrievalTestDialog

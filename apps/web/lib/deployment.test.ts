@@ -19,6 +19,9 @@ describe("appPath", () => {
     expect(APP_BASE_PATH).toBe("/app/sag");
     expect(appPath("/login")).toBe("/app/sag/login");
     expect(appPath("/app/sag/chat")).toBe("/app/sag/chat");
+    expect(appPath("/fnos-auth-callback")).toBe(
+      "/app/sag/fnos-auth-callback",
+    );
   });
 
   it("keeps normal deployments at the origin root", async () => {
