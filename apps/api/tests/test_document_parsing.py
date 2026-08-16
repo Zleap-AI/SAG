@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -57,6 +58,72 @@ async def test_parser_routes_markdown_and_markitdown_with_cache(tmp_path, monkey
     assert Path(first.path).read_text(encoding="utf-8") == "# Converted\n\nhello\n"
     assert second.cached is True and second.path == first.path
     assert calls == [str(source)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("settings_overrides", "resume_state", "expected_metadata", "expected_public_model"),
+    [
+        (
+            {
+                "mineru_provider": "official",
+                "mineru_official_model": "pipeline",
+                "mineru_api_key": "official-key",
+            },
+            None,
+            {"mineru_service": "official", "mineru_model": "pipeline"},
+            "pipeline",
+        ),
+        (
+            {
+                "mineru_provider": "302",
+                "mineru_version": "2.0",
+                "mineru_api_key": "302-key",
+            },
+            {"provider": "mineru", "status": "done"},
+            {"mineru_service": "302", "mineru_version": "2.0"},
+            "pipeline",
+        ),
+    ],
+)
+async def test_mineru_cache_hit_emits_authoritative_metadata(
+    tmp_path, settings_overrides, resume_state, expected_metadata, expected_public_model
+):
+    source = tmp_path / "cached.pdf"
+    source.write_bytes(b"%PDF-fake")
+    settings = _settings(
+        document_parser="mineru",
+        mineru_base_url="https://mineru.example.test",
+        **settings_overrides,
+    )
+    signature = service._signature("mineru", settings)
+    cache_path = Path(f"{source}.parsed.{signature}.md")
+    cache_path.write_text("# Cached result\n", encoding="utf-8")
+    states: list[dict[str, Any]] = []
+
+    prepared = await service.prepare_document(
+        str(source),
+        settings,
+        state=resume_state,
+        on_state=lambda state: _append_state(states, state),
+    )
+
+    assert prepared.cached is True
+    assert prepared.provider == "mineru"
+    assert states[-1]["provider"] == "mineru"
+    assert states[-1]["status"] == "done"
+    assert states[-1]["cache_path"] == str(cache_path)
+    assert {key: states[-1][key] for key in expected_metadata} == expected_metadata
+
+    from sag_api.jobs import tasks
+
+    public_values = tasks._prepared_parser_values(prepared, states[-1])
+    assert public_values["mineru_provider"] == expected_metadata["mineru_service"]
+    assert public_values["mineru_model"] == expected_public_model
+
+
+async def _append_state(states: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    states.append(state)
 
 
 @pytest.mark.asyncio
@@ -126,9 +193,7 @@ async def test_only_pdf_uses_configured_mineru(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pdf_without_complete_mineru_config_falls_back_to_markitdown(
-    tmp_path, monkeypatch
-):
+async def test_pdf_without_complete_mineru_config_falls_back_to_markitdown(tmp_path, monkeypatch):
     source = tmp_path / "paper.pdf"
     source.write_bytes(b"%PDF-fake")
     monkeypatch.setattr(service, "_markitdown_sync", lambda path: "# Local PDF\n")
@@ -141,9 +206,7 @@ async def test_pdf_without_complete_mineru_config_falls_back_to_markitdown(
 
 
 @pytest.mark.asyncio
-async def test_mineru_failure_falls_back_to_markitdown_and_reuses_cache(
-    tmp_path, monkeypatch
-):
+async def test_mineru_failure_falls_back_to_markitdown_and_reuses_cache(tmp_path, monkeypatch):
     source = tmp_path / "paper.pdf"
     source.write_bytes(b"%PDF-fake")
     mineru_calls = 0
@@ -173,9 +236,7 @@ async def test_mineru_failure_falls_back_to_markitdown_and_reuses_cache(
     )
     states: list[dict[str, Any]] = []
 
-    first = await service.prepare_document(
-        str(source), settings, on_state=lambda state: _record(states, state)
-    )
+    first = await service.prepare_document(str(source), settings, on_state=lambda state: _record(states, state))
     second = await service.prepare_document(
         str(source),
         settings,
@@ -197,9 +258,7 @@ async def test_mineru_failure_falls_back_to_markitdown_and_reuses_cache(
 
 
 @pytest.mark.asyncio
-async def test_document_fails_only_when_mineru_and_markitdown_both_fail(
-    tmp_path, monkeypatch
-):
+async def test_document_fails_only_when_mineru_and_markitdown_both_fail(tmp_path, monkeypatch):
     source = tmp_path / "broken.pdf"
     source.write_bytes(b"%PDF-broken")
 
@@ -222,17 +281,13 @@ async def test_document_fails_only_when_mineru_and_markitdown_both_fail(
     )
 
     with pytest.raises(ServiceUnavailableError, match="MinerU.*MarkItDown"):
-        await service.prepare_document(
-            str(source), settings, on_state=lambda state: _record(states, state)
-        )
+        await service.prepare_document(str(source), settings, on_state=lambda state: _record(states, state))
     assert states[-1]["status"] == "fallback_failed"
     assert states[-1]["fallback"]["markitdown_error"].endswith("local parser failed")
 
 
 @pytest.mark.asyncio
-async def test_mineru_state_callback_failure_does_not_trigger_markitdown(
-    tmp_path, monkeypatch
-):
+async def test_mineru_state_callback_failure_does_not_trigger_markitdown(tmp_path, monkeypatch):
     source = tmp_path / "paper.pdf"
     source.write_bytes(b"%PDF-fake")
     markitdown_calls = 0
@@ -267,17 +322,13 @@ async def test_mineru_state_callback_failure_does_not_trigger_markitdown(
     )
 
     with pytest.raises(RuntimeError, match="database commit failed"):
-        await service.prepare_document(
-            str(source), settings, on_state=fail_to_persist
-        )
+        await service.prepare_document(str(source), settings, on_state=fail_to_persist)
     assert state_writes == 2
     assert markitdown_calls == 0
 
 
 @pytest.mark.asyncio
-async def test_changed_mineru_config_retries_remote_after_cached_fallback(
-    tmp_path, monkeypatch
-):
+async def test_changed_mineru_config_retries_remote_after_cached_fallback(tmp_path, monkeypatch):
     source = tmp_path / "paper.pdf"
     source.write_bytes(b"%PDF-fake")
     mineru_calls = 0
@@ -303,9 +354,7 @@ async def test_changed_mineru_config_retries_remote_after_cached_fallback(
         mineru_api_key="sk-changed",
     )
 
-    await service.prepare_document(
-        str(source), first_settings, on_state=lambda state: _record(states, state)
-    )
+    await service.prepare_document(str(source), first_settings, on_state=lambda state: _record(states, state))
     previous_state = states[-1]
     await service.prepare_document(
         str(source),
@@ -354,9 +403,7 @@ async def test_concurrent_pdf_parsing_creates_only_one_mineru_task(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_concurrent_mineru_failure_creates_one_task_and_one_fallback(
-    tmp_path, monkeypatch
-):
+async def test_concurrent_mineru_failure_creates_one_task_and_one_fallback(tmp_path, monkeypatch):
     source = tmp_path / "paper.pdf"
     source.write_bytes(b"%PDF-fake")
     mineru_calls = 0
@@ -495,7 +542,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
 
     monkeypatch.setattr(tasks, "prepare_document", fake_prepare)
     engine = FakeEngineManager()
-    await tasks.process_document(FakeSession(), job, engine_manager=engine)
+    await tasks._process_document_unlocked(FakeSession(), job, engine_manager=engine)
 
     assert prepared_calls == ["/uploads/original.pdf"]
     assert stage_errors == [("loading", None), ("extracting", None)]
@@ -503,6 +550,459 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
     assert document.status.value == "ready"
     assert document.chunk_count == 2 and document.event_count == 1
     assert document.progress == 100 and document.token_usage == 2468
+    assert document.parser_provider == "markitdown"
+    assert document.parser_status == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("parser_state", "expected_provider", "expected_model"),
+    [
+        (
+            {
+                "provider": "mineru",
+                "mineru_service": "official",
+                "mineru_model": "pipeline",
+            },
+            "official",
+            "pipeline",
+        ),
+        (
+            {
+                "provider": "mineru",
+                "mineru_service": "302",
+                "mineru_version": "2.5",
+            },
+            "302",
+            "2.5",
+        ),
+        (
+            {
+                "provider": "mineru",
+                "mineru_service": "302",
+                "mineru_version": "2.0",
+                "base_url": "https://mineru-gateway.example.test",
+            },
+            "302",
+            "pipeline",
+        ),
+    ],
+)
+async def test_document_job_persists_successful_mineru_outcome(
+    monkeypatch, parser_state, expected_provider, expected_model
+):
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
+    from sag_api.jobs import tasks
+
+    document = SimpleNamespace(
+        id="doc-mineru",
+        source_id="source-1",
+        filename="paper.pdf",
+        storage_path="/uploads/paper.pdf",
+        status=DocumentStatus.PENDING,
+        error=None,
+        chunk_count=0,
+        event_count=0,
+        progress=0,
+        token_usage=0,
+        sag_source_id=None,
+    )
+    source = SimpleNamespace(id="source-1", sag_source_config_id="sag-source-1")
+    job = SimpleNamespace(id="job-mineru", document_id=document.id, progress=0.0, payload={})
+
+    class FakeSession:
+        async def get(self, model, _id):
+            return document if model is Document else source if model is Source else None
+
+        async def refresh(self, _instance, attribute_names=None):
+            pass
+
+        async def commit(self):
+            pass
+
+        async def execute(self, _statement):
+            return SimpleNamespace(rowcount=1)
+
+    async def fake_prepare(path, settings, *, state=None, on_state=None):
+        assert on_state is not None
+        await on_state(
+            {
+                **parser_state,
+                "task_id": "task-1",
+                "status": "running",
+            }
+        )
+        return PreparedDocument(f"{path}.parsed.mineru.md", "mineru")
+
+    class FakeEngineManager:
+        async def process_document(self, *args, **kwargs):
+            return ProcessOutcome(
+                source_id="engine-doc",
+                chunk_count=1,
+                event_count=1,
+                chunk_ids=["chunk-1"],
+                processed_chunk_ids=["chunk-1"],
+                token_usage=123,
+            )
+
+    async def no_op_touch(*args):
+        return None
+
+    monkeypatch.setattr(tasks, "prepare_document", fake_prepare)
+    monkeypatch.setattr(tasks, "touch_source_revision", no_op_touch)
+
+    await tasks._process_document_unlocked(FakeSession(), job, engine_manager=FakeEngineManager())
+
+    assert document.parser_provider == "mineru"
+    assert document.mineru_provider == expected_provider
+    assert document.mineru_model == expected_model
+    assert document.parser_status == "done"
+    assert document.fallback_from is None
+    assert document.fallback_reason is None
+    assert job.payload["document_parser"]["task_id"] == "task-1"
+
+
+@pytest.mark.asyncio
+async def test_document_job_persists_mineru_markitdown_fallback(monkeypatch, caplog):
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
+    from sag_api.jobs import tasks
+
+    document = SimpleNamespace(
+        id="doc-fallback",
+        source_id="source-1",
+        filename="paper.pdf",
+        storage_path="/uploads/paper.pdf",
+        status=DocumentStatus.PENDING,
+        error=None,
+        chunk_count=0,
+        event_count=0,
+        progress=0,
+        token_usage=0,
+        sag_source_id=None,
+    )
+    source = SimpleNamespace(id="source-1", sag_source_config_id="sag-source-1")
+    job = SimpleNamespace(id="job-fallback", document_id=document.id, progress=0.0, payload={})
+    raw_reason = "MinerU failed with sk-secret123 at https://files.example/result?token=signed-value"
+
+    class FakeSession:
+        async def get(self, model, _id):
+            return document if model is Document else source if model is Source else None
+
+        async def refresh(self, _instance, attribute_names=None):
+            pass
+
+        async def commit(self):
+            pass
+
+        async def execute(self, _statement):
+            return SimpleNamespace(rowcount=1)
+
+    async def fake_prepare(path, settings, *, state=None, on_state=None):
+        assert on_state is not None
+        await on_state(
+            {
+                "provider": "mineru",
+                "mineru_service": "302",
+                "mineru_version": "2.5",
+                "base_url": "https://api.302ai.cn",
+                "status": "fallback_done",
+                "fallback": {
+                    "provider": "markitdown",
+                    "status": "done",
+                    "mineru_error": raw_reason,
+                },
+            }
+        )
+        return PreparedDocument(
+            f"{path}.parsed.markitdown.md",
+            "markitdown",
+            fallback_from="mineru",
+            fallback_error=raw_reason,
+        )
+
+    class FakeEngineManager:
+        async def process_document(self, *args, **kwargs):
+            return ProcessOutcome(
+                source_id="engine-doc",
+                chunk_count=1,
+                event_count=0,
+                chunk_ids=["chunk-1"],
+                processed_chunk_ids=["chunk-1"],
+                token_usage=0,
+            )
+
+    async def no_op_touch(*args):
+        return None
+
+    monkeypatch.setattr(tasks, "prepare_document", fake_prepare)
+    monkeypatch.setattr(tasks, "touch_source_revision", no_op_touch)
+
+    caplog.set_level(logging.WARNING, logger="sag.jobs")
+    await tasks._process_document_unlocked(
+        FakeSession(), job, engine_manager=FakeEngineManager()
+    )
+
+    assert document.parser_provider == "markitdown"
+    assert document.mineru_provider == "302"
+    assert document.mineru_model == "2.5"
+    assert document.parser_status == "fallback"
+    assert document.fallback_from == "mineru"
+    assert "sk-secret123" not in document.fallback_reason
+    assert "signed-value" not in document.fallback_reason
+    warning_text = " ".join(record.getMessage() for record in caplog.records)
+    assert "sk-secret123" not in warning_text
+    assert "signed-value" not in warning_text
+    assert "[REDACTED]" in warning_text
+    assert job.payload["document_parser"]["fallback"]["mineru_error"] == raw_reason
+
+
+@pytest.mark.asyncio
+async def test_document_job_redacts_parser_failure_from_public_error(
+    monkeypatch, caplog
+):
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
+    from sag_api.jobs import tasks
+
+    raw_reason = (
+        "Parser failed with Bearer secret-token and sk-secret123 at "
+        "https://files.example/result?token=signed-value " + "detail " * 100
+    )
+    document = SimpleNamespace(
+        id="doc-parser-failed",
+        source_id="source-1",
+        filename="paper.pdf",
+        storage_path="/uploads/paper.pdf",
+        status=DocumentStatus.PENDING,
+        error=None,
+        chunk_count=0,
+        event_count=0,
+        progress=0,
+        token_usage=0,
+        sag_source_id=None,
+    )
+    source = SimpleNamespace(id="source-1", sag_source_config_id="sag-source-1")
+    job = SimpleNamespace(
+        id="job-parser-failed",
+        document_id=document.id,
+        progress=0.0,
+        payload={},
+    )
+
+    class FakeSession:
+        async def get(self, model, _id):
+            return document if model is Document else source if model is Source else None
+
+        async def refresh(self, _instance, attribute_names=None):
+            pass
+
+        async def commit(self):
+            pass
+
+        async def execute(self, statement):
+            values = {
+                column.key: bound.value for column, bound in statement._values.items()
+            }
+            if "error" in values:
+                document.error = values["error"]
+            return SimpleNamespace(rowcount=1)
+
+    async def fake_prepare(path, settings, *, state=None, on_state=None):
+        assert on_state is not None
+        await on_state(
+            {
+                "provider": "mineru",
+                "mineru_service": "302",
+                "mineru_version": "2.5",
+                "status": "fallback_failed",
+                "fallback": {
+                    "provider": "markitdown",
+                    "status": "failed",
+                    "mineru_error": raw_reason,
+                    "markitdown_error": raw_reason,
+                },
+            }
+        )
+        raise ServiceUnavailableError(raw_reason)
+
+    class FakeEngineManager:
+        async def process_document(self, *args, **kwargs):
+            raise AssertionError("engine must not run after parser failure")
+
+    monkeypatch.setattr(tasks, "prepare_document", fake_prepare)
+    caplog.set_level(logging.WARNING, logger="sag.jobs")
+
+    with pytest.raises(ServiceUnavailableError):
+        await tasks._process_document_unlocked(
+            FakeSession(), job, engine_manager=FakeEngineManager()
+        )
+
+    assert document.parser_status == "failed"
+    assert document.fallback_reason == document.error
+    assert document.error is not None and len(document.error) <= 300
+    assert "secret-token" not in document.error
+    assert "sk-secret123" not in document.error
+    assert "signed-value" not in document.error
+    warning_text = " ".join(record.getMessage() for record in caplog.records)
+    assert "secret-token" not in warning_text
+    assert "sk-secret123" not in warning_text
+    assert "signed-value" not in warning_text
+
+
+@pytest.mark.asyncio
+async def test_document_job_preserves_engine_error_before_first_checkpoint(
+    monkeypatch, caplog
+):
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
+    from sag_api.jobs import tasks
+
+    raw_reason = "engine extraction failed before checkpoint " + "diagnostic " * 40
+    document = SimpleNamespace(
+        id="doc-engine-failed",
+        source_id="source-1",
+        filename="paper.pdf",
+        storage_path="/uploads/paper.pdf",
+        status=DocumentStatus.PENDING,
+        error=None,
+        chunk_count=0,
+        event_count=0,
+        progress=0,
+        token_usage=0,
+        sag_source_id=None,
+    )
+    source = SimpleNamespace(id="source-1", sag_source_config_id="sag-source-1")
+    job = SimpleNamespace(
+        id="job-engine-failed",
+        document_id=document.id,
+        progress=0.0,
+        payload={},
+    )
+
+    class FakeSession:
+        async def get(self, model, _id):
+            return document if model is Document else source if model is Source else None
+
+        async def refresh(self, _instance, attribute_names=None):
+            pass
+
+        async def commit(self):
+            pass
+
+        async def execute(self, statement):
+            values = {
+                column.key: bound.value for column, bound in statement._values.items()
+            }
+            if "error" in values:
+                document.error = values["error"]
+            return SimpleNamespace(rowcount=1)
+
+    async def fake_prepare(path, settings, *, state=None, on_state=None):
+        assert on_state is not None
+        await on_state(
+            {
+                "provider": "mineru",
+                "mineru_service": "official",
+                "mineru_model": "pipeline",
+                "status": "done",
+            }
+        )
+        return PreparedDocument(f"{path}.parsed.mineru.md", "mineru")
+
+    class FakeEngineManager:
+        async def process_document(self, *args, **kwargs):
+            assert not kwargs["checkpoint"].chunk_ids
+            raise RuntimeError(raw_reason)
+
+    monkeypatch.setattr(tasks, "prepare_document", fake_prepare)
+    caplog.set_level(logging.WARNING, logger="sag.jobs")
+
+    with pytest.raises(RuntimeError, match="engine extraction failed"):
+        await tasks._process_document_unlocked(
+            FakeSession(), job, engine_manager=FakeEngineManager()
+        )
+
+    assert document.error == raw_reason
+    assert len(document.error) > 300
+    warning_text = " ".join(record.getMessage() for record in caplog.records)
+    assert raw_reason in warning_text
+
+
+@pytest.mark.asyncio
+async def test_document_job_preserves_engine_error_on_resumed_checkpoint(
+    monkeypatch, caplog
+):
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
+    from sag_api.jobs import tasks
+
+    raw_reason = "resumed engine extraction failed " + "checkpoint diagnostic " * 30
+    document = SimpleNamespace(
+        id="doc-resumed-engine-failed",
+        source_id="source-1",
+        filename="paper.pdf",
+        storage_path="/uploads/paper.pdf",
+        status=DocumentStatus.EXTRACTING,
+        error=None,
+        chunk_count=1,
+        event_count=0,
+        progress=20,
+        token_usage=0,
+        sag_source_id=None,
+    )
+    source = SimpleNamespace(id="source-1", sag_source_config_id="sag-source-1")
+    job = SimpleNamespace(
+        id="job-resumed-engine-failed",
+        document_id=document.id,
+        progress=0.2,
+        payload={
+            "process_checkpoint": {
+                "chunk_ids": ["chunk-1"],
+                "processed_chunk_ids": [],
+            }
+        },
+    )
+
+    class FakeSession:
+        async def get(self, model, _id):
+            return document if model is Document else source if model is Source else None
+
+        async def refresh(self, _instance, attribute_names=None):
+            pass
+
+        async def commit(self):
+            pass
+
+        async def execute(self, statement):
+            values = {
+                column.key: bound.value for column, bound in statement._values.items()
+            }
+            if "error" in values:
+                document.error = values["error"]
+            return SimpleNamespace(rowcount=1)
+
+    async def unexpected_prepare(*args, **kwargs):
+        pytest.fail("resumed jobs must skip parser preparation")
+
+    class FakeEngineManager:
+        async def process_document(self, *args, **kwargs):
+            assert kwargs["checkpoint"].chunk_ids == ["chunk-1"]
+            raise RuntimeError(raw_reason)
+
+    monkeypatch.setattr(tasks, "prepare_document", unexpected_prepare)
+    caplog.set_level(logging.WARNING, logger="sag.jobs")
+
+    with pytest.raises(RuntimeError, match="resumed engine extraction failed"):
+        await tasks._process_document_unlocked(
+            FakeSession(), job, engine_manager=FakeEngineManager()
+        )
+
+    assert document.error == raw_reason
+    assert len(document.error) > 300
+    warning_text = " ".join(record.getMessage() for record in caplog.records)
+    assert raw_reason in warning_text
 
 
 class _FakeAsyncClient:
@@ -561,9 +1061,7 @@ def _response(
 ) -> httpx.Response:
     request = httpx.Request("GET", url)
     if content is not None:
-        return httpx.Response(
-            status, content=content, headers={"content-type": content_type}, request=request
-        )
+        return httpx.Response(status, content=content, headers={"content-type": content_type}, request=request)
     return httpx.Response(status, json=json, request=request)
 
 
@@ -596,9 +1094,7 @@ def _simple_pdf(text: str) -> bytes:
     output.extend(b"0000000000 65535 f \n")
     for offset in offsets[1:]:
         output.extend(f"{offset:010d} 00000 n \n".encode())
-    output.extend(
-        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
-    )
+    output.extend(f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
     return bytes(output)
 
 
@@ -668,9 +1164,7 @@ async def test_mineru_upload_create_poll_and_download_zip(tmp_path, monkeypatch)
     source.write_bytes(b"%PDF-fake")
     _FakeAsyncClient.reset(
         [
-            _response(
-                json={"code": 200, "data": "https://file.302.ai/input.pdf", "message": "success"}
-            ),
+            _response(json={"code": 200, "data": "https://file.302.ai/input.pdf", "message": "success"}),
             _response(json="task-123"),
             _response(json="processing"),
             _response(json='{"status":"done","full_zip_url":"https://file.302.ai/result.zip"}'),
@@ -965,9 +1459,7 @@ async def test_mineru_accepts_immediate_result_url_from_create(tmp_path, monkeyp
         ]
     )
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
-    client = MinerUClient(
-        _settings(mineru_base_url="https://api.302.ai", mineru_api_key="sk-mineru")
-    )
+    client = MinerUClient(_settings(mineru_base_url="https://api.302.ai", mineru_api_key="sk-mineru"))
 
     assert await client.parse(str(source)) == "# Immediate result\n"
     assert [call[0] for call in _FakeAsyncClient.calls] == ["POST", "POST", "DOWNLOAD"]
@@ -986,9 +1478,7 @@ async def test_mineru_result_download_maps_bounded_error_body(tmp_path, monkeypa
         ]
     )
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
-    client = MinerUClient(
-        _settings(mineru_base_url="https://api.302.ai", mineru_api_key="sk-mineru")
-    )
+    client = MinerUClient(_settings(mineru_base_url="https://api.302.ai", mineru_api_key="sk-mineru"))
 
     with pytest.raises(ServiceUnavailableError, match="result temporarily unavailable"):
         await client.parse(str(source))
@@ -1000,9 +1490,7 @@ async def test_mineru_auth_error_is_configuration_error(tmp_path, monkeypatch):
     source.write_bytes(b"%PDF-fake")
     _FakeAsyncClient.reset([_response(json={"message": "bad key"}, status=401)])
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
-    client = MinerUClient(
-        _settings(mineru_base_url="https://api.302.ai", mineru_api_key="sk-bad")
-    )
+    client = MinerUClient(_settings(mineru_base_url="https://api.302.ai", mineru_api_key="sk-bad"))
     with pytest.raises(ConfigurationError, match="API Key"):
         await client.parse(str(source))
 

@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,6 +62,104 @@ _DELETE_CONTROL_STATES = {
     DocumentStatus.DELETING,
     DocumentStatus.DELETE_FAILED,
 }
+_PARSER_UPLOAD_STATES = {"uploading", "uploaded"}
+_PARSER_QUEUE_STATES = {"created", "pending", "queued", "queueing"}
+_PARSER_DONE_STATES = {"done", "success", "succeeded", "completed", "finished"}
+_PARSER_FAILED_STATES = {"failed", "failure", "error", "cancelled", "canceled", "fallback_failed"}
+_SECRET_QUERY_KEYS = re.compile(r"(?i)([?&](?:token|key|signature|credential|authorization|x-amz-[^=]+)=)[^&#\s]+")
+_BEARER_TOKEN = re.compile(r"(?i)bearer\s+\S+")
+_API_KEY = re.compile(r"(?i)\b(?:sk|ak)-[a-z0-9._-]{6,}\b")
+_URL = re.compile(r"https?://[^\s；，,]+")
+
+
+def _mineru_details(state: dict[str, Any] | None = None) -> tuple[str, str]:
+    current = state or {}
+    service = current.get("mineru_service")
+    if service == "official":
+        model = current.get("mineru_model")
+        return "official", model if model in {"vlm", "pipeline"} else "vlm"
+    if service == "302":
+        version = str(current.get("mineru_version") or "").lower()
+        # The public contract predates 302's 2.0 label. "pipeline" is the
+        # closest stable representation; importantly, it does not claim 2.5.
+        return "302", "2.5" if version in {"2.5", "v2.5"} else "pipeline"
+    return "302", "2.5"
+
+
+def _redact_parser_reason(value: object) -> str | None:
+    if value is None:
+        return None
+    message = " ".join(str(value).split())
+    if not message:
+        return None
+    message = _SECRET_QUERY_KEYS.sub(r"\1[REDACTED]", message)
+    message = _BEARER_TOKEN.sub("Bearer [REDACTED]", message)
+    message = _API_KEY.sub("[REDACTED]", message)
+    message = _URL.sub("[URL REDACTED]", message)
+    return message[:300]
+
+
+def _fallback_reason(state: dict[str, Any]) -> str | None:
+    fallback = state.get("fallback")
+    if isinstance(fallback, dict):
+        return _redact_parser_reason(fallback.get("mineru_error") or fallback.get("markitdown_error"))
+    return _redact_parser_reason(state.get("error") or state.get("message"))
+
+
+def _parser_state_values(state: dict[str, Any]) -> dict[str, str | None]:
+    raw_provider = state.get("provider")
+    provider = raw_provider if raw_provider in {"mineru", "markitdown", "original"} else None
+    raw_status = str(state.get("status") or "").lower()
+    fallback = isinstance(state.get("fallback"), dict)
+    if raw_status.startswith("fallback_") or fallback:
+        status = "failed" if raw_status == "fallback_failed" else "fallback"
+        parser_provider = "markitdown" if raw_status != "fallback_failed" else provider
+        fallback_from = "mineru"
+    elif raw_status in _PARSER_UPLOAD_STATES or state.get("upload_url") and not state.get("task_id"):
+        status = "uploading"
+        parser_provider = provider
+        fallback_from = None
+    elif raw_status in _PARSER_QUEUE_STATES or state.get("task_id") and not raw_status:
+        status = "queued"
+        parser_provider = provider
+        fallback_from = None
+    elif raw_status in _PARSER_DONE_STATES:
+        status = "done"
+        parser_provider = provider
+        fallback_from = None
+    elif raw_status in _PARSER_FAILED_STATES:
+        status = "failed"
+        parser_provider = provider
+        fallback_from = None
+    else:
+        status = "running"
+        parser_provider = provider
+        fallback_from = None
+    mineru_provider = mineru_model = None
+    if provider == "mineru" or fallback_from == "mineru":
+        mineru_provider, mineru_model = _mineru_details(state)
+    return {
+        "parser_provider": parser_provider,
+        "mineru_provider": mineru_provider,
+        "mineru_model": mineru_model,
+        "parser_status": status,
+        "fallback_from": fallback_from,
+        "fallback_reason": _fallback_reason(state) if fallback_from else None,
+    }
+
+
+def _prepared_parser_values(prepared, state: dict[str, Any] | None) -> dict[str, str | None]:  # noqa: ANN001
+    mineru_provider = mineru_model = None
+    if prepared.provider == "mineru" or prepared.fallback_from == "mineru":
+        mineru_provider, mineru_model = _mineru_details(state)
+    return {
+        "parser_provider": prepared.provider,
+        "mineru_provider": mineru_provider,
+        "mineru_model": mineru_model,
+        "parser_status": "fallback" if prepared.fallback_from else "done",
+        "fallback_from": prepared.fallback_from,
+        "fallback_reason": _redact_parser_reason(prepared.fallback_error),
+    }
 
 
 async def _yield_after_document_transition_lost(
@@ -159,6 +259,8 @@ async def _process_document_unlocked(
             return
         document.status = DocumentStatus.LOADING
         document.progress = max(document.progress, 10)
+        for field, value in _parser_state_values(state).items():
+            setattr(document, field, value)
         job.progress = document.progress / 100
         job.payload = {**(await refresh_payload()), "document_parser": state}
         await session.commit()
@@ -195,13 +297,20 @@ async def _process_document_unlocked(
 
     try:
         prepared = None
+        parser_stage = False
         if not checkpoint.chunk_ids:
+            parser_stage = True
             prepared = await prepare_document(
                 document.storage_path,
                 settings,
                 state=(job.payload or {}).get("document_parser"),
                 on_state=on_parser_state,
             )
+            parser_stage = False
+            parser_state = (job.payload or {}).get("document_parser")
+            for field, value in _prepared_parser_values(prepared, parser_state).items():
+                setattr(document, field, value)
+            await session.commit()
             if prepared.fallback_from:
                 log.warning(
                     "文档解析已降级 doc=%s job=%s from=%s to=%s cached=%s error=%s",
@@ -210,7 +319,7 @@ async def _process_document_unlocked(
                     prepared.fallback_from,
                     prepared.provider,
                     prepared.cached,
-                    prepared.fallback_error,
+                    _redact_parser_reason(prepared.fallback_error),
                 )
         outcome = await engine_manager.process_document(
             source.sag_source_config_id,
@@ -252,6 +361,20 @@ async def _process_document_unlocked(
         layer, stage = _classify_document_failure(e, document.status)
         expected_status = document.status
         message = getattr(e, "message", None) or str(e)
+        public_message = message
+        parser_failure_values: dict[str, str | None] = {}
+        parser_state = (job.payload or {}).get("document_parser")
+        parser_failed = parser_stage
+        if parser_failed:
+            public_message = _redact_parser_reason(message) or "文档解析失败"
+        if (
+            parser_failed
+            and isinstance(parser_state, dict)
+            and str(parser_state.get("status") or "").lower() == "fallback_failed"
+        ):
+            parser_failure_values = _parser_state_values(parser_state)
+            parser_failure_values["parser_status"] = "failed"
+            parser_failure_values["fallback_reason"] = _redact_parser_reason(message)
         failed = await session.execute(
             update(Document)
             .where(
@@ -260,9 +383,10 @@ async def _process_document_unlocked(
             )
             .values(
                 status=DocumentStatus.FAILED,
-                error=message,
+                error=public_message,
                 error_layer=layer.value,
                 error_stage=stage.value,
+                **parser_failure_values,
             )
             .execution_options(synchronize_session=False)
         )
@@ -273,7 +397,7 @@ async def _process_document_unlocked(
             document.id,
             layer.value,
             stage.value,
-            message,
+            public_message,
         )
         await session.commit()
         raise

@@ -197,6 +197,12 @@ async def reprocess_document(
             event_count=0,
             token_usage=0,
             sag_source_id=None,
+            parser_provider=None,
+            mineru_provider=None,
+            mineru_model=None,
+            parser_status=None,
+            fallback_from=None,
+            fallback_reason=None,
         )
     claimed = await session.execute(
         update(Document)

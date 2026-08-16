@@ -1422,6 +1422,12 @@ async def test_reprocess_ready_document_replaces_all_previous_derived_data():
             event_count=2,
             token_usage=500,
             sag_source_id="engine-latest",
+            parser_provider="mineru",
+            mineru_provider="official",
+            mineru_model="pipeline",
+            parser_status="done",
+            fallback_from="mineru",
+            fallback_reason="previous fallback",
         )
         other = Document(
             source_id=source.id,
@@ -1471,6 +1477,10 @@ async def test_reprocess_ready_document_replaces_all_previous_derived_data():
         assert document.progress == 0
         assert document.chunk_count == 0 and document.event_count == 0
         assert document.token_usage == 0 and document.sag_source_id is None
+        assert document.parser_provider is None
+        assert document.mineru_provider is None and document.mineru_model is None
+        assert document.parser_status is None
+        assert document.fallback_from is None and document.fallback_reason is None
         assert source.document_count == 2
         assert source.chunk_count == 4 and source.event_count == 5
         assert job.type == JobType.REPROCESS_DOCUMENT

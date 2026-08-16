@@ -67,6 +67,12 @@ _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
         "octx_installation_id": "VARCHAR(32)",
         "octx_document_id": "VARCHAR(36)",
         "is_active": "BOOLEAN NOT NULL DEFAULT TRUE",
+        "parser_provider": "VARCHAR(16)",
+        "mineru_provider": "VARCHAR(16)",
+        "mineru_model": "VARCHAR(16)",
+        "parser_status": "VARCHAR(16)",
+        "fallback_from": "VARCHAR(16)",
+        "fallback_reason": "TEXT",
     },
     "threads": {"archived": "BOOLEAN NOT NULL DEFAULT FALSE"},
     "messages": {

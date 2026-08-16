@@ -39,6 +39,12 @@ class DocumentOut(BaseModel):
     error: str | None
     error_layer: str | None = None
     error_stage: str | None = None
+    parser_provider: str | None = None
+    mineru_provider: str | None = None
+    mineru_model: str | None = None
+    parser_status: str | None = None
+    fallback_from: str | None = None
+    fallback_reason: str | None = None
     octx_installation_id: str | None = Field(default=None, exclude=True)
     created_at: datetime
     updated_at: datetime
