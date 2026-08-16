@@ -597,12 +597,14 @@
     "providerDescription": {
       "openai": "Works with OpenAI and compatible gateways such as 302.AI or private deployments.",
       "anthropic": "Uses the Anthropic Messages protocol with Claude streaming and tool calls.",
-      "gemini": "Uses Gemini GenerateContent with streaming and function calling."
+      "gemini": "Uses Gemini GenerateContent with streaming and function calling.",
+      "orcarouter": "Uses the OrcaRouter gateway for OpenAI-compatible models with namespaced model ids."
     },
     "baseUrlDescription": {
       "openai": "Enter the API root for an OpenAI-compatible Chat Completions endpoint.",
       "anthropic": "Leave blank for Anthropic's official endpoint, or enter a custom proxy URL.",
-      "gemini": "Leave blank for Google Gemini's official endpoint, or enter a custom proxy URL."
+      "gemini": "Leave blank for Google Gemini's official endpoint, or enter a custom proxy URL.",
+      "orcarouter": "OrcaRouter endpoint. Model ids are namespaced, e.g. openai/gpt-4o-mini."
     },
     "officialEndpoint": "Leave blank to use the official endpoint",
     "providerChangedKeyDescription": "The provider changed. Enter its API key; leaving this blank keeps the previously saved key.",

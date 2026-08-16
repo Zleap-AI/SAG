@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from types import MappingProxyType
 from typing import Literal
 
-ModelProviderId = Literal["openai", "anthropic", "gemini"]
+ModelProviderId = Literal["openai", "anthropic", "gemini", "orcarouter"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +81,25 @@ _PROVIDER_SPECS = (
         temperature_configurable=True,
         can_reuse_embedding_credentials=False,
         api_key_placeholder="AIza…",
+    ),
+    # OrcaRouter is an OpenAI-compatible gateway that requires namespaced model
+    # ids (e.g. "openai/gpt-4o-mini"). LiteLLM strips exactly one transport
+    # prefix before forwarding, so a plain "openai" prefix would reduce the id
+    # to a bare model name that OrcaRouter rejects. hosted_vllm is LiteLLM's
+    # generic OpenAI-compatible passthrough: it strips only its own prefix and
+    # forwards the remaining namespaced id unchanged.
+    ModelProviderSpec(
+        id="orcarouter",
+        display_name="OrcaRouter",
+        protocol="openai_chat_completions",
+        litellm_prefix="hosted_vllm",
+        default_model="openai/gpt-4o-mini",
+        default_base_url="https://api.orcarouter.ai/v1",
+        default_context_window=128_000,
+        default_temperature=0.3,
+        temperature_configurable=True,
+        can_reuse_embedding_credentials=False,
+        api_key_placeholder="sk-orca-…",
     ),
 )
 

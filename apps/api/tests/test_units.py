@@ -35,10 +35,34 @@ def test_connector_registry():
 
 def test_model_provider_registry_is_the_public_source_of_truth():
     catalog = model_provider_catalog()
-    assert [provider["id"] for provider in catalog] == ["openai", "anthropic", "gemini"]
+    assert [provider["id"] for provider in catalog] == ["openai", "anthropic", "gemini", "orcarouter"]
     assert all("litellm_prefix" not in provider for provider in catalog)
     assert get_model_provider("openai").route_model("qwen3.6-flash") == "openai/qwen3.6-flash"
     assert get_model_provider("gemini").route_model("gemini/gemini-3.5-flash") == "gemini/gemini-3.5-flash"
+    assert get_model_provider("orcarouter").route_model("openai/gpt-4o-mini") == "hosted_vllm/openai/gpt-4o-mini"
+
+
+def test_orcarouter_provider_keeps_namespaced_model_through_hosted_vllm():
+    provider = get_model_provider("orcarouter")
+    assert provider.default_base_url == "https://api.orcarouter.ai/v1"
+    assert provider.can_reuse_embedding_credentials is False
+    # OrcaRouter requires the namespaced id upstream; hosted_vllm is the
+    # transport prefix LiteLLM strips before forwarding.
+    assert provider.route_model("openai/gpt-4o-mini") == "hosted_vllm/openai/gpt-4o-mini"
+    assert provider.route_model("hosted_vllm/openai/gpt-4o-mini") == "hosted_vllm/openai/gpt-4o-mini"
+
+    configured = Settings(
+        _env_file=None,
+        llm_provider="orcarouter",
+        llm_base_url="https://api.orcarouter.ai/v1",
+        llm_api_key="sk-orca-test",
+        llm_model="openai/gpt-4o-mini",
+    )
+    assert configured.routed_llm_model == "hosted_vllm/openai/gpt-4o-mini"
+    engine = build_engine_config(configured)
+    assert engine.llm.model == "hosted_vllm/openai/gpt-4o-mini"
+    assert engine.llm.base_url == "https://api.orcarouter.ai/v1"
+    assert engine.embedding.api_key == "not-configured"
 
 
 def test_build_engine_config_zero_infra():
@@ -56,6 +80,7 @@ def test_build_engine_config_zero_infra():
         ("openai", "qwen3.6-flash", "openai/qwen3.6-flash"),
         ("anthropic", "claude-sonnet-5", "anthropic/claude-sonnet-5"),
         ("gemini", "gemini-3.5-flash", "gemini/gemini-3.5-flash"),
+        ("orcarouter", "openai/gpt-4o-mini", "hosted_vllm/openai/gpt-4o-mini"),
     ],
 )
 def test_extraction_engine_uses_one_litellm_transport(provider, model, expected_model):
@@ -420,6 +445,7 @@ async def test_deepseek_v4_agent_turn_sends_non_thinking_tool_request(monkeypatc
         ("openai", "qwen3.6-flash", "openai/qwen3.6-flash", 0.3),
         ("anthropic", "claude-sonnet-5", "anthropic/claude-sonnet-5", 1.0),
         ("gemini", "gemini/gemini-3.5-flash", "gemini/gemini-3.5-flash", 0.3),
+        ("orcarouter", "openai/gpt-4o-mini", "hosted_vllm/openai/gpt-4o-mini", 0.3),
     ],
 )
 async def test_generation_providers_use_one_litellm_route(monkeypatch, provider, model, expected, expected_temperature):

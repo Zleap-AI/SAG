@@ -146,7 +146,7 @@ export interface Binding {
   config: Record<string, unknown>;
 }
 
-export type ModelProviderId = "openai" | "anthropic" | "gemini";
+export type ModelProviderId = "openai" | "anthropic" | "gemini" | "orcarouter";
 
 export interface ModelProviderSpec {
   id: ModelProviderId;

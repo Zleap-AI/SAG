@@ -203,6 +203,17 @@ The UI and services still start without model credentials. Embeddings are requir
 
 To make the deployment configuration mandatory, set `SAG_LOCK_LLM_CONFIG=true`. SAG then shows the generation fields as locked in Settings and continues to use the `SAG_LLM_*` values. Change Docker Compose or `.env` and restart the API container to update a locked configuration. API keys remain deployment-managed and are never returned by the Settings API.
 
+The Settings → Models form is driven by the backend provider catalog (`openai`, `anthropic`, `gemini`, `orcarouter`). OrcaRouter is an OpenAI-compatible gateway that requires namespaced model ids, e.g.:
+
+```bash
+SAG_LLM_PROVIDER=orcarouter
+SAG_LLM_BASE_URL=https://api.orcarouter.ai/v1
+SAG_LLM_API_KEY=sk-orca-...
+SAG_LLM_MODEL=openai/gpt-4o-mini
+```
+
+OrcaRouter does not share the embedding format, so configure a separate OpenAI-compatible embedding endpoint and key.
+
 ### Import knowledge
 
 Create a source and add Markdown, text, PDF, Office, or other supported documents. SAG normalizes documents to Markdown, then runs chunking, embedding, event extraction, and entity extraction in the background.

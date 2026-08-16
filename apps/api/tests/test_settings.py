@@ -227,6 +227,7 @@ async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatc
                     "openai",
                     "anthropic",
                     "gemini",
+                    "orcarouter",
                 ]
                 assert providers[0]["default_model"] == body["llm_model"]
                 assert "litellm_prefix" not in providers[0]

@@ -597,12 +597,14 @@
     "providerDescription": {
       "openai": "支持 OpenAI 官方及 302.AI、私有网关等兼容端点。",
       "anthropic": "使用 Anthropic Messages 协议，支持 Claude 工具调用与流式回答。",
-      "gemini": "使用 Gemini GenerateContent 协议，支持函数调用与流式回答。"
+      "gemini": "使用 Gemini GenerateContent 协议，支持函数调用与流式回答。",
+      "orcarouter": "通过 OrcaRouter 网关接入 OpenAI 兼容模型，模型名需带命名空间前缀。"
     },
     "baseUrlDescription": {
       "openai": "填写兼容 Chat Completions 的 API 根地址。",
       "anthropic": "留空使用 Anthropic 官方端点；私有代理可填自定义地址。",
-      "gemini": "留空使用 Google Gemini 官方端点；私有代理可填自定义地址。"
+      "gemini": "留空使用 Google Gemini 官方端点；私有代理可填自定义地址。",
+      "orcarouter": "OrcaRouter 端点地址；模型名需带命名空间，如 openai/gpt-4o-mini。"
     },
     "officialEndpoint": "留空使用官方端点",
     "providerChangedKeyDescription": "已切换接入方式；请输入新 provider 的 API Key，留空将继续使用原密钥。",
