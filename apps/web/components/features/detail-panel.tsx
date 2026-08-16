@@ -20,6 +20,7 @@ import { api, ApiError } from "@/lib/api";
 import { getToken } from "@/lib/auth";
 import type { CitationEventRef, Doc } from "@/lib/types";
 import { formatBytes, formatDate, formatTokenCount, relativeTime } from "@/lib/format";
+import { documentParserStatus } from "@/lib/document-parser-status";
 import { cleanCitationText, stripCitationTransportTokens } from "@/lib/citation-presentation";
 import { cn } from "@/lib/utils";
 import { ChunkedMarkdown, ChunkedRawText } from "@/components/features/markdown-content";
@@ -676,6 +677,7 @@ export function DocumentDetailContent({
       </div>
     );
   }
+  const parser = documentParserStatus(doc);
   return (
     <TooltipProvider delayDuration={300}>
       <div className={cn("flex min-h-0 min-w-0 flex-1 flex-col", compact ? "gap-3" : "gap-4")}>
@@ -695,6 +697,15 @@ export function DocumentDetailContent({
             )}
           >
             <DocStatusBadge status={doc.status} />
+            {parser && (
+              <span
+                className="max-w-full truncate"
+                title={t(`document.parser.${parser.methodKey}`)}
+              >
+                {t(`document.parser.${parser.methodKey}`)}
+                {parser.progressKey ? ` · ${t(`document.parser.${parser.progressKey}`)}` : ""}
+              </span>
+            )}
             <span>
               {Math.min(100, Math.max(0, Math.round(doc.progress)))}% ·{" "}
               {t("document.tokens", { count: formatTokenCount(doc.token_usage, locale) })}

@@ -367,7 +367,19 @@
     "resume": "继续抽取",
     "reprocess": "重新处理",
     "exportOctx": "导出此文档为 .octx",
-    "delete": "删除"
+    "delete": "删除",
+    "parser": {
+      "officialMineruVlm": "MinerU · 官方 · VLM",
+      "officialMineruPipeline": "MinerU · 官方 · pipeline",
+      "ai302Mineru": "MinerU · 302.AI · 2.5",
+      "markitdown": "MarkItDown",
+      "markitdownFallback": "MarkItDown 回退",
+      "failed": "两个解析器均失败",
+      "original": "原始 Markdown",
+      "uploading": "上传中",
+      "queued": "排队中",
+      "running": "解析中"
+    }
   },
   "Knowledge": {
     "title": "知识库",
@@ -1069,7 +1081,19 @@
       "loadFailed": "文档加载失败",
       "tokens": "{count} tokens",
       "chunks": "{count, number} 分块",
-      "events": "{count, number} 事件"
+      "events": "{count, number} 事件",
+      "parser": {
+        "officialMineruVlm": "MinerU · 官方 · VLM",
+        "officialMineruPipeline": "MinerU · 官方 · pipeline",
+        "ai302Mineru": "MinerU · 302.AI · 2.5",
+        "markitdown": "MarkItDown",
+        "markitdownFallback": "MarkItDown 回退",
+        "failed": "两个解析器均失败",
+        "original": "原始 Markdown",
+        "uploading": "上传中",
+        "queued": "排队中",
+        "running": "解析中"
+      }
     },
     "panel": {
       "chunkTitle": "原文溯源",
