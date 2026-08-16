@@ -161,6 +161,8 @@ export interface ModelProviderSpec {
   api_key_placeholder: string;
 }
 
+export type MinerUProvider = "302" | "official";
+
 export interface ModelConfig {
   llm_provider: ModelProviderId;
   llm_base_url: string | null;
@@ -176,8 +178,10 @@ export interface ModelConfig {
   embedding_dimensions: number | null;
   embedding_api_key_set: boolean;
   document_parser: DocumentParser;
+  mineru_provider: MinerUProvider;
   mineru_base_url: string | null;
   mineru_version: "2.0" | "2.5";
+  mineru_official_model: "pipeline" | "vlm";
   mineru_api_key_set: boolean;
   effective_document_parser: EffectiveDocumentParser;
   document_extract_concurrency: number;
@@ -205,8 +209,10 @@ export type ModelConfigPatch = Partial<{
   embedding_api_key: string;
   embedding_dimensions: number | null;
   document_parser: DocumentParser;
+  mineru_provider: MinerUProvider;
   mineru_base_url: string | null;
   mineru_version: "2.0" | "2.5";
+  mineru_official_model: "pipeline" | "vlm";
   mineru_api_key: string;
   document_extract_concurrency: number;
   document_chunk_max_tokens: number;

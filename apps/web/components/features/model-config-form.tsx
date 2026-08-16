@@ -23,6 +23,7 @@ import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { api, ApiError } from "@/lib/api";
 import { isLlmConfigLocked } from "@/lib/model-config-lock";
+import { mineruProviderBaseUrl } from "@/lib/mineru-config";
 import { getDiagnosticsStore } from "@/lib/diagnostics";
 import type {
   ModelConfig,
@@ -66,9 +67,13 @@ export function ModelConfigForm() {
   const [embDims, setEmbDims] = React.useState("");
   const [documentParser, setDocumentParser] =
     React.useState<ModelConfig["document_parser"]>("auto");
+  const [mineruProvider, setMineruProvider] =
+    React.useState<ModelConfig["mineru_provider"]>("302");
   const [mineruBaseUrl, setMineruBaseUrl] = React.useState("");
   const [mineruVersion, setMineruVersion] =
     React.useState<ModelConfig["mineru_version"]>("2.5");
+  const [mineruOfficialModel, setMineruOfficialModel] =
+    React.useState<ModelConfig["mineru_official_model"]>("vlm");
   const [mineruKey, setMineruKey] = React.useState("");
 
   const hydrate = React.useCallback((config: ModelConfig) => {
@@ -85,8 +90,10 @@ export function ModelConfigForm() {
     setEmbBaseUrl(config.embedding_base_url ?? "");
     setEmbDims(config.embedding_dimensions != null ? String(config.embedding_dimensions) : "");
     setDocumentParser(config.document_parser);
+    setMineruProvider(config.mineru_provider);
     setMineruBaseUrl(config.mineru_base_url ?? "");
     setMineruVersion(config.mineru_version);
+    setMineruOfficialModel(config.mineru_official_model);
     setLlmKey("");
     setEmbKey("");
     setMineruKey("");
@@ -117,8 +124,10 @@ export function ModelConfigForm() {
         embedding_base_url: config.embedding_base_url,
         embedding_dimensions: config.embedding_dimensions,
         document_parser: config.document_parser,
+        mineru_provider: config.mineru_provider,
         mineru_base_url: config.mineru_base_url,
         mineru_version: config.mineru_version,
+        mineru_official_model: config.mineru_official_model,
       });
     } catch (error) {
       setLoadError(error instanceof ApiError ? error.message : t("loadFailed"));
@@ -143,8 +152,10 @@ export function ModelConfigForm() {
       embedding_base_url: embBaseUrl.trim(),
       embedding_dimensions: embDims.trim() ? Number(embDims) : null,
       document_parser: documentParser,
+      mineru_provider: mineruProvider,
       mineru_base_url: mineruBaseUrl.trim() || null,
       mineru_version: mineruVersion,
+      mineru_official_model: mineruOfficialModel,
     };
     if (llmKey.trim()) patch.llm_api_key = llmKey.trim();
     if (embKey.trim()) patch.embedding_api_key = embKey.trim();
@@ -173,8 +184,10 @@ export function ModelConfigForm() {
         embedding_base_url: config.embedding_base_url,
         embedding_dimensions: config.embedding_dimensions,
         document_parser: config.document_parser,
+        mineru_provider: config.mineru_provider,
         mineru_base_url: config.mineru_base_url,
         mineru_version: config.mineru_version,
+        mineru_official_model: config.mineru_official_model,
         llm_api_key_changed: Boolean(llmKey.trim()),
         embedding_api_key_changed: Boolean(embKey.trim()),
         mineru_api_key_changed: Boolean(mineruKey.trim()),
@@ -238,6 +251,14 @@ export function ModelConfigForm() {
       setTemperature(next.default_temperature);
     }
     setLlmProvider(next.id);
+    setTestResult(null);
+  }
+
+  function changeMineruProvider(value: ModelConfig["mineru_provider"]) {
+    setMineruBaseUrl(
+      mineruProviderBaseUrl(mineruBaseUrl, mineruProvider, value),
+    );
+    setMineruProvider(value);
     setTestResult(null);
   }
 
@@ -567,19 +588,55 @@ export function ModelConfigForm() {
               </FieldDescription>
             </Field>
             <Field>
-              <FieldLabel htmlFor="mineru-version">{t("mineruVersion")}</FieldLabel>
+              <FieldLabel htmlFor="mineru-provider">{t("mineruProvider")}</FieldLabel>
               <Select
-                value={mineruVersion}
+                value={mineruProvider}
                 onValueChange={(value) =>
-                  setMineruVersion(value as ModelConfig["mineru_version"])
+                  changeMineruProvider(value as ModelConfig["mineru_provider"])
                 }
               >
-                <SelectTrigger id="mineru-version">
+                <SelectTrigger id="mineru-provider">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="2.5">2.5</SelectItem>
-                  <SelectItem value="2.0">2.0</SelectItem>
+                  <SelectItem value="302">302.AI</SelectItem>
+                  <SelectItem value="official">{t("mineruProviderOfficial")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="mineru-model">
+                {mineruProvider === "302" ? t("mineruVersion") : t("mineruModel")}
+              </FieldLabel>
+              <Select
+                value={
+                  mineruProvider === "302" ? mineruVersion : mineruOfficialModel
+                }
+                onValueChange={(value) => {
+                  if (mineruProvider === "302") {
+                    setMineruVersion(value as ModelConfig["mineru_version"]);
+                  } else {
+                    setMineruOfficialModel(
+                      value as ModelConfig["mineru_official_model"],
+                    );
+                  }
+                }}
+              >
+                <SelectTrigger id="mineru-model">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {mineruProvider === "302" ? (
+                    <>
+                      <SelectItem value="2.5">2.5</SelectItem>
+                      <SelectItem value="2.0">2.0</SelectItem>
+                    </>
+                  ) : (
+                    <>
+                      <SelectItem value="vlm">VLM</SelectItem>
+                      <SelectItem value="pipeline">Pipeline</SelectItem>
+                    </>
+                  )}
                 </SelectContent>
               </Select>
             </Field>
@@ -589,10 +646,18 @@ export function ModelConfigForm() {
                 id="mineru-url"
                 value={mineruBaseUrl}
                 onChange={(event) => setMineruBaseUrl(event.target.value)}
-                placeholder="https://api.302ai.cn"
+                placeholder={
+                  mineruProvider === "302"
+                    ? "https://api.302ai.cn"
+                    : "https://mineru.net/api/v4"
+                }
               />
-              <FieldDescription>{t("mineruPricing")}</FieldDescription>
-              {canReuse302Key && !cfg.mineru_api_key_set && (
+              <FieldDescription>
+                {mineruProvider === "302"
+                  ? t("mineru302Pricing")
+                  : t("mineruOfficialPricing")}
+              </FieldDescription>
+              {mineruProvider === "302" && canReuse302Key && !cfg.mineru_api_key_set && (
                 <Button
                   type="button"
                   size="sm"
