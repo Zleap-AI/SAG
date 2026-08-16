@@ -41,6 +41,12 @@ class DocumentOut(BaseModel):
     error_stage: str | None = None
     origin_kind: str | None = None
     origin_display_path: str | None = None
+    parser_provider: str | None = None
+    mineru_provider: str | None = None
+    mineru_model: str | None = None
+    parser_status: str | None = None
+    fallback_from: str | None = None
+    fallback_reason: str | None = None
     created_at: datetime
     updated_at: datetime
 

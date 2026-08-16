@@ -20,9 +20,7 @@ class Document(IDMixin, TimestampMixin, Base):
         ),
     )
 
-    source_id: Mapped[str] = mapped_column(
-        ForeignKey("sources.id", ondelete="CASCADE"), index=True
-    )
+    source_id: Mapped[str] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"), index=True)
     filename: Mapped[str] = mapped_column(String(512))
     content_type: Mapped[str] = mapped_column(String(128), default="application/octet-stream")
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
@@ -49,3 +47,9 @@ class Document(IDMixin, TimestampMixin, Base):
     origin_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     origin_mtime_ns: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     origin_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    parser_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    mineru_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    mineru_model: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    parser_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    fallback_from: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    fallback_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
