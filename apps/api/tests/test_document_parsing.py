@@ -708,6 +708,220 @@ async def test_mineru_upload_create_poll_and_download_zip(tmp_path, monkeypatch)
     assert "Authorization" not in _FakeAsyncClient.calls[-1][2]
 
 
+@pytest.mark.asyncio
+async def test_official_mineru_issue_105_upload_poll_and_download(tmp_path, monkeypatch):
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(b"%PDF-fake")
+    upload_url = "https://upload.example.test/paper.pdf"
+    result_url = "https://cdn-mineru.openxlab.org.cn/result.zip"
+    _FakeAsyncClient.reset(
+        [
+            _response(
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "trace_id": "trace-apply-105",
+                    "data": {
+                        "batch_id": "batch-105",
+                        "file_urls": [upload_url],
+                    },
+                },
+                url="https://mineru.net/api/v4/file-urls/batch",
+            ),
+            _response(content=b"", url=upload_url),
+            _response(
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "trace_id": "trace-poll-105",
+                    "data": {
+                        "batch_id": "batch-105",
+                        "extract_result": [
+                            {
+                                "file_name": "paper.pdf",
+                                "state": "done",
+                                "err_msg": "",
+                                "full_zip_url": result_url,
+                            }
+                        ],
+                    },
+                },
+                url=(
+                    "https://mineru.net/api/v4/extract-results/batch/batch-105"
+                ),
+            ),
+            _response(
+                content=_result_zip("# Official MinerU result"),
+                content_type="application/zip",
+                url=result_url,
+            ),
+        ]
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+    async def allow_public_test_hosts(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "sag_api.parsing.mineru._assert_public_host", allow_public_test_hosts
+    )
+    states: list[dict[str, Any]] = []
+    official_settings = _settings(
+        mineru_provider="official",
+        mineru_base_url="https://mineru.net/api/v4/file-urls/batch",
+        mineru_api_key="official-test-token",
+        mineru_official_model="vlm",
+        mineru_poll_interval=0.001,
+        mineru_poll_timeout=1,
+    )
+    client = MinerUClient(official_settings)
+
+    assert service._signature("mineru", official_settings) == (
+        "mineru-official-vlm-auto"
+    )
+
+    markdown = await client.parse(
+        str(source), on_state=lambda state: _record(states, state)
+    )
+
+    assert markdown == "# Official MinerU result\n"
+    assert [call[:2] for call in _FakeAsyncClient.calls] == [
+        ("POST", "https://mineru.net/api/v4/file-urls/batch"),
+        ("PUT", upload_url),
+        (
+            "GET",
+            "https://mineru.net/api/v4/extract-results/batch/batch-105",
+        ),
+        ("DOWNLOAD", result_url),
+    ]
+    assert _FakeAsyncClient.calls[0][2]["json"] == {
+        "files": [{"name": "paper.pdf"}],
+        "model_version": "vlm",
+    }
+    assert _FakeAsyncClient.calls[0][2]["headers"] == {
+        "Authorization": "Bearer official-test-token"
+    }
+    assert "headers" not in _FakeAsyncClient.calls[1][2]
+    assert "headers" not in _FakeAsyncClient.calls[3][2]
+    assert any(
+        state.get("batch_id") == "batch-105"
+        and state.get("upload_completed") is True
+        for state in states
+    )
+
+
+@pytest.mark.asyncio
+async def test_official_mineru_resume_polls_existing_uploaded_batch(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(b"%PDF-fake")
+    result_url = "https://cdn-mineru.openxlab.org.cn/resumed.zip"
+    _FakeAsyncClient.reset(
+        [
+            _response(
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "trace_id": "trace-resume-105",
+                    "data": {
+                        "batch_id": "batch-105",
+                        "extract_result": [
+                            {
+                                "file_name": "paper.pdf",
+                                "state": "done",
+                                "err_msg": "",
+                                "full_zip_url": result_url,
+                            }
+                        ],
+                    },
+                }
+            ),
+            _response(
+                content=_result_zip("# Resumed official result"),
+                content_type="application/zip",
+                url=result_url,
+            ),
+        ]
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+    async def allow_public_test_hosts(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "sag_api.parsing.mineru._assert_public_host", allow_public_test_hosts
+    )
+    client = MinerUClient(
+        _settings(
+            mineru_provider="official",
+            mineru_base_url="https://mineru.net",
+            mineru_api_key="official-test-token",
+            mineru_poll_interval=0.001,
+            mineru_poll_timeout=1,
+        )
+    )
+
+    markdown = await client.parse(
+        str(source),
+        state={
+            "mineru_service": "official",
+            "batch_id": "batch-105",
+            "upload_completed": True,
+            "filename": "paper.pdf",
+        },
+    )
+
+    assert markdown == "# Resumed official result\n"
+    assert [call[:2] for call in _FakeAsyncClient.calls] == [
+        (
+            "GET",
+            "https://mineru.net/api/v4/extract-results/batch/batch-105",
+        ),
+        ("DOWNLOAD", result_url),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_official_mineru_business_error_keeps_message_and_trace(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(b"%PDF-fake")
+    _FakeAsyncClient.reset(
+        [
+            _response(
+                json={
+                    "code": -60011,
+                    "msg": "请确保文件已上传",
+                    "trace_id": "trace-105",
+                    "data": None,
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+    async def allow_public_test_hosts(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "sag_api.parsing.mineru._assert_public_host", allow_public_test_hosts
+    )
+    client = MinerUClient(
+        _settings(
+            mineru_provider="official",
+            mineru_base_url="https://mineru.net",
+            mineru_api_key="official-test-token",
+        )
+    )
+
+    with pytest.raises(
+        UpstreamError, match="请确保文件已上传.*trace_id: trace-105"
+    ):
+        await client.parse(str(source))
+
+
 async def _record(target: list[dict[str, Any]], state: dict[str, Any]) -> None:
     target.append(dict(state))
 

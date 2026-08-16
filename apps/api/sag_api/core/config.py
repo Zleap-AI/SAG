@@ -148,9 +148,11 @@ class Settings(BaseSettings):
     # ── 文档解析（进入 zleap-sag 前统一转为 Markdown）─────────────────
     # auto：PDF 优先 MinerU，未配置或 MinerU 失败时回退本地 MarkItDown。
     document_parser: Literal["auto", "markitdown", "mineru"] = "auto"
+    mineru_provider: Literal["302", "official"] = "302"
     mineru_base_url: str | None = "https://api.302ai.cn"
     mineru_api_key: str | None = None
     mineru_version: Literal["2.0", "2.5"] = "2.5"
+    mineru_official_model: Literal["pipeline", "vlm"] = "vlm"
     mineru_parse_method: Literal["auto", "txt", "ocr"] = "auto"
     mineru_request_timeout: float = 60.0
     mineru_poll_interval: float = 2.0

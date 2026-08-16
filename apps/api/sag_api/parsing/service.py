@@ -339,6 +339,11 @@ def parsed_sidecar_paths(path: str) -> list[str]:
 
 def _signature(provider: str, settings: Settings) -> str:
     if provider == "mineru":
+        if settings.mineru_provider == "official":
+            return (
+                f"mineru-official-{settings.mineru_official_model}-"
+                f"{settings.mineru_parse_method}"
+            )
         return f"mineru-{settings.mineru_version}-{settings.mineru_parse_method}"
     return "markitdown"
 
@@ -358,6 +363,10 @@ def _compatible_state(
         else "",
     }
     current = dict(state or {})
+    if provider == "mineru":
+        expected["mineru_service"] = settings.mineru_provider
+        if settings.mineru_provider == "302" and "mineru_service" not in current:
+            current["mineru_service"] = "302"
     if any(current.get(key) != value for key, value in expected.items()):
         return expected
     return current
