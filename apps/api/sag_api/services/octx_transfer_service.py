@@ -4,6 +4,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import logging
 import math
 import shutil
 import time
@@ -79,6 +80,8 @@ from sag_api.services.octx_diagnostics_service import append_octx_trace
 
 if TYPE_CHECKING:
     from sag_api.jobs import JobQueue
+
+logger = logging.getLogger(__name__)
 
 
 _EXPORT_SNAPSHOT_RANGES = {
@@ -1647,36 +1650,28 @@ async def execute_export(
             source,
         )
 
-    # Vector export is an optional acceleration layer. Only reuse vectors when
-    # the source partition records the exact identity of the current embedding
-    # configuration. Export never calls the embedding provider: the descriptor
-    # below is metadata-only and vectors are read from the existing vector store.
+    # Vector export is a portable data layer, not a reuse decision. Always try
+    # to carry complete vectors from the source partition. The stored identity
+    # controls whether the profile is compatible or rebuild_required; importers
+    # make the final reuse decision and export never calls the embedding provider.
     from zleap.sag.db.models import SourceConfig
 
-    from sag_api.sag.octx_vector_protocol import embedding_identity
-
-    descriptor = embedding_client
-    if descriptor is None:
+    async with sag_session_factory() as sag_session:
+        source_config = await sag_session.get(SourceConfig, source.sag_source_config_id)
+    target_config = source_config.target_config if source_config is not None else None
+    stored_vector_identity = target_config.get("octx_vector_identity") if isinstance(target_config, dict) else None
+    if not isinstance(stored_vector_identity, dict):
+        stored_vector_identity = None
+    if vector_store is None:
         try:
-            from zleap.sag.core.ai.factory import get_embedding_client
+            from zleap.sag.core.storage.client import get_vector_client
 
-            descriptor = await get_embedding_client(scenario="general")
+            vector_store = get_vector_client()
         except Exception:
-            # Vector export is optional. Missing local model configuration must
-            # not block a valid structured-only OCTX export.
-            descriptor = None
-    current_vector_identity = embedding_identity(descriptor) if descriptor is not None else None
-    trusted_vector_export = False
-    if current_vector_identity is not None:
-        async with sag_session_factory() as sag_session:
-            source_config = await sag_session.get(SourceConfig, source.sag_source_config_id)
-        target_config = source_config.target_config if source_config is not None else None
-        stored_vector_identity = target_config.get("octx_vector_identity") if isinstance(target_config, dict) else None
-        trusted_vector_export = stored_vector_identity == current_vector_identity
-    if trusted_vector_export and vector_store is None:
-        from zleap.sag.core.storage.client import get_vector_client
-
-        vector_store = get_vector_client()
+            # Missing vector storage must not block a valid structured export,
+            # but the degradation must stay diagnosable in task logs.
+            logger.warning("OCTX export vector storage unavailable; exporting structured data only", exc_info=True)
+            vector_store = None
 
     async def save_export_progress(detail: dict[str, Any]) -> None:
         await _ensure_transfer_active(session, transfer, stage=str(detail.get("phase") or "export"))
@@ -1704,8 +1699,9 @@ async def execute_export(
             selected_article_ids=selected_article_ids,
             producer_state_path=producer_ids,
             session_factory=sag_session_factory,
-            vector_store=vector_store if trusted_vector_export else None,
-            embedding_client=descriptor if trusted_vector_export else None,
+            vector_store=vector_store,
+            embedding_client=None,
+            vector_identity=stored_vector_identity,
             on_progress=save_export_progress,
         )
     await _ensure_transfer_active(session, transfer, stage="after_snapshot")

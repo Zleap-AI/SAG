@@ -172,12 +172,33 @@ def prepare_vector_reuse(
         _create_cache(connection)
         connection.execute("DELETE FROM vector_reuse_locations")
         connection.execute("DELETE FROM vector_reuse_sources")
-        profiles_document = json.loads(package.read_payload("vectors/profiles.json"))
-        for profile in profiles_document["profiles"]:
-            role = str(profile["role"])
-            dimensions = int(profile["dimensions"])
-            local_profile = vector_profile(role, embedding_client, dimensions)
-            if local_profile["fingerprint"] != profile["fingerprint"]:
+        try:
+            profiles_document = json.loads(package.read_payload("vectors/profiles.json"))
+            profiles = profiles_document["profiles"]
+        except (KeyError, TypeError, ValueError):
+            # A malformed profiles document disables reuse entirely; the vector
+            # rebuild stage regenerates every role from scratch.
+            return set()
+        try:
+            # The reuse decision must compare against the *current* embedding
+            # configuration, never against dimensions declared by the package.
+            # A mismatched or undetectable local dimension simply disables reuse.
+            local_dimensions = int(getattr(embedding_client, "dimensions", 0) or 0)
+        except (TypeError, ValueError):
+            local_dimensions = 0
+        for profile in profiles:
+            if not isinstance(profile, dict) or profile.get("reuse_policy", "compatible") != "compatible":
+                continue
+            try:
+                role = str(profile["role"])
+                dimensions = int(profile["dimensions"])
+                local_profile = vector_profile(role, embedding_client, local_dimensions)
+            except (KeyError, TypeError, ValueError):
+                # Malformed or incomplete profile identity: never reuse, let the
+                # vector rebuild stage regenerate this role from scratch.
+                continue
+            local_fingerprint = local_profile.get("fingerprint")
+            if not local_fingerprint or local_fingerprint != profile.get("fingerprint"):
                 continue
             if profile.get("coverage") != "complete":
                 continue
@@ -198,13 +219,20 @@ def prepare_vector_reuse(
                 connection.execute("DELETE FROM vector_reuse_locations WHERE role = ?", (role,))
                 output_path.unlink(missing_ok=True)
                 continue
-            connection.execute(
-                """
-                INSERT INTO vector_reuse_sources(role, fingerprint, arrow_path, dimension)
-                VALUES (?, ?, ?, ?)
-                """,
-                (role, profile["fingerprint"], str(output_path), dimensions),
-            )
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO vector_reuse_sources(role, fingerprint, arrow_path, dimension)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (role, profile["fingerprint"], str(output_path), dimensions),
+                )
+            except sqlite3.IntegrityError:
+                # Duplicate role declarations in a malformed package: skip the
+                # role instead of failing the whole reuse preparation.
+                connection.execute("DELETE FROM vector_reuse_locations WHERE role = ?", (role,))
+                output_path.unlink(missing_ok=True)
+                continue
             reusable.add(role)
         connection.commit()
     return reusable

@@ -135,13 +135,19 @@ async def rebuild_vectors(
     if enable_vector_reuse and package_path is not None and plan_path is not None:
         from sag_api.sag.octx_vector_reuse import ArrowVectorReuseReader, prepare_vector_reuse
 
-        reusable = await asyncio.to_thread(
-            prepare_vector_reuse,
-            package_path,
-            plan_path,
-            embedding,
-            prevalidated_vector_valid=prevalidated_vector_valid,
-        )
+        try:
+            reusable = await asyncio.to_thread(
+                prepare_vector_reuse,
+                package_path,
+                plan_path,
+                embedding,
+                prevalidated_vector_valid=prevalidated_vector_valid,
+            )
+        except Exception:
+            # Vector reuse is an acceleration layer. Any failure while preparing
+            # it must degrade to a full rebuild, never fail the import task.
+            logger.exception("OCTX vector reuse preparation failed; rebuilding all vectors")
+            reusable = set()
         checkpoint["reusable_roles"] = sorted(reusable)
         if reusable:
             reuse_reader = ArrowVectorReuseReader(plan_path)

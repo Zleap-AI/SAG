@@ -130,19 +130,49 @@ def configured_embedding_identity(settings: Any) -> dict[str, Any] | None:
 
 
 def vector_profile(role: str, embedding_client: Any, dimensions: int) -> dict[str, Any]:
-    profile: dict[str, Any] = {
+    identity = embedding_identity(embedding_client)
+    if identity is None:
+        raise ValueError("embedding identity is incomplete")
+    return vector_profile_from_identity(role, identity, dimensions)
+
+
+def vector_profile_from_identity(
+    role: str,
+    identity: dict[str, Any] | None,
+    dimensions: int,
+) -> dict[str, Any]:
+    common: dict[str, Any] = {
         "role": role,
-        "provider": "openai-compatible",
-        "model": str(getattr(embedding_client, "model", "")),
-        "model_fingerprint": model_fingerprint(embedding_client),
         "dimensions": dimensions,
         "dtype": "float32",
-        "normalized": False,
         "coverage": "complete",
         "recipe_id": RECIPE_IDS[role],
         "recipe": {**ROLE_RECIPES[role], **_CANONICALIZATION},
         "input_hash_algorithm": "sha256",
     }
+    try:
+        identity_dimensions = int(identity.get("dimensions") or 0) if isinstance(identity, dict) else 0
+    except (TypeError, ValueError):
+        identity_dimensions = 0
+    compatible = (
+        isinstance(identity, dict)
+        and str(identity.get("model") or "").strip()
+        and identity_dimensions == dimensions
+        and identity.get("dtype") == "float32"
+        and isinstance(identity.get("normalized"), bool)
+        and bool(identity.get("revision") or identity.get("model_fingerprint"))
+    )
+    if not compatible:
+        return {**common, "reuse_policy": "rebuild_required"}
+    profile = {
+        **common,
+        "model": str(identity["model"]),
+        "normalized": bool(identity["normalized"]),
+    }
+    for field in ("provider", "revision", "model_fingerprint"):
+        value = identity.get(field)
+        if value:
+            profile[field] = str(value)
     profile["fingerprint"] = vector_profile_fingerprint(profile)
     return profile
 
@@ -339,8 +369,9 @@ async def _fetch_vector_fields(
 async def write_existing_vector_payload(
     workspace: str | Path,
     vector_store: Any,
-    embedding_client: Any,
+    embedding_client: Any | None,
     *,
+    vector_identity: dict[str, Any] | None = None,
     source_ids: dict[str, dict[str, str]] | None = None,
     manifest_path: str | Path | None = None,
     routing: str | None = None,
@@ -349,8 +380,9 @@ async def write_existing_vector_payload(
 ) -> set[str]:
     if batch_size < 1:
         raise ValueError("OCTX vector export batch size must be positive")
-    if embedding_identity(embedding_client) is None:
-        return set()
+    export_identity = vector_identity
+    if export_identity is None and embedding_client is not None:
+        export_identity = embedding_identity(embedding_client)
     import pyarrow as pa
     import pyarrow.ipc as ipc
 
@@ -539,7 +571,7 @@ async def write_existing_vector_payload(
             if not complete or dimension is None:
                 output_path.unlink(missing_ok=True)
                 continue
-            profiles.append(vector_profile(role, embedding_client, dimension))
+            profiles.append(vector_profile_from_identity(role, export_identity, dimension))
             written_roles.add(role)
     finally:
         if manifest is not None:
