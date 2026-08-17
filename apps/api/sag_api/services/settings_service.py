@@ -111,7 +111,8 @@ def _normalize_overrides(overrides: dict) -> dict:
         )
     elif (
         normalized["mineru_provider"] == "official"
-        and normalized.get("mineru_base_url") == "https://api.302ai.cn"
+        and str(normalized.get("mineru_base_url") or "").rstrip("/")
+        == "https://api.302ai.cn"
     ):
         normalized["mineru_base_url"] = _OFFICIAL_MINERU_BASE_URL
     strategy = normalized.get("search_strategy")

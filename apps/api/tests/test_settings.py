@@ -96,13 +96,17 @@ def test_legacy_mineru_net_override_selects_official_provider():
     assert proxied["mineru_provider"] == "302"
 
 
-def test_official_provider_repairs_stale_302_mineru_base_url():
+@pytest.mark.parametrize(
+    "stale_base_url",
+    ["https://api.302ai.cn", "https://api.302ai.cn/"],
+)
+def test_official_provider_repairs_stale_302_mineru_base_url(stale_base_url):
     from sag_api.services.settings_service import _normalize_overrides
 
     normalized = _normalize_overrides(
         {
             "mineru_provider": "official",
-            "mineru_base_url": "https://api.302ai.cn",
+            "mineru_base_url": stale_base_url,
         }
     )
 
