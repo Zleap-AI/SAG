@@ -541,6 +541,12 @@ def _is_http_url(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+# Clash/mihomo 等代理的 fake-ip 模式会把域名解析到 198.18.0.0/15（基准测试保留段），
+# 由 TUN 网关按 fake-ip 映射表转发到真实公网地址。该段不属于任何真实内网服务，
+# 非 TUN 环境亦不可路由，放行不会引入可访问内网目标的 SSRF 面。
+_FAKE_IP_POOL = ipaddress.ip_network("198.18.0.0/15")
+
+
 async def _assert_public_host(host: str, port: int) -> None:
     """拒绝 loopback、私网、链路本地与保留地址，降低结果下载 SSRF 风险。"""
     if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
@@ -560,7 +566,7 @@ async def _assert_public_host(host: str, port: int) -> None:
         resolved = [ipaddress.ip_address(address) for address in addresses]
     else:
         resolved = [literal]
-    if any(not address.is_global for address in resolved):
+    if any(not address.is_global and address not in _FAKE_IP_POOL for address in resolved):
         raise UpstreamError("MinerU 结果 URL 指向了本地或内网地址")
 
 
