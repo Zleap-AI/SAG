@@ -1,7 +1,7 @@
 {
   "name": "sag-web",
   "private": true,
-  "version": "1.6.4",
+  "version": "1.6.5",
   "packageManager": "npm@10.9.2",
   "engines": {
     "node": ">=20"

@@ -1,7 +1,7 @@
 {
   "name": "sag-desktop",
   "productName": "SAG",
-  "version": "1.6.4",
+  "version": "1.6.5",
   "private": true,
   "description": "SAG desktop client for macOS and Windows",
   "author": "Zleap AI",
