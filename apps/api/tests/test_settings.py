@@ -126,6 +126,54 @@ def test_official_provider_repairs_stale_302_mineru_base_url(stale_base_url):
     assert normalized["mineru_base_url"] == "https://mineru.net/api/v4"
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected_provider", "expected_base_url"),
+    [
+        # 显式 302 + 官方 URL：provider 跟随 URL 主机切换为官方
+        (
+            {"mineru_provider": "302", "mineru_base_url": "https://mineru.net/api/v4"},
+            "official",
+            "https://mineru.net/api/v4",
+        ),
+        (
+            {
+                "mineru_provider": "302",
+                "mineru_base_url": "https://mineru.net/api/v4/file-urls/batch",
+            },
+            "official",
+            "https://mineru.net/api/v4/file-urls/batch",
+        ),
+        # 显式 302 + 302 URL：保持 302 不动
+        (
+            {"mineru_provider": "302", "mineru_base_url": "https://api.302ai.cn"},
+            "302",
+            "https://api.302ai.cn",
+        ),
+        # 未设 provider 时按 URL 主机推断（既有行为）
+        (
+            {"mineru_base_url": "https://mineru.net/api/v4"},
+            "official",
+            "https://mineru.net/api/v4",
+        ),
+        # 官方 + 旧 302 地址（含尾斜杠）仍修复为官方默认地址（既有行为）
+        (
+            {"mineru_provider": "official", "mineru_base_url": "https://api.302ai.cn/"},
+            "official",
+            "https://mineru.net/api/v4",
+        ),
+    ],
+)
+def test_mineru_provider_follows_base_url_host(
+    raw, expected_provider, expected_base_url
+):
+    from sag_api.services.settings_service import _normalize_overrides
+
+    normalized = _normalize_overrides(raw)
+
+    assert normalized["mineru_provider"] == expected_provider
+    assert normalized["mineru_base_url"] == expected_base_url
+
+
 def test_default_model_output_limit_is_20000(monkeypatch):
     monkeypatch.delenv("SAG_LLM_MAX_TOKENS", raising=False)
     assert Settings(_env_file=None).llm_max_tokens == 20_000

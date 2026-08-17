@@ -129,6 +129,14 @@ def _normalize_overrides(overrides: dict) -> dict:
         == "https://api.302ai.cn"
     ):
         normalized["mineru_base_url"] = _OFFICIAL_MINERU_BASE_URL
+    elif (
+        normalized["mineru_provider"] == "302"
+        and (urlparse(str(normalized.get("mineru_base_url") or "")).hostname or "").lower()
+        == "mineru.net"
+    ):
+        # 用户在设置页只粘贴了官方 URL、未切换服务商下拉框时，协议必须跟随
+        # URL 主机走官方分支，否则会把官方 v4 请求误发到 302 适配器。
+        normalized["mineru_provider"] = "official"
     strategy = normalized.get("search_strategy")
     if strategy == "atomic":
         normalized["search_strategy"] = normalize_search_strategy(strategy)
