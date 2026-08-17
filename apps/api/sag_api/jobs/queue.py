@@ -30,6 +30,16 @@ class JobQueue(ABC):
     async def finish_source_maintenance(self, source_id: str, job_id: str) -> None:
         """结束维护任务；最后一个维护任务结束后唤醒临时让行的任务。"""
 
+    def request_source_stop(self, source_id: str) -> None:  # noqa: B027 - 可选钩子
+        """请求某信源在途处理任务在安全检查点尽快让路（用于同步删除）。"""
+
+    def clear_source_stop(self, source_id: str) -> None:  # noqa: B027
+        """清除信源停止请求。"""
+
+    def source_stop_requested(self, source_id: str) -> bool:
+        """当前信源是否被请求停止在途处理任务。"""
+        return False
+
     async def start(self) -> None:  # noqa: B027 - 可选生命周期钩子
         """启动后台 worker（如有）。"""
 

@@ -31,7 +31,7 @@ from sag_api.jobs.octx_tasks import (
     preflight_octx,
 )
 from sag_api.jobs.scheduling import SOURCE_MAINTENANCE
-from sag_api.parsing import prepare_document
+from sag_api.parsing import ParsePaused, prepare_document
 from sag_api.sag import EngineManager
 from sag_api.sag.dto import ProcessCheckpoint
 from sag_api.services.source_operation_service import (
@@ -293,19 +293,50 @@ async def _process_document_unlocked(
         if job_queue is not None and job_queue.source_maintenance_requested(source.id):
             scheduler_yield_reason = SOURCE_MAINTENANCE
             return True
+        # 信源正在被删除：请求在途处理任务尽快让路并释放处理租约，使同步删除
+        # 能在 HTTP 窗口内完成，而非被动等待解析/抽取自然结束。此处按“暂停”语义
+        # 处理（不设置 yield 原因）——文档随后会随信源级联删除。
+        if job_queue is not None and job_queue.source_stop_requested(source.id):
+            return True
         return False
+
+    async def _pause_or_yield() -> None:
+        """把当前文档落到 PAUSED 或让行，供解析/抽取两个阶段共用。"""
+        await session.refresh(document)
+        if scheduler_yield_reason == SOURCE_MAINTENANCE and document.status not in _CONTROL_TRANSITION_STATES:
+            raise JobYielded(SOURCE_MAINTENANCE)
+        if document.status in _DELETE_CONTROL_STATES:
+            raise JobPaused()
+        expected_status = document.status
+        paused = await session.execute(
+            update(Document)
+            .where(
+                Document.id == document.id,
+                Document.status == expected_status,
+            )
+            .values(status=DocumentStatus.PAUSED, error=None)
+            .execution_options(synchronize_session=False)
+        )
+        if paused.rowcount != 1:
+            await _yield_after_document_transition_lost(session, document)
+        await session.commit()
+        raise JobPaused()
 
     try:
         prepared = None
         parser_stage = False
         if not checkpoint.chunk_ids:
             parser_stage = True
-            prepared = await prepare_document(
-                document.storage_path,
-                settings,
-                state=(job.payload or {}).get("document_parser"),
-                on_state=on_parser_state,
-            )
+            try:
+                prepared = await prepare_document(
+                    document.storage_path,
+                    settings,
+                    state=(job.payload or {}).get("document_parser"),
+                    on_state=on_parser_state,
+                    should_pause=should_pause,
+                )
+            except ParsePaused:
+                await _pause_or_yield()
             parser_stage = False
             parser_state = (job.payload or {}).get("document_parser")
             for field, value in _prepared_parser_values(prepared, parser_state).items():
@@ -333,25 +364,7 @@ async def _process_document_unlocked(
             document_title=Path(document.filename).stem.strip(),
         )
         if outcome.paused:
-            await session.refresh(document)
-            if scheduler_yield_reason == SOURCE_MAINTENANCE and document.status not in _CONTROL_TRANSITION_STATES:
-                raise JobYielded(SOURCE_MAINTENANCE)
-            if document.status in _DELETE_CONTROL_STATES:
-                raise JobPaused()
-            expected_status = document.status
-            paused = await session.execute(
-                update(Document)
-                .where(
-                    Document.id == document.id,
-                    Document.status == expected_status,
-                )
-                .values(status=DocumentStatus.PAUSED, error=None)
-                .execution_options(synchronize_session=False)
-            )
-            if paused.rowcount != 1:
-                await _yield_after_document_transition_lost(session, document)
-            await session.commit()
-            raise JobPaused()
+            await _pause_or_yield()
     except (JobPaused, JobYielded):
         raise
     except Exception as e:  # noqa: BLE001 - 记录到文档后再上抛给 worker
