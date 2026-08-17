@@ -16,6 +16,7 @@ import { api } from "@/lib/api";
 import {
   buildFolderImportPlan,
   hasUnresolvedFolderImportConflicts,
+  resolveAllFolderImportConflicts,
   resolveFolderImportItem,
   selectedFolderImportItems,
   setAllFolderImportItemsSelected,
@@ -320,6 +321,17 @@ export const FolderImportDialog = React.forwardRef<
     );
   }
 
+  function decideAllConflicts(decision: "skip" | "upload") {
+    if (!plan) return;
+    const nextPlan = resolveAllFolderImportConflicts(plan, decision);
+    setPlan(nextPlan);
+    setLiveMessage(
+      hasUnresolvedFolderImportConflicts(nextPlan)
+        ? t("conflictsRemain")
+        : t("conflictsResolved"),
+    );
+  }
+
   function prepareUpload(total: number) {
     cancelRef.current = false;
     setFailures([]);
@@ -481,9 +493,9 @@ export const FolderImportDialog = React.forwardRef<
               {rejected.map((item) => (
                 <li
                   key={item.id}
-                  className="flex items-center justify-between gap-2"
+                  className="flex min-w-0 items-center justify-between gap-2"
                 >
-                  <span className="truncate">
+                  <span className="min-w-0 truncate">
                     {item.displayPath || t("missingName")}
                   </span>
                   <span className="shrink-0">
@@ -548,11 +560,29 @@ export const FolderImportDialog = React.forwardRef<
         <div className="flex flex-col gap-3">
           <h4 className="text-sm font-medium">{t("inspectConflicts")}</h4>
           <p className="text-xs text-muted-foreground">{t("undecided")}</p>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => decideAllConflicts("skip")}
+            >
+              {t("skipAll")}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => decideAllConflicts("upload")}
+            >
+              {t("addAllAnyway")}
+            </Button>
+          </div>
           <div className="max-h-64 space-y-3 overflow-auto">
             {conflicts.map((item) => (
-              <fieldset key={item.id} className="rounded-md border p-3">
-                <legend className="max-w-full truncate px-1 text-xs font-medium">
-                  {item.displayPath}
+              <fieldset key={item.id} className="min-w-0 rounded-md border p-3">
+                <legend className="flex max-w-full px-1 text-xs font-medium">
+                  <span className="min-w-0 truncate">{item.displayPath}</span>
                 </legend>
                 <div className="mt-2 flex gap-4 text-sm">
                   <label className="flex items-center gap-2">
@@ -680,10 +710,10 @@ export const FolderImportDialog = React.forwardRef<
               {failures.map(({ item, message }) => (
                 <li
                   key={item.id}
-                  className="flex items-center gap-2 text-destructive"
+                  className="flex min-w-0 items-center gap-2 text-destructive"
                 >
                   <XCircle className="size-3.5 shrink-0" />
-                  <span className="truncate">
+                  <span className="min-w-0 truncate">
                     {item.name}: {message}
                   </span>
                 </li>

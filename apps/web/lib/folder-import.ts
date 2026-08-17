@@ -23,6 +23,13 @@ function normalizedName(name: string): string {
   return name.normalize("NFC").toLocaleLowerCase();
 }
 
+// 文件夹内查重按相对路径归一，使不同子目录下的同名文件不再互相误判为重复。
+// 后端为每次上传分配唯一 doc_id 存盘，同名文件不会互相覆盖，因此仅完整相对路径
+// 相同才算真正的重复。缺少相对路径时回退到文件名。
+function normalizedPath(path: string): string {
+  return path.normalize("NFC").replace(/\\/g, "/").toLocaleLowerCase();
+}
+
 function extensionOf(name: string): string {
   const extensionIndex = name.lastIndexOf(".");
   return extensionIndex === -1 ? "" : name.slice(extensionIndex).toLocaleLowerCase();
@@ -36,12 +43,12 @@ export function buildFolderImportPlan(
 ): FolderImportPlan {
   const existing = new Set(existingNames.map(normalizedName));
   const allowed = new Set(allowedExts.map((extension) => extension.toLocaleLowerCase()));
-  const names = new Map<string, number>();
+  const paths = new Map<string, number>();
 
   for (const file of files) {
     if (file.name) {
-      const normalized = normalizedName(file.name);
-      names.set(normalized, (names.get(normalized) ?? 0) + 1);
+      const normalized = normalizedPath(file.webkitRelativePath || file.name);
+      paths.set(normalized, (paths.get(normalized) ?? 0) + 1);
     }
   }
 
@@ -49,6 +56,7 @@ export function buildFolderImportPlan(
     const name = file.name;
     const displayPath = file.webkitRelativePath || name;
     const normalized = name ? normalizedName(name) : "";
+    const normalizedRelative = name ? normalizedPath(displayPath) : "";
     let rejectReason: FolderImportRejectReason | undefined;
 
     if (!name) {
@@ -74,7 +82,7 @@ export function buildFolderImportPlan(
     }
 
     const duplicateExisting = existing.has(normalized);
-    const duplicateFolder = (names.get(normalized) ?? 0) > 1;
+    const duplicateFolder = (paths.get(normalizedRelative) ?? 0) > 1;
     const duplicateWith = duplicateExisting && duplicateFolder
       ? "both"
       : duplicateExisting
@@ -151,6 +159,22 @@ export function resolveFolderImportItem(
     ...plan,
     items: plan.items.map((candidate) => candidate.id === itemId ? { ...candidate, decision } : candidate),
   };
+}
+
+// 一键处理全部（已选中的）冲突文件：仅作用于待决定的冲突项，不动其它状态。
+export function resolveAllFolderImportConflicts(
+  plan: FolderImportPlan,
+  decision: "skip" | "upload",
+): FolderImportPlan {
+  let changed = false;
+  const items = plan.items.map((item) => {
+    if (item.selected && item.status === "conflict" && item.decision !== decision) {
+      changed = true;
+      return { ...item, decision };
+    }
+    return item;
+  });
+  return changed ? { ...plan, items } : plan;
 }
 
 export function hasUnresolvedFolderImportConflicts(plan: FolderImportPlan): boolean {

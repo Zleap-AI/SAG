@@ -309,6 +309,8 @@
     "conflictsResolved": "All conflicts have a decision.",
     "skip": "Skip",
     "addAnyway": "Add anyway",
+    "skipAll": "Skip all",
+    "addAllAnyway": "Add all anyway",
     "finalConfirmation": "Final confirmation",
     "confirmDescription": "Only these {count, plural, one {# confirmed file} other {# confirmed files}} will be uploaded.",
     "uploadCount": "Upload {count, plural, one {# file} other {# files}}",

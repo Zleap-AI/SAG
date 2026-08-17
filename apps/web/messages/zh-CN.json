@@ -309,6 +309,8 @@
     "conflictsResolved": "所有冲突文件均已决定。",
     "skip": "跳过",
     "addAnyway": "仍然添加",
+    "skipAll": "全部跳过",
+    "addAllAnyway": "全部仍然添加",
     "finalConfirmation": "最终确认",
     "confirmDescription": "只会上传这 {count, number} 个已确认文件。",
     "uploadCount": "上传 {count, number} 个文件",

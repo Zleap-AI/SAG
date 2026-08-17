@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildFolderImportPlan,
   hasUnresolvedFolderImportConflicts,
+  resolveAllFolderImportConflicts,
   resolveFolderImportItem,
   setAllFolderImportItemsSelected,
   setFolderImportItemSelected,
@@ -26,13 +27,15 @@ describe("buildFolderImportPlan", () => {
       1024,
     );
 
+    // 两个文件名都与库内既有 plan.md 冲突（按文件名比对既有文档），
+    // 但彼此相对路径不同，不再互判为文件夹内重复。
     expect(plan.summary).toMatchObject({ eligible: 1, conflicts: 2, rejected: 0 });
     expect(plan.items[0]).toMatchObject({
       status: "conflict",
-      duplicateWith: "both",
+      duplicateWith: "existing",
       decision: "undecided",
     });
-    expect(plan.items[1]).toMatchObject({ status: "conflict", duplicateWith: "both" });
+    expect(plan.items[1]).toMatchObject({ status: "conflict", duplicateWith: "existing" });
     expect(uploadableFolderImportItems(plan)).toHaveLength(1);
     expect(hasUnresolvedFolderImportConflicts(plan)).toBe(true);
 
@@ -42,6 +45,64 @@ describe("buildFolderImportPlan", () => {
 
     const fullyDecided = resolveFolderImportItem(decided, decided.items[1].id, "skip");
     expect(uploadableFolderImportItems(fullyDecided)).toHaveLength(2);
+  });
+
+  it("treats same-name files in different subfolders as distinct, not folder duplicates", () => {
+    const plan = buildFolderImportPlan(
+      [
+        file("2023-001/合同_1.png", "a", { name: "合同_1.png" }),
+        file("2026-015/合同_1.png", "b", { name: "合同_1.png" }),
+      ],
+      [],
+      [".png"],
+      1024,
+    );
+
+    expect(plan.summary).toMatchObject({ eligible: 2, conflicts: 0, rejected: 0 });
+    expect(plan.items.map((item) => item.duplicateWith)).toEqual([null, null]);
+  });
+
+  it("still flags true folder duplicates when the same relative path repeats", () => {
+    const plan = buildFolderImportPlan(
+      [file("docs/a.md", "a"), file("docs/a.md", "b")],
+      [],
+      [".md"],
+      1024,
+    );
+
+    expect(plan.summary).toMatchObject({ eligible: 0, conflicts: 2, rejected: 0 });
+    expect(plan.items.map((item) => item.duplicateWith)).toEqual(["folder", "folder"]);
+  });
+
+  it("resolves every selected conflict at once via resolveAllFolderImportConflicts", () => {
+    const plan = buildFolderImportPlan(
+      [file("a.md", "a"), file("b.md", "b"), file("c.txt", "c")],
+      ["a.md", "b.md"],
+      [".md", ".txt"],
+      1024,
+    );
+    expect(hasUnresolvedFolderImportConflicts(plan)).toBe(true);
+
+    const skipped = resolveAllFolderImportConflicts(plan, "skip");
+    expect(hasUnresolvedFolderImportConflicts(skipped)).toBe(false);
+    expect(uploadableFolderImportItems(skipped).map((item) => item.name)).toEqual(["c.txt"]);
+
+    const added = resolveAllFolderImportConflicts(plan, "upload");
+    expect(hasUnresolvedFolderImportConflicts(added)).toBe(false);
+    expect(uploadableFolderImportItems(added).map((item) => item.name).sort()).toEqual([
+      "a.md",
+      "b.md",
+      "c.txt",
+    ]);
+
+    // 不影响已拒绝项，也不改变未选中的冲突项。
+    const unchanged = resolveAllFolderImportConflicts(
+      setAllFolderImportItemsSelected(plan, false),
+      "upload",
+    );
+    expect(unchanged.items.every((item) => item.decision !== "upload" || item.status !== "conflict")).toBe(
+      true,
+    );
   });
 
   it("normalizes Unicode names and rejects unsupported, oversized, and nameless files", () => {
@@ -58,10 +119,10 @@ describe("buildFolderImportPlan", () => {
       10,
     );
 
-    expect(plan.summary).toEqual({ eligible: 0, conflicts: 2, rejected: 3 });
+    expect(plan.summary).toEqual({ eligible: 2, conflicts: 0, rejected: 3 });
     expect(plan.items.map((item) => [item.status, item.rejectReason, item.duplicateWith])).toEqual([
-      ["conflict", undefined, "folder"],
-      ["conflict", undefined, "folder"],
+      ["eligible", undefined, null],
+      ["eligible", undefined, null],
       ["rejected", "unsupported_type", null],
       ["rejected", "file_too_large", null],
       ["rejected", "missing_name", null],
