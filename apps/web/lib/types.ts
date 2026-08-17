@@ -22,6 +22,16 @@ export type SourceStatus = "active" | "paused" | "error";
 export type SourceType = "document" | "web" | "message" | "audio";
 export type DocumentParser = "auto" | "markitdown" | "mineru";
 export type EffectiveDocumentParser = Exclude<DocumentParser, "auto">;
+export type ParserProvider = "mineru" | "markitdown" | "original";
+export type MineruProvider = "official" | "302";
+export type MineruModel = "vlm" | "pipeline" | "2.5";
+export type ParserStatus =
+  | "uploading"
+  | "queued"
+  | "running"
+  | "done"
+  | "fallback"
+  | "failed";
 export interface Source {
   id: string;
   name: string;
@@ -71,6 +81,14 @@ export interface Doc {
   error_layer?: string | null;
   /** 失败链路环节（parse / load / extract / persist 等），仅失败时有值。 */
   error_stage?: string | null;
+  parser_provider?: ParserProvider | null;
+  mineru_provider?: MineruProvider | null;
+  mineru_model?: MineruModel | null;
+  parser_status?: ParserStatus | null;
+  fallback_from?: "mineru" | null;
+  fallback_reason?: string | null;
+  /** False when an OCTX package contains parsed content but not the original attachment bytes. */
+  original_file_available?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -264,6 +282,8 @@ export interface ModelProviderSpec {
   api_key_placeholder: string;
 }
 
+export type MinerUProvider = "302" | "official";
+
 export interface ModelConfig {
   llm_provider: ModelProviderId;
   llm_base_url: string | null;
@@ -279,8 +299,10 @@ export interface ModelConfig {
   embedding_dimensions: number | null;
   embedding_api_key_set: boolean;
   document_parser: DocumentParser;
+  mineru_provider: MinerUProvider;
   mineru_base_url: string | null;
   mineru_version: "2.0" | "2.5";
+  mineru_official_model: "pipeline" | "vlm";
   mineru_api_key_set: boolean;
   effective_document_parser: EffectiveDocumentParser;
   document_extract_concurrency: number;
@@ -306,8 +328,10 @@ export type ModelConfigPatch = Partial<{
   embedding_api_key: string;
   embedding_dimensions: number | null;
   document_parser: DocumentParser;
+  mineru_provider: MinerUProvider;
   mineru_base_url: string | null;
   mineru_version: "2.0" | "2.5";
+  mineru_official_model: "pipeline" | "vlm";
   mineru_api_key: string;
   document_extract_concurrency: number;
   document_chunk_max_tokens: number;

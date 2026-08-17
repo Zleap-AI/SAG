@@ -23,9 +23,11 @@ _RESTORE = (
     "sag_language",
     "llm_api_key",
     "document_parser",
+    "mineru_provider",
     "mineru_base_url",
     "mineru_api_key",
     "mineru_version",
+    "mineru_official_model",
     "timezone",
     "document_extract_concurrency",
 )
@@ -70,6 +72,46 @@ def test_provider_base_urls_default_to_302_china_endpoint(monkeypatch):
     assert configured.llm_base_url == "https://api.302ai.cn/v1"
     assert configured.embedding_base_url == "https://api.302ai.cn/v1"
     assert configured.mineru_base_url == "https://api.302ai.cn"
+
+
+def test_mineru_provider_defaults_to_302(monkeypatch):
+    monkeypatch.delenv("SAG_MINERU_PROVIDER", raising=False)
+    monkeypatch.delenv("SAG_MINERU_OFFICIAL_MODEL", raising=False)
+
+    configured = Settings(_env_file=None)
+
+    assert configured.mineru_provider == "302"
+    assert configured.mineru_official_model == "vlm"
+
+
+def test_legacy_mineru_net_override_selects_official_provider():
+    from sag_api.services.settings_service import _normalize_overrides
+
+    official = _normalize_overrides(
+        {"mineru_base_url": "https://mineru.net/api/v4/file-urls/batch"}
+    )
+    proxied = _normalize_overrides({"mineru_base_url": "https://api.302ai.cn"})
+
+    assert official["mineru_provider"] == "official"
+    assert proxied["mineru_provider"] == "302"
+
+
+@pytest.mark.parametrize(
+    "stale_base_url",
+    ["https://api.302ai.cn", "https://api.302ai.cn/"],
+)
+def test_official_provider_repairs_stale_302_mineru_base_url(stale_base_url):
+    from sag_api.services.settings_service import _normalize_overrides
+
+    normalized = _normalize_overrides(
+        {
+            "mineru_provider": "official",
+            "mineru_base_url": stale_base_url,
+        }
+    )
+
+    assert normalized["mineru_provider"] == "official"
+    assert normalized["mineru_base_url"] == "https://mineru.net/api/v4"
 
 
 def test_default_model_output_limit_is_20000(monkeypatch):
@@ -179,6 +221,8 @@ async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatc
                 assert body["llm_provider"] == "openai"
                 assert "mineru_api_key" not in body and body["mineru_api_key_set"] is False
                 assert body["effective_document_parser"] == "markitdown"
+                assert body["mineru_provider"] == "302"
+                assert body["mineru_official_model"] == "vlm"
                 assert body["document_extract_concurrency"] == 30
                 assert body["document_chunk_max_tokens"] == 1_000
                 assert body["document_chunk_mode"] == "standard"
@@ -284,6 +328,7 @@ async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatc
                 # 升级前已配置 302 的用户可在服务端复用旧 Key，一键补齐 MinerU。
                 r = await c.post("/api/v1/system/model-config/mineru/302", headers=A)
                 assert r.status_code == 200
+                assert r.json()["config"]["mineru_provider"] == "302"
                 assert r.json()["config"]["mineru_base_url"] == "https://api.302ai.cn"
                 assert r.json()["config"]["mineru_api_key_set"] is True
                 assert "sk-fake" not in r.text
@@ -302,14 +347,18 @@ async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatc
                     headers=A,
                     json={
                         "document_parser": "auto",
-                        "mineru_base_url": "https://mineru.example.test",
+                        "mineru_provider": "official",
+                        "mineru_base_url": "https://mineru.net/api/v4/file-urls/batch",
                         "mineru_api_key": "sk-mineru-fake",
                         "mineru_version": "2.5",
+                        "mineru_official_model": "vlm",
                         "document_extract_concurrency": 7,
                     },
                 )
                 parser_config = r.json()["config"]
                 assert parser_config["mineru_api_key_set"] is True
+                assert parser_config["mineru_provider"] == "official"
+                assert parser_config["mineru_official_model"] == "vlm"
                 assert parser_config["effective_document_parser"] == "mineru"
                 assert parser_config["document_extract_concurrency"] == 7
                 assert "sk-mineru-fake" not in r.text

@@ -76,6 +76,12 @@ _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
         "origin_size_bytes": "BIGINT",
         "origin_mtime_ns": "BIGINT",
         "origin_sha256": "VARCHAR(64)",
+        "parser_provider": "VARCHAR(16)",
+        "mineru_provider": "VARCHAR(16)",
+        "mineru_model": "VARCHAR(16)",
+        "parser_status": "VARCHAR(16)",
+        "fallback_from": "VARCHAR(16)",
+        "fallback_reason": "TEXT",
     },
     "threads": {"archived": "BOOLEAN NOT NULL DEFAULT 0"},
     "messages": {

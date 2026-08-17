@@ -56,7 +56,7 @@ _RESULT_URL_KEYS = (
 _MARKDOWN_KEYS = ("markdown", "md_content", "markdown_content", "content")
 
 
-class MinerUClient:
+class MinerU302Client:
     def __init__(self, settings: Settings):
         if not settings.mineru_configured:
             raise ConfigurationError("MinerU 尚未配置 Base URL 与 API Key")
@@ -305,7 +305,7 @@ class MinerUClient:
         if response.is_success:
             return response
         message = _error_message(response)
-        MinerUClient._raise_status(response.status_code, action, message)
+        MinerU302Client._raise_status(response.status_code, action, message)
 
     @staticmethod
     def _raise_status(status_code: int, action: str, message: str) -> NoReturn:
@@ -314,6 +314,17 @@ class MinerUClient:
         if status_code == 429 or status_code >= 500:
             raise ServiceUnavailableError(f"{action}暂时不可用（{status_code}）：{message}")
         raise UpstreamError(f"{action}失败（{status_code}）：{message}")
+
+
+class MinerUClient:
+    """按显式服务商选择 MinerU 协议，同时保留原有构造入口。"""
+
+    def __new__(cls, settings: Settings) -> MinerU302Client:
+        if settings.mineru_provider == "official":
+            from sag_api.parsing.mineru_official import OfficialMinerUClient
+
+            return OfficialMinerUClient(settings)
+        return MinerU302Client(settings)
 
 
 def _response_payload(response: httpx.Response) -> Any:

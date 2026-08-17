@@ -43,9 +43,11 @@ _FIELDS = frozenset(
         "embedding_api_key",
         "embedding_dimensions",
         "document_parser",
+        "mineru_provider",
         "mineru_base_url",
         "mineru_api_key",
         "mineru_version",
+        "mineru_official_model",
         "document_extract_concurrency",
         "document_chunk_max_tokens",
         "document_chunk_mode",
@@ -72,6 +74,7 @@ QUICK_SETUP_302 = {
     "embedding_base_url": "https://api.302ai.cn/v1",
     "embedding_dimensions": 1024,
     "document_parser": "auto",
+    "mineru_provider": "302",
     "mineru_base_url": "https://api.302ai.cn",
     "mineru_version": "2.5",
     "document_extract_concurrency": 30,
@@ -86,6 +89,7 @@ _LEGACY_302_BASE_URLS = {
     "https://api.302.ai": "https://api.302ai.cn",
     "https://api.302.ai/v1": "https://api.302ai.cn/v1",
 }
+_OFFICIAL_MINERU_BASE_URL = "https://mineru.net/api/v4"
 
 
 async def _load_row(session: AsyncSession, key: str = _KEY) -> Setting | None:
@@ -99,6 +103,18 @@ def _normalize_overrides(overrides: dict) -> dict:
         value = normalized.get(field)
         if isinstance(value, str):
             normalized[field] = _LEGACY_302_BASE_URLS.get(value.rstrip("/"), value)
+    if normalized.get("mineru_provider") is None:
+        mineru_url = str(normalized.get("mineru_base_url") or "")
+        mineru_host = (urlparse(mineru_url).hostname or "").lower()
+        normalized["mineru_provider"] = (
+            "official" if mineru_host == "mineru.net" else "302"
+        )
+    elif (
+        normalized["mineru_provider"] == "official"
+        and str(normalized.get("mineru_base_url") or "").rstrip("/")
+        == "https://api.302ai.cn"
+    ):
+        normalized["mineru_base_url"] = _OFFICIAL_MINERU_BASE_URL
     strategy = normalized.get("search_strategy")
     if strategy == "atomic":
         normalized["search_strategy"] = normalize_search_strategy(strategy)
@@ -177,8 +193,10 @@ def effective_model_config() -> dict:
         "embedding_api_key_set": bool(_settings.embedding_api_key),
         "document_parser": _settings.document_parser,
         "effective_document_parser": _settings.effective_document_parser,
+        "mineru_provider": _settings.mineru_provider,
         "mineru_base_url": _settings.mineru_base_url,
         "mineru_version": _settings.mineru_version,
+        "mineru_official_model": _settings.mineru_official_model,
         "mineru_api_key_set": bool(_settings.mineru_api_key),
         "document_extract_concurrency": _settings.document_extract_concurrency,
         "document_chunk_max_tokens": _settings.document_chunk_max_tokens,
@@ -275,6 +293,7 @@ async def save_302_mineru_setup(session: AsyncSession) -> dict:
             session,
             {
                 "document_parser": "auto",
+                "mineru_provider": "302",
                 "mineru_base_url": "https://api.302ai.cn",
                 "mineru_api_key": api_key,
                 "mineru_version": "2.5",
