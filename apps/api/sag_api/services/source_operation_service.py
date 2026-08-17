@@ -155,32 +155,61 @@ async def acquire_operation_lease(
         await _release_owned(session_factory, acquired, owner)
 
 
+_DOCUMENT_DELETE_OWNER_PREFIX = "document-delete:"
+_DOCUMENT_MUTATION_BUSY_MESSAGE = "知识库正在执行其他数据操作，请稍后重试"
+
+
 @asynccontextmanager
-async def source_content_mutation(
+async def source_document_mutation(
     session_factory: async_sessionmaker,
     source_id: str,
     operation: str,
     *,
     admission_timeout_seconds: float = 1,
 ) -> AsyncIterator[None]:
-    """Serialize every source-content mutation with OCTX import/export jobs."""
+    """Admit one document-level mutation, queueing behind deletion cleanups.
+
+    Document deletion holds the source gate while engine-side records are
+    removed, but its critical section only touches the deleted document's rows
+    and files plus source counts. Every document-level mutation (upload /
+    delete / reprocess / resume / ingest) therefore proceeds immediately when
+    a deletion cleanup is in flight; its own processing is serialized in the
+    background (the maintenance coordinator dispatches maintenance jobs one at
+    a time, and processor admission waits for the cleanup to drain).
+
+    Other exclusive owners (OCTX import/export, source deletion) retain the
+    normal fail-fast behavior so transfer snapshots cannot be mutated
+    underneath them.
+    """
     if not source_id or not operation:
         raise ValueError("source mutation requires source_id and operation")
     owner = f"{operation}:{new_id()}"
+    resource_key = f"source:{source_id}"
     deadline = time.monotonic() + admission_timeout_seconds
+    bypassed = False
     while True:
-        lease = acquire_operation_lease(session_factory, [f"source:{source_id}"], owner=owner)
+        lease = acquire_operation_lease(session_factory, [resource_key], owner=owner)
         try:
             await lease.__aenter__()
             break
-        except ConflictError:
+        except ConflictError as error:
+            active_owner = await _active_lease_owner(session_factory, resource_key)
+            if active_owner is not None and active_owner.startswith(_DOCUMENT_DELETE_OWNER_PREFIX):
+                bypassed = True
+                break
             if time.monotonic() >= deadline:
-                raise
+                raise ConflictError(
+                    _DOCUMENT_MUTATION_BUSY_MESSAGE,
+                    layer=ErrorLayer.STORE,
+                    stage=ErrorStage.OCTX_RESOLVE,
+                    retryable=True,
+                ) from error
             await asyncio.sleep(0.02)
     try:
         yield
     finally:
-        await lease.__aexit__(None, None, None)
+        if not bypassed:
+            await lease.__aexit__(None, None, None)
 
 
 @asynccontextmanager
@@ -210,58 +239,6 @@ async def _active_lease_owner(
                 OctxOperationLease.expires_at > _now(),
             )
         )
-
-
-@asynccontextmanager
-async def source_upload_mutation(
-    session_factory: async_sessionmaker,
-    source_id: str,
-    *,
-    admission_timeout_seconds: float = 1,
-    delete_wait_timeout_seconds: float = 60,
-) -> AsyncIterator[None]:
-    """Admit uploads, waiting only for the preceding document deletion.
-
-    Document deletion can legitimately hold the source gate while engine-side
-    records are removed. A user who immediately corrects a mistaken upload
-    should not see that internal lease conflict. Other exclusive owners (OCTX
-    import/export, source deletion, reprocessing) retain the normal fail-fast
-    behavior so transfer snapshots cannot be mutated underneath them.
-    """
-    if not source_id:
-        raise ValueError("source upload mutation requires source_id")
-    owner = f"document-upload:{new_id()}"
-    resource_key = f"source:{source_id}"
-    started_at = time.monotonic()
-    admission_deadline = started_at + admission_timeout_seconds
-    delete_deadline = started_at + delete_wait_timeout_seconds
-    while True:
-        lease = acquire_operation_lease(session_factory, [resource_key], owner=owner)
-        try:
-            await lease.__aenter__()
-            break
-        except ConflictError as error:
-            active_owner = await _active_lease_owner(session_factory, resource_key)
-            deleting = bool(active_owner and active_owner.startswith("document-delete:"))
-            now = time.monotonic()
-            if deleting and now < delete_deadline:
-                await asyncio.sleep(0.05)
-                continue
-            if now < admission_deadline:
-                await asyncio.sleep(0.02)
-                continue
-            if deleting:
-                raise ConflictError(
-                    "上一份文档仍在清理，请稍后重试",
-                    layer=ErrorLayer.STORE,
-                    stage=ErrorStage.OCTX_RESOLVE,
-                    retryable=True,
-                ) from error
-            raise
-    try:
-        yield
-    finally:
-        await lease.__aexit__(None, None, None)
 
 
 def _processing_resource(source_id: str, job_id: str) -> str:
@@ -310,15 +287,24 @@ async def acquire_source_processing_lease(
     job_id: str,
     *,
     admission_timeout_seconds: float = 1,
+    delete_wait_timeout_seconds: float = 120,
 ) -> AsyncIterator[None]:
-    """Register one shared processor while briefly crossing the source gate."""
+    """Register one shared processor while briefly crossing the source gate.
+
+    A document uploaded right after a deletion is queued as pending while the
+    delete cleanup drains; this admission therefore waits for a document-delete
+    owner instead of consuming a retry attempt. Other exclusive owners keep the
+    normal fail-fast admission so transfers are never blocked for long.
+    """
     owner = f"document:{job_id}"
     processing = acquire_operation_lease(
         session_factory,
         [_processing_resource(source_id, job_id)],
         owner=owner,
     )
-    deadline = time.monotonic() + admission_timeout_seconds
+    started_at = time.monotonic()
+    deadline = started_at + admission_timeout_seconds
+    delete_deadline = started_at + delete_wait_timeout_seconds
     while True:
         try:
             async with acquire_operation_lease(
@@ -329,6 +315,14 @@ async def acquire_source_processing_lease(
                 await processing.__aenter__()
             break
         except ConflictError:
+            active_owner = await _active_lease_owner(session_factory, f"source:{source_id}")
+            deleting = bool(
+                active_owner is not None
+                and active_owner.startswith(_DOCUMENT_DELETE_OWNER_PREFIX)
+            )
+            if deleting and time.monotonic() < delete_deadline:
+                await asyncio.sleep(0.05)
+                continue
             if time.monotonic() >= deadline:
                 raise
             await asyncio.sleep(0.02)

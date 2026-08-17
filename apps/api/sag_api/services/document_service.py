@@ -283,39 +283,58 @@ async def _document_derived_source_ids(
     return values
 
 
-async def _refresh_source_counts(session: AsyncSession, source: Source) -> None:
-    document_count, chunk_count, event_count = (
-        await session.execute(
-            select(
-                func.count(Document.id),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (Document.status == DocumentStatus.READY, Document.chunk_count),
-                            else_=0,
-                        )
-                    ),
-                    0,
+def _source_document_filter(source_id: str):
+    return (
+        Document.source_id == source_id,
+        Document.is_active.is_(True),
+        Document.status.not_in([DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED]),
+    )
+
+
+def _source_sum_clause(source_id: str, column):
+    """仅统计 READY 文档的分块/事件列求和。"""
+    return (
+        select(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (Document.status == DocumentStatus.READY, column),
+                        else_=0,
+                    )
                 ),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (Document.status == DocumentStatus.READY, Document.event_count),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ),
-            ).where(
-                Document.source_id == source.id,
-                Document.is_active.is_(True),
-                Document.status.not_in([DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED]),
+                0,
             )
         )
-    ).one()
-    source.document_count = int(document_count)
-    source.chunk_count = int(chunk_count)
-    source.event_count = int(event_count)
+        .where(*_source_document_filter(source_id))
+        .scalar_subquery()
+    )
+
+
+async def _refresh_source_counts(session: AsyncSession, source: Source) -> None:
+    """原子重算信源聚合计数。
+
+    删除任务与文档级变更（上传/删除等）可并发提交；用单条 UPDATE 在数据库
+    层串行化计数写入，避免「先 SELECT 后赋值」在两者交错时丢失计数。
+    """
+    document_count = (
+        select(func.count(Document.id))
+        .where(*_source_document_filter(source.id))
+        .scalar_subquery()
+    )
+    await session.execute(
+        update(Source)
+        .where(Source.id == source.id)
+        .values(
+            document_count=document_count,
+            chunk_count=_source_sum_clause(source.id, Document.chunk_count),
+            event_count=_source_sum_clause(source.id, Document.event_count),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    await session.refresh(
+        source,
+        attribute_names=["document_count", "chunk_count", "event_count"],
+    )
 
 
 async def _commit_document_job_transition(

@@ -127,7 +127,7 @@ async def test_ordinary_source_mutation_cannot_enter_during_octx_export(octx_ses
     from sag_api.core.errors import ConflictError
     from sag_api.services.source_operation_service import (
         acquire_operation_lease,
-        source_content_mutation,
+        source_document_mutation,
     )
 
     async with acquire_operation_lease(
@@ -136,75 +136,16 @@ async def test_ordinary_source_mutation_cannot_enter_during_octx_export(octx_ses
         owner="octx-export",
     ):
         with pytest.raises(ConflictError):
-            async with source_content_mutation(octx_sessions, "source-a", "document-delete"):
+            async with source_document_mutation(octx_sessions, "source-a", "document-delete"):
                 pass
 
 
 @pytest.mark.asyncio
-async def test_upload_waits_for_document_delete_lease(octx_sessions):
-    """A quick re-upload should continue after the preceding async delete drains."""
-    import asyncio
-
+async def test_document_mutations_bypass_document_delete_lease(octx_sessions):
+    """Upload and delete requests must not block behind a preceding deletion."""
     from sag_api.services.source_operation_service import (
         acquire_operation_lease,
-        source_upload_mutation,
-    )
-
-    delete_started = asyncio.Event()
-
-    async def delete_document() -> None:
-        async with acquire_operation_lease(
-            octx_sessions,
-            ["source:source-a"],
-            owner="document-delete:job-a",
-        ):
-            delete_started.set()
-            await asyncio.sleep(0.08)
-
-    deletion = asyncio.create_task(delete_document())
-    await delete_started.wait()
-    entered = False
-    async with source_upload_mutation(
-        octx_sessions,
-        "source-a",
-        admission_timeout_seconds=0.01,
-        delete_wait_timeout_seconds=0.5,
-    ):
-        entered = True
-    await deletion
-    assert entered is True
-
-
-@pytest.mark.asyncio
-async def test_upload_does_not_wait_for_octx_export_lease(octx_sessions):
-    """The delete exception must not weaken OCTX import/export isolation."""
-    from sag_api.core.errors import ConflictError
-    from sag_api.services.source_operation_service import (
-        acquire_operation_lease,
-        source_upload_mutation,
-    )
-
-    async with acquire_operation_lease(
-        octx_sessions,
-        ["source:source-a"],
-        owner="octx-export:job-a",
-    ):
-        with pytest.raises(ConflictError, match="OCTX operation resource is busy"):
-            async with source_upload_mutation(
-                octx_sessions,
-                "source-a",
-                admission_timeout_seconds=0.01,
-                delete_wait_timeout_seconds=0.5,
-            ):
-                pass
-
-
-@pytest.mark.asyncio
-async def test_upload_delete_wait_timeout_is_user_facing(octx_sessions):
-    from sag_api.core.errors import ConflictError
-    from sag_api.services.source_operation_service import (
-        acquire_operation_lease,
-        source_upload_mutation,
+        source_document_mutation,
     )
 
     async with acquire_operation_lease(
@@ -212,12 +153,173 @@ async def test_upload_delete_wait_timeout_is_user_facing(octx_sessions):
         ["source:source-a"],
         owner="document-delete:job-a",
     ):
-        with pytest.raises(ConflictError, match="上一份文档仍在清理，请稍后重试"):
-            async with source_upload_mutation(
+        async with source_document_mutation(octx_sessions, "source-a", "document-upload"):
+            async with source_document_mutation(octx_sessions, "source-a", "document-delete"):
+                pass
+
+
+@pytest.mark.asyncio
+async def test_upload_and_delete_flow_works_while_delete_cleanup_runs(octx_sessions, tmp_path):
+    """Upload/delete domain logic must complete and keep counts consistent during a delete cleanup."""
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.services.document_service import (
+        create_document_from_upload,
+        delete_document,
+    )
+    from sag_api.services.source_operation_service import (
+        acquire_operation_lease,
+        source_document_mutation,
+    )
+
+    class Queue:
+        def __init__(self):
+            self.enqueued: list[str] = []
+
+        async def enqueue(self, job_id: str) -> None:
+            self.enqueued.append(job_id)
+
+        def begin_source_maintenance(self, _source_id: str, _job_id: str) -> None:
+            return None
+
+    async with octx_sessions() as session:
+        source = Source(
+            id="source-busy-delete",
+            name="Busy delete",
+            sag_source_config_id="src_busy_delete",
+        )
+        session.add(source)
+        await session.flush()
+        ready_document = Document(
+            id="document-to-delete",
+            source_id=source.id,
+            filename="old.pdf",
+            storage_path="old.pdf",
+            status=DocumentStatus.READY,
+            sag_source_id="article-old",
+            chunk_count=2,
+            event_count=1,
+        )
+        session.add(ready_document)
+        await session.commit()
+
+        queue = Queue()
+        async with acquire_operation_lease(
+            octx_sessions,
+            ["source:source-busy-delete"],
+            owner="document-delete:job-a",
+        ):
+            async with source_document_mutation(
+                octx_sessions, source.id, "document-delete"
+            ):
+                delete_job = await delete_document(
+                    session, source, ready_document.id, job_queue=queue
+                )
+            async with source_document_mutation(
+                octx_sessions, source.id, "document-upload"
+            ):
+                uploaded, process_job = await create_document_from_upload(
+                    session,
+                    source,
+                    filename="new.md",
+                    content_type="text/markdown",
+                    data=b"# New",
+                    upload_dir=str(tmp_path / "uploads"),
+                    job_queue=queue,
+                )
+
+    assert delete_job.type == JobType.DELETE_DOCUMENT
+    assert delete_job.status == JobStatus.QUEUED
+    assert uploaded.status == DocumentStatus.PENDING
+    assert process_job.status == JobStatus.QUEUED
+    async with octx_sessions() as session:
+        current_source = await session.get(Source, source.id)
+        assert current_source.document_count == 1  # 旧文档已计入删除路径，仅剩新文档
+        assert current_source.chunk_count == 0
+        assert current_source.event_count == 0
+
+
+@pytest.mark.asyncio
+async def test_document_mutation_does_not_wait_for_octx_export_lease(octx_sessions):
+    """The delete exception must not weaken OCTX import/export isolation."""
+    from sag_api.core.errors import ConflictError
+    from sag_api.services.source_operation_service import (
+        acquire_operation_lease,
+        source_document_mutation,
+    )
+
+    async with acquire_operation_lease(
+        octx_sessions,
+        ["source:source-a"],
+        owner="octx-export:job-a",
+    ):
+        with pytest.raises(ConflictError, match="知识库正在执行其他数据操作"):
+            async with source_document_mutation(
                 octx_sessions,
                 "source-a",
+                "document-upload",
                 admission_timeout_seconds=0.01,
-                delete_wait_timeout_seconds=0.03,
+            ):
+                pass
+
+
+@pytest.mark.asyncio
+async def test_processor_admission_waits_for_document_delete(octx_sessions):
+    """A queued upload must start processing only after the delete drains."""
+    import asyncio
+
+    from sag_api.services.source_operation_service import (
+        acquire_operation_lease,
+        acquire_source_processing_lease,
+    )
+
+    delete_acquired = asyncio.Event()
+
+    async def delete_document() -> None:
+        async with acquire_operation_lease(
+            octx_sessions,
+            ["source:source-a"],
+            owner="document-delete:job-a",
+        ):
+            delete_acquired.set()
+            await asyncio.sleep(0.05)
+
+    deletion = asyncio.create_task(delete_document())
+    await delete_acquired.wait()
+    entered = False
+    async with acquire_source_processing_lease(
+        octx_sessions,
+        "source-a",
+        "job-b",
+        admission_timeout_seconds=0.05,
+        delete_wait_timeout_seconds=1,
+    ):
+        entered = True
+    await deletion
+    assert entered is True
+
+
+@pytest.mark.asyncio
+async def test_processor_admission_does_not_wait_for_octx_export(octx_sessions):
+    """Processor admission keeps fail-fast behavior for transfer leases."""
+    from sag_api.core.errors import ConflictError
+    from sag_api.services.source_operation_service import (
+        acquire_operation_lease,
+        acquire_source_processing_lease,
+    )
+
+    async with acquire_operation_lease(
+        octx_sessions,
+        ["source:source-a"],
+        owner="octx-export:job-a",
+    ):
+        with pytest.raises(ConflictError):
+            async with acquire_source_processing_lease(
+                octx_sessions,
+                "source-a",
+                "job-b",
+                admission_timeout_seconds=0.05,
+                delete_wait_timeout_seconds=1,
             ):
                 pass
 

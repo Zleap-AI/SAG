@@ -280,7 +280,6 @@
     "uploaded": "{count, plural, one {# file uploaded} other {# files uploaded}}. Background processing has started.",
     "uploading": "Uploading files…",
     "uploadProgress": "File upload progress",
-    "waitingForCleanup": "File uploaded. Waiting for the previous document deletion to finish…",
     "prompt": "Drop files here or click to choose",
     "support": "Supports Markdown, text, PDF, and more · Up to {maxMb, number} MB per file",
     "concurrencyHint": "Is background parsing and extraction slow for multiple documents? Adjust chunk concurrency.",

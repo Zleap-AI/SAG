@@ -33,10 +33,7 @@ from sag_api.services.document_service import (
     reprocess_document,
     resume_document,
 )
-from sag_api.services.source_operation_service import (
-    source_content_mutation,
-    source_upload_mutation,
-)
+from sag_api.services.source_operation_service import source_document_mutation
 from sag_api.services.source_service import get_source
 
 router = APIRouter(prefix="/sources/{source_id}/documents", tags=["documents"])
@@ -114,7 +111,7 @@ async def upload(
                 len(data),
                 request_id,
             )
-        async with source_upload_mutation(SessionLocal, source_id):
+        async with source_document_mutation(SessionLocal, source_id, "document-upload"):
             source = await get_source(session, source_id)
             document, _job = await create_document_from_upload(
                 session,
@@ -162,7 +159,7 @@ async def ingest(
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> DocumentOut:
     """统一写入接口：外部系统持续推送文本 / 消息进入信源。"""
-    async with source_content_mutation(SessionLocal, source_id, "document-ingest"):
+    async with source_document_mutation(SessionLocal, source_id, "document-ingest"):
         source = await get_source(session, source_id)
         document = await ingest_content(
             session,
@@ -289,7 +286,7 @@ async def reprocess(
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> JobOut:
-    async with source_content_mutation(SessionLocal, source_id, "document-reprocess"):
+    async with source_document_mutation(SessionLocal, source_id, "document-reprocess"):
         source = await get_source(session, source_id)
         job = await reprocess_document(
             session,
@@ -323,7 +320,7 @@ async def resume(
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> JobOut:
-    async with source_content_mutation(SessionLocal, source_id, "document-resume"):
+    async with source_document_mutation(SessionLocal, source_id, "document-resume"):
         source = await get_source(session, source_id)
         job = await resume_document(session, source, document_id, job_queue=job_queue)
     return JobOut.model_validate(job)
@@ -337,7 +334,7 @@ async def delete_(
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> Ok:
-    async with source_content_mutation(SessionLocal, source_id, "document-delete"):
+    async with source_document_mutation(SessionLocal, source_id, "document-delete"):
         source = await get_source(session, source_id)
         await delete_document(
             session,

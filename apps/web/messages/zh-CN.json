@@ -280,7 +280,6 @@
     "uploaded": "已完成 {count, number} 个文件上传，已进入后台处理",
     "uploading": "正在上传文件…",
     "uploadProgress": "文件上传进度",
-    "waitingForCleanup": "文件已上传，正在等待上一份文档删除完成…",
     "prompt": "拖拽文件到此处，或点击选择",
     "support": "支持 Markdown / 文本 / PDF 等 · 单文件 ≤ {maxMb, number}MB",
     "concurrencyHint": "多文档后台解析与抽取较慢？可调整分片并发数。",
