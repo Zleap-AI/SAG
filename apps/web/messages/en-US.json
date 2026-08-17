@@ -352,7 +352,19 @@
     "pause": "Stop extraction",
     "resume": "Resume extraction",
     "reprocess": "Reprocess",
-    "delete": "Delete"
+    "delete": "Delete",
+    "parser": {
+      "officialMineruVlm": "MinerU · official · VLM",
+      "officialMineruPipeline": "MinerU · official · pipeline",
+      "ai302Mineru": "MinerU · 302.AI · 2.5",
+      "markitdown": "MarkItDown",
+      "markitdownFallback": "MarkItDown fallback",
+      "failed": "Both parsers failed",
+      "original": "Original Markdown",
+      "uploading": "uploading",
+      "queued": "queued",
+      "running": "parsing"
+    }
   },
   "Knowledge": {
     "title": "Knowledge",
@@ -972,7 +984,19 @@
       "loadFailed": "Failed to load document",
       "tokens": "{count} tokens",
       "chunks": "{count, plural, one {# chunk} other {# chunks}}",
-      "events": "{count, plural, one {# event} other {# events}}"
+      "events": "{count, plural, one {# event} other {# events}}",
+      "parser": {
+        "officialMineruVlm": "MinerU · official · VLM",
+        "officialMineruPipeline": "MinerU · official · pipeline",
+        "ai302Mineru": "MinerU · 302.AI · 2.5",
+        "markitdown": "MarkItDown",
+        "markitdownFallback": "MarkItDown fallback",
+        "failed": "Both parsers failed",
+        "original": "Original Markdown",
+        "uploading": "uploading",
+        "queued": "queued",
+        "running": "parsing"
+      }
     },
     "panel": {
       "chunkTitle": "Source trace",

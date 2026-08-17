@@ -15,6 +15,7 @@ import {
 } from "@/lib/document-activity";
 import type { Doc } from "@/lib/types";
 import { formatBytes, formatTokenCount, relativeTime } from "@/lib/format";
+import { documentParserStatus } from "@/lib/document-parser-status";
 import { useDetailPanel } from "@/components/features/detail-panel";
 import { useApp } from "@/components/features/app-shell";
 import { DocumentActivityBadge } from "@/components/features/status-badge";
@@ -142,6 +143,7 @@ export function DocumentList({
         {documents.map((document) => {
           const activity = activities[document.id] ?? deriveDocumentActivity(document);
           const showProgress = documentActivityShowsProgress(activity.phase);
+          const parser = documentParserStatus(document);
           return (
             <div
               key={document.id}
@@ -169,6 +171,15 @@ export function DocumentList({
                     <span>·</span>
                     <span>{t("tokens", { count: formatTokenCount(document.token_usage, locale) })}</span>
                   </div>
+                  {parser && (
+                    <div
+                      className="mt-0.5 truncate text-[11px] text-muted-foreground"
+                      title={t(`parser.${parser.methodKey}`)}
+                    >
+                      {t(`parser.${parser.methodKey}`)}
+                      {parser.progressKey ? ` · ${t(`parser.${parser.progressKey}`)}` : ""}
+                    </div>
+                  )}
                   {activity.error && (
                     <p className="mt-0.5 truncate text-[11px] text-destructive" title={activity.error}>
                       {activity.error}
@@ -198,6 +209,7 @@ export function DocumentList({
       {documents.map((document, index) => {
         const activity = activities[document.id] ?? deriveDocumentActivity(document);
         const showProgress = documentActivityShowsProgress(activity.phase);
+        const parser = documentParserStatus(document);
         return (
           <div
             key={document.id}
@@ -247,6 +259,15 @@ export function DocumentList({
                   </>
                 )}
               </div>
+              {parser && (
+                <div
+                  className="mt-0.5 truncate text-xs text-muted-foreground"
+                  title={t(`parser.${parser.methodKey}`)}
+                >
+                  {t(`parser.${parser.methodKey}`)}
+                  {parser.progressKey ? ` · ${t(`parser.${parser.progressKey}`)}` : ""}
+                </div>
+              )}
               {showProgress && (
                 <div className="mt-1.5 h-1 w-full max-w-56 overflow-hidden rounded-full bg-muted">
                   <div
