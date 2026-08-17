@@ -118,3 +118,87 @@ async def test_complete_chunk_heading_vectors_does_not_regenerate_existing_vecto
     )
 
     assert completed == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored_fields",
+    [
+        None,  # 向量记录整体缺失（load 阶段索引失败被依赖方吞掉）
+        {"heading_vector": None, "content_vector": None},  # 记录在但两个向量都是空的
+    ],
+)
+async def test_complete_chunk_heading_vectors_rebuilds_missing_vector_record(
+    stored_fields,
+):
+    from sag_api.sag.chunk_heading_vectors import complete_chunk_heading_vectors
+
+    chunk = SimpleNamespace(
+        id="chunk-1",
+        source_id="article-1",
+        source_config_id="source-config-1",
+        rank=0,
+        heading="章节标题",
+        content="正文内容",
+        references=[],
+        chunk_length=4,
+    )
+
+    class EmbeddingClient:
+        def __init__(self) -> None:
+            self.inputs: list[list[str]] = []
+
+        async def batch_generate(self, texts: list[str]) -> list[list[float]]:
+            self.inputs.append(texts)
+            return [[0.1, 0.2] for _ in texts]
+
+    class VectorStore:
+        def __init__(self) -> None:
+            self.documents: list[dict] = []
+
+        async def bulk_index(self, *, index, documents, return_details, routing):
+            assert index == "source_chunks"
+            assert return_details is True
+            assert routing == "source-config-1"
+            self.documents.extend(documents)
+            return {
+                "success": True,
+                "success_count": len(documents),
+                "error_count": 0,
+                "errors": [],
+            }
+
+    embedding = EmbeddingClient()
+    vector_store = VectorStore()
+
+    async def fetch_fields(_store, _index, _record_ids, _fields, *, routing):
+        assert routing == "source-config-1"
+        return {} if stored_fields is None else {"chunk-1": stored_fields}
+
+    completed = await complete_chunk_heading_vectors(
+        [chunk],
+        "source-config-1",
+        embedding_client=embedding,
+        vector_store=vector_store,
+        fetch_vector_fields=fetch_fields,
+    )
+
+    assert completed == 1
+    # 先重建内容向量，再重建标题向量
+    assert embedding.inputs == [["正文内容"], ["章节标题"]]
+    assert vector_store.documents == [
+        {
+            "id": "chunk-1",
+            "chunk_id": "chunk-1",
+            "source_id": "article-1",
+            "source_config_id": "source-config-1",
+            "rank": 0,
+            "heading": "章节标题",
+            "content": "正文内容",
+            "heading_vector": [0.1, 0.2],
+            "content_vector": [0.1, 0.2],
+            "references": [],
+            "chunk_type": "TEXT",
+            "content_length": 4,
+        }
+    ]
