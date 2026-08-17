@@ -174,7 +174,7 @@ async def test_only_pdf_uses_configured_mineru(tmp_path, monkeypatch):
         def __init__(self, _settings):
             pass
 
-        async def parse(self, path, *, state=None, on_state=None):
+        async def parse(self, path, *, state=None, on_state=None, should_pause=None):
             seen.append(path)
             return "# From MinerU\n"
 
@@ -217,7 +217,7 @@ async def test_mineru_failure_falls_back_to_markitdown_and_reuses_cache(tmp_path
         def __init__(self, _settings):
             pass
 
-        async def parse(self, path, *, state=None, on_state=None):
+        async def parse(self, path, *, state=None, on_state=None, should_pause=None):
             nonlocal mineru_calls
             mineru_calls += 1
             if on_state:
@@ -267,7 +267,7 @@ async def test_document_fails_only_when_mineru_and_markitdown_both_fail(tmp_path
         def __init__(self, _settings):
             pass
 
-        async def parse(self, path, *, state=None, on_state=None):
+        async def parse(self, path, *, state=None, on_state=None, should_pause=None):
             raise ServiceUnavailableError("remote parser failed")
 
     def fail_locally(_path: str) -> str:
@@ -297,7 +297,7 @@ async def test_mineru_state_callback_failure_does_not_trigger_markitdown(tmp_pat
         def __init__(self, _settings):
             pass
 
-        async def parse(self, path, *, state=None, on_state=None):
+        async def parse(self, path, *, state=None, on_state=None, should_pause=None):
             assert on_state is not None
             await on_state({**(state or {}), "task_id": "task-1"})
             return "# Never reached\n"
@@ -338,7 +338,7 @@ async def test_changed_mineru_config_retries_remote_after_cached_fallback(tmp_pa
         def __init__(self, _settings):
             pass
 
-        async def parse(self, path, *, state=None, on_state=None):
+        async def parse(self, path, *, state=None, on_state=None, should_pause=None):
             nonlocal mineru_calls
             mineru_calls += 1
             raise UpstreamError("remote unavailable")
@@ -380,7 +380,7 @@ async def test_concurrent_pdf_parsing_creates_only_one_mineru_task(tmp_path, mon
         def __init__(self, _settings):
             pass
 
-        async def parse(self, path, *, state=None, on_state=None):
+        async def parse(self, path, *, state=None, on_state=None, should_pause=None):
             nonlocal calls
             calls += 1
             started.set()
@@ -414,7 +414,7 @@ async def test_concurrent_mineru_failure_creates_one_task_and_one_fallback(tmp_p
         def __init__(self, _settings):
             pass
 
-        async def parse(self, path, *, state=None, on_state=None):
+        async def parse(self, path, *, state=None, on_state=None, should_pause=None):
             nonlocal mineru_calls
             mineru_calls += 1
             await asyncio.sleep(0.01)
@@ -492,7 +492,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
     prepared_calls: list[str] = []
     stage_errors: list[tuple[str, str | None]] = []
 
-    async def fake_prepare(path, settings, *, state=None, on_state=None):
+    async def fake_prepare(path, settings, *, state=None, on_state=None, should_pause=None):
         prepared_calls.append(path)
         return PreparedDocument("/uploads/original.pdf.parsed.markitdown.md", "markitdown")
 
@@ -622,7 +622,7 @@ async def test_document_job_persists_successful_mineru_outcome(
         async def execute(self, _statement):
             return SimpleNamespace(rowcount=1)
 
-    async def fake_prepare(path, settings, *, state=None, on_state=None):
+    async def fake_prepare(path, settings, *, state=None, on_state=None, should_pause=None):
         assert on_state is not None
         await on_state(
             {
@@ -693,7 +693,7 @@ async def test_document_job_persists_mineru_markitdown_fallback(monkeypatch, cap
         async def execute(self, _statement):
             return SimpleNamespace(rowcount=1)
 
-    async def fake_prepare(path, settings, *, state=None, on_state=None):
+    async def fake_prepare(path, settings, *, state=None, on_state=None, should_pause=None):
         assert on_state is not None
         await on_state(
             {
@@ -799,7 +799,7 @@ async def test_document_job_redacts_parser_failure_from_public_error(
                 document.error = values["error"]
             return SimpleNamespace(rowcount=1)
 
-    async def fake_prepare(path, settings, *, state=None, on_state=None):
+    async def fake_prepare(path, settings, *, state=None, on_state=None, should_pause=None):
         assert on_state is not None
         await on_state(
             {
@@ -889,7 +889,7 @@ async def test_document_job_preserves_engine_error_before_first_checkpoint(
                 document.error = values["error"]
             return SimpleNamespace(rowcount=1)
 
-    async def fake_prepare(path, settings, *, state=None, on_state=None):
+    async def fake_prepare(path, settings, *, state=None, on_state=None, should_pause=None):
         assert on_state is not None
         await on_state(
             {

@@ -88,13 +88,20 @@ async def delete_(
 ) -> Ok:
     from sag_api.core.config import settings
 
-    await delete_source(
-        session,
-        source_id,
-        engine_manager=engine_manager,
-        upload_dir=settings.upload_dir,
-        job_queue=job_queue,
-    )
+    # 先请求在途处理任务尽快让路：解析/抽取会在下一个安全检查点观察到停止信号，
+    # 释放引擎槽，使 engine_manager.release 的 drain 能在 HTTP 窗口内完成，
+    # 而非被动等待长时间 MinerU 轮询自然结束。
+    job_queue.request_source_stop(source_id)
+    try:
+        await delete_source(
+            session,
+            source_id,
+            engine_manager=engine_manager,
+            upload_dir=settings.upload_dir,
+            job_queue=job_queue,
+        )
+    finally:
+        job_queue.clear_source_stop(source_id)
     return Ok(detail="信源已删除")
 
 

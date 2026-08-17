@@ -18,7 +18,7 @@ from sag_api.core.errors import (
     UpstreamError,
     ValidationError,
 )
-from sag_api.parsing.mineru import MinerUClient
+from sag_api.parsing.mineru import MinerUClient, PauseCallback
 from sag_api.parsing.text import TextDecodingError, is_plain_text_path, read_text_file
 
 ParseStateCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -40,6 +40,7 @@ async def prepare_document(
     *,
     state: dict[str, Any] | None = None,
     on_state: ParseStateCallback | None = None,
+    should_pause: PauseCallback | None = None,
 ) -> PreparedDocument:
     """返回可直接交给 zleap-sag 的 Markdown 路径，保留原始上传文件。"""
     suffix = os.path.splitext(path)[1].lower()
@@ -83,6 +84,7 @@ async def prepare_document(
             settings,
             state=state,
             on_state=on_state,
+            should_pause=should_pause,
         )
 
 
@@ -140,6 +142,7 @@ async def _prepare_and_cache(
     *,
     state: dict[str, Any] | None,
     on_state: ParseStateCallback | None,
+    should_pause: PauseCallback | None = None,
 ) -> PreparedDocument:
     parser_state = _compatible_state(state, provider, signature, settings)
     current_state = dict(parser_state)
@@ -189,7 +192,7 @@ async def _prepare_and_cache(
             )
         try:
             markdown = await MinerUClient(settings).parse(
-                path, state=parser_state, on_state=track_state
+                path, state=parser_state, on_state=track_state, should_pause=should_pause
             )
         except ApiError as mineru_error:
             return await _prepare_markitdown_fallback(
