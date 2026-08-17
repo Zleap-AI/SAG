@@ -3,8 +3,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
-from sqlalchemy import select
-
 VectorFieldFetcher = Callable[..., Awaitable[dict[str, dict[str, Any]]]]
 
 
@@ -88,49 +86,3 @@ async def complete_chunk_heading_vectors(
             raise RuntimeError(f"chunk heading vector completion failed: {result!r}")
         completed += len(documents)
     return completed
-
-
-async def complete_loaded_chunk_heading_vectors(
-    chunk_ids: Sequence[str],
-    source_config_id: str,
-) -> int:
-    """Complete heading vectors for chunks created by one document load."""
-    if not chunk_ids:
-        return 0
-
-    from zleap.sag.core.ai.factory import get_embedding_client
-    from zleap.sag.core.storage.client import get_vector_client
-    from zleap.sag.db import SourceChunk, get_session_factory
-
-    from sag_api.sag.octx_vector_protocol import _fetch_vector_fields
-
-    sessions = get_session_factory()
-    async with sessions() as session:
-        chunks = (
-            (
-                await session.execute(
-                    select(SourceChunk)
-                    .where(
-                        SourceChunk.source_config_id == source_config_id,
-                        SourceChunk.id.in_(list(chunk_ids)),
-                    )
-                    .order_by(SourceChunk.id)
-                )
-            )
-            .scalars()
-            .all()
-        )
-    if len(chunks) != len(set(chunk_ids)):
-        raise RuntimeError(
-            "loaded chunk rows are incomplete: "
-            f"expected={len(set(chunk_ids))} actual={len(chunks)}"
-        )
-
-    embedding_client = await get_embedding_client(scenario="general")
-    return await complete_chunk_heading_vectors(
-        chunks,
-        source_config_id,
-        embedding_client=embedding_client,
-        vector_store=get_vector_client(),
-        fetch_vector_fields=_fetch_vector_fields,
-    )

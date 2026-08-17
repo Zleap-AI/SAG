@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from zleap.sag.db.schema import create_missing_relation_tables
 
 
 @pytest_asyncio.fixture
@@ -41,7 +42,7 @@ async def test_installation_gc_rejects_current_active_partition(gc_sessions):
             name="Active",
             source_type=SourceType.DOCUMENT,
             connector_kind=ConnectorKind.FILE_UPLOAD,
-            sag_source_config_id="src_active",
+            sag_source_config_id="src_active"[:36],
             status=SourceStatus.ACTIVE,
         )
         asset = OctxAsset(
@@ -64,7 +65,7 @@ async def test_installation_gc_rejects_current_active_partition(gc_sessions):
         installation = OctxInstallation(
             source_id=source.id,
             release_id=release.id,
-            sag_source_config_id="src_active",
+            sag_source_config_id="src_active"[:36],
             id_namespace="0191f6a0-0000-7000-8000-000000000202",
             status=OctxInstallationStatus.ACTIVE,
         )
@@ -84,8 +85,7 @@ async def test_installation_gc_rejects_current_active_partition(gc_sessions):
 async def test_installation_gc_deletes_only_expired_retained_partition(
     gc_sessions, tmp_path
 ):
-    from zleap.sag.db.base import Base as SagBase
-    from zleap.sag.db.models import SourceConfig
+    from zleap.sag.db.models import DataSource
 
     from sag_api.db.models import (
         Document,
@@ -107,10 +107,9 @@ async def test_installation_gc_deletes_only_expired_retained_partition(
 
     sag_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'sag.db'}")
     sag_sessions = async_sessionmaker(sag_engine, expire_on_commit=False)
-    async with sag_engine.begin() as connection:
-        await connection.run_sync(SagBase.metadata.create_all)
+    await create_missing_relation_tables(sag_engine, "normal")
     async with sag_sessions() as sag_session:
-        sag_session.add(SourceConfig(id="src_retained", name="Old", target_config={}))
+        sag_session.add(DataSource(id="src_retained", name="Old"))
         await sag_session.commit()
 
     deleted: list[tuple[str, str]] = []
@@ -131,7 +130,7 @@ async def test_installation_gc_deletes_only_expired_retained_partition(
                 name="Current",
                 source_type=SourceType.DOCUMENT,
                 connector_kind=ConnectorKind.FILE_UPLOAD,
-                sag_source_config_id="src_current",
+                sag_source_config_id="src_current"[:36],
                 status=SourceStatus.ACTIVE,
             )
             asset = OctxAsset(
@@ -154,7 +153,7 @@ async def test_installation_gc_deletes_only_expired_retained_partition(
             installation = OctxInstallation(
                 source_id=source.id,
                 release_id=release.id,
-                sag_source_config_id="src_retained",
+                sag_source_config_id="src_retained"[:36],
                 id_namespace="0191f6a0-0000-7000-8000-000000000212",
                 status=OctxInstallationStatus.RETAINED,
                 retain_until=datetime.now(UTC) - timedelta(seconds=1),
@@ -188,15 +187,15 @@ async def test_installation_gc_deletes_only_expired_retained_partition(
             assert await session.get(Document, document.id) is None
             assert not controlled.exists()
         async with sag_sessions() as sag_session:
-            assert await sag_session.get(SourceConfig, "src_retained") is None
+            assert await sag_session.get(DataSource, "src_retained") is None
         assert {index for index, _ in deleted} == {
             "source_chunks",
-            "event_vectors",
+            "event_vectors_wide",
             "event_entity_vectors",
             "entity_vectors",
         }
         assert all(
-            expression == "source_config_id = 'src_retained'"
+            expression == "data_source_id = 'src_retained'"
             for _, expression in deleted
         )
     finally:

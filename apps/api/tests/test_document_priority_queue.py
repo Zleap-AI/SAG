@@ -150,7 +150,7 @@ async def test_recovery_deduplicates_legacy_active_document_jobs():
     async with SessionLocal() as session:
         source = Source(
             name="legacy-duplicate-recovery",
-            sag_source_config_id="legacy-duplicate-recovery-config",
+            sag_source_config_id="legacy-duplicate-recovery-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -215,7 +215,7 @@ async def test_source_maintenance_requeues_blocked_job_after_last_delete():
     async with SessionLocal() as session:
         source = Source(
             name="source-maintenance",
-            sag_source_config_id="source-maintenance-config",
+            sag_source_config_id="source-maintenance-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -275,7 +275,7 @@ async def test_source_maintenance_only_resumes_eligible_peer_documents():
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="resume-filter", sag_source_config_id="resume-filter-config")
+        source = Source(name="resume-filter", sag_source_config_id="resume-filter-config"[:36])
         session.add(source)
         await session.flush()
         extracting = Document(
@@ -357,7 +357,7 @@ async def test_recovery_reconciles_orphaned_pausing_and_deleting_documents():
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="transition-recovery", sag_source_config_id="transition-recovery-config")
+        source = Source(name="transition-recovery", sag_source_config_id="transition-recovery-config"[:36])
         session.add(source)
         await session.flush()
         pausing = Document(
@@ -439,7 +439,7 @@ async def test_recovery_unblocks_source_job_when_delete_job_no_longer_exists():
     async with SessionLocal() as session:
         source = Source(
             name="orphaned-maintenance",
-            sag_source_config_id="orphaned-maintenance-config",
+            sag_source_config_id="orphaned-maintenance-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -491,7 +491,7 @@ async def test_new_process_job_is_blocked_while_source_maintenance_is_active():
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="active-maintenance", sag_source_config_id="active-config")
+        source = Source(name="active-maintenance", sag_source_config_id="active-config"[:36])
         session.add(source)
         await session.flush()
         process = Job(
@@ -530,7 +530,7 @@ async def test_user_can_resume_job_after_source_maintenance_has_finished():
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="manual-resume", sag_source_config_id="manual-resume-config")
+        source = Source(name="manual-resume", sag_source_config_id="manual-resume-config"[:36])
         session.add(source)
         await session.flush()
         document = Document(
@@ -595,7 +595,7 @@ async def test_scheduler_yield_keeps_document_extracting(monkeypatch):
     async with SessionLocal() as session:
         source = Source(
             name="yield-source",
-            sag_source_config_id="yield-source-config",
+            sag_source_config_id="yield-source-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -658,7 +658,7 @@ async def test_delete_failure_releases_source_maintenance_and_retries_cleanup():
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="failed-delete", sag_source_config_id="failed-delete-config")
+        source = Source(name="failed-delete", sag_source_config_id="failed-delete-config"[:36])
         session.add(source)
         await session.flush()
         deleting = Document(
@@ -750,7 +750,7 @@ async def test_delete_control_state_checkpoint_does_not_advance_visible_progress
     async with SessionLocal() as session:
         source = Source(
             name=f"late-checkpoint-{protected_status}",
-            sag_source_config_id=f"late-checkpoint-config-{protected_status}",
+            sag_source_config_id=(f"late-checkpoint-config-{protected_status}")[:36],
         )
         session.add(source)
         await session.flush()
@@ -882,7 +882,7 @@ async def test_deleting_one_active_document_temporarily_yields_and_resumes_its_p
     await queue.start()
     try:
         async with SessionLocal() as session:
-            source = Source(name="concurrent-delete", sag_source_config_id="concurrent-config")
+            source = Source(name="concurrent-delete", sag_source_config_id="concurrent-config"[:36])
             session.add(source)
             await session.commit()
             document_a, process_a = await create_document_from_upload(

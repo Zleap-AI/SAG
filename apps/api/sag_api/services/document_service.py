@@ -476,6 +476,16 @@ async def resume_document(
         )
 
     payload = dict(job.payload or {})
+    checkpoint = payload.get("process_checkpoint")
+    is_legacy_checkpoint = (
+        isinstance(checkpoint, dict)
+        and bool(checkpoint.get("chunk_ids"))
+        and (not checkpoint.get("generation_id") or not checkpoint.get("chunk_version"))
+    )
+    if is_legacy_checkpoint:
+        if not os.path.isfile(document.storage_path):
+            raise ConflictError("旧版抽取断点无法恢复，且原文件已不存在；请重新上传原文件")
+        payload.pop("process_checkpoint", None)
     payload.pop("pause_requested", None)
     payload["resume_requested"] = True
     resumed_payload = set_scheduler(

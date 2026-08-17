@@ -55,14 +55,22 @@ async def health() -> dict:
 
 
 @router.get("/ready")
-async def ready() -> JSONResponse:
-    """就绪探针：数据库可连通才 200，否则 503（供 compose/K8s 健康检查）。"""
+async def ready(request: Request) -> JSONResponse:
+    """就绪探针：数据库与知识运行时均就绪才返回 200。"""
     try:
         async with SessionLocal() as session:
             await session.execute(text("SELECT 1"))
     except Exception as e:  # noqa: BLE001
         log.warning("就绪检查失败：%s", e)
         return JSONResponse(status_code=503, content={"status": "unavailable", "db": False})
+
+    runtime = getattr(request.app.state, "knowledge_runtime", None)
+    coordinator = getattr(request.app.state, "storage_bootstrap", None)  # [storage-bootstrap]
+    if runtime is None or not runtime.ready:
+        content: dict[str, object] = {"status": "unavailable", "db": True}
+        if coordinator is not None:
+            content["phase"] = coordinator.public_status()["phase"]
+        return JSONResponse(status_code=503, content=content)
     return JSONResponse(content={"status": "ready", "db": True})
 
 

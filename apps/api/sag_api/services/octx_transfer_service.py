@@ -636,6 +636,8 @@ async def execute_structured_import(
             reuse_batch_size=settings.octx_reused_vector_batch_size,
             enable_vector_reuse=settings.octx_arrow_vector_reuse_enabled,
             session_factory=sag_session_factory,
+            embedding_client=await engine_manager.get_sag_embedding(source_config_id),
+            vector_store=await engine_manager._vector_store(source_config_id),
             on_checkpoint=save_vector_checkpoint,
             package_path=package_path,
             plan_path=plan_path,
@@ -1651,16 +1653,15 @@ async def execute_export(
     # the source partition records the exact identity of the current embedding
     # configuration. Export never calls the embedding provider: the descriptor
     # below is metadata-only and vectors are read from the existing vector store.
-    from zleap.sag.db.models import SourceConfig
-
+    # 迁移注记:0.8.2 DataSource 无 target_config,向量复用信任元数据改存
+    # SAG 元库 Source.config;当前未写入侧,trusted_vector_export 恒为 False,
+    # 导出走向量重建的安全路径(待 octx 元数据迁移补回后恢复复用)。
     from sag_api.sag.octx_vector_protocol import embedding_identity
 
     descriptor = embedding_client
-    if descriptor is None:
+    if descriptor is None and engine_manager is not None:
         try:
-            from zleap.sag.core.ai.factory import get_embedding_client
-
-            descriptor = await get_embedding_client(scenario="general")
+            descriptor = await engine_manager.get_sag_embedding(source.sag_source_config_id, source)
         except Exception:
             # Vector export is optional. Missing local model configuration must
             # not block a valid structured-only OCTX export.
@@ -1668,15 +1669,14 @@ async def execute_export(
     current_vector_identity = embedding_identity(descriptor) if descriptor is not None else None
     trusted_vector_export = False
     if current_vector_identity is not None:
-        async with sag_session_factory() as sag_session:
-            source_config = await sag_session.get(SourceConfig, source.sag_source_config_id)
-        target_config = source_config.target_config if source_config is not None else None
-        stored_vector_identity = target_config.get("octx_vector_identity") if isinstance(target_config, dict) else None
+        stored_vector_identity = (
+            (source.config or {}).get("octx_vector_identity")
+            if isinstance(source.config, dict)
+            else None
+        )
         trusted_vector_export = stored_vector_identity == current_vector_identity
-    if trusted_vector_export and vector_store is None:
-        from zleap.sag.core.storage.client import get_vector_client
-
-        vector_store = get_vector_client()
+    if trusted_vector_export and vector_store is None and engine_manager is not None:
+        vector_store = await engine_manager._vector_store(source.sag_source_config_id, source)
 
     async def save_export_progress(detail: dict[str, Any]) -> None:
         await _ensure_transfer_active(session, transfer, stage=str(detail.get("phase") or "export"))

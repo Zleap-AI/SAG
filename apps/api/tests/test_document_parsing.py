@@ -416,7 +416,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
     )
     source = SimpleNamespace(
         id="source-1",
-        sag_source_config_id="sag-source-1",
+        sag_source_config_id="sag-source-1"[:36],
         chunk_count=0,
         event_count=0,
     )

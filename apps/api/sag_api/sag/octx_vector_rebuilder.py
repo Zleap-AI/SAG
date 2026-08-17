@@ -86,19 +86,36 @@ async def _write(
     vector_store: Any,
     index: str,
     documents: list[dict[str, Any]],
-    source_config_id: str,
 ) -> int:
-    result = await vector_store.bulk_index(
-        index=index,
-        documents=documents,
-        return_details=True,
-        routing=source_config_id,
-    )
-    if not isinstance(result, dict) or int(result.get("error_count", 0)):
-        raise RuntimeError(f"OCTX vector batch failed for {index}: {result!r}")
-    written = int(result.get("success_count", 0))
+    from zleap.sag.core.adapters.models import VectorRecord
+
+    collection = "event_vectors_wide" if index == "event_vectors" else index
+    records: list[VectorRecord] = []
+    for document in documents:
+        item = dict(document)
+        record_id = str(item.pop("id"))
+        vectors = {
+            key: [float(value) for value in item.pop(key)]
+            for key in tuple(item)
+            if (key == "vector" or key.endswith("_vector")) and item[key] is not None
+        }
+        source_config_id = item.pop("source_config_id", None)
+        if source_config_id is not None:
+            item["data_source_id"] = str(source_config_id)
+            if collection in {"entity_vectors", "event_entity_vectors"}:
+                item["source_config_id"] = str(source_config_id)
+        records.append(VectorRecord(id=record_id, payload=item, vectors=vectors))
+
+    result = await vector_store.upsert(collection, records)
+    if result.failure_count:
+        failed = ", ".join(item.id for item in result.failed_items[:5])
+        raise RuntimeError(f"OCTX vector batch failed for {collection}: {failed}")
+    written = result.success_count
     if written != len(documents):
-        raise RuntimeError(f"OCTX vector batch incomplete for {index}: expected={len(documents)} actual={written}")
+        raise RuntimeError(
+            f"OCTX vector batch incomplete for {collection}: "
+            f"expected={len(documents)} actual={written}"
+        )
     return written
 
 
@@ -122,14 +139,15 @@ async def rebuild_vectors(
         raise ValueError("OCTX vector batch size must be positive")
     if reuse_batch_size < 1:
         raise ValueError("OCTX reused vector batch size must be positive")
-    from zleap.sag.core.ai.factory import get_embedding_client
-    from zleap.sag.core.storage.client import get_vector_client
-    from zleap.sag.db import get_session_factory
     from zleap.sag.db.models import Entity, EventEntity, SourceChunk, SourceEvent
 
-    embedding = embedding_client or await get_embedding_client(scenario="general")
-    vector_store = vector_store or get_vector_client()
-    sessions = session_factory or get_session_factory()
+    # 0.8.2 无全局客户端/会话工厂:必须由调用方(engine_manager)注入引擎级资源。
+    if embedding_client is None or vector_store is None or session_factory is None:
+        raise RuntimeError(
+            "0.8.2 无全局资源:rebuild_vectors 必须注入 session_factory / embedding_client / vector_store"
+        )
+    embedding = embedding_client
+    sessions = session_factory
     reusable: set[str] = set()
     reuse_reader = None
     if enable_vector_reuse and package_path is not None and plan_path is not None:
@@ -175,10 +193,10 @@ async def rebuild_vectors(
                 statement = select(model)
                 if join_event:
                     statement = statement.join(SourceEvent, SourceEvent.id == EventEntity.event_id).where(
-                        SourceEvent.source_config_id == source_config_id
+                        SourceEvent.data_source_id == source_config_id
                     )
                 else:
-                    statement = statement.where(model.source_config_id == source_config_id)
+                    statement = statement.where(model.data_source_id == source_config_id)
                 if last_id:
                     statement = statement.where(model.id > last_id)
                 records: Sequence[Any] = (
@@ -223,6 +241,7 @@ async def rebuild_vectors(
                 "chunk_id": record.id,
                 "source_id": record.source_id,
                 "source_config_id": source_config_id,
+                "generation_id": record.generation_id,
                 "rank": record.rank,
                 "heading": record.heading,
                 "content": record.content or "",
@@ -234,7 +253,7 @@ async def rebuild_vectors(
             }
             for record, heading_vector, content_vector in zip(records, heading_vectors, content_vectors, strict=True)
         ]
-        counts["chunks"] += await _write(vector_store, "source_chunks", documents, source_config_id)
+        counts["chunks"] += await _write(vector_store, "source_chunks", documents)
 
     async for records in batches(
         SourceEvent,
@@ -263,6 +282,11 @@ async def rebuild_vectors(
                 "event_id": record.id,
                 "source_config_id": source_config_id,
                 "source_id": record.source_id,
+                "source_type": record.source_type,
+                "generation_id": record.generation_id,
+                "article_id": record.article_id,
+                "conversation_id": record.conversation_id,
+                "chunk_id": record.chunk_id,
                 "title": record.title,
                 "summary": record.summary,
                 "content": record.content,
@@ -274,7 +298,7 @@ async def rebuild_vectors(
             }
             for record, title_vector, content_vector in zip(records, title_vectors, content_vectors, strict=True)
         ]
-        counts["events"] += await _write(vector_store, "event_vectors", documents, source_config_id)
+        counts["events"] += await _write(vector_store, "event_vectors", documents)
 
     async for records in batches(
         Entity,
@@ -303,7 +327,7 @@ async def rebuild_vectors(
             }
             for record, vector in zip(records, vectors, strict=True)
         ]
-        counts["entities"] += await _write(vector_store, "entity_vectors", documents, source_config_id)
+        counts["entities"] += await _write(vector_store, "entity_vectors", documents)
 
     async for records in batches(
         EventEntity,
@@ -314,10 +338,23 @@ async def rebuild_vectors(
         relation_ids = [record.id for record in records]
         async with sessions() as session:
             relation_context = {
-                str(relation_id): (str(event_title), str(entity_name))
-                for relation_id, event_title, entity_name in (
+                str(relation_id): (
+                    str(event_title),
+                    str(entity_name),
+                    str(source_id),
+                    str(generation_id) if generation_id is not None else None,
+                    str(source_type),
+                )
+                for relation_id, event_title, entity_name, source_id, generation_id, source_type in (
                     await session.execute(
-                        select(EventEntity.id, SourceEvent.title, Entity.name)
+                        select(
+                            EventEntity.id,
+                            SourceEvent.title,
+                            Entity.name,
+                            SourceEvent.source_id,
+                            SourceEvent.generation_id,
+                            SourceEvent.source_type,
+                        )
                         .join(SourceEvent, SourceEvent.id == EventEntity.event_id)
                         .join(Entity, Entity.id == EventEntity.entity_id)
                         .where(EventEntity.id.in_(relation_ids))
@@ -325,7 +362,9 @@ async def rebuild_vectors(
                 ).all()
             }
         relation_texts = [
-            str(record.description) if record.description else "\n\n".join(relation_context[str(record.id)])
+            str(record.description)
+            if record.description
+            else "\n\n".join(relation_context[str(record.id)][:2])
             for record in records
         ]
         vectors = await _vectors_for_role(
@@ -342,6 +381,9 @@ async def rebuild_vectors(
                 "event_id": record.event_id,
                 "entity_id": record.entity_id,
                 "source_config_id": source_config_id,
+                "source_id": relation_context[str(record.id)][2],
+                "generation_id": relation_context[str(record.id)][3],
+                "source_type": relation_context[str(record.id)][4],
                 "description": record.description or "",
                 "vector": vector,
                 "created_time": (record.created_time.isoformat() if record.created_time else None),
@@ -349,8 +391,22 @@ async def rebuild_vectors(
             }
             for record, vector in zip(records, vectors, strict=True)
         ]
-        counts["event_entities"] += await _write(vector_store, "event_entity_vectors", documents, source_config_id)
+        counts["event_entities"] += await _write(vector_store, "event_entity_vectors", documents)
 
-    if reuse_reader is not None:
-        reuse_reader.close()
+    collections = tuple(
+        collection
+        for kind, collection in (
+            ("chunks", "source_chunks"),
+            ("events", "event_vectors_wide"),
+            ("entities", "entity_vectors"),
+            ("event_entities", "event_entity_vectors"),
+        )
+        if counts[kind]
+    )
+    try:
+        if collections:
+            await vector_store.publish(collections)
+    finally:
+        if reuse_reader is not None:
+            reuse_reader.close()
     return counts

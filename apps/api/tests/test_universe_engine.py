@@ -55,13 +55,11 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                 source_config_id = source.sag_source_config_id
                 user_id = await session.scalar(select(User.id).where(User.email == email))
                 assert user_id is not None
-
-            from zleap.sag.db import get_session_factory
             from zleap.sag.db.models import (
+                DataSource,
                 Entity,
                 EntityType,
                 EventEntity,
-                SourceConfig,
                 SourceEvent,
             )
 
@@ -73,11 +71,11 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
             foreign_entity_id = uuid.uuid4().hex
             foreign_source_config_id = f"src_{uuid.uuid4().hex}"
             base_time = datetime.now() - timedelta(days=1)
-            session_factory = get_session_factory()
+            session_factory = await app.state.engine_manager.get_sag_session_factory(source_config_id)
             async with session_factory() as session:
-                await session.merge(SourceConfig(id=source_config_id, name="时序图谱测试源"))
+                await session.merge(DataSource(id=source_config_id, name="时序图谱测试源"))
                 await session.merge(
-                    SourceConfig(id=foreign_source_config_id, name="异常跨源引用")
+                    DataSource(id=foreign_source_config_id, name="异常跨源引用")
                 )
                 session.add(
                     EntityType(
@@ -89,7 +87,7 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                 session.add(
                     Entity(
                         id=entity_id,
-                        source_config_id=source_config_id,
+                        data_source_id=source_config_id,
                         entity_type_id=entity_type_id,
                         type="concept",
                         name="SAG 动态图谱",
@@ -106,7 +104,7 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                     session.add(
                         SourceEvent(
                             id=event_id,
-                            source_config_id=source_config_id,
+                            data_source_id=source_config_id,
                             source_type="doc",
                             source_id="timeline-doc",
                             title=f"时序事件 {index:02d}",
@@ -132,7 +130,7 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                     session.add(
                         Entity(
                             id=auxiliary_id,
-                            source_config_id=source_config_id,
+                            data_source_id=source_config_id,
                             entity_type_id=entity_type_id,
                             type="concept",
                             name=f"关联主题 {index:02d}",
@@ -151,7 +149,7 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                 session.add(
                     Entity(
                         id=foreign_entity_id,
-                        source_config_id=foreign_source_config_id,
+                        data_source_id=foreign_source_config_id,
                         entity_type_id=entity_type_id,
                         type="concept",
                         name="跨源实体",
@@ -170,7 +168,7 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                 session.add(
                     SourceEvent(
                         id=old_event_id,
-                        source_config_id=source_config_id,
+                        data_source_id=source_config_id,
                         source_type="doc",
                         source_id="timeline-doc",
                         title="较早的历史事件",
@@ -451,7 +449,7 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                 session.add(
                     SourceEvent(
                         id=late_event_id,
-                        source_config_id=source_config_id,
+                        data_source_id=source_config_id,
                         source_type="doc",
                         source_id="late-doc",
                         title="快照后迟到的历史事件",
@@ -787,13 +785,11 @@ async def test_universe_timeline_orders_same_instant_book_by_narrative_rank():
                 source = await session.get(Source, source_id)
                 assert source is not None
                 source_config_id = source.sag_source_config_id
-
-            from zleap.sag.db import get_session_factory
             from zleap.sag.db.models import (
+                DataSource,
                 Entity,
                 EntityType,
                 EventEntity,
-                SourceConfig,
                 SourceEvent,
             )
 
@@ -803,9 +799,9 @@ async def test_universe_timeline_orders_same_instant_book_by_narrative_rank():
             # Ids sort in the exact opposite direction of ranks, so any id
             # tie-break would reverse the book; only rank produces reading order.
             chapter_ids = [f"{9 - rank}{uuid.uuid4().hex[:12]}" for rank in range(8)]
-            session_factory = get_session_factory()
+            session_factory = await app.state.engine_manager.get_sag_session_factory(source_config_id)
             async with session_factory() as session:
-                await session.merge(SourceConfig(id=source_config_id, name="同刻书籍源"))
+                await session.merge(DataSource(id=source_config_id, name="同刻书籍源"))
                 session.add(
                     EntityType(
                         id=entity_type_id,
@@ -816,7 +812,7 @@ async def test_universe_timeline_orders_same_instant_book_by_narrative_rank():
                 session.add(
                     Entity(
                         id=entity_id,
-                        source_config_id=source_config_id,
+                        data_source_id=source_config_id,
                         entity_type_id=entity_type_id,
                         type="concept",
                         name="书中人物",
@@ -829,7 +825,7 @@ async def test_universe_timeline_orders_same_instant_book_by_narrative_rank():
                     session.add(
                         SourceEvent(
                             id=event_id,
-                            source_config_id=source_config_id,
+                            data_source_id=source_config_id,
                             source_type="ARTICLE",
                             source_id="book-doc",
                             title=f"章节 {rank:02d}",

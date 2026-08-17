@@ -108,6 +108,7 @@ async def _setup(c):
     r = await c.post(
         "/api/v1/auth/register", json={"email": f"stream{id(c)}@t.com", "password": "password123"}
     )
+    assert r.status_code == 201, r.text
     H = {"Authorization": f"Bearer {r.json()['access_token']}"}
     a = (await c.get("/api/v1/agents/default", headers=H)).json()
     th = (await c.post(f"/api/v1/agents/{a['id']}/threads", headers=H, json={})).json()

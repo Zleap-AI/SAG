@@ -17,9 +17,10 @@ dependencies = [
     "python-multipart>=0.0.9",
     "sse-starlette>=2.1",
     "httpx>=0.27",
+    "filelock>=3.16,<4",
     "litellm>=1.92,<2",
     "orjson>=3.11.6,<4",
-    "zleap-sag==0.7.1",
+    "zleap-sag==0.8.2",
     "alembic>=1.13",
     "trafilatura>=1.8",
     "markitdown[docx,pdf,pptx,xls,xlsx]>=0.1.6,<0.2",
@@ -31,7 +32,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-postgres = ["asyncpg>=0.29", "zleap-sag[postgres]==0.7.1"]
+postgres = ["asyncpg>=0.29", "zleap-sag[postgres]==0.8.2"]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",

@@ -3301,6 +3301,7 @@ dependencies = [
     { name = "bcrypt" },
     { name = "charset-normalizer" },
     { name = "fastapi" },
+    { name = "filelock" },
     { name = "httpx" },
     { name = "jieba-py" },
     { name = "litellm" },
@@ -3344,6 +3345,7 @@ requires-dist = [
     { name = "bcrypt", specifier = ">=4.1" },
     { name = "charset-normalizer", specifier = ">=3.3,<4" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "filelock", specifier = ">=3.16,<4" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jieba-py", specifier = ">=0.46.12,<0.47" },
     { name = "litellm", specifier = ">=1.92,<2" },
@@ -3364,8 +3366,8 @@ requires-dist = [
     { name = "trafilatura", specifier = ">=1.8" },
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
-    { name = "zleap-sag", specifier = "==0.7.1" },
-    { name = "zleap-sag", extras = ["postgres"], marker = "extra == 'postgres'", specifier = "==0.7.1" },
+    { name = "zleap-sag", specifier = "==0.8.2" },
+    { name = "zleap-sag", extras = ["postgres"], marker = "extra == 'postgres'", specifier = "==0.8.2" },
 ]
 provides-extras = ["postgres", "dev", "desktop"]
 
@@ -4068,7 +4070,7 @@ wheels = [
 
 [[package]]
 name = "zleap-sag"
-version = "0.7.1"
+version = "0.8.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -4080,16 +4082,15 @@ dependencies = [
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "openai" },
     { name = "pydantic" },
-    { name = "pydantic-settings" },
     { name = "pyyaml" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "tiktoken" },
     { name = "tokenizers" },
     { name = "tzdata" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fb/be/8a124c711e3274204fd440a14766dc35438b5e5868d71acd734231f3fe89/zleap_sag-0.7.1.tar.gz", hash = "sha256:2ca75da95916165bcf10049eac2171c0e91f7907874e0dc60b26b2da88d1634e", size = 2297185, upload-time = "2026-07-07T08:02:20.425Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/75/3f/c8001174985fda366869301b6e8bee5cc17eefe474b047032d5a1c61e29f/zleap_sag-0.8.2.tar.gz", hash = "sha256:95d44e2e31c22e0c6fe8079922a7f6452250c43bc7c4259b83107070a7816e08", size = 3310151, upload-time = "2026-08-14T13:01:53.768Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/74/83/c415067fae12cb57f706106c9f5502c15a2b94f56d06a5a8d61f9531a634/zleap_sag-0.7.1-py3-none-any.whl", hash = "sha256:92158f43536cd62a027730853f197173fed14e1b556a665fcd19cc0d4c56cda3", size = 2401544, upload-time = "2026-07-07T08:02:18.657Z" },
+    { url = "https://files.pythonhosted.org/packages/23/98/c7ebbe3c901ad9dfed339535105d6efb31d03f896ac1905ebebb23a69c83/zleap_sag-0.8.2-py3-none-any.whl", hash = "sha256:aa986c1e5c9f700f2b2aaeca67a85ea962c2f046899126e98e5e132226918779", size = 3218360, upload-time = "2026-08-14T13:01:51.867Z" },
 ]
 
 [package.optional-dependencies]

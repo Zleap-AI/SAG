@@ -35,6 +35,7 @@ services:
       SAG_LLM_MAX_TOKENS: ${SAG_LLM_MAX_TOKENS:-20000}
       SAG_LLM_TIMEOUT_MS: ${SAG_LLM_TIMEOUT_MS:-60000}
       SAG_LLM_MAX_RETRIES: ${SAG_LLM_MAX_RETRIES:-2}
+      SAG_LLM_STRUCTURED_OUTPUT_MODE: ${SAG_LLM_STRUCTURED_OUTPUT_MODE:-auto}
       # 默认允许 Settings 页面在运行时调整 LLM；设为 true 才作为部署策略锁定。
       SAG_LOCK_LLM_CONFIG: ${SAG_LOCK_LLM_CONFIG:-false}
       SAG_EMBEDDING_MODEL: ${SAG_EMBEDDING_MODEL:-bge-large-en-v1.5}
@@ -59,11 +60,11 @@ services:
         - CMD-SHELL
         - >-
           python -c "import urllib.request,sys;
-          sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/system/ready').status==200 else 1)"
+          sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/system/health').status==200 else 1)"
       interval: 15s
       timeout: 5s
-      retries: 5
-      start_period: 30s
+      retries: 480
+      start_period: 60s
     restart: unless-stopped
 
   web:
