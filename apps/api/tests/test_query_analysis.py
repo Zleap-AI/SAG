@@ -68,3 +68,41 @@ def test_lookup_terms_are_deduplicated_and_capped_at_four():
     )
 
     assert result.lookup_terms == ("甲乙", "丙丁", "戊己", "庚辛")
+
+
+def test_glued_english_digit_query_yields_separate_scoring_terms():
+    result = analyze_query("AI2027", segmentation_enabled=False)
+
+    assert result.scoring_terms == ("ai", "2027")
+    assert result.lookup_terms == ("ai", "2027", "ai2027")
+
+
+def test_glued_query_keeps_the_exact_token_as_a_lookup_term():
+    result = analyze_query("iPhone15", segmentation_enabled=False)
+
+    assert result.scoring_terms == ("iphone", "15")
+    assert result.lookup_terms == ("iphone", "15", "iphone15")
+
+
+def test_punctuation_separated_english_term_is_not_split():
+    result = analyze_query("foo-bar", segmentation_enabled=False)
+
+    assert result.scoring_terms == ("foo-bar",)
+    assert result.lookup_terms == ("foo-bar",)
+
+
+def test_punctuation_separated_number_is_not_treated_as_alnum():
+    result = analyze_query("2024.10", segmentation_enabled=False)
+
+    assert result.scoring_terms == ()
+    assert result.lookup_terms == ()
+
+
+def test_mixed_chinese_and_glued_english_digit_splits_both():
+    result = analyze_query(
+        "大模型GPT4发布",
+        segmenter=lambda _text: ["大模型", "发布"],
+    )
+
+    assert "gpt" in result.scoring_terms
+    assert "gpt" in result.lookup_terms

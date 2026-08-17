@@ -119,6 +119,62 @@ async def test_contiguous_and_spaced_chinese_queries_return_same_core_evidence()
 
 
 @pytest.mark.asyncio
+async def test_glued_alnum_query_recalls_distant_terms_from_the_same_document():
+    from uuid import uuid4
+
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Source
+    from sag_api.sag import SearchOutcome
+    from sag_api.services.retrieval_service import retrieve_relevant_sections
+
+    class LexicalEngine:
+        async def search_many(self, _targets, query, **_kwargs):
+            return SearchOutcome(query=query, sections=[], stats={})
+
+        async def grep_chunks(self, _source_config_id, term, **_kwargs):
+            rows = {
+                "ai": [
+                    {
+                        "chunk_id": "ai-trend",
+                        "heading": "技术趋势",
+                        "snippet": "AI 正在迅速发展。",
+                        "source_id": "article-ai-2028",
+                    }
+                ],
+                "2028": [
+                    {
+                        "chunk_id": "automation-year",
+                        "heading": "未来预测",
+                        "snippet": "预计 2028 年会实现完全自动化。",
+                        "source_id": "article-ai-2028",
+                    }
+                ],
+            }
+            return rows.get(term, [])
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="distant-alnum-terms",
+            sag_source_config_id=f"distant-alnum-{uuid4().hex}",
+        )
+        session.add(source)
+        await session.commit()
+
+        outcome = await retrieve_relevant_sections(
+            LexicalEngine(),
+            [source],
+            "AI2028",
+            top_k=8,
+        )
+
+    assert [item.chunk_id for item in outcome.sections] == [
+        "ai-trend",
+        "automation-year",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_natural_chinese_question_recalls_trailing_topic_term():
     from uuid import uuid4
 

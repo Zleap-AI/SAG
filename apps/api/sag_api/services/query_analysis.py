@@ -51,6 +51,14 @@ _LEXICAL_PART_RE = re.compile(
 _LEGACY_TERM_RE = re.compile(
     r"[a-z0-9][a-z0-9_.+-]{1,31}|[\u3400-\u9fff]{2,16}",
 )
+# Letter and digit runs inside a single lexical token. A glued query such as
+# "ai2027" or "gpt4" is one token to the regexes above, but the deterministic
+# grep path matches literal substrings, so it can never bridge a query that
+# glues letters to digits against content that separates them ("AI 2027",
+# "GPT-4"). Splitting on the letter/digit boundary is the English/number
+# analogue of the Chinese segmentation that lets contiguous queries match
+# spaced evidence.
+_ALNUM_SUBTOKEN_RE = re.compile(r"[a-z]+|[0-9]+")
 
 Segmenter = Callable[[str], Iterable[str]]
 
@@ -79,23 +87,48 @@ def _is_valid_term(value: str) -> bool:
     return len(normalized) >= 2 and not normalized.isdigit()
 
 
-def _bounded_unique(values: Iterable[str], *, limit: int) -> tuple[str, ...]:
+def _split_alnum_terms(parts: Iterable[str]) -> tuple[str, ...]:
     terms: list[str] = []
     keys: set[str] = set()
-    for candidate in values:
-        value = candidate.strip().lower()
+    for part in parts:
+        subtokens = _ALNUM_SUBTOKEN_RE.findall(part)
+        split = any(value.isalpha() for value in subtokens) and any(
+            value.isdigit() for value in subtokens
+        )
+        for candidate in subtokens if split else (part,):
+            value = candidate.strip().lower()
+            key = normalize_lexical_text(value)
+            valid = len(key) >= 2 and (split or not key.isdigit())
+            if not valid or key in keys:
+                continue
+            terms.append(value)
+            keys.add(key)
+            if len(terms) >= 4:
+                return tuple(terms)
+    return tuple(terms)
+
+
+def _lookup_terms(
+    scoring_terms: tuple[str, ...],
+    phrase: str,
+) -> tuple[str, ...]:
+    phrase_term = (phrase,) if _is_valid_term(phrase) else ()
+    candidates = (*scoring_terms, *phrase_term)
+    terms: list[str] = []
+    keys: set[str] = set()
+    for value in candidates:
         key = normalize_lexical_text(value)
-        if not _is_valid_term(value) or key in keys:
+        if not key or key in keys:
             continue
         terms.append(value)
         keys.add(key)
-        if len(terms) >= limit:
+        if len(terms) >= 4:
             break
     return tuple(terms)
 
 
 def _legacy_query_terms(cleaned: str) -> tuple[str, ...]:
-    return _bounded_unique(_LEGACY_TERM_RE.findall(cleaned), limit=4)
+    return _split_alnum_terms(_LEGACY_TERM_RE.findall(cleaned))
 
 
 def _chinese_runs(cleaned: str) -> tuple[str, ...]:
@@ -122,7 +155,7 @@ def _segmented_terms(cleaned: str, segmenter: Segmenter) -> tuple[str, ...]:
         for value in values
         if normalize_lexical_text(value) not in _QUERY_INSTRUCTION_TERMS
     )
-    return _bounded_unique(informative, limit=4)
+    return _split_alnum_terms(informative)
 
 
 def analyze_query(
@@ -134,17 +167,22 @@ def analyze_query(
     cleaned = _remove_query_noise(query)
     phrase = normalize_lexical_text(cleaned)
     legacy_terms = _legacy_query_terms(cleaned)
+    legacy_lookup_terms = _lookup_terms(legacy_terms, phrase)
     chinese_runs = _chinese_runs(cleaned)
     if not segmentation_enabled or not chinese_runs:
-        return QueryAnalysis(phrase, legacy_terms, legacy_terms, False)
+        return QueryAnalysis(phrase, legacy_terms, legacy_lookup_terms, False)
 
     try:
         scoring_terms = _segmented_terms(cleaned, segmenter or _jieba_segment)
     except Exception:  # noqa: BLE001 -- retrieval must survive tokenizer failure
-        return QueryAnalysis(phrase, legacy_terms, legacy_terms, False)
+        return QueryAnalysis(phrase, legacy_terms, legacy_lookup_terms, False)
 
-    lookup_terms = _bounded_unique((*scoring_terms, phrase), limit=4)
-    return QueryAnalysis(phrase, scoring_terms, lookup_terms, True)
+    return QueryAnalysis(
+        phrase,
+        scoring_terms,
+        _lookup_terms(scoring_terms, phrase),
+        True,
+    )
 
 
 def query_terms(query: str, *, segmentation_enabled: bool = True) -> list[str]:
