@@ -1,5 +1,4 @@
-import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
 import {
@@ -12,10 +11,10 @@ import { app, utilityProcess, type UtilityProcess } from "electron";
 import log from "electron-log/main";
 
 import { desktopConfig } from "./config";
-
-interface RuntimeSecretFile {
-  secretKey: string;
-}
+import {
+  loadOrCreateRuntimeSecret,
+  resolveStableWebPort,
+} from "./runtime-state";
 
 export interface ManagedRuntime {
   readonly webUrl: string;
@@ -27,30 +26,6 @@ interface StartedProcess {
   stop(): void;
 }
 
-function isValidSecretFile(value: unknown): value is RuntimeSecretFile {
-  if (!value || typeof value !== "object") return false;
-  return typeof (value as RuntimeSecretFile).secretKey === "string"
-    && (value as RuntimeSecretFile).secretKey.length >= 64;
-}
-
-function loadOrCreateSecret(userDataDir: string): string {
-  const file = path.join(userDataDir, "desktop-runtime.json");
-  if (existsSync(file)) {
-    try {
-      const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
-      if (isValidSecretFile(parsed)) return parsed.secretKey;
-    } catch (error) {
-      log.warn("Ignoring invalid desktop runtime secret", error);
-    }
-  }
-  const secretKey = randomBytes(48).toString("hex");
-  writeFileSync(file, `${JSON.stringify({ secretKey }, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  return secretKey;
-}
-
 async function isPortAvailable(host: string, port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = createServer();
@@ -60,13 +35,6 @@ async function isPortAvailable(host: string, port: number): Promise<boolean> {
       server.close(() => resolve(true));
     });
   });
-}
-
-async function findAvailablePort(host: string, preferred: number): Promise<number> {
-  for (let port = preferred; port < Math.min(65535, preferred + 100); port += 1) {
-    if (await isPortAvailable(host, port)) return port;
-  }
-  throw new Error(`No available local port found near ${preferred}`);
 }
 
 async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
@@ -147,7 +115,7 @@ function startPythonRuntime(
   if (!existsSync(executable)) {
     throw new Error(`Packaged Python backend not found: ${executable}`);
   }
-  const secretKey = loadOrCreateSecret(userDataDir);
+  const secretKey = loadOrCreateRuntimeSecret(userDataDir);
   const child = spawn(executable, [], {
     cwd: userDataDir,
     env: {
@@ -180,14 +148,18 @@ export async function startPackagedRuntime(): Promise<ManagedRuntime> {
       + "Close the conflicting service or configure SAG_DESKTOP_API_PORT.",
     );
   }
-  const webPort = await findAvailablePort(host, desktopConfig.preferredWebPort);
+  const userDataDir = app.getPath("userData");
+  const webPort = await resolveStableWebPort(
+    userDataDir,
+    desktopConfig.preferredWebPort,
+    (port) => isPortAvailable(host, port),
+  );
   const webHealthUrl = `http://${host}:${webPort}`;
   // Next.js standalone normalizes redirects to localhost. Use that as the UI
   // origin while keeping the actual listener restricted to 127.0.0.1.
   const webUrl = `http://localhost:${webPort}`;
   const apiUrl = `http://${host}:${desktopConfig.apiPort}`;
   const webRoot = path.join(process.resourcesPath, "web");
-  const userDataDir = app.getPath("userData");
 
   const processes: StartedProcess[] = [];
   try {

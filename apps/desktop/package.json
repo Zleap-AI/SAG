@@ -18,6 +18,7 @@
   },
   "scripts": {
     "clean": "node ./scripts/clean.mjs",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/*.test.mts",
     "typecheck": "tsc --noEmit",
     "build": "npm run clean && tsc && node ./scripts/verify-preload.mjs",
     "dev": "npm run build && node ./scripts/dev.mjs",
