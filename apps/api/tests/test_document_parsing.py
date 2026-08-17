@@ -1527,3 +1527,12 @@ async def test_mineru_result_download_rejects_private_hosts():
         await _assert_public_host("127.0.0.1", 80)
     with pytest.raises(UpstreamError, match="内网"):
         await _assert_public_host("169.254.169.254", 80)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fake_ip", ["198.18.0.90", "198.19.255.254"])
+async def test_mineru_result_download_allows_fake_ip_proxy_dns(fake_ip):
+    # Clash/mihomo 等代理的 fake-ip 模式会把域名解析到 198.18.0.0/15，
+    # TUN 网关按映射表转发到真实公网地址；该段不指向任何真实内网服务，
+    # 不应被 SSRF 守卫当作内网拒绝。
+    await _assert_public_host(fake_ip, 443)
