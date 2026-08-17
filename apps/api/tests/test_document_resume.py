@@ -819,6 +819,58 @@ def test_event_entity_schema_is_strengthened_without_mutating_prompt_schema():
     assert event["properties"]["content"]["minLength"] == 1
 
 
+def test_strengthen_event_entity_schema_passes_null_schema_through():
+    """The DeepSeek json_object compat path in ``sag.compat`` calls
+    ``chat_with_schema(response_schema=None, response_format={"type":"json_object"})``.
+    ``strengthened_chat_with_schema`` forwards that ``None`` into the strengthener,
+    where ``dict(None)`` used to raise ``'NoneType' object is not iterable`` and crash
+    the whole chunk extraction (``Chunk提取失败: 提取失败: 'NoneType' object is not iterable``)
+    before the LLM was ever called.  A null schema must strengthen to a no-op."""
+    from sag_api.sag.incremental_processor import _strengthen_event_entity_schema
+
+    assert _strengthen_event_entity_schema(None) is None
+    # Any other non-mapping value is likewise returned unchanged, never coerced.
+    assert _strengthen_event_entity_schema("not-a-schema") == "not-a-schema"
+
+
+@pytest.mark.asyncio
+async def test_strengthened_wrapper_forwards_null_response_schema():
+    """End-to-end guard: the schema-strengthening wrapper installed on the LLM
+    client must pass ``response_schema=None`` straight through to the underlying
+    ``chat_with_schema`` (json_object mode) instead of crashing in the strengthener."""
+    from sag_api.sag.incremental_processor import _strengthen_event_entity_schema
+
+    seen: dict[str, object] = {}
+
+    async def original_chat_with_schema(messages, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(content="{}")
+
+    # Mirror the wrapper installed in IncrementalDocumentProcessor.
+    async def strengthened_chat_with_schema(
+        *args,
+        _original_chat_with_schema=original_chat_with_schema,
+        **kwargs,
+    ):
+        call_args = list(args)
+        if "response_schema" in kwargs:
+            kwargs = {
+                **kwargs,
+                "response_schema": _strengthen_event_entity_schema(kwargs["response_schema"]),
+            }
+        elif len(call_args) >= 2:
+            call_args[1] = _strengthen_event_entity_schema(call_args[1])
+        return await _original_chat_with_schema(*call_args, **kwargs)
+
+    await strengthened_chat_with_schema(
+        [{"role": "user", "content": "x"}],
+        response_schema=None,
+        response_format={"type": "json_object"},
+    )
+    assert seen["response_schema"] is None
+    assert seen["response_format"] == {"type": "json_object"}
+
+
 def test_event_entity_attempt_setting_is_bounded():
     """An unbounded contract retry would amplify LLM cost and stall document jobs."""
     from pydantic import ValidationError

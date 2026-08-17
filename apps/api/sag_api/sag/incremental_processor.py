@@ -265,9 +265,19 @@ def _normalize_extraction_response(response: Any, allowed_types: set[str]) -> in
     return normalized
 
 
-def _strengthen_event_entity_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
-    """Require an Event body and Entity without mutating PromptManager state."""
+def _strengthen_event_entity_schema(schema: Any) -> Any:
+    """Require an Event body and Entity without mutating PromptManager state.
 
+    ``schema`` may legitimately be ``None`` (or another non-mapping): the
+    DeepSeek json_object compatibility path in ``sag.compat`` calls
+    ``chat_with_schema(response_schema=None, response_format={"type": "json_object"})``.
+    ``strengthened_chat_with_schema`` forwards that ``None`` here, so guard it —
+    ``dict(None)`` raises ``'NoneType' object is not iterable`` and crashes the
+    whole chunk extraction. Strengthening a null schema is a no-op.
+    """
+
+    if not isinstance(schema, Mapping):
+        return schema
     strengthened = copy.deepcopy(dict(schema))
     definitions = strengthened.get("definitions")
     event = definitions.get("event") if isinstance(definitions, dict) else None
