@@ -11,6 +11,7 @@ import asyncio
 import io
 import ipaddress
 import json
+import logging
 import os
 import re
 import socket
@@ -31,6 +32,29 @@ from sag_api.core.errors import (
 )
 
 StateCallback = Callable[[dict[str, Any]], Awaitable[None]]
+PauseCallback = Callable[[], Awaitable[bool]]
+
+log = logging.getLogger(__name__)
+
+
+class ParsePaused(Exception):
+    """解析过程中收到暂停/让路信号，用于协作式中断长时间轮询。
+
+    该异常属于解析层的中性信号，由上层任务层捕获后转换为任务暂停/让行，
+    避免解析层反向依赖 jobs 控制流类型。
+    """
+
+
+# pending 轮询状态归一：区分“仍在排队”与“已在处理”。已进入处理或状态未知
+# 时如实展示“解析中”，避免文档长时间停留在“排队中”造成用户误解。
+_QUEUE_PENDING_STATES = {"created", "pending", "queued", "queueing"}
+
+
+def _pending_parser_status(raw: str) -> str:
+    normalized = (raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in _QUEUE_PENDING_STATES:
+        return "queued"
+    return "running"
 
 _PENDING_STATES = {
     "created",
@@ -91,6 +115,7 @@ class MinerU302Client:
         *,
         state: dict[str, Any] | None = None,
         on_state: StateCallback | None = None,
+        should_pause: PauseCallback | None = None,
     ) -> str:
         state = dict(state or {})
         upload_url = state.get("upload_url")
@@ -117,7 +142,12 @@ class MinerU302Client:
             if on_state:
                 await on_state(dict(state))
 
-        markdown = await self._poll(str(task_id))
+        markdown = await self._poll(
+            str(task_id),
+            state=state,
+            on_state=on_state,
+            should_pause=should_pause,
+        )
         if on_state:
             await on_state({**state, "status": "done"})
         return markdown
@@ -172,6 +202,7 @@ class MinerU302Client:
                 raise UpstreamError(f"MinerU 创建任务失败：{value}")
         task_id = _find_task_id(payload)
         if task_id:
+            log.info("MinerU 已创建解析任务 task=%s", task_id)
             return "task", task_id
         kind, value = _interpret_poll_payload(payload, "")
         if kind in {"url", "markdown"}:
@@ -180,9 +211,21 @@ class MinerU302Client:
             raise UpstreamError(f"MinerU 创建任务失败：{value}")
         raise UpstreamError("MinerU 已接受请求，但响应中没有任务 ID")
 
-    async def _poll(self, task_id: str) -> str:
+    async def _poll(
+        self,
+        task_id: str,
+        *,
+        state: dict[str, Any] | None = None,
+        on_state: StateCallback | None = None,
+        should_pause: PauseCallback | None = None,
+    ) -> str:
         deadline = time.monotonic() + self._poll_timeout
+        base_state = dict(state or {})
+        last_status: str | None = None
         while True:
+            if should_pause is not None and await should_pause():
+                log.info("MinerU 轮询收到暂停信号，协作式中断 task=%s", task_id)
+                raise ParsePaused()
             response = await self._api_request(
                 "GET", "/302/v2/mineru/task", params={"task_id": task_id}
             )
@@ -193,9 +236,21 @@ class MinerU302Client:
                 return await self._download_markdown(value)
             if kind == "failed":
                 raise UpstreamError(f"MinerU 解析失败：{value}")
+            # kind == "pending"：透出真实进度，避免 UI 长时间停留在“排队中”。
+            status = _pending_parser_status(value)
+            if status != last_status:
+                last_status = status
+                log.info(
+                    "MinerU 轮询 task=%s upstream=%s status=%s", task_id, value, status
+                )
+                if on_state is not None:
+                    await on_state({**base_state, "status": status})
             if time.monotonic() >= deadline:
+                log.warning(
+                    "MinerU 轮询超时 task=%s timeout=%.0fs", task_id, self._poll_timeout
+                )
                 raise ServiceUnavailableError(
-                    f"MinerU 解析等待超时（任务 {task_id}），后台将继续重试"
+                    f"MinerU 解析等待超时（任务 {task_id}）"
                 )
             await asyncio.sleep(self._poll_interval)
 

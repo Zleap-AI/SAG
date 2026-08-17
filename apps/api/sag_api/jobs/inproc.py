@@ -218,6 +218,7 @@ class InProcessAsyncQueue(JobQueue):
         self._source_maintenance_ready: set[str] = set()
         self._source_maintenance_dispatched: dict[str, str] = {}
         self._source_maintenance_closing: set[str] = set()
+        self._source_stop_requested: set[str] = set()
         self._started = False
         self._stopping = False
 
@@ -280,6 +281,15 @@ class InProcessAsyncQueue(JobQueue):
 
     def source_maintenance_requested(self, source_id: str) -> bool:
         return bool(self._source_maintenance_jobs.get(source_id))
+
+    def request_source_stop(self, source_id: str) -> None:
+        self._source_stop_requested.add(source_id)
+
+    def clear_source_stop(self, source_id: str) -> None:
+        self._source_stop_requested.discard(source_id)
+
+    def source_stop_requested(self, source_id: str) -> bool:
+        return source_id in self._source_stop_requested
 
     def _schedule_source_maintenance(self, source_id: str) -> None:
         current = self._source_maintenance_tasks.get(source_id)

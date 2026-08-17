@@ -19,7 +19,14 @@ from sag_api.core.errors import (
     ValidationError,
 )
 from sag_api.parsing import mineru as mineru_core
-from sag_api.parsing.mineru import MinerU302Client, StateCallback
+from sag_api.parsing.mineru import (
+    MinerU302Client,
+    ParsePaused,
+    PauseCallback,
+    StateCallback,
+    _pending_parser_status,
+    log,
+)
 
 _PENDING_STATES = {"waiting-file", "pending", "running", "converting"}
 
@@ -42,6 +49,7 @@ class OfficialMinerUClient(MinerU302Client):
         *,
         state: dict[str, Any] | None = None,
         on_state: StateCallback | None = None,
+        should_pause: PauseCallback | None = None,
     ) -> str:
         filename = os.path.basename(path)
         current = dict(state or {})
@@ -78,7 +86,13 @@ class OfficialMinerUClient(MinerU302Client):
             if on_state:
                 await on_state(dict(current))
 
-        result_url = await self._poll_batch(batch_id, filename)
+        result_url = await self._poll_batch(
+            batch_id,
+            filename,
+            state=current,
+            on_state=on_state,
+            should_pause=should_pause,
+        )
         markdown = await self._download_markdown(result_url)
         if on_state:
             await on_state({**current, "status": "done"})
@@ -136,9 +150,22 @@ class OfficialMinerUClient(MinerU302Client):
             ) from exc
         self._checked(response, "上传 PDF 到 MinerU 官方服务")
 
-    async def _poll_batch(self, batch_id: str, filename: str) -> str:
+    async def _poll_batch(
+        self,
+        batch_id: str,
+        filename: str,
+        *,
+        state: dict[str, Any] | None = None,
+        on_state: StateCallback | None = None,
+        should_pause: PauseCallback | None = None,
+    ) -> str:
         deadline = time.monotonic() + self._poll_timeout
+        base_state = dict(state or {})
+        last_status: str | None = None
         while True:
+            if should_pause is not None and await should_pause():
+                log.info("MinerU 官方轮询收到暂停信号，协作式中断 batch=%s", batch_id)
+                raise ParsePaused()
             response = await self._official_request(
                 "GET", f"extract-results/batch/{batch_id}"
             )
@@ -173,9 +200,26 @@ class OfficialMinerUClient(MinerU302Client):
                 raise UpstreamError(
                     f"MinerU 官方返回未知任务状态：{state or '空'}"
                 )
+            # pending：透出真实进度，避免 UI 长时间停留在“排队中”。
+            status = _pending_parser_status(state)
+            if status != last_status:
+                last_status = status
+                log.info(
+                    "MinerU 官方轮询 batch=%s upstream=%s status=%s",
+                    batch_id,
+                    state,
+                    status,
+                )
+                if on_state is not None:
+                    await on_state({**base_state, "status": status})
             if time.monotonic() >= deadline:
+                log.warning(
+                    "MinerU 官方轮询超时 batch=%s timeout=%.0fs",
+                    batch_id,
+                    self._poll_timeout,
+                )
                 raise ServiceUnavailableError(
-                    f"MinerU 解析等待超时（批次 {batch_id}），后台将继续重试"
+                    f"MinerU 解析等待超时（批次 {batch_id}）"
                 )
             await asyncio.sleep(self._poll_interval)
 
