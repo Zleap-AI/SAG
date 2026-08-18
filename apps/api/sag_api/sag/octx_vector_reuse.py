@@ -200,8 +200,6 @@ def prepare_vector_reuse(
             local_fingerprint = local_profile.get("fingerprint")
             if not local_fingerprint or local_fingerprint != profile.get("fingerprint"):
                 continue
-            if profile.get("coverage") != "complete":
-                continue
             target = ROLE_TARGETS[role]
             logical_path = f"vectors/{target}.arrow"
             output_path = reuse_root / f"{target}.arrow"

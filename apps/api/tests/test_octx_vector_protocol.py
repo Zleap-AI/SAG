@@ -349,7 +349,7 @@ async def test_prepare_vector_reuse_rebuilds_role_when_dimensions_mismatch(tmp_p
     assert embedding.calls == [["Head\n\nBody"]]
 
 
-async def test_partial_coverage_role_is_rebuilt_while_complete_roles_reuse(tmp_path: Path) -> None:
+async def test_partial_coverage_role_reuses_available_rows_and_rebuilds_missing(tmp_path: Path) -> None:
     from octx import vector_profile_fingerprint
 
     from sag_api.sag.octx_importer import build_structured_plan
@@ -388,9 +388,9 @@ async def test_partial_coverage_role_is_rebuilt_while_complete_roles_reuse(tmp_p
             return [[0.4, 0.5, 0.6] for _ in texts]
 
     embedding = Embedding()
-    # Current policy: partial coverage roles are rebuilt as a whole role; only
-    # complete roles participate in reuse.
-    assert prepare_vector_reuse(package, plan_path, embedding) == {"chunk.heading"}
+    # Compatible partial coverage should index the available rows so only the
+    # missing records are regenerated.
+    assert prepare_vector_reuse(package, plan_path, embedding) == {"chunk.heading", "chunk.content"}
 
     from sag_api.sag.octx_vector_rebuilder import _vectors_for_role
 
@@ -415,8 +415,8 @@ async def test_partial_coverage_role_is_rebuilt_while_complete_roles_reuse(tmp_p
         embedding,
         plan_path=plan_path,
     )
-    assert regenerated_content == [[0.4, 0.5, 0.6], [0.4, 0.5, 0.6]]
-    assert embedding.calls == [["Head\n\nBody", "Head2\n\nBody2"]]
+    assert regenerated_content == [pytest.approx([0.1, 0.2, 0.3]), pytest.approx([0.4, 0.5, 0.6])]
+    assert embedding.calls == [["Head2\n\nBody2"]]
 
 
 async def test_import_reuses_declared_roles_and_rebuilds_undeclared_roles(tmp_path: Path) -> None:
