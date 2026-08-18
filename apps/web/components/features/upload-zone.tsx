@@ -49,6 +49,10 @@ export function UploadZone({
         toast.error(t("unsupportedType", { name: file.name }));
         continue;
       }
+      if (file.size > maxMb * 1024 * 1024) {
+        toast.error(t("fileTooLarge", { name: file.name, maxMb }));
+        continue;
+      }
       try {
         const idx = ok + 1;
         setProgress({ name: file.name, pct: 0, idx, total: files.length });
