@@ -135,7 +135,7 @@ export function QuickModelSetupDialog({
               <div className="flex items-center justify-between gap-2">
                 <FieldLabel htmlFor="quick-setup-api-key">302.AI API Key</FieldLabel>
                 <a
-                  href="https://302.ai/"
+                  href="https://302ai.cn/"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
