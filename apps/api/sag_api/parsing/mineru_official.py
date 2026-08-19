@@ -19,7 +19,7 @@ from sag_api.core.errors import (
     ValidationError,
 )
 from sag_api.parsing import mineru as mineru_core
-from sag_api.parsing.mineru import MinerU302Client, StateCallback
+from sag_api.parsing.mineru import MinerU302Client, ParsePaused, PauseCallback, StateCallback
 
 _PENDING_STATES = {"waiting-file", "pending", "running", "converting"}
 
@@ -42,6 +42,7 @@ class OfficialMinerUClient(MinerU302Client):
         *,
         state: dict[str, Any] | None = None,
         on_state: StateCallback | None = None,
+        should_pause: PauseCallback | None = None,
     ) -> str:
         filename = os.path.basename(path)
         current = dict(state or {})
@@ -78,7 +79,11 @@ class OfficialMinerUClient(MinerU302Client):
             if on_state:
                 await on_state(dict(current))
 
-        result_url = await self._poll_batch(batch_id, filename)
+        result_url = await self._poll_batch(
+            batch_id,
+            filename,
+            should_pause=should_pause,
+        )
         markdown = await self._download_markdown(result_url)
         if on_state:
             await on_state({**current, "status": "done"})
@@ -136,9 +141,17 @@ class OfficialMinerUClient(MinerU302Client):
             ) from exc
         self._checked(response, "上传 PDF 到 MinerU 官方服务")
 
-    async def _poll_batch(self, batch_id: str, filename: str) -> str:
+    async def _poll_batch(
+        self,
+        batch_id: str,
+        filename: str,
+        *,
+        should_pause: PauseCallback | None = None,
+    ) -> str:
         deadline = time.monotonic() + self._poll_timeout
         while True:
+            if should_pause is not None and await should_pause():
+                raise ParsePaused()
             response = await self._official_request(
                 "GET", f"extract-results/batch/{batch_id}"
             )

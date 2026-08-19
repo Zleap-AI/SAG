@@ -1305,6 +1305,104 @@ async def test_official_mineru_issue_105_upload_poll_and_download(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_official_mineru_service_entrypoint_accepts_pause_callback(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(b"%PDF-fake")
+    upload_url = "https://upload.example.test/paper.pdf"
+    result_url = "https://cdn-mineru.openxlab.org.cn/result.zip"
+    _FakeAsyncClient.reset(
+        [
+            _response(
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "trace_id": "trace-service-105",
+                    "data": {
+                        "batch_id": "batch-service-105",
+                        "file_urls": [upload_url],
+                    },
+                },
+                url="https://mineru.net/api/v4/file-urls/batch",
+            ),
+            _response(content=b"", url=upload_url),
+            _response(
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "trace_id": "trace-service-poll-105",
+                    "data": {
+                        "batch_id": "batch-service-105",
+                        "extract_result": [
+                            {
+                                "file_name": "paper.pdf",
+                                "state": "done",
+                                "err_msg": "",
+                                "full_zip_url": result_url,
+                            }
+                        ],
+                    },
+                },
+                url=(
+                    "https://mineru.net/api/v4/extract-results/batch/"
+                    "batch-service-105"
+                ),
+            ),
+            _response(
+                content=_result_zip("# Official service entrypoint result"),
+                content_type="application/zip",
+                url=result_url,
+            ),
+        ]
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+    async def allow_public_test_hosts(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "sag_api.parsing.mineru._assert_public_host", allow_public_test_hosts
+    )
+    pause_checks = 0
+
+    async def never_pause() -> bool:
+        nonlocal pause_checks
+        pause_checks += 1
+        return False
+
+    prepared = await service.prepare_document(
+        str(source),
+        _settings(
+            document_parser="mineru",
+            mineru_provider="official",
+            mineru_base_url="https://mineru.net/api/v4/file-urls/batch",
+            mineru_api_key="official-test-token",
+            mineru_official_model="vlm",
+            mineru_poll_interval=0.001,
+            mineru_poll_timeout=1,
+        ),
+        should_pause=never_pause,
+    )
+
+    assert prepared.provider == "mineru"
+    assert Path(prepared.path).read_text(encoding="utf-8") == (
+        "# Official service entrypoint result\n"
+    )
+    assert pause_checks == 1
+    assert [call[:2] for call in _FakeAsyncClient.calls] == [
+        ("POST", "https://mineru.net/api/v4/file-urls/batch"),
+        ("PUT", upload_url),
+        (
+            "GET",
+            "https://mineru.net/api/v4/extract-results/batch/"
+            "batch-service-105",
+        ),
+        ("DOWNLOAD", result_url),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_official_mineru_resume_polls_existing_uploaded_batch(
     tmp_path, monkeypatch
 ):
