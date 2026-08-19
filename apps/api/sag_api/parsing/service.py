@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import os
+import posixpath
 import tempfile
 import weakref
+import zipfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
+from xml.etree import ElementTree
 
 from sag_api.core.config import Settings
 from sag_api.core.errors import (
@@ -23,6 +27,22 @@ from sag_api.parsing.text import TextDecodingError, is_plain_text_path, read_tex
 
 ParseStateCallback = Callable[[dict[str, Any]], Awaitable[None]]
 _PARSE_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+
+_DOCX_EXTENSION = ".docx"
+_IMAGE_RELATIONSHIP_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+)
+_PACKAGE_RELATIONSHIP_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/relationships"
+_RELATIONSHIP_TAG = f"{{{_PACKAGE_RELATIONSHIP_NAMESPACE}}}Relationship"
+_WORD_RELATIONSHIPS_PREFIX = "word/_rels/"
+_WORDPROCESSING_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_DRAWING_TAG = f"{{{_WORDPROCESSING_NAMESPACE}}}drawing"
+_PICT_TAG = f"{{{_WORDPROCESSING_NAMESPACE}}}pict"
+_OFFICE_DOCUMENT_RELATIONSHIP_NAMESPACE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+)
+_RELATIONSHIP_EMBED_ATTRIBUTE = f"{{{_OFFICE_DOCUMENT_RELATIONSHIP_NAMESPACE}}}embed"
+_RELATIONSHIP_ID_ATTRIBUTE = f"{{{_OFFICE_DOCUMENT_RELATIONSHIP_NAMESPACE}}}id"
 
 
 @dataclass(frozen=True, slots=True)
@@ -479,15 +499,161 @@ def _is_meaningful_markdown(markdown: str) -> bool:
 
 
 def _markitdown_sync(path: str) -> str:
-    from markitdown import MarkItDown
+    from markitdown import MarkItDown, StreamInfo
 
-    result = MarkItDown().convert(path)
+    if path.lower().endswith(_DOCX_EXTENSION):
+        with open(path, "rb") as source:
+            content = _without_dangling_docx_image_relationships(source.read())
+        result = MarkItDown().convert_stream(
+            io.BytesIO(content),
+            stream_info=StreamInfo(
+                filename=os.path.basename(path),
+                mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                extension=_DOCX_EXTENSION,
+            ),
+        )
+    else:
+        result = MarkItDown().convert(path)
     markdown = getattr(result, "markdown", None)
     if markdown is None:  # 兼容 0.0.x / 早期 0.1.x 返回对象
         markdown = getattr(result, "text_content", None)
     if not isinstance(markdown, str):
         raise TypeError("MarkItDown 返回了未知结果格式")
     return markdown
+
+
+def _without_dangling_docx_image_relationships(content: bytes) -> bytes:
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as source:
+            entries = source.infolist()
+            names = frozenset(entry.filename for entry in entries)
+            replacements: dict[str, bytes] = {}
+            for entry in entries:
+                if not _is_word_relationships_entry(entry.filename):
+                    continue
+                relationships = source.read(entry)
+                sanitized, removed_relationship_ids = _without_dangling_image_relationships(
+                    relationships=relationships,
+                    relationships_entry=entry.filename,
+                    names=names,
+                )
+                if sanitized != relationships:
+                    replacements[entry.filename] = sanitized
+                if not removed_relationship_ids:
+                    continue
+                source_part = _source_part_for_relationships(entry.filename)
+                if source_part not in names:
+                    continue
+                source_content = source.read(source_part)
+                sanitized_source = _without_image_relationship_references(
+                    content=source_content,
+                    relationship_ids=removed_relationship_ids,
+                )
+                if sanitized_source != source_content:
+                    replacements[source_part] = sanitized_source
+            if not replacements:
+                return content
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, "w") as destination:
+                destination.comment = source.comment
+                for entry in entries:
+                    destination.writestr(
+                        entry,
+                        replacements.get(entry.filename, source.read(entry)),
+                    )
+            return output.getvalue()
+    except (ElementTree.ParseError, zipfile.BadZipFile, zipfile.LargeZipFile):
+        return content
+
+
+def _is_word_relationships_entry(name: str) -> bool:
+    return name.startswith(_WORD_RELATIONSHIPS_PREFIX) and name.endswith(".rels")
+
+
+def _without_dangling_image_relationships(
+    *,
+    relationships: bytes,
+    relationships_entry: str,
+    names: frozenset[str],
+) -> tuple[bytes, frozenset[str]]:
+    root = ElementTree.fromstring(relationships)
+    removed_relationship_ids: set[str] = set()
+    for relationship in root.findall(_RELATIONSHIP_TAG):
+        if relationship.get("Type") != _IMAGE_RELATIONSHIP_TYPE:
+            continue
+        if relationship.get("TargetMode") == "External":
+            continue
+        target = relationship.get("Target")
+        if target is None or not _relationship_target_is_missing(
+            relationships_entry=relationships_entry,
+            target=target,
+            names=names,
+        ):
+            continue
+        relationship_id = relationship.get("Id")
+        if relationship_id is None:
+            continue
+        root.remove(relationship)
+        removed_relationship_ids.add(relationship_id)
+    if not removed_relationship_ids:
+        return relationships, frozenset()
+    return (
+        ElementTree.tostring(root, encoding="utf-8", xml_declaration=True),
+        frozenset(removed_relationship_ids),
+    )
+
+
+def _source_part_for_relationships(relationships_entry: str) -> str:
+    return relationships_entry.replace("/_rels/", "/", 1)[: -len(".rels")]
+
+
+def _without_image_relationship_references(
+    *,
+    content: bytes,
+    relationship_ids: frozenset[str],
+) -> bytes:
+    root = ElementTree.fromstring(content)
+    parents = {child: parent for parent in root.iter() for child in parent}
+    containers: set[ElementTree.Element[str]] = set()
+    for element in root.iter():
+        relationship_id = element.get(_RELATIONSHIP_EMBED_ATTRIBUTE) or element.get(
+            _RELATIONSHIP_ID_ATTRIBUTE
+        )
+        if relationship_id not in relationship_ids:
+            continue
+        container = _image_container(element, parents)
+        if container is not None:
+            containers.add(container)
+    if not containers:
+        return content
+    for container in containers:
+        parent = parents.get(container)
+        if parent is not None:
+            parent.remove(container)
+    return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _image_container(
+    element: ElementTree.Element[str],
+    parents: dict[ElementTree.Element[str], ElementTree.Element[str]],
+) -> ElementTree.Element[str] | None:
+    current: ElementTree.Element[str] | None = element
+    while current is not None:
+        if current.tag in {_DRAWING_TAG, _PICT_TAG}:
+            return current
+        current = parents.get(current)
+    return None
+
+
+def _relationship_target_is_missing(
+    *,
+    relationships_entry: str,
+    target: str,
+    names: frozenset[str],
+) -> bool:
+    source_part = _source_part_for_relationships(relationships_entry)
+    target_path = posixpath.normpath(posixpath.join(posixpath.dirname(source_part), target))
+    return target_path not in names
 
 
 def _write_markdown(path: str, markdown: str) -> None:
