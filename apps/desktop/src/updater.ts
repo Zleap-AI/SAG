@@ -1,12 +1,16 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-import { app, type BrowserWindow, dialog } from "electron";
+import { app, type BrowserWindow, dialog, shell } from "electron";
 import log from "electron-log/main";
 import { autoUpdater, type ProgressInfo, type UpdateInfo } from "electron-updater";
 
 import { DESKTOP_CHANNELS, type UpdateState } from "./channels";
 import { desktopConfig } from "./config";
+import {
+  describeUpdaterError,
+  shouldPresentUpdaterError,
+} from "./updater-error";
 
 export interface UpdaterController {
   check(): Promise<{ supported: boolean }>;
@@ -30,6 +34,31 @@ export function createUpdaterController(
     const window = getWindow();
     if (window && !window.isDestroyed()) {
       window.webContents.send(DESKTOP_CHANNELS.updateState, state);
+    }
+  };
+
+  const showUpdaterError = async (error: unknown): Promise<void> => {
+    const presentation = describeUpdaterError(error);
+    const window = getWindow();
+    if (!window || window.isDestroyed()) return;
+    const buttons = presentation.actionLabel
+      ? ["知道了", presentation.actionLabel]
+      : ["知道了"];
+    try {
+      const result = await dialog.showMessageBox(window, {
+        type: "error",
+        title: presentation.title,
+        message: presentation.message,
+        detail: presentation.detail,
+        buttons,
+        defaultId: presentation.actionLabel ? 1 : 0,
+        cancelId: 0,
+      });
+      if (presentation.actionUrl && result.response === 1) {
+        await shell.openExternal(presentation.actionUrl);
+      }
+    } catch (dialogError) {
+      log.error("Failed to present updater error", dialogError);
     }
   };
 
@@ -64,12 +93,15 @@ export function createUpdaterController(
     });
     autoUpdater.on("error", (error) => {
       log.error("Updater error", error);
+      const presentError = shouldPresentUpdaterError(currentState);
       publish({ status: "error", message: error.message });
+      if (presentError) void showUpdaterError(error);
     });
     autoUpdater.on("update-downloaded", async (info: UpdateInfo) => {
       publish({ status: "downloaded", version: info.version });
       const window = getWindow();
       if (!window || window.isDestroyed()) return;
+
       const result = await dialog.showMessageBox(window, {
         type: "info",
         title: "SAG 更新已就绪",
@@ -80,7 +112,13 @@ export function createUpdaterController(
         cancelId: 0,
       });
       if (result.response === 1) {
-        autoUpdater.quitAndInstall(false, true);
+        try {
+          log.info("Applying update via quitAndInstall(false, true)");
+          autoUpdater.quitAndInstall(false, true);
+        } catch (error) {
+          log.error("quitAndInstall failed", error);
+          await showUpdaterError(error);
+        }
       }
     });
 
@@ -99,8 +137,15 @@ export function createUpdaterController(
       if (!supported || currentState.status !== "downloaded") {
         return { started: false };
       }
-      autoUpdater.quitAndInstall(false, true);
-      return { started: true };
+      try {
+        log.info("Applying update via quitAndInstall(false, true)");
+        autoUpdater.quitAndInstall(false, true);
+        return { started: true };
+      } catch (error) {
+        log.error("quitAndInstall failed", error);
+        void showUpdaterError(error);
+        return { started: false };
+      }
     },
     dispose: () => {
       if (delayTimer) clearTimeout(delayTimer);

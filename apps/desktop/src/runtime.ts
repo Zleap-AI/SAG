@@ -154,6 +154,7 @@ export async function startPackagedRuntime(): Promise<ManagedRuntime> {
     desktopConfig.preferredWebPort,
     (port) => isPortAvailable(host, port),
   );
+  log.info(`Resolved stable web port ${webPort} (origin http://localhost:${webPort})`);
   const webHealthUrl = `http://${host}:${webPort}`;
   // Next.js standalone normalizes redirects to localhost. Use that as the UI
   // origin while keeping the actual listener restricted to 127.0.0.1.
