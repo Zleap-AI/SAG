@@ -108,9 +108,16 @@ async def export_snapshot(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     vector_store: Any = None,
     embedding_client: Any = None,
+    vector_identity: dict[str, Any] | None = None,
     on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> SnapshotStats:
-    """Stream one explicit source_config partition into an OCTX workspace."""
+    """Stream one explicit source_config partition into an OCTX workspace.
+
+    ``vector_identity`` is the historical embedding identity recorded on the
+    source partition; it controls whether exported vector profiles are declared
+    ``compatible`` or ``rebuild_required``. It is never derived from the current
+    runtime configuration, and export never calls the embedding provider.
+    """
     from zleap.sag.db import get_session_factory
     from zleap.sag.db.models import Article, Entity, EventEntity, SourceChunk, SourceEvent
 
@@ -463,13 +470,14 @@ async def export_snapshot(
 
     vector_roles: set[str] = set()
     try:
-        if vector_store is not None and embedding_client is not None:
+        if vector_store is not None:
             from sag_api.sag.octx_vector_protocol import write_existing_vector_payload
 
             vector_roles = await write_existing_vector_payload(
                 root,
                 vector_store,
                 embedding_client,
+                vector_identity=vector_identity,
                 manifest_path=vector_manifest_path,
                 routing=source_config_id,
                 on_progress=on_progress,

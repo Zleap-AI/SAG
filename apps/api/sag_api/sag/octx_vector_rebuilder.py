@@ -60,6 +60,7 @@ async def _vectors_for_role(
 ) -> list[list[float]]:
     record_ids = [_exchange_record_id(role, record) for record in records]
     if all(record_id is not None for record_id in record_ids):
+        reused_by_id: dict[str, list[float]] = {}
         if reuse_reader is not None:
             try:
                 reused_by_id = reuse_reader.get_many(role, [str(record_id) for record_id in record_ids])
@@ -69,16 +70,31 @@ async def _vectors_for_role(
                     role,
                     error,
                 )
-                reused_by_id = {}
-            if len(reused_by_id) == len(record_ids):
-                return [reused_by_id[str(record_id)] for record_id in record_ids]
         elif plan_path is not None:
             from sag_api.sag.octx_vector_reuse import ArrowVectorReuseReader
 
-            with ArrowVectorReuseReader(plan_path) as reader:
-                reused_by_id = reader.get_many(role, [str(record_id) for record_id in record_ids])
-            if len(reused_by_id) == len(record_ids):
-                return [reused_by_id[str(record_id)] for record_id in record_ids]
+            try:
+                with ArrowVectorReuseReader(plan_path) as reader:
+                    reused_by_id = reader.get_many(role, [str(record_id) for record_id in record_ids])
+            except (OSError, RuntimeError, ValueError, sqlite3.DatabaseError) as error:
+                logger.warning(
+                    "OCTX vector reuse failed; rebuilding role=%s error=%s",
+                    role,
+                    error,
+                )
+
+        if len(reused_by_id) == len(record_ids):
+            return [reused_by_id[str(record_id)] for record_id in record_ids]
+        if reused_by_id:
+            missing_indices = [
+                index for index, record_id in enumerate(record_ids) if str(record_id) not in reused_by_id
+            ]
+            generated = await _generate(embedding_client, [texts[index] for index in missing_indices])
+            generated_by_index = dict(zip(missing_indices, generated, strict=True))
+            return [
+                reused_by_id[str(record_id)] if index not in generated_by_index else generated_by_index[index]
+                for index, record_id in enumerate(record_ids)
+            ]
     return await _generate(embedding_client, texts)
 
 
@@ -135,13 +151,19 @@ async def rebuild_vectors(
     if enable_vector_reuse and package_path is not None and plan_path is not None:
         from sag_api.sag.octx_vector_reuse import ArrowVectorReuseReader, prepare_vector_reuse
 
-        reusable = await asyncio.to_thread(
-            prepare_vector_reuse,
-            package_path,
-            plan_path,
-            embedding,
-            prevalidated_vector_valid=prevalidated_vector_valid,
-        )
+        try:
+            reusable = await asyncio.to_thread(
+                prepare_vector_reuse,
+                package_path,
+                plan_path,
+                embedding,
+                prevalidated_vector_valid=prevalidated_vector_valid,
+            )
+        except Exception:
+            # Vector reuse is an acceleration layer. Any failure while preparing
+            # it must degrade to a full rebuild, never fail the import task.
+            logger.exception("OCTX vector reuse preparation failed; rebuilding all vectors")
+            reusable = set()
         checkpoint["reusable_roles"] = sorted(reusable)
         if reusable:
             reuse_reader = ArrowVectorReuseReader(plan_path)

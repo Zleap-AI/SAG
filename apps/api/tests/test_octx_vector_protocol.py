@@ -27,6 +27,75 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
     path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
 
 
+def _transport_only_vector_package(tmp_path: Path) -> Path:
+    import pyarrow as pa
+    import pyarrow.ipc as ipc
+
+    document_id = "019c1234-5678-7abc-8def-0123456789ab"
+    chunk_id = "019c2222-2222-7222-8222-222222222222"
+    source = tmp_path / "transport-source"
+    source.mkdir()
+    (source / "guide.md").write_text(
+        f"---\ntype: Reference\ntitle: Guide\noctx:\n  document_id: {document_id}\n---\n# Guide\n",
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "transport-workspace"
+    create_octx(workspace, source=source, name="Transport vectors", output=tmp_path / "transport-base.octx")
+    _write_jsonl(
+        workspace / "data/chunks.jsonl",
+        [{"id": chunk_id, "document_id": document_id, "ordinal": 0, "heading": "Head", "text": "Body"}],
+    )
+    _write_jsonl(workspace / "data/events.jsonl", [])
+    _write_jsonl(workspace / "data/entities.jsonl", [])
+    _write_jsonl(workspace / "relations/chunk-events.jsonl", [])
+    _write_jsonl(workspace / "relations/event-entities.jsonl", [])
+    vectors = workspace / "vectors"
+    vectors.mkdir()
+    profile = {
+        "role": "chunk.content",
+        "reuse_policy": "rebuild_required",
+        "dimensions": 3,
+        "dtype": "float32",
+        "coverage": "complete",
+        "recipe_id": "sag.chunk-content/1",
+        "recipe": {
+            "fields": ["heading", "text"],
+            "separator": "\n\n",
+            "encoding": "UTF-8",
+            "unicode_normalization": "NFC",
+            "newline": "LF",
+            "null_as": "",
+            "trim": False,
+        },
+        "input_hash_algorithm": "sha256",
+    }
+    (vectors / "profiles.json").write_text(json.dumps({"profiles": [profile]}) + "\n", encoding="utf-8")
+    schema = pa.schema(
+        [
+            pa.field("record_id", pa.string(), nullable=False),
+            pa.field("input_sha256", pa.string(), nullable=False),
+            pa.field("vector", pa.list_(pa.float32(), 3), nullable=False),
+        ]
+    )
+    table = pa.Table.from_arrays(
+        [
+            pa.array([chunk_id]),
+            pa.array([input_sha256("Head\n\nBody")]),
+            pa.array([[0.1, 0.2, 0.3]], type=pa.list_(pa.float32(), 3)),
+        ],
+        schema=schema,
+    )
+    with pa.OSFile(str(vectors / "chunk_content.arrow"), "wb") as output:
+        with ipc.new_file(output, schema) as writer:
+            writer.write_table(table)
+    return create_octx(
+        workspace,
+        version="1.1.0",
+        output=tmp_path / "transport-only.octx",
+        capabilities={"sag-structured": "0.1", "vectors": "0.1"},
+    ).output
+
+
 def test_role_input_is_canonical_across_unicode_and_newlines() -> None:
     record = {"heading": "Cafe\u0301\r\nTitle", "text": "Body\rLine"}
 
@@ -63,6 +132,479 @@ def test_embedding_identity_distinguishes_service_endpoints_without_exposing_the
 
     assert first_identity != second_identity
     assert "base_url" not in first_identity
+
+
+def test_malformed_stored_identity_falls_back_to_rebuild_required_profile() -> None:
+    from sag_api.sag.octx_vector_protocol import vector_profile_from_identity
+
+    profile = vector_profile_from_identity(
+        "chunk.content",
+        {
+            "model": "legacy/embedding",
+            "model_fingerprint": "legacy-fingerprint",
+            "dimensions": "not-a-number",
+            "dtype": "float32",
+            "normalized": False,
+        },
+        3,
+    )
+
+    assert profile["reuse_policy"] == "rebuild_required"
+    assert "model" not in profile
+
+
+async def test_prepare_vector_reuse_skips_rebuild_required_profiles(tmp_path: Path) -> None:
+    from sag_api.sag.octx_importer import build_structured_plan
+    from sag_api.sag.octx_vector_rebuilder import _vectors_for_role
+
+    package = _transport_only_vector_package(tmp_path)
+    plan_path = tmp_path / "transport-only-plan.sqlite3"
+    build_structured_plan(package, plan_path, str(uuid.uuid4()))
+
+    class Embedding:
+        model = "test/embedding"
+        base_url = "https://embedding.invalid/v1"
+        dimensions = 3
+
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        async def batch_generate(self, texts):
+            self.calls.append(list(texts))
+            return [[0.4, 0.5, 0.6] for _ in texts]
+
+    embedding = Embedding()
+    assert prepare_vector_reuse(package, plan_path, embedding) == set()
+    generated = await _vectors_for_role(
+        "chunk.content",
+        [SimpleNamespace(extra_data={"octx": {"record_id": "019c2222-2222-7222-8222-222222222222"}})],
+        ["Head\n\nBody"],
+        embedding,
+        plan_path=plan_path,
+    )
+
+    assert generated == [[0.4, 0.5, 0.6]]
+    assert embedding.calls == [["Head\n\nBody"]]
+
+
+def _compatible_reuse_package(
+    tmp_path: Path,
+    *,
+    name: str,
+    profiles: list[dict],
+    arrow_rows: dict[str, list[tuple[str, list[float]]]],
+    dimensions: int = 3,
+    chunk_count: int = 1,
+) -> Path:
+    """Build a sag-structured package whose declared vector profiles are *compatible*.
+
+    Structured data contains `chunk_count` chunks, one event, one entity and one
+    event-entity relation; only the first chunk relates to the event. Arrow rows
+    are written with input_sha256 values computed from the same records so reuse
+    indexing accepts them.
+    """
+    import pyarrow as pa
+    import pyarrow.ipc as ipc
+
+    from sag_api.sag.octx_vector_protocol import ROLE_RECIPES, ROLE_TARGETS, render_recipe_input
+
+    document_id = "019c1234-5678-7abc-8def-0123456789ab"
+    chunk_ids = ["019c2222-2222-7222-8222-222222222222", "019c3333-3333-7333-8333-333333333333"][:chunk_count]
+    event_id = "019c4444-4444-7444-8444-444444444444"
+    entity_id = "019c5555-5555-7555-8555-555555555555"
+    source = tmp_path / f"{name}-source"
+    source.mkdir()
+    (source / "guide.md").write_text(
+        f"---\ntype: Reference\ntitle: Guide\noctx:\n  document_id: {document_id}\n---\n# Guide\n",
+        encoding="utf-8",
+    )
+    workspace = tmp_path / f"{name}-workspace"
+    create_octx(workspace, source=source, name=name, output=tmp_path / f"{name}-base.octx")
+    chunk_records = {
+        chunk_id: {
+            "id": chunk_id,
+            "document_id": document_id,
+            "ordinal": index,
+            "heading": f"Head{index or ''}",
+            "text": f"Body{index or ''}",
+        }
+        for index, chunk_id in enumerate(chunk_ids)
+    }
+    _write_jsonl(workspace / "data/chunks.jsonl", list(chunk_records.values()))
+    _write_jsonl(
+        workspace / "data/events.jsonl",
+        [{"id": event_id, "title": "Event", "content": "Event body"}],
+    )
+    _write_jsonl(workspace / "data/entities.jsonl", [{"id": entity_id, "name": "Entity", "type": "term"}])
+    _write_jsonl(workspace / "relations/chunk-events.jsonl", [{"chunk_id": chunk_ids[0], "event_id": event_id}])
+    _write_jsonl(
+        workspace / "relations/event-entities.jsonl",
+        [{"event_id": event_id, "entity_id": entity_id}],
+    )
+
+    def record_for(role: str, record_id: str) -> dict:
+        if role.startswith("chunk."):
+            return chunk_records[record_id]
+        if role.startswith("event."):
+            return {"id": event_id, "title": "Event", "content": "Event body"}
+        if role == "entity.name":
+            return {"id": entity_id, "name": "Entity", "type": "term"}
+        return {
+            "event_id": event_id,
+            "entity_id": entity_id,
+            "event": {"id": event_id, "title": "Event", "content": "Event body"},
+            "entity": {"id": entity_id, "name": "Entity", "type": "term"},
+        }
+
+    vectors = workspace / "vectors"
+    vectors.mkdir()
+    (vectors / "profiles.json").write_text(json.dumps({"profiles": profiles}) + "\n", encoding="utf-8")
+    for role, rows in arrow_rows.items():
+        target = ROLE_TARGETS[role]
+        recipe = ROLE_RECIPES[role]
+        hashes = [
+            input_sha256(render_recipe_input(recipe, record_for(role, record_id)))
+            for record_id, _vector in rows
+        ]
+        schema = pa.schema(
+            [
+                pa.field("record_id", pa.string(), nullable=False),
+                pa.field("input_sha256", pa.string(), nullable=False),
+                pa.field("vector", pa.list_(pa.float32(), dimensions), nullable=False),
+            ]
+        )
+        table = pa.Table.from_arrays(
+            [
+                pa.array([record_id for record_id, _vector in rows]),
+                pa.array(hashes),
+                pa.array([vector for _record_id, vector in rows], type=pa.list_(pa.float32(), dimensions)),
+            ],
+            schema=schema,
+        )
+        with pa.OSFile(str(vectors / f"{target}.arrow"), "wb") as output:
+            with ipc.new_file(output, schema) as writer:
+                writer.write_table(table)
+    return create_octx(
+        workspace,
+        version="1.1.0",
+        output=tmp_path / f"{name}.octx",
+        capabilities={"sag-structured": "0.1", "vectors": "0.1"},
+    ).output
+
+
+def _compatible_identity(dimensions: int) -> dict:
+    from sag_api.sag.octx_vector_protocol import embedding_identity
+
+    return embedding_identity(
+        SimpleNamespace(
+            model="test/embedding",
+            base_url="https://embedding.invalid/v1",
+            dimensions=dimensions,
+        )
+    )
+
+
+async def test_prepare_vector_reuse_rebuilds_role_when_dimensions_mismatch(tmp_path: Path) -> None:
+    from sag_api.sag.octx_importer import build_structured_plan
+    from sag_api.sag.octx_vector_protocol import vector_profile_from_identity
+
+    chunk_id = "019c2222-2222-7222-8222-222222222222"
+    profile = vector_profile_from_identity("chunk.content", _compatible_identity(3), 3)
+    package = _compatible_reuse_package(
+        tmp_path,
+        name="dim-mismatch",
+        profiles=[profile],
+        arrow_rows={"chunk.content": [(chunk_id, [0.1, 0.2, 0.3])]},
+    )
+    assert validate_octx(package).capabilities["vectors"].valid
+    plan_path = tmp_path / "dim-mismatch-plan.sqlite3"
+    build_structured_plan(package, plan_path, str(uuid.uuid4()))
+
+    class TwoDimEmbedding:
+        model = "test/embedding"
+        base_url = "https://embedding.invalid/v1"
+        dimensions = 2
+
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        async def batch_generate(self, texts):
+            self.calls.append(list(texts))
+            return [[0.4, 0.5] for _ in texts]
+
+    embedding = TwoDimEmbedding()
+    # A dimension mismatch must disable reuse without crashing the import.
+    assert prepare_vector_reuse(package, plan_path, embedding) == set()
+
+    from sag_api.sag.octx_vector_rebuilder import _vectors_for_role
+
+    regenerated = await _vectors_for_role(
+        "chunk.content",
+        [SimpleNamespace(extra_data={"octx": {"record_id": chunk_id}})],
+        ["Head\n\nBody"],
+        embedding,
+        plan_path=plan_path,
+    )
+    assert regenerated == [[0.4, 0.5]]
+    assert embedding.calls == [["Head\n\nBody"]]
+
+
+async def test_partial_coverage_role_reuses_available_rows_and_rebuilds_missing(tmp_path: Path) -> None:
+    from octx import vector_profile_fingerprint
+
+    from sag_api.sag.octx_importer import build_structured_plan
+    from sag_api.sag.octx_vector_protocol import vector_profile_from_identity
+
+    chunk_id = "019c2222-2222-7222-8222-222222222222"
+    chunk2_id = "019c3333-3333-7333-8333-333333333333"
+    heading_profile = vector_profile_from_identity("chunk.heading", _compatible_identity(3), 3)
+    content_profile = vector_profile_from_identity("chunk.content", _compatible_identity(3), 3)
+    content_profile["coverage"] = "partial"
+    content_profile["fingerprint"] = vector_profile_fingerprint(content_profile)
+    package = _compatible_reuse_package(
+        tmp_path,
+        name="partial-coverage",
+        profiles=[heading_profile, content_profile],
+        arrow_rows={
+            "chunk.heading": [(chunk_id, [0.1, 0.2, 0.3]), (chunk2_id, [0.2, 0.3, 0.4])],
+            "chunk.content": [(chunk_id, [0.1, 0.2, 0.3])],
+        },
+        chunk_count=2,
+    )
+    assert validate_octx(package).capabilities["vectors"].valid
+    plan_path = tmp_path / "partial-coverage-plan.sqlite3"
+    build_structured_plan(package, plan_path, str(uuid.uuid4()))
+
+    class Embedding:
+        model = "test/embedding"
+        base_url = "https://embedding.invalid/v1"
+        dimensions = 3
+
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        async def batch_generate(self, texts):
+            self.calls.append(list(texts))
+            return [[0.4, 0.5, 0.6] for _ in texts]
+
+    embedding = Embedding()
+    # Compatible partial coverage should index the available rows so only the
+    # missing records are regenerated.
+    assert prepare_vector_reuse(package, plan_path, embedding) == {"chunk.heading", "chunk.content"}
+
+    from sag_api.sag.octx_vector_rebuilder import _vectors_for_role
+
+    records = [
+        SimpleNamespace(extra_data={"octx": {"record_id": chunk_id}}),
+        SimpleNamespace(extra_data={"octx": {"record_id": chunk2_id}}),
+    ]
+    reused_heading = await _vectors_for_role(
+        "chunk.heading",
+        records,
+        ["Head", "Head2"],
+        embedding,
+        plan_path=plan_path,
+    )
+    assert reused_heading == [pytest.approx([0.1, 0.2, 0.3]), pytest.approx([0.2, 0.3, 0.4])]
+    assert embedding.calls == []
+
+    regenerated_content = await _vectors_for_role(
+        "chunk.content",
+        records,
+        ["Head\n\nBody", "Head2\n\nBody2"],
+        embedding,
+        plan_path=plan_path,
+    )
+    assert regenerated_content == [pytest.approx([0.1, 0.2, 0.3]), pytest.approx([0.4, 0.5, 0.6])]
+    assert embedding.calls == [["Head2\n\nBody2"]]
+
+
+async def test_import_reuses_declared_roles_and_rebuilds_undeclared_roles(tmp_path: Path) -> None:
+    from sag_api.sag.octx_importer import build_structured_plan, import_structured_plan
+    from sag_api.sag.octx_vector_protocol import vector_profile_from_identity
+    from sag_api.sag.octx_vector_rebuilder import rebuild_vectors
+
+    chunk_id = "019c2222-2222-7222-8222-222222222222"
+    identity = _compatible_identity(3)
+    profiles = [
+        vector_profile_from_identity("chunk.heading", identity, 3),
+        vector_profile_from_identity("chunk.content", identity, 3),
+    ]
+    package = _compatible_reuse_package(
+        tmp_path,
+        name="partial-roles",
+        profiles=profiles,
+        arrow_rows={
+            "chunk.heading": [(chunk_id, [0.1, 0.2, 0.3])],
+            "chunk.content": [(chunk_id, [0.1, 0.2, 0.3])],
+        },
+    )
+    assert validate_octx(package).capabilities["vectors"].valid
+
+    class TrackingEmbedding:
+        model = "test/embedding"
+        base_url = "https://embedding.invalid/v1"
+        dimensions = 3
+
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        async def batch_generate(self, texts):
+            self.calls.append(list(texts))
+            return [[0.4, 0.5, 0.6] for _ in texts]
+
+    embedding = TrackingEmbedding()
+    plan_path = tmp_path / "partial-roles-plan.sqlite3"
+    namespace = str(uuid.uuid4())
+    build_structured_plan(package, plan_path, namespace)
+    assert prepare_vector_reuse(package, plan_path, embedding) == {"chunk.heading", "chunk.content"}
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from zleap.sag.db.base import Base
+
+    class VectorStore:
+        indexes: list[str] = []
+
+        def __init__(self) -> None:
+            self.documents: dict[str, list[dict]] = {}
+
+        async def bulk_index(self, *, index, documents, return_details, routing):
+            assert routing == "shadow-partial-roles"
+            self.indexes.append(index)
+            self.documents.setdefault(index, []).extend(documents)
+            return {"success_count": len(documents), "error_count": 0}
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'partial-roles-sag.db'}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    await import_structured_plan(
+        plan_path,
+        namespace,
+        source_config_id="shadow-partial-roles",
+        source_name="Shadow",
+        session_factory=sessions,
+    )
+    store = VectorStore()
+    try:
+        stats = await rebuild_vectors(
+            "shadow-partial-roles",
+            {},
+            session_factory=sessions,
+            embedding_client=embedding,
+            vector_store=store,
+            package_path=package,
+            plan_path=plan_path,
+        )
+    finally:
+        await engine.dispose()
+
+    assert stats == {"chunks": 1, "events": 1, "entities": 1, "event_entities": 1}
+    assert store.indexes == ["source_chunks", "event_vectors", "entity_vectors", "event_entity_vectors"]
+    # Declared chunk roles are reused: no embedding call and stored vectors
+    # match the package payload.
+    assert store.documents["source_chunks"][0]["heading_vector"] == pytest.approx([0.1, 0.2, 0.3])
+    assert store.documents["source_chunks"][0]["content_vector"] == pytest.approx([0.1, 0.2, 0.3])
+    # Undeclared roles are rebuilt through the embedding provider.
+    assert embedding.calls == [
+        ["Event"],
+        ["Event\n\nEvent body"],
+        ["Entity"],
+        ["Event\n\nEntity"],
+    ]
+
+
+def test_export_profile_is_rebuild_required_when_stored_dimensions_disagree() -> None:
+    from sag_api.sag.octx_vector_protocol import vector_profile_from_identity
+
+    # The stored identity claims 3 dimensions but the role really holds 2:
+    # the identity is no longer provable, so the profile must degrade to
+    # rebuild_required instead of claiming compatibility.
+    profile = vector_profile_from_identity("chunk.content", _compatible_identity(3), 2)
+
+    assert profile["reuse_policy"] == "rebuild_required"
+    assert "model" not in profile
+    assert "fingerprint" not in profile
+
+
+async def test_rebuild_vectors_falls_back_to_generation_when_reuse_preparation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zleap.sag.db.models import SourceChunk, SourceConfig
+
+    from sag_api.sag import octx_vector_reuse
+    from sag_api.sag.octx_vector_rebuilder import rebuild_vectors
+
+    def broken_prepare(*_args, **_kwargs):
+        raise OSError("temporary vector payload disappeared")
+
+    monkeypatch.setattr(octx_vector_reuse, "prepare_vector_reuse", broken_prepare)
+
+    class TrackingEmbedding:
+        model = "test/embedding"
+        base_url = "https://embedding.invalid/v1"
+        dimensions = 3
+
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        async def batch_generate(self, texts):
+            self.calls.append(list(texts))
+            return [[0.4, 0.5, 0.6] for _ in texts]
+
+    class VectorStore:
+        def __init__(self) -> None:
+            self.indexes: list[str] = []
+
+        async def bulk_index(self, *, index, documents, return_details, routing):
+            self.indexes.append(index)
+            return {"success_count": len(documents), "error_count": 0}
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from zleap.sag.db.base import Base
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'fallback-sag.db'}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    async with sessions() as session:
+        session.add(SourceConfig(id="src-fallback", name="Fallback", target_config={}))
+        session.add(
+            SourceChunk(
+                id="019c2222-2222-7222-8222-222222222222",
+                source_config_id="src-fallback",
+                source_type="article",
+                source_id="article-fallback",
+                heading="Head",
+                content="Body",
+                rank=0,
+                chunk_length=8,
+            )
+        )
+        await session.commit()
+
+    embedding = TrackingEmbedding()
+    store = VectorStore()
+    checkpoint: dict = {}
+    try:
+        stats = await rebuild_vectors(
+            "src-fallback",
+            checkpoint,
+            session_factory=sessions,
+            embedding_client=embedding,
+            vector_store=store,
+            package_path=tmp_path / "unused.octx",
+            plan_path=tmp_path / "unused-plan.sqlite3",
+        )
+    finally:
+        await engine.dispose()
+
+    assert stats == {"chunks": 1, "events": 0, "entities": 0, "event_entities": 0}
+    assert store.indexes == ["source_chunks"]
+    assert checkpoint["reusable_roles"] == []
+    # The failure degraded to a full generation path instead of crashing.
+    assert embedding.calls == [["Head\n\nBody"], ["Head"]]
 
 
 def test_vector_arrow_conversion_reuses_float_lists_without_flattening_them() -> None:

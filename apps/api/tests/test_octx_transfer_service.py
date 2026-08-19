@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from io import BytesIO
 
 import pytest
@@ -445,12 +446,12 @@ async def test_structured_import_activates_source_only_after_shadow_is_ready(tra
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("trusted_vectors", [True, False])
+@pytest.mark.parametrize("stored_identity_model", ["test/embedding", "previous/embedding", None])
 @pytest.mark.parametrize("export_scope", ["source", "document"])
 async def test_export_transfer_builds_immutable_fully_validated_release(
     transfer_sessions,
     tmp_path,
-    trusted_vectors,
+    stored_identity_model,
     export_scope,
 ):
     from contextlib import asynccontextmanager
@@ -516,18 +517,23 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
     entity_id = str(__import__("uuid").uuid4())
     type_id = str(__import__("uuid").uuid4())
     async with sag_sessions() as sag_session:
-        vector_identity = embedding_identity(
-            SimpleNamespace(
-                model="test/embedding" if trusted_vectors else "previous/embedding",
-                base_url="https://embedding.invalid/v1",
-                dimensions=2,
+        vector_identity = (
+            embedding_identity(
+                SimpleNamespace(
+                    model=stored_identity_model,
+                    base_url="https://embedding.invalid/v1",
+                    dimensions=2,
+                )
             )
+            if stored_identity_model is not None
+            else None
         )
+        target_config = {"octx_vector_identity": vector_identity} if vector_identity is not None else {}
         sag_session.add(
             SourceConfig(
                 id="src_export",
                 name="Export",
-                target_config={"octx_vector_identity": vector_identity},
+                target_config=target_config,
             )
         )
         sag_session.add(
@@ -695,7 +701,14 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
             with open_octx(artifact) as package:
                 assert package.manifest["capabilities"]["sag-structured"]["version"] == "0.1"
                 vector_capability = package.manifest["capabilities"].get("vectors")
-                assert (vector_capability or {}).get("version") == ("0.1" if trusted_vectors else None)
+                assert (vector_capability or {}).get("version") == "0.1"
+                profiles = json.loads(package.read_payload("vectors/profiles.json"))["profiles"]
+                if stored_identity_model is None:
+                    assert {profile["reuse_policy"] for profile in profiles} == {"rebuild_required"}
+                    assert all("model" not in profile and "fingerprint" not in profile for profile in profiles)
+                else:
+                    assert {profile.get("reuse_policy", "compatible") for profile in profiles} == {"compatible"}
+                    assert {profile["model"] for profile in profiles} == {stored_identity_model}
                 assert len(list(package.iter_documents())) == 1
             validation = validate_octx(artifact)
             assert validation.valid and validation.fully_validated
@@ -748,7 +761,7 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
                 "event_entities": 1,
             }
 
-            if trusted_vectors:
+            if stored_identity_model == "test/embedding":
 
                 class NoRoundTripEmbedding:
                     model = "test/embedding"
