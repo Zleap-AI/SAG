@@ -9,6 +9,7 @@ maintainer=Zleap AI
 distributor=Zleap AI
 install_dep_apps=python312:nodejs_v22
 ctl_stop=true
+service_port=15167
 desktop_uidir=ui
 desktop_applaunchname=sag.Application
 micro_app=true

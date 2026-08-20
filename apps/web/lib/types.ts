@@ -374,16 +374,32 @@ export interface SourceMcpDescriptor {
 export interface KnowledgeMcpDescriptor {
   name: string;
   scope: "knowledge_base";
+  mode?: "fnos";
   source_count: number;
   tools: string[];
   tool_details: McpToolDetail[];
+  grants?: FnOSMcpGrant[];
+  inactive_grants?: FnOSMcpGrant[];
   http: {
     transport: string;
-    url: string;
+    url?: string;
+    path?: string;
     headers: Record<string, string>;
     note: string;
   };
-  stdio: { command: string; args: string[]; env: Record<string, string>; note: string };
+  stdio?: { command: string; args: string[]; env: Record<string, string>; note: string };
+}
+
+export interface FnOSMcpGrant {
+  id: string;
+  expires_at: string;
+  revoked_at: string | null;
+  created_at: string;
+}
+
+export interface FnOSMcpGrantIssued extends FnOSMcpGrant {
+  token: string;
+  expires_in_days: 7 | 30 | 90;
 }
 
 export interface Thread {
@@ -806,6 +822,7 @@ export interface ExplorationDetail {
 export interface Capabilities {
   auth_mode?: "legacy" | "password" | "single_user" | "fnos";
   llm_configured: boolean;
+  web_search_configured?: boolean;
   llm_provider: ModelProviderId;
   llm_model: string;
   context_window?: number;

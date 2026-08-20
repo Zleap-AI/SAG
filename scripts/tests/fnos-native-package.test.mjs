@@ -233,10 +233,23 @@ test("rendered native package rejects micro_app=false", async (t) => {
   await expectRejected(root, "x86", /manifest micro_app must be true/i);
 });
 
-test("rendered native package rejects a manifest service port", async (t) => {
+test("rendered native package requires the non-reserved public MCP service port", async (t) => {
   const root = await renderedPackage(t, "x86");
-  await writeFile(path.join(root, "manifest"), `${await readFile(path.join(root, "manifest"), "utf8")}service_port=3080\n`);
-  await expectRejected(root, "x86", /service_port/i);
+  const manifestPath = path.join(root, "manifest");
+  await writeFile(manifestPath, (await readFile(manifestPath, "utf8")).replace(/^service_port=15167\n/m, ""));
+  await expectRejected(root, "x86", /service_port.*15167/i);
+});
+
+test("rendered native package accepts exactly the public MCP service port", async (t) => {
+  const root = await renderedPackage(t, "x86");
+  const { validateNativeTemplate } = await loadValidator();
+  await validateNativeTemplate(root, "x86");
+});
+
+test("rendered native package rejects a non-public MCP service port", async (t) => {
+  const root = await renderedPackage(t, "x86");
+  await writeFile(path.join(root, "manifest"), (await readFile(path.join(root, "manifest"), "utf8")).replace("service_port=15167", "service_port=3080"));
+  await expectRejected(root, "x86", /service_port.*15167/i);
 });
 
 test("rendered native package rejects a root run-as default", async (t) => {
@@ -325,6 +338,35 @@ test("native builders reject legacy numbered fnOS versions before reading inputs
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /version.*x\.y\.z-fnos/i);
   }
+});
+
+test("release builder rejects a web bundle without the fnOS gateway base path", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "sag-native-release-base-path-test-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  const vendor = path.join(root, "vendor");
+  const web = path.join(root, "web");
+  const bin = path.join(root, "bin");
+  await mkdir(vendor);
+  await mkdir(path.join(web, ".next"), { recursive: true });
+  await mkdir(bin);
+  await writeFile(path.join(web, "server.js"), "// standalone fixture\n");
+  await writeFile(path.join(web, ".next", "required-server-files.json"), JSON.stringify({
+    config: { basePath: "" },
+  }));
+  await writeFile(path.join(bin, "fnpack"), "#!/bin/sh\ntouch sag.fpk\n");
+  await chmod(path.join(bin, "fnpack"), 0o755);
+
+  const result = spawnSync(process.execPath, [releaseBuilder,
+    "--platform", "x86", "--vendor", vendor, "--web", web,
+    "--version", "1.6.7-fnos", "--output", path.join(root, "broken.fpk"),
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /basePath.*\/app\/sag/i);
 });
 
 test("probe builder exports locked production dependencies and installs ARM binary wheels", async (t) => {

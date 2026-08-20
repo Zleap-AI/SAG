@@ -47,6 +47,22 @@ def filtered_request_headers(headers: Iterable[tuple[bytes, bytes]]) -> list[tup
     return result
 
 
+def bearer_token(headers: Iterable[tuple[bytes, bytes]]) -> str | None:
+    """Return one well-formed bearer token without trusting duplicate headers."""
+
+    values = [value for name, value in headers if name.lower() == b"authorization"]
+    if len(values) != 1:
+        return None
+    try:
+        value = values[0].decode("latin-1").strip()
+    except UnicodeDecodeError:
+        return None
+    if not value.lower().startswith("bearer "):
+        return None
+    token = value[7:].strip()
+    return token or None
+
+
 def filtered_response_headers(headers: Iterable[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
     """Do not let private upstreams install cookies or connection controls."""
     return [

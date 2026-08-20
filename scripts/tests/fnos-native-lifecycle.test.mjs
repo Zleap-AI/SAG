@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile, stat } from "node:fs/promises";
+import { chmod, cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -206,6 +206,27 @@ test("install_callback does not require ownership-changing commands", async () =
 test("upgrade_callback delegates to install_callback for perm/ownership fixup", async () => {
   const source = await readFile(path.join(cmd, "upgrade_callback"), "utf8");
   assert.match(source, /"\$command_dir\/install_callback"/);
+});
+
+test("upgrade_callback stops a prior service before the upgraded package is started", async (t) => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "sag-native-upgrade-callback-"));
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const commandDir = path.join(fixture, "cmd");
+  const trace = path.join(fixture, "trace");
+  await mkdir(commandDir);
+  await cp(path.join(cmd, "upgrade_callback"), path.join(commandDir, "upgrade_callback"));
+  await writeFile(path.join(commandDir, "main"), "#!/bin/sh\nprintf 'main:%s\\n' \"$1\" >> \"$TRACE\"\n");
+  await writeFile(path.join(commandDir, "install_callback"), "#!/bin/sh\nprintf 'install_callback\\n' >> \"$TRACE\"\n");
+  await chmod(path.join(commandDir, "main"), 0o755);
+  await chmod(path.join(commandDir, "install_callback"), 0o755);
+
+  const result = spawnSync("/bin/sh", [path.join(commandDir, "upgrade_callback")], {
+    encoding: "utf8",
+    env: { ...process.env, TRACE: trace },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual((await readFile(trace, "utf8")).trim().split("\n"), ["main:stop", "install_callback"]);
 });
 
 test("upgrade_callback under strict /bin/sh (dash on fnOS)", () => {
@@ -595,4 +616,22 @@ test("native main only starts loopback Next before the UDS gateway", async () =>
   assert.match(source, /kill -TERM/);
   assert.match(source, /kill -KILL/);
   assert.doesNotMatch(source, /docker /);
+});
+
+test("main starts public MCP only after the UDS gateway is healthy", async () => {
+  const source = await readFile(path.join(cmd, "main"), "utf8");
+  assert.ok(source.indexOf("wait_for_gateway_socket") < source.indexOf("mcp-proxy"));
+  assert.match(source, /SAG_NATIVE_SERVICE="mcp-public"/);
+});
+
+test("public MCP uses the fnOS-assigned service port instead of a reserved hard-coded port", async () => {
+  const source = await readFile(path.join(cmd, "main"), "utf8");
+  assert.match(source, /mcp_public_port="\$\{TRIM_SERVICE_PORT:-\}"/);
+  assert.doesNotMatch(source, /mcp_public_port="5667"/);
+});
+
+test("public MCP startup failure is isolated from Native desktop startup", async () => {
+  const source = await readFile(path.join(cmd, "main"), "utf8");
+  assert.match(source, /SAG Native public MCP listener failed to start; the desktop app remains available/);
+  assert.doesNotMatch(source, /mcp-public[^\n]*exit 1/);
 });

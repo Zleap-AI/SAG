@@ -127,7 +127,7 @@ describe("NAS import panel", () => {
     await user.click(screen.getByRole("button", { name: /导入 1 个文档/ }));
     expect(screen.getByText(/一次性复制到“公司知识”/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "确认导入" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("导入完成");
+    expect(await screen.findByText("导入完成：新增 1、更新 0、跳过 0、失败 0")).toBeInTheDocument();
   });
 
   it("keeps the previous result and actions stable during a rescan", async () => {

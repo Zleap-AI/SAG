@@ -351,7 +351,8 @@ async def test_search_tool_reuses_direct_event_recall_and_loads_traceable_eviden
     assert "原文证据：\n维持复杂社会秩序需要存储并处理大量行政信息。" in result.content
 
 
-def test_visible_sources_mount_builtin_knowledge_tools():
+def test_visible_sources_mount_builtin_knowledge_tools(monkeypatch):
+    monkeypatch.setattr("sag_api.services.agent_service.WebSearchTool.configured", lambda: True)
     agent = SimpleNamespace(persona={}, is_default=False)
     assert _enabled_tool_names(agent, has_sources=True) == [
         "get_time",

@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
+import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,6 +28,21 @@ FNOS_A = {
     "X-Trim-Username": "Alice",
     "X-Trim-Isadmin": "false",
 }
+MCP_ROUTING_KEY = b"m" * 32
+
+
+def _mcp_token(*, uid: int = 1000, username: str = "Alice", expires_at: int | None = None) -> str:
+    grant_id = "grant-1"
+    secret = "secret-1"
+    payload = base64.urlsafe_b64encode(
+        json.dumps(
+            {"uid": uid, "username": username, "exp": expires_at or int(time.time()) + 3600},
+            separators=(",", ":"),
+        ).encode()
+    ).decode().rstrip("=")
+    signed = f"v1\n{grant_id}\n{secret}\n{payload}".encode()
+    signature = hmac.new(MCP_ROUTING_KEY, signed, hashlib.sha256).hexdigest()
+    return f"sagf_mcp_{grant_id}.{secret}.{payload}.{signature}"
 
 
 @pytest.mark.parametrize(
@@ -165,6 +185,7 @@ def gateway(worker: _Worker) -> FastAPI:
         supervisor,
         InternalIdentitySigner(b"s" * 32),
         "http://127.0.0.1:3091",
+        mcp_routing_key=MCP_ROUTING_KEY,
     )
     app.state.supervisor = supervisor
     return app
@@ -222,6 +243,64 @@ async def test_worker_proxy_keeps_query_and_signed_identity_but_strips_client_au
     assert request.headers["x-sag-internal-uid"] == "1000"
     assert request.headers["x-sag-internal-request-id"]
     assert request.headers["x-request-id"] != ""
+
+
+@pytest.mark.asyncio
+async def test_valid_fnos_mcp_grant_selects_its_user_worker_and_forwards_bearer(
+    gateway_client: httpx.AsyncClient, worker: _Worker, gateway: FastAPI
+) -> None:
+    token = _mcp_token()
+
+    response = await gateway_client.post(
+        "/app/sag/mcp/",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"jsonrpc": "2.0", "method": "initialize"},
+    )
+
+    assert response.status_code == 200
+    assert gateway.state.supervisor.identities[-1] == GatewayIdentity(1000, "Alice", False)
+    assert worker.requests[-1].headers["authorization"] == f"Bearer {token}"
+    assert worker.requests[-1].url.query == b""
+
+
+@pytest.mark.asyncio
+async def test_hermes_preflight_returns_an_mcp_content_type(gateway_client: httpx.AsyncClient) -> None:
+    """A text/plain preflight response makes Hermes reject an otherwise valid Streamable HTTP endpoint."""
+    response = await gateway_client.get(f"/app/sag/mcp/?sag_mcp_token={_mcp_token()}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+
+
+@pytest.mark.asyncio
+async def test_hermes_query_grant_selects_its_user_worker_and_forwards_bearer(
+    gateway_client: httpx.AsyncClient, worker: _Worker, gateway: FastAPI
+) -> None:
+    """Hermes's HTTP/SSE form has no header field, so its generated URL must still authenticate."""
+    token = _mcp_token()
+
+    response = await gateway_client.post(
+        f"/app/sag/mcp/?sag_mcp_token={token}",
+        json={"jsonrpc": "2.0", "method": "initialize"},
+    )
+
+    assert response.status_code == 200
+    assert gateway.state.supervisor.identities[-1] == GatewayIdentity(1000, "Alice", False)
+    assert worker.requests[-1].headers["authorization"] == f"Bearer {token}"
+    assert worker.requests[-1].url.query == b""
+
+
+@pytest.mark.asyncio
+async def test_expired_or_tampered_fnos_mcp_grant_cannot_start_a_worker(
+    gateway_client: httpx.AsyncClient, gateway: FastAPI
+) -> None:
+    expired = _mcp_token(expires_at=int(time.time()) - 1)
+    tampered = _mcp_token() + "x"
+
+    for token in (expired, tampered):
+        response = await gateway_client.post("/app/sag/mcp/", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 401
+    assert gateway.state.supervisor.identities == []
 
 
 @pytest.mark.asyncio

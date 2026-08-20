@@ -350,7 +350,8 @@ def _enabled_tool_names(agent, *, has_sources: bool = False, knowledge_only: boo
         # Keep local, read-only system utilities available while excluding
         # configured/MCP tools and model-knowledge fallbacks.
         return list(dict.fromkeys([*_ALWAYS_TOOLS, *knowledge_tools]))
-    return list(dict.fromkeys([*_ALWAYS_TOOLS, *knowledge_tools, *_WEB_TOOLS, *configured]))
+    web_tools = _WEB_TOOLS if WebSearchTool.configured() else []
+    return list(dict.fromkeys([*_ALWAYS_TOOLS, *knowledge_tools, *web_tools, *configured]))
 
 
 def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict]) -> AgentTool:
@@ -586,6 +587,12 @@ async def generate_stream(
                     "web_search 或 open_webpage 已成功返回结果后，不得声称无法联网、无法访问实时信息或无法访问网页；"
                     "如果结果不够新或不足以支持结论，只能明确说明本次搜索没有找到足以核验的结果，并说明证据日期，"
                     "不得把证据不足描述成系统能力不足。"
+                )
+            else:
+                scene_notes.append(
+                    "本轮联网已开启，但内置网页搜索尚未配置可用的 302.AI API Key 和接口地址，"
+                    "因此不得声称已进行内置联网搜索；仅当本轮已成功挂载可用的外部 MCP 工具时，"
+                    "才可调用这些工具获取外部事实，并如实说明证据来源。"
                 )
             if plan.source_ids and sources:
                 scene_notes.append(

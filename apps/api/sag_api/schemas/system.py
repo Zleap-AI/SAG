@@ -21,6 +21,10 @@ class QuickModelSetupRequest(BaseModel):
         return value
 
 
+class FnOSMcpGrantCreate(BaseModel):
+    expires_in_days: Literal[7, 30, 90]
+
+
 class SystemPreferencesUpdate(BaseModel):
     timezone: str = Field(min_length=1, max_length=100)
 
