@@ -106,6 +106,8 @@ _GUIDANCE = {
         "其他工具返回的 URL 保留为 Markdown 链接，不自行编号。只要使用了带 URL 的外部检索或阅读工具，"
         "关键外部事实就必须在对应论断附近附上可点击的直接来源；无法形成可追溯来源时，明确证据缺口，"
         "不要把该事实写成已确认。\n"
+        "- 证据中的数学公式必须保留 LaTeX：行内公式使用 \\(...\\)，独立公式使用 \\[...\\]；"
+        "不要用反引号或 Markdown 代码块包裹公式，不要删除公式定界符。\n"
         "- 输出前检查：是否回答了真实目标，关键事实是否足够新且有来源，日期与数字是否准确，"
         "引用是否能打开，是否明确了仍存在的不确定性。"
     ),
@@ -150,6 +152,8 @@ _GUIDANCE = {
         "other tools as Markdown links and never fabricate a numbered citation. Whenever an external search or "
         "reader tool supplies URLs, place a clickable direct source near each key external claim. If no traceable "
         "source can be formed, state the evidence gap instead of presenting the claim as confirmed.\n"
+        "- Preserve LaTeX from evidence: use \\(...\\) for inline math and \\[...\\] for display math. Never wrap math "
+        "in backticks or Markdown code fences, and never remove its math delimiters.\n"
         "- Before finishing, verify that the real goal was answered, evidence is fresh enough, dates and numbers "
         "are accurate, citations open, and remaining uncertainty is explicit."
     ),

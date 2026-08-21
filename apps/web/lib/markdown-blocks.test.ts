@@ -45,6 +45,51 @@ describe("splitMarkdownBlocks", () => {
     expectLossless(text);
   });
 
+  it("never splits a display-math fence across blocks", () => {
+    const text = `${"x".repeat(4985)}\n\n$$\n\\frac{1}{n + 1}\n\n+ z + 1\n$$\n\n${"tail ".repeat(50)}`;
+    const blocks = splitMarkdownBlocks(text);
+    const formulaBlock = blocks.find((block) => block.includes("\\frac{1}"));
+
+    expect(blocks.length).toBeGreaterThan(1);
+    expect(formulaBlock).toContain("+ z + 1");
+    expect((formulaBlock!.match(/\$\$/g) ?? []).length).toBe(2);
+    expectLossless(text);
+  });
+
+  it("keeps longer remark-math dollar fences intact", () => {
+    const text = `${"x".repeat(4988)}\n\n$$$\na + b\n\n+ c\n$$$\n\n${"tail ".repeat(50)}`;
+    const blocks = splitMarkdownBlocks(text);
+    const formulaBlock = blocks.find((block) => block.includes("a + b"));
+
+    expect(blocks.length).toBeGreaterThan(1);
+    expect(formulaBlock).toContain("+ c");
+    expect((formulaBlock!.match(/\$\$\$/g) ?? []).length).toBe(2);
+    expectLossless(text);
+  });
+
+  it("accepts a closing math fence longer than its opening fence", () => {
+    const text = `$$$\na\n$$$$\n\n${"x".repeat(4988)}\n\n$$$\nb\n\n+ c\n$$$\n\n${"tail ".repeat(50)}`;
+    const blocks = splitMarkdownBlocks(text);
+    const secondFormulaBlock = blocks.find((block) => block.includes("\nb\n"));
+
+    expect(blocks.length).toBeGreaterThan(1);
+    expect(secondFormulaBlock).toContain("$$$\nb");
+    expect(secondFormulaBlock).toContain("+ c");
+    expectLossless(text);
+  });
+
+  it("never splits a bracket display-math fence across blocks", () => {
+    const text = `${"x".repeat(4985)}\n\n\\[\n\\frac{1}{n + 1}\n\n+ z + 1\n\\]\n\n${"tail ".repeat(50)}`;
+    const blocks = splitMarkdownBlocks(text);
+    const formulaBlock = blocks.find((block) => block.includes("\\frac{1}"));
+
+    expect(blocks.length).toBeGreaterThan(1);
+    expect(formulaBlock).toContain("+ z + 1");
+    expect(formulaBlock).toContain("\\[");
+    expect(formulaBlock).toContain("\\]");
+    expectLossless(text);
+  });
+
   it("does not split a large table across blocks", () => {
     const header = "| a | b |\n| --- | --- |\n";
     const rows = Array.from({ length: 400 }, (_, i) => `| ${i} | v${i} |`).join("\n");
