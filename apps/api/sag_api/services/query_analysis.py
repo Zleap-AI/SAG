@@ -69,6 +69,7 @@ class QueryAnalysis:
     scoring_terms: tuple[str, ...]
     lookup_terms: tuple[str, ...]
     chinese_segmentation_used: bool
+    expanded_terms: tuple[str, ...] = ()
 
 
 def normalize_lexical_text(value: str) -> str:
@@ -87,13 +88,19 @@ def _is_valid_term(value: str) -> bool:
     return len(normalized) >= 2 and not normalized.isdigit()
 
 
-def _split_alnum_terms(parts: Iterable[str]) -> tuple[str, ...]:
+def _split_alnum_terms(
+    parts: Iterable[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     terms: list[str] = []
+    expanded_terms: list[str] = []
     keys: set[str] = set()
     for part in parts:
         subtokens = _ALNUM_SUBTOKEN_RE.findall(part)
-        split = any(value.isalpha() for value in subtokens) and any(
-            value.isdigit() for value in subtokens
+        split = (
+            part.isalnum()
+            and len(subtokens) == 2
+            and any(value.isalpha() for value in subtokens)
+            and any(value.isdigit() for value in subtokens)
         )
         for candidate in subtokens if split else (part,):
             value = candidate.strip().lower()
@@ -102,10 +109,12 @@ def _split_alnum_terms(parts: Iterable[str]) -> tuple[str, ...]:
             if not valid or key in keys:
                 continue
             terms.append(value)
+            if split:
+                expanded_terms.append(value)
             keys.add(key)
             if len(terms) >= 4:
-                return tuple(terms)
-    return tuple(terms)
+                return tuple(terms), tuple(expanded_terms)
+    return tuple(terms), tuple(expanded_terms)
 
 
 def _lookup_terms(
@@ -127,7 +136,9 @@ def _lookup_terms(
     return tuple(terms)
 
 
-def _legacy_query_terms(cleaned: str) -> tuple[str, ...]:
+def _legacy_query_terms(
+    cleaned: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return _split_alnum_terms(_LEGACY_TERM_RE.findall(cleaned))
 
 
@@ -141,7 +152,10 @@ def _jieba_segment(text: str) -> Iterable[str]:
     return jieba.cut(text, cut_all=False)
 
 
-def _segmented_terms(cleaned: str, segmenter: Segmenter) -> tuple[str, ...]:
+def _segmented_terms(
+    cleaned: str,
+    segmenter: Segmenter,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     values: list[str] = []
     for part in _LEXICAL_PART_RE.findall(cleaned):
         if _CHINESE_RUN_RE.fullmatch(part):
@@ -166,22 +180,38 @@ def analyze_query(
 ) -> QueryAnalysis:
     cleaned = _remove_query_noise(query)
     phrase = normalize_lexical_text(cleaned)
-    legacy_terms = _legacy_query_terms(cleaned)
+    legacy_terms, legacy_expanded_terms = _legacy_query_terms(cleaned)
     legacy_lookup_terms = _lookup_terms(legacy_terms, phrase)
     chinese_runs = _chinese_runs(cleaned)
     if not segmentation_enabled or not chinese_runs:
-        return QueryAnalysis(phrase, legacy_terms, legacy_lookup_terms, False)
+        return QueryAnalysis(
+            phrase,
+            legacy_terms,
+            legacy_lookup_terms,
+            False,
+            legacy_expanded_terms,
+        )
 
     try:
-        scoring_terms = _segmented_terms(cleaned, segmenter or _jieba_segment)
+        scoring_terms, expanded_terms = _segmented_terms(
+            cleaned,
+            segmenter or _jieba_segment,
+        )
     except Exception:  # noqa: BLE001 -- retrieval must survive tokenizer failure
-        return QueryAnalysis(phrase, legacy_terms, legacy_lookup_terms, False)
+        return QueryAnalysis(
+            phrase,
+            legacy_terms,
+            legacy_lookup_terms,
+            False,
+            legacy_expanded_terms,
+        )
 
     return QueryAnalysis(
         phrase,
         scoring_terms,
         _lookup_terms(scoring_terms, phrase),
         True,
+        expanded_terms,
     )
 
 

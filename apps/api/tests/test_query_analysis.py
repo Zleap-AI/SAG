@@ -84,6 +84,25 @@ def test_glued_query_keeps_the_exact_token_as_a_lookup_term():
     assert result.lookup_terms == ("iphone", "15", "iphone15")
 
 
+def test_complex_model_identifier_is_not_split_into_numeric_fragments():
+    segments = {
+        "冰箱型号为": ["冰箱", "型号"],
+        "的温度最低是": ["温度", "最低"],
+        "吗": ["吗"],
+    }
+
+    result = analyze_query(
+        "冰箱型号为dw-2412p30的温度最低是-200°吗？",
+        segmenter=lambda text: segments[text],
+    )
+
+    assert "dw-2412p30" in result.scoring_terms
+    assert "dw-2412p30" in result.lookup_terms
+    assert "2412" not in result.lookup_terms
+    assert "30" not in result.lookup_terms
+    assert "200" not in result.lookup_terms
+
+
 def test_punctuation_separated_english_term_is_not_split():
     result = analyze_query("foo-bar", segmentation_enabled=False)
 
