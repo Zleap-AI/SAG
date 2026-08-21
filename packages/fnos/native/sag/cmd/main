@@ -7,12 +7,18 @@ run_dir="${TRIM_PKGVAR}/run"
 log_dir="${TRIM_PKGVAR}/logs"
 gateway_pid="${run_dir}/gateway.pid"
 web_pid="${run_dir}/web.pid"
+mcp_public_pid="${run_dir}/mcp-public.pid"
 web_port_file="${run_dir}/web.port"
 gateway_socket="${TRIM_APPDEST}/app.sock"
 web_entry="${TRIM_APPDEST}/web/server.js"
 web_root="${TRIM_APPDEST}/web"
 gateway_log="${log_dir}/gateway.log"
 web_log="${log_dir}/web.log"
+mcp_public_log="${log_dir}/mcp-public.log"
+# fnOS reserves and injects the port declared in manifest.service_port.  Do
+# not provide an application fallback: otherwise a manifest/runtime mismatch
+# could publish a stale, unreachable Agent configuration.
+mcp_public_port="${TRIM_SERVICE_PORT:-}"
 secret="${TRIM_PKGVAR}/internal-secret"
 
 # fnpack invokes every callback in cmd/ (install_init, install_callback,
@@ -343,10 +349,35 @@ case "${1:-}" in
       exit 1
     }
 
+    # External Agents cannot traverse fnOS' desktop authentication Nginx
+    # layer. The public listener exposes only /mcp/ and forwards every
+    # request into the healthy UDS gateway above. It is intentionally
+    # optional: a port collision or missing fnOS port assignment must not
+    # make the SAG desktop app unusable.
+    _START_STEP="start-public-mcp"
+    if [ -z "$mcp_public_port" ]; then
+      log_error "SAG Native public MCP listener is disabled: fnOS did not provide TRIM_SERVICE_PORT. The desktop app remains available."
+    elif ! valid_pid "$mcp_public_pid" "sag_api.fnos.cli" "mcp-public"; then
+      if touch "$mcp_public_log" 2>/dev/null; then
+        ( SAG_NATIVE_SERVICE="mcp-public" "$runtime" -m sag_api.fnos.cli mcp-proxy --socket "$gateway_socket" --host 0.0.0.0 --port "$mcp_public_port" ) >> "$mcp_public_log" 2>&1 &
+        mcp_public_process=$!
+        write_pid "$mcp_public_pid" "$mcp_public_process"
+        sleep 1
+        if ! kill -0 "$mcp_public_process" 2>/dev/null; then
+          rm -f "$mcp_public_pid"
+          mcp_public_tail="$(tail -n 20 "$mcp_public_log" 2>/dev/null | tr '\n' ' ' | head -c 800)"
+          log_error "SAG Native public MCP listener failed to start; the desktop app remains available. Last mcp-public.log: ${mcp_public_tail:-<empty>}"
+        fi
+      else
+        log_error "SAG Native public MCP listener failed to start; the desktop app remains available. Cannot write $mcp_public_log."
+      fi
+    fi
+
     # Success — disarm the crash trap so stop/status are not affected.
     trap - EXIT
     ;;
   stop)
+    stop_process "$mcp_public_pid" "sag_api.fnos.cli" "mcp-public"
     stop_process "$gateway_pid" "sag_api.fnos.cli"
     stop_process "$web_pid" "$web_entry" "web"
     rm -f "$gateway_socket" "$web_port_file"

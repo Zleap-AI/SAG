@@ -11,13 +11,14 @@ from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from websockets.asyncio.client import unix_connect
 
 from sag_api.core.errors import AuthError
 from sag_api.fnos.identity import InternalIdentitySigner, parse_gateway_identity
 from sag_api.fnos.proxy import (
     HeaderPolicyError,
+    bearer_token,
     filtered_request_headers,
     filtered_response_headers,
     proxy_websocket,
@@ -53,6 +54,7 @@ def create_gateway_app(
     signer: InternalIdentitySigner,
     web_origin: str,
     prefix: str = "/app/sag",
+    mcp_routing_key: bytes | None = None,
 ) -> FastAPI:
     if not _is_loopback_web_origin(web_origin):
         raise ValueError("fnOS gateway web origin must be loopback")
@@ -102,15 +104,37 @@ def create_gateway_app(
     async def healthz():
         return {"status": "ok"}
 
+    def query_mcp_token(request: Request) -> str | None:
+        # fnOS' public Nginx gateway reserves `token` for its own
+        # browser-auth flow and rejects an unknown value before this UDS
+        # application receives the request. Keep the MCP credential in a
+        # product-specific parameter so HTTP/SSE-only clients (Hermes) can
+        # reach the Streamable HTTP endpoint.
+        values = request.query_params.getlist("sag_mcp_token")
+        return values[0].strip() if len(values) == 1 and values[0].strip() else None
+
     @app.api_route("/{requested_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
     async def route(request: Request, requested_path: str):
         path = f"/{requested_path}"
         if not (path == prefix or path.startswith(f"{prefix}/")):
             return JSONResponse({"detail": "not found"}, status_code=404)
+        external_mcp_token = None
+        identity = None
+        if path.startswith(f"{prefix}/mcp/") and mcp_routing_key is not None:
+            from sag_api.services.fnos_mcp_access import route_grant
+
+            candidate = bearer_token(request.scope["headers"]) or query_mcp_token(request)
+            if candidate is not None:
+                identity = route_grant(candidate, routing_key=mcp_routing_key)
+                if identity is not None:
+                    external_mcp_token = candidate
         try:
-            identity = parse_gateway_identity(request.headers)
+            if identity is None:
+                identity = parse_gateway_identity(request.headers)
         except AuthError as error:
             return JSONResponse({"detail": str(error)}, status_code=401)
+        if path.startswith(f"{prefix}/mcp/") and external_mcp_token is not None and request.method in {"GET", "HEAD"}:
+            return Response(status_code=200, media_type="application/json")
         try:
             headers = filtered_request_headers(request.scope["headers"])
         except HeaderPolicyError as error:
@@ -138,10 +162,17 @@ def create_gateway_app(
                 upstream_headers = headers + [
                     (name.lower().encode(), value.encode()) for name, value in signed.items()
                 ] + [(b"x-request-id", request_id.encode())]
+                if external_mcp_token is not None:
+                    upstream_headers.append((b"authorization", f"Bearer {external_mcp_token}".encode()))
+                upstream_params = [
+                    (key, value)
+                    for key, value in request.query_params.multi_items()
+                    if key != "sag_mcp_token"
+                ]
                 upstream = lease.handle.client.build_request(
                     request.method,
                     upstream_path,
-                    params=request.query_params,
+                    params=upstream_params,
                     headers=upstream_headers,
                     content=request.stream(),
                 )

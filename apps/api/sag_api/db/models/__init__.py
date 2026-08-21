@@ -2,6 +2,7 @@
 
 from sag_api.db.models.agent import Agent, AgentBinding, Message, Thread
 from sag_api.db.models.document import Document
+from sag_api.db.models.fnos_mcp_grant import FnOSMcpGrant
 from sag_api.db.models.fnos_nas import FnOSNasLegacyFolder
 from sag_api.db.models.job import Job
 from sag_api.db.models.setting import Setting
@@ -19,6 +20,7 @@ __all__ = [
     "Agent",
     "AgentBinding",
     "Document",
+    "FnOSMcpGrant",
     "FnOSNasLegacyFolder",
     "Job",
     "Message",

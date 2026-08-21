@@ -19,6 +19,7 @@ export function CopyButton({ text, label }: { text: string; label?: string }) {
       variant="ghost"
       size="sm"
       className="h-7 gap-1.5 px-2 text-xs"
+      aria-label={resolvedLabel}
       onClick={async () => {
         try {
           await copyText(text);

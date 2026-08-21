@@ -1,25 +1,31 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal, get_session
-from sag_api.core.deps import get_current_user
-from sag_api.core.errors import ApiError, ConflictError
+from sag_api.core.deps import get_current_user, get_fnos_identity
+from sag_api.core.errors import ApiError, ConflictError, NotFoundError
 from sag_api.core.logging import get_logger
 from sag_api.core.model_providers import model_provider_catalog
-from sag_api.db.models import Source, User
+from sag_api.db.models import FnOSMcpGrant, Source, User
+from sag_api.fnos.identity import GatewayIdentity, derive_fnos_internal_key
 from sag_api.generation import LLMClient
 from sag_api.mcp.server import MCP_TOOL_DETAILS, MCP_TOOL_NAMES
 from sag_api.schemas.system import (
+    FnOSMcpGrantCreate,
     ModelConfigUpdate,
     QuickModelSetupRequest,
     SystemPreferencesUpdate,
 )
 from sag_api.services import settings_service
+from sag_api.tools.builtin import WebSearchTool
 
 router = APIRouter(prefix="/system", tags=["system"])
 log = get_logger("system")
@@ -29,6 +35,7 @@ def _capabilities() -> dict:
     return {
         "auth_mode": settings.auth_mode,
         "llm_configured": settings.llm_configured,
+        "web_search_configured": WebSearchTool.configured(),
         "llm_provider": settings.llm_provider,
         "llm_model": settings.llm_model,
         "context_window": settings.llm_context_window,
@@ -42,6 +49,23 @@ def _capabilities() -> dict:
         "timezone": settings.timezone,
         "max_upload_mb": settings.max_upload_mb,
         "allowed_upload_exts": sorted(settings.allowed_upload_exts),
+    }
+
+
+def _fnos_mcp_routing_key() -> bytes:
+    if not settings.fnos_internal_secret_file:
+        raise NotFoundError("资源不存在")
+    return derive_fnos_internal_key(
+        Path(settings.fnos_internal_secret_file), b"sag-fnos-mcp-routing-v1"
+    )
+
+
+def _fnos_mcp_grant_payload(grant: FnOSMcpGrant) -> dict:
+    return {
+        "id": grant.id,
+        "expires_at": grant.expires_at,
+        "revoked_at": grant.revoked_at,
+        "created_at": grant.created_at,
     }
 
 
@@ -122,6 +146,38 @@ async def knowledge_mcp_descriptor(
 ) -> dict:
     """返回将整个 SAG 知识库挂入外部 MCP 宿主的连接信息。"""
     source_count = await session.scalar(select(func.count(Source.id))) or 0
+    if settings.auth_mode == "fnos":
+        grants = list(
+            (
+                await session.scalars(
+                    select(FnOSMcpGrant)
+                    .order_by(FnOSMcpGrant.created_at.desc(), FnOSMcpGrant.id.desc())
+                )
+            ).all()
+        )
+        now = datetime.now(UTC)
+        active_grants = [
+            grant for grant in grants if grant.revoked_at is None and grant.expires_at > now
+        ]
+        inactive_grants = [
+            grant for grant in grants if grant.revoked_at is not None or grant.expires_at <= now
+        ]
+        return {
+            "name": "SAG 知识库",
+            "scope": "knowledge_base",
+            "mode": "fnos",
+            "source_count": source_count,
+            "tools": list(MCP_TOOL_NAMES),
+            "tool_details": list(MCP_TOOL_DETAILS),
+            "grants": [_fnos_mcp_grant_payload(grant) for grant in active_grants],
+            "inactive_grants": [_fnos_mcp_grant_payload(grant) for grant in inactive_grants],
+            "http": {
+                "transport": "streamable-http",
+                "path": "/mcp/",
+                "headers": {"Authorization": "Bearer <SAG_FNOS_MCP_TOKEN>"},
+                "note": "请先生成 MCP 凭据；凭据只显示一次，过期或撤销后需要重新授权。",
+            },
+        }
     base = str(request.base_url).rstrip("/")
     return {
         "name": "SAG 知识库",
@@ -145,6 +201,68 @@ async def knowledge_mcp_descriptor(
             "note": "默认开放全部信源；设置 SAG_MCP_SOURCE_ID 可限定单个信源。",
         },
     }
+
+
+@router.post("/mcp/grants", status_code=201)
+async def issue_fnos_mcp_grant(
+    body: FnOSMcpGrantCreate,
+    _user: User = Depends(get_current_user),
+    identity: GatewayIdentity = Depends(get_fnos_identity),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    if settings.auth_mode != "fnos":
+        raise NotFoundError("资源不存在")
+    from sag_api.services.fnos_mcp_access import issue_grant
+
+    issued = await issue_grant(
+        session,
+        user=_user,
+        expires_in_days=body.expires_in_days,
+        identity_uid=identity.uid,
+        identity_username=identity.username,
+        routing_key=_fnos_mcp_routing_key(),
+    )
+    return {
+        "id": issued.id,
+        "token": issued.token,
+        "expires_in_days": body.expires_in_days,
+        "expires_at": issued.expires_at,
+    }
+
+
+@router.delete("/mcp/grants/{grant_id}", status_code=204)
+async def revoke_fnos_mcp_grant(
+    grant_id: str,
+    _user: User = Depends(get_current_user),
+    _identity: GatewayIdentity = Depends(get_fnos_identity),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    if settings.auth_mode != "fnos":
+        raise NotFoundError("资源不存在")
+    from sag_api.services.fnos_mcp_access import revoke_grant
+
+    if not await revoke_grant(session, grant_id=grant_id, user=_user):
+        raise NotFoundError("MCP 凭据不存在")
+    return Response(status_code=204)
+
+
+@router.delete("/mcp/grants/{grant_id}/record", status_code=204)
+async def delete_inactive_fnos_mcp_grant(
+    grant_id: str,
+    _user: User = Depends(get_current_user),
+    _identity: GatewayIdentity = Depends(get_fnos_identity),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    if settings.auth_mode != "fnos":
+        raise NotFoundError("资源不存在")
+    from sag_api.services.fnos_mcp_access import delete_inactive_grant
+
+    result = await delete_inactive_grant(session, grant_id=grant_id, user=_user)
+    if result == "missing":
+        raise NotFoundError("MCP 凭据不存在")
+    if result == "active":
+        raise ConflictError("请先撤销有效的 MCP 凭据")
+    return Response(status_code=204)
 
 
 @router.post("/model-setup/302")

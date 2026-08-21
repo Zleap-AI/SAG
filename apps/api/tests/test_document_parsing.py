@@ -1118,6 +1118,69 @@ def _simple_docx(path: Path, text: str) -> None:
         )
 
 
+def _docx_with_dangling_image_relationship(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+              <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+              <Default Extension="xml" ContentType="application/xml"/>
+              <Override PartName="/word/document.xml"
+                ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+            </Types>""",
+        )
+        archive.writestr(
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1"
+                Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+                Target="word/document.xml"/>
+            </Relationships>""",
+        )
+        archive.writestr(
+            "word/document.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+                xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+                xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+                xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+              <w:body>
+                <w:p><w:r><w:t>DOCX text survives a dangling image relationship.</w:t></w:r></w:p>
+                <w:p><w:r><w:drawing><wp:inline>
+                  <wp:extent cx="990000" cy="792000"/><wp:docPr id="1" name="Missing image"/>
+                  <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                    <pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="Missing image"/><pic:cNvPicPr/></pic:nvPicPr>
+                      <pic:blipFill><a:blip r:embed="rId2"/></pic:blipFill><pic:spPr/></pic:pic>
+                  </a:graphicData></a:graphic>
+                </wp:inline></w:drawing></w:r></w:p><w:sectPr/>
+              </w:body>
+            </w:document>""",
+        )
+        archive.writestr(
+            "word/_rels/document.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId2"
+                Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+                Target="../NULL"/>
+            </Relationships>""",
+        )
+
+
+def test_real_markitdown_converts_docx_with_dangling_image_relationship(tmp_path):
+    from sag_api.parsing.service import _markitdown_sync
+
+    docx = tmp_path / "dangling-image.docx"
+    _docx_with_dangling_image_relationship(docx)
+
+    markdown = _markitdown_sync(str(docx))
+
+    assert "DOCX text survives a dangling image relationship." in markdown
+
+
 def test_real_markitdown_converts_pdf_and_office_files(tmp_path):
     """依赖安装烟测：核心格式确实能产出可供引擎摄取的 Markdown。"""
     from openpyxl import Workbook

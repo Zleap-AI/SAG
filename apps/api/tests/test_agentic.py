@@ -23,7 +23,8 @@ class _A:
         self.persona = {"tools": tools} if tools is not None else {}
 
 
-def test_default_agent_gets_builtin_tools():
+def test_default_agent_gets_builtin_tools(monkeypatch):
+    monkeypatch.setattr("sag_api.services.agent_service.WebSearchTool.configured", lambda: True)
     assert _enabled_tool_names(_A(is_default=True)) == [
         "get_time",
         "search_context",
@@ -45,6 +46,16 @@ def test_default_agent_gets_builtin_tools():
         "echo",
     ]
     assert _enabled_tool_names(_A(is_default=True), knowledge_only=True) == [
+        "get_time",
+        "search_context",
+        "get_entity",
+    ]
+
+
+def test_unconfigured_web_search_is_not_exposed_as_an_available_tool(monkeypatch):
+    monkeypatch.setattr("sag_api.services.agent_service.WebSearchTool.configured", lambda: False)
+
+    assert _enabled_tool_names(_A(is_default=True)) == [
         "get_time",
         "search_context",
         "get_entity",

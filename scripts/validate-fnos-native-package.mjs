@@ -97,7 +97,7 @@ export async function validateNativeTemplate(root, platform) {
   for (const [key, value] of Object.entries(requiredManifest)) {
     if (manifest.get(key) !== value) fail(`manifest ${key} must be ${value}`);
   }
-  if (manifest.has("service_port")) fail("manifest must not define service_port");
+  if (manifest.get("service_port") !== "15167") fail("manifest service_port must be 15167");
   if (manifest.get("platform") === "all") fail("manifest platform must not be all");
   if (manifest.get("platform") !== platform) fail(`manifest platform must be ${platform}`);
   try {

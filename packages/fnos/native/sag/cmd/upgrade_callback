@@ -2,14 +2,22 @@
 # upgrade_callback — heal ownership/perm drift after an upgrade.
 #
 # Runs as the sag package user (config/privilege defaults.run-as=package). fnpack invokes
-# this callback after swapping in the new package payload. Delegate to
-# install_callback so an upgrade from any prior release lands with the
-# same guarantees a fresh install would: $TRIM_PKGVAR mode 0700 and
-# internal-secret 0600.
+# this callback after swapping in the new package payload. Stop any
+# inherited service here, rather than relying on the old package's
+# upgrade_init to have done so: otherwise the next start can reuse an
+# in-memory Web/Gateway pair from the old payload.
 
 set -u
 
 command_dir="$(dirname "$0")"
+
+if ! "$command_dir/main" stop; then
+  log_file="${TRIM_TEMP_LOGFILE:-}"
+  if [ -n "$log_file" ]; then
+    printf 'upgrade_callback: could not stop the previous service instance\n' >>"$log_file" 2>/dev/null || :
+  fi
+  exit 1
+fi
 
 if ! "$command_dir/install_callback"; then
   log_file="${TRIM_TEMP_LOGFILE:-}"

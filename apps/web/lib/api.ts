@@ -42,6 +42,7 @@ import type {
   FnOSNasScanRequest,
   FnOSNasScanResult,
   FnOSNasStatus,
+  FnOSMcpGrantIssued,
 } from "./types";
 
 /** 浏览器通过局域网 IP 打开前端时，自动将 API 指向同主机 8000 端口。 */
@@ -996,4 +997,13 @@ export const api = {
 
   // 整个 SAG 知识库的 MCP 挂载信息
   knowledgeMcp: () => request<KnowledgeMcpDescriptor>("/api/v1/system/mcp"),
+  issueFnOSMcpGrant: (expiresInDays: 7 | 30 | 90) =>
+    request<FnOSMcpGrantIssued>("/api/v1/system/mcp/grants", {
+      method: "POST",
+      body: JSON.stringify({ expires_in_days: expiresInDays }),
+    }),
+  revokeFnOSMcpGrant: (grantId: string) =>
+    request<void>(`/api/v1/system/mcp/grants/${grantId}`, { method: "DELETE" }),
+  deleteFnOSMcpGrantRecord: (grantId: string) =>
+    request<void>(`/api/v1/system/mcp/grants/${grantId}/record`, { method: "DELETE" }),
 };

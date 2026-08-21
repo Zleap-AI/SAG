@@ -188,6 +188,7 @@ export function ConversationPanel({
   const locale = useLocale();
   const resolvedPlaceholder = placeholder ?? t("defaultPlaceholder");
   const { capabilities } = useApp();
+  const webSearchConfigured = capabilities?.web_search_configured === true;
   const runtime = useConversationRuntime();
   const session = useConversationSession(sessionId);
   const detailPanel = useDetailPanel();
@@ -938,9 +939,13 @@ export function ConversationPanel({
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="top" className="max-w-64">
-                  {webEnabled
-                    ? t("webEnabledDescription")
-                    : t("webDisabledDescription")}
+                  {webSearchConfigured
+                    ? webEnabled
+                      ? t("webEnabledDescription")
+                      : t("webDisabledDescription")
+                    : webEnabled
+                      ? t("webEnabledUnavailableDescription")
+                      : t("webUnavailableDescription")}
                 </TooltipContent>
               </Tooltip>
               <Tooltip>
