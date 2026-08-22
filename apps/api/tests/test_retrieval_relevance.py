@@ -103,7 +103,7 @@ async def test_contiguous_and_spaced_chinese_queries_return_same_core_evidence()
     async with SessionLocal() as session:
         source = Source(
             name="chinese-query-equivalence",
-            sag_source_config_id=f"chinese-query-{uuid4().hex}",
+            sag_source_config_id=(f"chinese-query-{uuid4().hex}")[:36],
         )
         session.add(source)
         await session.commit()
@@ -156,7 +156,7 @@ async def test_glued_alnum_query_recalls_distant_terms_from_the_same_document():
     async with SessionLocal() as session:
         source = Source(
             name="distant-alnum-terms",
-            sag_source_config_id=f"distant-alnum-{uuid4().hex}",
+            sag_source_config_id=(f"distant-alnum-{uuid4().hex}")[:36],
         )
         session.add(source)
         await session.commit()
@@ -212,7 +212,7 @@ async def test_exact_glued_token_ranks_above_expansion_only_match():
     async with SessionLocal() as session:
         source = Source(
             name="exact-token-priority",
-            sag_source_config_id=f"exact-token-{uuid4().hex}",
+            sag_source_config_id=(f"exact-token-{uuid4().hex}")[:36],
         )
         session.add(source)
         await session.commit()
@@ -259,7 +259,7 @@ async def test_natural_chinese_question_recalls_trailing_topic_term():
     async with SessionLocal() as session:
         source = Source(
             name="natural-chinese-query",
-            sag_source_config_id=f"natural-chinese-query-{uuid4().hex}",
+            sag_source_config_id=(f"natural-chinese-query-{uuid4().hex}")[:36],
         )
         session.add(source)
         await session.commit()
@@ -312,7 +312,7 @@ async def test_lexical_recall_is_bounded_to_four_terms_per_source(monkeypatch):
     engine = RecordingEngine()
     async with SessionLocal() as session:
         sources = [
-            Source(name=f"bounded-{index}", sag_source_config_id=f"bounded-{index}-{uuid4().hex}")
+            Source(name=f"bounded-{index}", sag_source_config_id=(f"bounded-{index}-{uuid4().hex}")[:36])
             for index in range(2)
         ]
         session.add_all(sources)
@@ -392,7 +392,7 @@ async def test_tokenizer_failure_preserves_semantic_retrieval(monkeypatch):
     async with SessionLocal() as session:
         source = Source(
             name="tokenizer-fallback",
-            sag_source_config_id=f"tokenizer-fallback-{uuid4().hex}",
+            sag_source_config_id=(f"tokenizer-fallback-{uuid4().hex}")[:36],
         )
         session.add(source)
         await session.commit()
@@ -492,7 +492,7 @@ async def test_retrieval_excludes_logically_deleted_document_before_physical_cle
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="visibility", sag_source_config_id="visibility-config")
+        source = Source(name="visibility", sag_source_config_id="visibility-config"[:36])
         session.add(source)
         await session.flush()
         session.add_all(
@@ -549,7 +549,7 @@ async def test_lexical_retrieval_keeps_visible_peer_during_logical_delete():
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="lexical-visibility", sag_source_config_id="lexical-config")
+        source = Source(name="lexical-visibility", sag_source_config_id="lexical-config"[:36])
         session.add(source)
         await session.flush()
         session.add(
@@ -585,7 +585,7 @@ async def test_event_recall_excludes_events_from_logically_deleted_document():
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="event-visibility", sag_source_config_id="event-config")
+        source = Source(name="event-visibility", sag_source_config_id="event-config"[:36])
         session.add(source)
         await session.flush()
         document = Document(
@@ -630,7 +630,7 @@ async def test_delete_failed_source_is_filtered_before_vector_top_k():
     from sag_api.services.retrieval_service import retrieve_relevant_sections
 
     await init_db()
-    config_id = f"prefilter-{uuid4().hex}"
+    config_id = f"prefilter-{uuid4().hex}"[:36]
     async with SessionLocal() as session:
         source = Source(name="prefilter", sag_source_config_id=config_id)
         session.add(source)

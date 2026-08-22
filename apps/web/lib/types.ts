@@ -16,6 +16,30 @@ export interface TokenResponse {
   user: User;
 }
 
+export type StorageChoice = "migrate" | "fresh";
+export type StorageBootstrapPhase =
+  | "ready"
+  | "choice_required"
+  | "processing"
+  | "failed";
+
+export interface StorageBootstrapStatus {
+  phase: StorageBootstrapPhase;
+  detected_version: string | null;
+  target_version: string;
+  choices: StorageChoice[];
+  stage: string | null;
+  error: string | null;
+  recoverable: boolean;
+  runtime_ready: boolean;
+  /** Present only when the status request is authenticated. */
+  accepted_choice?: StorageChoice | null;
+  /** Present only when the status request is authenticated. */
+  preserved_path?: string | null;
+  /** Present only when the status request is authenticated. */
+  diagnostic_path?: string | null;
+}
+
 export type SourceStatus = "active" | "paused" | "error";
 export type SourceType = "document" | "web" | "message" | "audio";
 export type DocumentParser = "auto" | "markitdown" | "mineru";

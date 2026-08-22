@@ -150,7 +150,7 @@ async def test_search_tool_prefers_exact_body_window_over_semantic_boilerplate()
             )
 
     engine = HybridEngine()
-    source = SimpleNamespace(id="source-1", name="娱乐新闻", sag_source_config_id="sc-1")
+    source = SimpleNamespace(id="source-1", name="娱乐新闻", sag_source_config_id="sc-1"[:36])
     host_context = ToolContext(engine_manager=engine, sources=[source])
     result = await SearchContextTool().invoke(
         {"query": "关于林俊杰最新动态 2024 2025", "top_k": 4},
@@ -256,7 +256,7 @@ async def test_search_tool_graph_capacity_covers_every_returned_section():
             )
 
     engine = ManySectionEngine()
-    source = SimpleNamespace(id="source-1", name="测试资料", sag_source_config_id="sc-1")
+    source = SimpleNamespace(id="source-1", name="测试资料", sag_source_config_id="sc-1"[:36])
     result = await SearchContextTool().invoke(
         {"query": "共同主题", "top_k": 20},
         ToolContext(engine_manager=engine, sources=[source]),
@@ -326,7 +326,7 @@ async def test_search_tool_reuses_direct_event_recall_and_loads_traceable_eviden
             )
 
     engine = SparseEventEngine()
-    source = SimpleNamespace(id="source-1", name="人类简史", sag_source_config_id="sc-1")
+    source = SimpleNamespace(id="source-1", name="人类简史", sag_source_config_id="sc-1"[:36])
     result = await SearchContextTool().invoke(
         {"query": "帝国发展", "top_k": 2},
         ToolContext(engine_manager=engine, sources=[source]),

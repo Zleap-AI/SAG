@@ -195,16 +195,16 @@ def test_real_octx_structured_package_streams_into_plan_store(tmp_path):
 async def test_structured_plan_imports_one_atomic_shadow_partition(tmp_path):
     from sqlalchemy import func, select
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from zleap.sag.db.base import Base
     from zleap.sag.db.models import (
         Article,
         ArticleSection,
+        DataSource,
         Entity,
         EventEntity,
         SourceChunk,
-        SourceConfig,
         SourceEvent,
     )
+    from zleap.sag.db.schema import create_missing_relation_tables
 
     from sag_api.sag.octx_importer import import_structured_plan
     from sag_api.sag.octx_plan_store import OctxPlanStore
@@ -256,8 +256,7 @@ async def test_structured_plan_imports_one_atomic_shadow_partition(tmp_path):
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'engine.db'}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await create_missing_relation_tables(engine, "normal")
     try:
         stats = await import_structured_plan(
             plan_path,
@@ -274,7 +273,7 @@ async def test_structured_plan_imports_one_atomic_shadow_partition(tmp_path):
             "event_entities": 2,
         }
         async with sessions() as session:
-            assert await session.get(SourceConfig, "shadow-source-config") is not None
+            assert await session.get(DataSource, "shadow-source-config") is not None
             assert await session.scalar(select(func.count()).select_from(Article)) == 1
             assert await session.scalar(select(func.count()).select_from(ArticleSection)) == 1
             assert await session.scalar(select(func.count()).select_from(SourceChunk)) == 1
@@ -297,8 +296,8 @@ async def test_structured_plan_imports_one_atomic_shadow_partition(tmp_path):
 @pytest.mark.asyncio
 async def test_structured_plan_resumes_an_exactly_materialized_shadow_partition(tmp_path):
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from zleap.sag.db.base import Base
-    from zleap.sag.db.models import Article, SourceConfig
+    from zleap.sag.db.models import Article, DataSource
+    from zleap.sag.db.schema import create_missing_relation_tables
 
     from sag_api.sag.octx_importer import import_structured_plan
     from sag_api.sag.octx_plan_store import OctxPlanError, OctxPlanStore
@@ -318,16 +317,14 @@ async def test_structured_plan_resumes_an_exactly_materialized_shadow_partition(
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'engine.db'}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await create_missing_relation_tables(engine, "normal")
     try:
         async with sessions() as session:
             session.add(
-                SourceConfig(
+                DataSource(
                     id="shadow-source-config",
                     name="preprovisioned",
                     description="created by sag EngineManager",
-                    target_config={},
                 )
             )
             await session.commit()
@@ -351,12 +348,12 @@ async def test_structured_plan_resumes_an_exactly_materialized_shadow_partition(
         assert resumed.counts == result.counts
 
         async with sessions() as session:
-            source = await session.get(SourceConfig, "shadow-source-config")
+            source = await session.get(DataSource, "shadow-source-config")
             source.name = "occupied"
             session.add(
                 Article(
                     id="existing-article",
-                    source_config_id=source.id,
+                    data_source_id=source.id,
                     title="Existing",
                     content="Existing",
                     status="COMPLETED",

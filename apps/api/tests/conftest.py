@@ -7,7 +7,7 @@ import tempfile
 import pytest
 
 _TMP = tempfile.mkdtemp(prefix="sag-test-")
-os.environ.setdefault("SAG_DATABASE_URL", f"sqlite+aiosqlite:///{_TMP}/sag.db")
+os.environ.setdefault("SAG_DATABASE_URL", f"sqlite+aiosqlite:///{_TMP}/sag.db?timeout=30")
 os.environ.setdefault("SAG_DATA_DIR", f"{_TMP}/sag")
 os.environ.setdefault("SAG_UPLOAD_DIR", f"{_TMP}/uploads")
 os.environ.setdefault("SAG_DEBUG", "false")
@@ -22,6 +22,48 @@ os.environ["SAG_LLM_BASE_URL"] = ""
 os.environ["SAG_EMBEDDING_API_KEY"] = ""
 os.environ["SAG_MINERU_API_KEY"] = ""
 os.environ["SAG_MINERU_BASE_URL"] = ""
+
+
+@pytest.fixture(autouse=True)
+def _isolate_app_lifespan_from_storage_upgrade_probe(monkeypatch: pytest.MonkeyPatch):
+    """Unrelated lifespan tests start from a ready coordinator without probing shared stores.
+
+    Patches the integration seam (sag_api.upgrades.integration), the only place
+    outside sag_api/upgrades/ that wires the bootstrap into the app.
+    """
+    from sag_api.upgrades.contracts import StorageBootstrapPhase, StorageBootstrapStatus
+
+    class ReadyStorageBootstrapCoordinator:
+        def __init__(self, _settings, _session_factory, *, on_ready=None):
+            self.on_ready = on_ready
+            self._status = StorageBootstrapStatus(
+                StorageBootstrapPhase.READY,
+                "current_0_8",
+                "0.8.2",
+                stage="ready",
+                runtime_ready=True,
+            )
+
+        async def inspect(self):
+            return self._status
+
+        async def wait(self) -> None:
+            return None
+
+        def runtime_ready(self) -> bool:
+            return True
+
+        def public_status(self, *, authenticated: bool = False):
+            del authenticated
+            return {
+                "phase": self._status.phase.value,
+                "runtime_ready": self._status.runtime_ready,
+            }
+
+    monkeypatch.setattr(
+        "sag_api.upgrades.integration.StorageBootstrapCoordinator",
+        ReadyStorageBootstrapCoordinator,
+    )
 
 
 @pytest.fixture(autouse=True)

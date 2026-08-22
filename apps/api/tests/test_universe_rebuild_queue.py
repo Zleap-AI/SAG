@@ -37,7 +37,7 @@ async def _create_user_and_source():
         )
         source = Source(
             name=f"Universe Source {suffix[:8]}",
-            sag_source_config_id=f"src_{suffix[:16]}",
+            sag_source_config_id=(f"src_{suffix[:16]}")[:36],
         )
         session.add_all([user, source])
         await session.commit()

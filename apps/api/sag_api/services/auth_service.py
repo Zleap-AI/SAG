@@ -48,6 +48,8 @@ async def authenticate_or_register(
     name: str = "",
     email: str = "",
     password: str | None = None,
+    allow_create: bool = True,
+    exact_existing: bool = False,
 ) -> User:
     name = name.strip()
     email = email.strip().lower()
@@ -63,7 +65,7 @@ async def authenticate_or_register(
             user = await session.scalar(
                 select(User).where(User.name == name).order_by(User.created_at.asc()).limit(1)
             )
-        if user is None:
+        if user is None and not exact_existing:
             user = await session.scalar(
                 select(User).order_by(User.created_at.asc()).limit(1)
             )
@@ -82,6 +84,9 @@ async def authenticate_or_register(
 
     if not name:
         raise ValidationError("请先填写名字")
+
+    if not allow_create:
+        raise AuthError("邮箱或密码错误")
 
     user = User(
         email=email,

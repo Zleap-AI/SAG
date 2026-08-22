@@ -23,6 +23,8 @@ import type {
   Source,
   SourceGraphResponse,
   SourceMcpDescriptor,
+  StorageBootstrapStatus,
+  StorageChoice,
   SystemPreferences,
   Thread,
   TokenResponse,
@@ -433,12 +435,17 @@ async function streamGlobalSearch(
   return completed;
 }
 
-async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
+interface RequestOptions extends RequestInit {
+  redirectOnUnauthorized?: boolean;
+}
+
+async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+  const { redirectOnUnauthorized = true, ...requestInit } = opts;
   const token = getToken();
   const headers: Record<string, string> = {
-    ...(opts.headers as Record<string, string>),
+    ...(requestInit.headers as Record<string, string>),
   };
-  if (opts.body && !(opts.body instanceof FormData)) {
+  if (requestInit.body && !(requestInit.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
   }
   if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -447,15 +454,15 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
 
   // 30s 超时护栏（SSE 流式接口不走此函数，不受影响）
   const timeoutSignal = AbortSignal.timeout(30_000);
-  const signal = opts.signal
-    ? AbortSignal.any([opts.signal, timeoutSignal])
+  const signal = requestInit.signal
+    ? AbortSignal.any([requestInit.signal, timeoutSignal])
     : timeoutSignal;
 
-  const method = opts.method ?? "GET";
+  const method = requestInit.method ?? "GET";
   const startMs = Date.now();
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}`, { ...opts, headers, signal });
+    res = await fetch(`${API_BASE}${path}`, { ...requestInit, headers, signal });
   } catch (e) {
     const durationMs = Date.now() - startMs;
     const isTimeout = e instanceof DOMException && e.name === "TimeoutError";
@@ -486,7 +493,8 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   if (
     res.status === 401 &&
     typeof window !== "undefined" &&
-    !path.includes("/auth/")
+    !path.includes("/auth/") &&
+    redirectOnUnauthorized
   ) {
     clearToken();
     window.location.href = "/login";
@@ -646,6 +654,16 @@ export const api = {
       body: JSON.stringify(b),
     }),
   me: () => request<User>("/api/v1/auth/me"),
+  storageBootstrap: () =>
+    request<StorageBootstrapStatus>("/api/v1/system/storage-bootstrap", {
+      redirectOnUnauthorized: false,
+    }),
+  chooseStorageBootstrap: (choice: StorageChoice) =>
+    request<StorageBootstrapStatus>("/api/v1/system/storage-bootstrap/choice", {
+      method: "POST",
+      body: JSON.stringify({ choice }),
+      redirectOnUnauthorized: false,
+    }),
   capabilities: () => request<Capabilities>("/api/v1/system/capabilities"),
   getSystemPreferences: () =>
     request<SystemPreferences>("/api/v1/system/preferences"),

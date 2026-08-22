@@ -73,19 +73,19 @@ async def _delete_vector_ids(client: Any, index: str, ids: tuple[str, ...]) -> N
         await client.delete(index=index, id=record_id)
 
 
-async def _delete_vectors(records: DeletedDocumentRecords) -> None:
-    from zleap.sag.core.storage.client import get_vector_client
-
-    client = get_vector_client()
+async def _delete_vectors(records: DeletedDocumentRecords, store: Any) -> None:
+    """0.8.2:向量删除经引擎注入的 VectorStore(集合名含 event_vectors_wide)。"""
     groups = (
         ("source_chunks", records.chunk_ids),
-        ("event_vectors", records.event_ids),
+        ("event_vectors_wide", records.event_ids),
         ("event_entity_vectors", records.relation_ids),
         ("entity_vectors", records.entity_ids),
     )
     for index, ids in groups:
+        if not ids:
+            continue
         try:
-            await _delete_vector_ids(client, index, ids)
+            await store.delete(index, tuple(ids))
         except Exception as error:  # noqa: BLE001 - relational data remains authoritative
             log.warning("向量派生数据清理失败 index=%s count=%d: %s", index, len(ids), error)
 
@@ -93,29 +93,34 @@ async def _delete_vectors(records: DeletedDocumentRecords) -> None:
 async def delete_document_records(
     source_config_id: str,
     document_source_id: str,
+    *,
+    session_factory: Any = None,
+    vector_store: Any = None,
 ) -> DeletedDocumentRecords:
-    """Delete chunks, events, relations and now-orphaned entities for one document."""
-    from zleap.sag.db import get_session_factory
+    """Delete chunks, events, relations and now-orphaned entities for one document.
+
+    0.8.2 无全局会话工厂/向量客户端:必须由 engine_manager 注入引擎级资源。
+    """
     from zleap.sag.db.models import (
         Article,
         ArticleSection,
         Entity,
         EventEntity,
-        EventEntityEmbedding,
         SourceChunk,
         SourceEvent,
     )
 
-    session_factory = get_session_factory()
+    if session_factory is None:
+        raise RuntimeError("0.8.2 无全局会话工厂:delete_document_records 必须注入 session_factory")
     async with session_factory() as session:
         article_ids = tuple(
             (
                 await session.scalars(
                     select(Article.id).where(
-                        Article.source_config_id == source_config_id,
+                        Article.data_source_id == source_config_id,
                         or_(
                             Article.id == document_source_id,
-                            Article.source_id == document_source_id,
+                            Article.document_id == document_source_id,
                         ),
                     )
                 )
@@ -129,7 +134,7 @@ async def delete_document_records(
             (
                 await session.scalars(
                     select(SourceChunk.id).where(
-                        SourceChunk.source_config_id == source_config_id,
+                        SourceChunk.data_source_id == source_config_id,
                         or_(*chunk_conditions),
                     )
                 )
@@ -145,7 +150,7 @@ async def delete_document_records(
             (
                 await session.scalars(
                     select(SourceEvent.id).where(
-                        SourceEvent.source_config_id == source_config_id,
+                        SourceEvent.data_source_id == source_config_id,
                         or_(*event_conditions),
                     )
                 )
@@ -167,9 +172,6 @@ async def delete_document_records(
         related_entity_ids = tuple({row.entity_id for row in relation_rows})
 
         if relation_ids:
-            await session.execute(
-                delete(EventEntityEmbedding).where(EventEntityEmbedding.id.in_(relation_ids))
-            )
             await session.execute(delete(EventEntity).where(EventEntity.id.in_(relation_ids)))
         if event_ids:
             await session.execute(delete(SourceEvent).where(SourceEvent.id.in_(event_ids)))
@@ -206,5 +208,6 @@ async def delete_document_records(
         relation_ids=relation_ids,
         entity_ids=orphan_entity_ids,
     )
-    await _delete_vectors(records)
+    if vector_store is not None:
+        await _delete_vectors(records, vector_store)
     return records
