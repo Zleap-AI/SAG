@@ -67,7 +67,7 @@ async def test_retryable_handler_failure_cannot_revive_concurrently_paused_job(
     async with SessionLocal() as session:
         source = Source(
             name="pause-wins-retry-race",
-            sag_source_config_id=f"pause-wins-retry-race-{uuid4().hex}",
+            sag_source_config_id=(f"pause-wins-retry-race-{uuid4().hex}")[:36],
         )
         session.add(source)
         await session.flush()
@@ -147,7 +147,7 @@ async def test_job_paused_signal_cannot_undo_a_concurrent_resume(monkeypatch):
     async with SessionLocal() as session:
         source = Source(
             name="resume-wins-stale-pause-signal",
-            sag_source_config_id=f"resume-wins-stale-pause-{uuid4().hex}",
+            sag_source_config_id=(f"resume-wins-stale-pause-{uuid4().hex}")[:36],
         )
         session.add(source)
         await session.flush()
@@ -220,7 +220,7 @@ async def test_job_yielded_signal_cannot_undo_a_concurrent_pause(monkeypatch):
     async with SessionLocal() as session:
         source = Source(
             name="pause-wins-stale-yield",
-            sag_source_config_id=f"pause-wins-stale-yield-{uuid4().hex}",
+            sag_source_config_id=(f"pause-wins-stale-yield-{uuid4().hex}")[:36],
         )
         session.add(source)
         await session.flush()
@@ -411,7 +411,7 @@ async def test_worker_commits_retryable_job_and_document_as_waiting(monkeypatch)
         source = Source(
             name="retry-source",
             description="",
-            sag_source_config_id=f"retry-source-config-{uuid4().hex}",
+            sag_source_config_id=(f"retry-source-config-{uuid4().hex}")[:36],
             config={},
         )
         session.add(source)
@@ -489,7 +489,7 @@ async def test_worker_keeps_non_retryable_document_failed(monkeypatch):
         source = Source(
             name="final-failure-source",
             description="",
-            sag_source_config_id=f"final-failure-source-config-{uuid4().hex}",
+            sag_source_config_id=(f"final-failure-source-config-{uuid4().hex}")[:36],
             config={},
         )
         session.add(source)
@@ -567,7 +567,7 @@ async def test_delete_job_stops_retrying_and_remains_hidden_on_terminal_failure(
     async with SessionLocal() as session:
         source = Source(
             name=f"terminal-delete-{failure_kind}",
-            sag_source_config_id=f"terminal-delete-{failure_kind}-{uuid4().hex}",
+            sag_source_config_id=(f"terminal-delete-{failure_kind}-{uuid4().hex}")[:36],
         )
         session.add(source)
         await session.flush()
@@ -640,7 +640,7 @@ async def test_reprocess_failure_cannot_override_concurrent_delete(monkeypatch):
     async with SessionLocal() as session:
         source = Source(
             name="delete-wins-reprocess-failure",
-            sag_source_config_id=f"delete-wins-reprocess-{uuid4().hex}",
+            sag_source_config_id=(f"delete-wins-reprocess-{uuid4().hex}")[:36],
         )
         session.add(source)
         await session.flush()

@@ -639,6 +639,8 @@ async def execute_structured_import(
             reuse_batch_size=settings.octx_reused_vector_batch_size,
             enable_vector_reuse=settings.octx_arrow_vector_reuse_enabled,
             session_factory=sag_session_factory,
+            embedding_client=await engine_manager.get_sag_embedding(source_config_id),
+            vector_store=await engine_manager._vector_store(source_config_id),
             on_checkpoint=save_vector_checkpoint,
             package_path=package_path,
             plan_path=plan_path,
@@ -1654,19 +1656,14 @@ async def execute_export(
     # to carry complete vectors from the source partition. The stored identity
     # controls whether the profile is compatible or rebuild_required; importers
     # make the final reuse decision and export never calls the embedding provider.
-    from zleap.sag.db.models import SourceConfig
-
-    async with sag_session_factory() as sag_session:
-        source_config = await sag_session.get(SourceConfig, source.sag_source_config_id)
-    target_config = source_config.target_config if source_config is not None else None
-    stored_vector_identity = target_config.get("octx_vector_identity") if isinstance(target_config, dict) else None
+    # 迁移注记:0.8.2 起 DataSource 无 target_config,向量身份改存业务库 Source.config。
+    source_config = source.config if isinstance(source.config, dict) else {}
+    stored_vector_identity = source_config.get("octx_vector_identity")
     if not isinstance(stored_vector_identity, dict):
         stored_vector_identity = None
-    if vector_store is None:
+    if vector_store is None and engine_manager is not None:
         try:
-            from zleap.sag.core.storage.client import get_vector_client
-
-            vector_store = get_vector_client()
+            vector_store = await engine_manager._vector_store(source.sag_source_config_id, source)
         except Exception:
             # Missing vector storage must not block a valid structured export,
             # but the degradation must stay diagnosable in task logs.

@@ -1,6 +1,7 @@
 """R3 稳定硬化：就绪/存活探针、上传白名单、Job 退避重试、引擎 LRU 逐出。"""
 
 import asyncio
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -91,11 +92,13 @@ async def test_health_ready_and_upload_whitelist():
             assert ".md" in caps["allowed_upload_exts"]
 
             A = await _register(c)
-            sid = (await c.post("/api/v1/sources", headers=A, json={"name": "白名单"})).json()["id"]
+            _created = await c.post("/api/v1/sources", headers=A, json={"name": "白名单"})
+            assert _created.status_code == 201, _created.text
+            sid = _created.json()["id"]
 
             # 创建信源必须同步建立引擎父记录；增量加载器会直接写 article，
             # 缺少该记录时将触发 FOREIGN KEY constraint failed。
-            from zleap.sag.db import SourceConfig, get_session_factory
+            from zleap.sag.db import DataSource
 
             from sag_api.core.db import SessionLocal
             from sag_api.db.models import Source
@@ -104,9 +107,11 @@ async def test_health_ready_and_upload_whitelist():
                 source = await session.get(Source, sid)
                 assert source is not None
                 source_config_id = source.sag_source_config_id
-            engine_session_factory = get_session_factory()
+            engine_session_factory = await app.state.engine_manager.get_sag_session_factory(
+                source_config_id
+            )
             async with engine_session_factory() as engine_session:
-                parent = await engine_session.get(SourceConfig, source_config_id)
+                parent = await engine_session.get(DataSource, source_config_id)
                 assert parent is not None
                 assert parent.name == "白名单"
 
@@ -377,6 +382,15 @@ async def test_document_cleanup_drains_and_blocks_same_source_processing(monkeyp
     from sag_api.sag.engine_manager import EngineManager, _Slot
 
     class FakeEngine:
+        class _Relational:
+            def session_factory(self):
+                return SimpleNamespace()
+
+        class _Vector:
+            pass
+
+        resources = SimpleNamespace(relational=_Relational(), vector=_Vector())
+
         async def aclose(self):
             pass
 
@@ -389,7 +403,7 @@ async def test_document_cleanup_drains_and_blocks_same_source_processing(monkeyp
     cleanup_entered = asyncio.Event()
     release_cleanup = asyncio.Event()
 
-    async def fake_delete_records(source_config_id, document_source_id):
+    async def fake_delete_records(source_config_id, document_source_id, session_factory=None, vector_store=None):
         assert (source_config_id, document_source_id) == ("source", "document")
         cleanup_entered.set()
         await release_cleanup.wait()
@@ -538,18 +552,19 @@ async def test_search_falls_back_to_vector():
             self.empty_multi = empty_multi
             self.calls: list[str] = []
 
-        async def search(self, query, strategy=None, top_k=None):
+        async def search(self, request):
+            strategy = request.options.strategy
             self.calls.append(strategy)
-            if strategy == "multi":
+            if strategy == "full_expand":
                 if self.fail_multi:
                     raise RuntimeError("boom")
                 if self.empty_multi:
-                    return type("R", (), {"query": query, "sections": [], "stats": {}})()
+                    return type("R", (), {"query": request.query, "sections": [], "stats": {}})()
             return type(
                 "R",
                 (),
                 {
-                    "query": query,
+                    "query": request.query,
                     "sections": [
                         {
                             "chunk_id": "c1",
@@ -577,16 +592,16 @@ async def test_search_falls_back_to_vector():
     # 失败回退
     eng = FakeEngine(fail_multi=True)
     out = await run_case(eng)
-    assert eng.calls == ["multi", "vector"] and len(out.sections) == 1
+    assert eng.calls == ["full_expand", "vector"] and len(out.sections) == 1
     # 空结果回退
     eng2 = FakeEngine(fail_multi=False, empty_multi=True)
     out2 = await run_case(eng2)
-    assert eng2.calls == ["multi", "vector"] and len(out2.sections) == 1
+    assert eng2.calls == ["full_expand", "vector"] and len(out2.sections) == 1
 
     # vector 直查失败不回退
     class FailVector(FakeEngine):
-        async def search(self, query, strategy=None, top_k=None):
-            self.calls.append(strategy)
+        async def search(self, request):
+            self.calls.append(request.options.strategy)
             raise RuntimeError("vector down")
 
     em = EngineManager(settings)

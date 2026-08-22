@@ -26,7 +26,7 @@ async def test_fresh_postgres_bootstraps_engine_schema_before_first_source():
 
     async with application_engine.begin() as connection:
         await connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-    assert "source_config" not in await _table_names(application_engine)
+    assert "data_source" not in await _table_names(application_engine)
 
     transport = httpx.ASGITransport(app=app)
     async with app.router.lifespan_context(app):
@@ -53,13 +53,16 @@ async def test_fresh_postgres_bootstraps_engine_schema_before_first_source():
         # relation "source_config" does not exist.
         await app.state.engine_manager.provision(source_config_id, source)
 
-        from zleap.sag.db import get_engine, get_session_factory
-        from zleap.sag.db.models import EntityType, SourceConfig
+        from zleap.sag.db.models import DataSource, EntityType
 
-        engine_tables = await _table_names(get_engine())
-        assert {"source_config", "source_chunk", "source_event"} <= engine_tables
-        async with get_session_factory()() as session:
-            parent = await session.get(SourceConfig, source_config_id)
+        slot = await app.state.engine_manager._slot(source_config_id, source)
+        engine_tables = await _table_names(slot.engine.resources.relational.engine())
+        assert {"data_source", "source_chunk", "source_event"} <= engine_tables
+        session_factory = await app.state.engine_manager.get_sag_session_factory(
+            source_config_id, source
+        )
+        async with session_factory() as session:
+            parent = await session.get(DataSource, source_config_id)
             entity_type_count = await session.scalar(
                 select(func.count()).select_from(EntityType).where(EntityType.scope == "global")
             )

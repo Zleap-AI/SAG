@@ -414,7 +414,7 @@ async def test_conflict_matrix_distinguishes_new_idempotent_upgrade_and_digest_c
         source = Source(
             id="source-a",
             name="Existing",
-            sag_source_config_id="src_existing",
+            sag_source_config_id="src_existing"[:36],
         )
         asset = OctxAsset(
             id=asset_id,
@@ -484,7 +484,7 @@ async def test_confirmed_update_is_bound_to_transfer_source_and_revision(octx_se
     secret = "test-secret-that-is-at-least-32-bytes-long"
     asset_id = "0191f6a0-0000-7000-8000-000000000002"
     async with octx_sessions() as session:
-        source = Source(id="source-b", name="Existing", sag_source_config_id="src_b")
+        source = Source(id="source-b", name="Existing", sag_source_config_id="src_b"[:36])
         asset = OctxAsset(id=asset_id, name="Asset", ownership=OctxAssetOwnership.IMPORTED)
         release = OctxRelease(
             id="release-b",
@@ -614,7 +614,7 @@ async def test_document_content_mutations_advance_octx_binding_revision(octx_ses
 
     asset_id = "0191f6a0-0000-7000-8000-000000000003"
     async with octx_sessions() as session:
-        source = Source(id="source-c", name="Bound", sag_source_config_id="src_c")
+        source = Source(id="source-c", name="Bound", sag_source_config_id="src_c"[:36])
         asset = OctxAsset(id=asset_id, name="Asset", ownership=OctxAssetOwnership.LOCAL)
         release = OctxRelease(
             id="release-c",
@@ -713,7 +713,7 @@ async def test_successful_document_processing_advances_binding_revision(octx_ses
 
     asset_id = "0191f6a0-0000-7000-8000-000000000004"
     async with octx_sessions() as session:
-        source = Source(id="source-d", name="Bound", sag_source_config_id="src_d")
+        source = Source(id="source-d", name="Bound", sag_source_config_id="src_d"[:36])
         asset = OctxAsset(id=asset_id, name="Asset", ownership=OctxAssetOwnership.LOCAL)
         release = OctxRelease(
             id="release-d",
@@ -776,7 +776,7 @@ async def test_retained_installation_documents_are_hidden_from_active_queries(oc
     from sag_api.services.document_service import get_document, list_documents
 
     async with octx_sessions() as session:
-        source = Source(id="source-active-docs", name="Source", sag_source_config_id="src")
+        source = Source(id="source-active-docs", name="Source", sag_source_config_id="src"[:36])
         session.add(source)
         await session.flush()
         active = Document(

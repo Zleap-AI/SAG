@@ -5,6 +5,7 @@ import shutil
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from octx import create_octx, open_octx, validate_octx
@@ -460,24 +461,27 @@ async def test_import_reuses_declared_roles_and_rebuilds_undeclared_roles(tmp_pa
     assert prepare_vector_reuse(package, plan_path, embedding) == {"chunk.heading", "chunk.content"}
 
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from zleap.sag.db.base import Base
+    from zleap.sag.db.schema import create_missing_relation_tables
 
     class VectorStore:
-        indexes: list[str] = []
-
         def __init__(self) -> None:
-            self.documents: dict[str, list[dict]] = {}
+            self.collections: list[str] = []
+            self.records: dict[str, list[Any]] = {}
 
-        async def bulk_index(self, *, index, documents, return_details, routing):
-            assert routing == "shadow-partial-roles"
-            self.indexes.append(index)
-            self.documents.setdefault(index, []).extend(documents)
-            return {"success_count": len(documents), "error_count": 0}
+        async def upsert(self, collection, records):
+            from zleap.sag.core.adapters.models import BulkResult
+
+            assert all(record.payload["data_source_id"] == "shadow-partial-roles" for record in records)
+            self.collections.append(collection)
+            self.records.setdefault(collection, []).extend(records)
+            return BulkResult(succeeded_ids=tuple(record.id for record in records))
+
+        async def publish(self, collections):
+            self.published = tuple(collections)
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'partial-roles-sag.db'}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await create_missing_relation_tables(engine, "normal")
     await import_structured_plan(
         plan_path,
         namespace,
@@ -500,11 +504,17 @@ async def test_import_reuses_declared_roles_and_rebuilds_undeclared_roles(tmp_pa
         await engine.dispose()
 
     assert stats == {"chunks": 1, "events": 1, "entities": 1, "event_entities": 1}
-    assert store.indexes == ["source_chunks", "event_vectors", "entity_vectors", "event_entity_vectors"]
+    assert store.collections == [
+        "source_chunks",
+        "event_vectors_wide",
+        "entity_vectors",
+        "event_entity_vectors",
+    ]
     # Declared chunk roles are reused: no embedding call and stored vectors
     # match the package payload.
-    assert store.documents["source_chunks"][0]["heading_vector"] == pytest.approx([0.1, 0.2, 0.3])
-    assert store.documents["source_chunks"][0]["content_vector"] == pytest.approx([0.1, 0.2, 0.3])
+    chunk_vectors = store.records["source_chunks"][0].vectors
+    assert chunk_vectors["heading_vector"] == pytest.approx([0.1, 0.2, 0.3])
+    assert chunk_vectors["content_vector"] == pytest.approx([0.1, 0.2, 0.3])
     # Undeclared roles are rebuilt through the embedding provider.
     assert embedding.calls == [
         ["Event"],
@@ -531,7 +541,7 @@ async def test_rebuild_vectors_falls_back_to_generation_when_reuse_preparation_f
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from zleap.sag.db.models import SourceChunk, SourceConfig
+    from zleap.sag.db.models import DataSource, SourceChunk
 
     from sag_api.sag import octx_vector_reuse
     from sag_api.sag.octx_vector_rebuilder import rebuild_vectors
@@ -555,25 +565,29 @@ async def test_rebuild_vectors_falls_back_to_generation_when_reuse_preparation_f
 
     class VectorStore:
         def __init__(self) -> None:
-            self.indexes: list[str] = []
+            self.collections: list[str] = []
 
-        async def bulk_index(self, *, index, documents, return_details, routing):
-            self.indexes.append(index)
-            return {"success_count": len(documents), "error_count": 0}
+        async def upsert(self, collection, records):
+            from zleap.sag.core.adapters.models import BulkResult
+
+            self.collections.append(collection)
+            return BulkResult(succeeded_ids=tuple(record.id for record in records))
+
+        async def publish(self, collections):
+            self.published = tuple(collections)
 
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from zleap.sag.db.base import Base
+    from zleap.sag.db.schema import create_missing_relation_tables
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'fallback-sag.db'}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await create_missing_relation_tables(engine, "normal")
     async with sessions() as session:
-        session.add(SourceConfig(id="src-fallback", name="Fallback", target_config={}))
+        session.add(DataSource(id="src-fallback", name="Fallback"))
         session.add(
             SourceChunk(
                 id="019c2222-2222-7222-8222-222222222222",
-                source_config_id="src-fallback",
+                data_source_id="src-fallback",
                 source_type="article",
                 source_id="article-fallback",
                 heading="Head",
@@ -601,7 +615,7 @@ async def test_rebuild_vectors_falls_back_to_generation_when_reuse_preparation_f
         await engine.dispose()
 
     assert stats == {"chunks": 1, "events": 0, "entities": 0, "event_entities": 0}
-    assert store.indexes == ["source_chunks"]
+    assert store.collections == ["source_chunks"]
     assert checkpoint["reusable_roles"] == []
     # The failure degraded to a full generation path instead of crashing.
     assert embedding.calls == [["Head\n\nBody"], ["Head"]]
@@ -772,6 +786,8 @@ async def test_lancedb_arrow_stream_exports_large_role_without_python_vector_mat
 
 
 async def test_write_vector_payload_creates_valid_vectors_v01_package(tmp_path: Path) -> None:
+    vector_a = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    vector_b = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]
     doc_id = "019c1234-5678-7abc-8def-0123456789ab"
     chunk_id = "019c2222-2222-7222-8222-222222222222"
     event_id = "019c4444-4444-7444-8444-444444444444"
@@ -802,12 +818,12 @@ async def test_write_vector_payload_creates_valid_vectors_v01_package(tmp_path: 
     class Embedding:
         model = "test/embedding"
         base_url = "https://embedding.invalid/v1"
-        dimensions = 3
+        dimensions = 9
         calls: list[list[str]] = []
 
         async def batch_generate(self, texts):
             self.calls.append(list(texts))
-            return [[0.1, 0.2, 0.3] for _ in texts]
+            return [vector_a for _ in texts]
 
     relation_key = f"event_entity:{event_id}:{entity_id}"
     source_ids = {
@@ -821,7 +837,7 @@ async def test_write_vector_payload_creates_valid_vectors_v01_package(tmp_path: 
 
     class ExistingVectors:
         async def fetch_vector_fields(self, index, ids, fields):
-            return {record_id: {field: [0.1, 0.2, 0.3] for field in fields} for record_id in ids}
+            return {record_id: {field: vector_a for field in fields} for record_id in ids}
 
     roles = await write_existing_vector_payload(
         workspace,
@@ -891,9 +907,9 @@ async def test_write_vector_payload_creates_valid_vectors_v01_package(tmp_path: 
 
     with ArrowVectorReuseReader(plan_path) as reuse_reader:
         assert reuse_reader.get_many("chunk.content", [chunk_id]) == {
-            chunk_id: pytest.approx([0.1, 0.2, 0.3])
+            chunk_id: pytest.approx(vector_a)
         }
-    assert get_reused_vector(plan_path, "chunk.content", chunk_id) == pytest.approx([0.1, 0.2, 0.3])
+    assert get_reused_vector(plan_path, "chunk.content", chunk_id) == pytest.approx(vector_a)
 
     from sag_api.sag.octx_vector_rebuilder import _vectors_for_role
 
@@ -909,7 +925,7 @@ async def test_write_vector_payload_creates_valid_vectors_v01_package(tmp_path: 
         reuse_reader=ArrowVectorReuseReader(plan_path),
     )
     assert len(reused) == 1
-    assert reused[0] == pytest.approx([0.1, 0.2, 0.3])
+    assert reused[0] == pytest.approx(vector_a)
 
     class BatchReader:
         calls: list[tuple[str, list[str]]] = []
@@ -917,8 +933,8 @@ async def test_write_vector_payload_creates_valid_vectors_v01_package(tmp_path: 
         def get_many(self, role: str, record_ids: list[str]):
             self.calls.append((role, list(record_ids)))
             return {
-                "chunk-a": [0.1, 0.2, 0.3],
-                "chunk-b": [0.4, 0.5, 0.6],
+                "chunk-a": vector_a,
+                "chunk-b": vector_b,
             }
 
     batch_reader = BatchReader()
@@ -935,8 +951,8 @@ async def test_write_vector_payload_creates_valid_vectors_v01_package(tmp_path: 
 
     assert batch_reader.calls == [("chunk.content", ["chunk-a", "chunk-b"])]
     assert batch_reused == [
-        pytest.approx([0.1, 0.2, 0.3]),
-        pytest.approx([0.4, 0.5, 0.6]),
+        pytest.approx(vector_a),
+        pytest.approx(vector_b),
     ]
 
     class BrokenReader:
@@ -948,7 +964,7 @@ async def test_write_vector_payload_creates_valid_vectors_v01_package(tmp_path: 
 
         async def batch_generate(self, texts):
             self.calls.append(list(texts))
-            return [[0.7, 0.8, 0.9] for _ in texts]
+            return [vector_b for _ in texts]
 
     fallback_embedding = FallbackEmbedding()
     fallback = await _vectors_for_role(
@@ -959,59 +975,75 @@ async def test_write_vector_payload_creates_valid_vectors_v01_package(tmp_path: 
         reuse_reader=BrokenReader(),
     )
 
-    assert fallback == [[0.7, 0.8, 0.9]]
+    assert fallback == [vector_b]
     assert fallback_embedding.calls == [["A"]]
 
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from zleap.sag.db.base import Base
+    from zleap.sag import DataEngine
+    from zleap.sag.core.adapters.models import Filter, VectorQuery
 
+    from sag_api.core.config import Settings
+    from sag_api.sag.config_builder import build_engine_config
     from sag_api.sag.octx_importer import import_structured_plan
     from sag_api.sag.octx_vector_rebuilder import rebuild_vectors
 
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'sag.db'}")
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    await import_structured_plan(
-        plan_path,
-        namespace,
-        source_config_id="shadow-vectors-v02",
-        source_name="Shadow",
-        session_factory=sessions,
+    target_dir = tmp_path / "target-engine"
+    settings = Settings(
+        data_dir=str(target_dir),
+        llm_api_key="fixture",
+        embedding_api_key="fixture",
+        embedding_dimensions=9,
+        _env_file=None,
     )
+    data_engine = DataEngine(build_engine_config(settings), health_check=False)
+    await data_engine.start()
+    sessions = data_engine.resources.relational.session_factory()
 
     class CompatibleNoEmbedding:
         model = "test/embedding"
         base_url = "https://embedding.invalid/v1"
-        dimensions = 3
+        dimensions = 9
 
         async def batch_generate(self, _texts):
             raise AssertionError("full compatible package must skip all Embedding calls")
 
-    class VectorStore:
-        indexes: list[str] = []
-
-        async def bulk_index(self, *, index, documents, return_details, routing):
-            assert routing == "shadow-vectors-v02"
-            self.indexes.append(index)
-            return {"success_count": len(documents), "error_count": 0}
-
-    store = VectorStore()
     try:
+        await import_structured_plan(
+            plan_path,
+            namespace,
+            source_config_id="shadow-vectors-v02",
+            source_name="Shadow",
+            session_factory=sessions,
+        )
         stats = await rebuild_vectors(
             "shadow-vectors-v02",
             {},
             session_factory=sessions,
             embedding_client=CompatibleNoEmbedding(),
-            vector_store=store,
+            vector_store=data_engine.resources.vector,
             package_path=package,
             plan_path=plan_path,
         )
+        names = await data_engine.resources.vector.schema_object_names()
+        hits = await data_engine.resources.vector.query(
+            "source_chunks",
+            VectorQuery(
+                vector=vector_a,
+                vector_field="content_vector",
+                filters=Filter.eq("data_source_id", "shadow-vectors-v02"),
+                limit=1,
+            ),
+        )
     finally:
-        await engine.dispose()
+        await data_engine.aclose()
 
     assert stats == {"chunks": 1, "events": 1, "entities": 1, "event_entities": 1}
-    assert store.indexes == ["source_chunks", "event_vectors", "entity_vectors", "event_entity_vectors"]
+    assert names >= {
+        "source_chunks",
+        "event_vectors_wide",
+        "entity_vectors",
+        "event_entity_vectors",
+    }
+    assert hits and hits[0].payload["data_source_id"] == "shadow-vectors-v02"
 
     existing_workspace = tmp_path / "existing-workspace"
     shutil.copytree(workspace, existing_workspace)

@@ -30,16 +30,17 @@ async def smoke_test_installation(
     caller can keep the installation in SHADOW and transition the transfer to
     FAILED — the atomic swap onto ``Source.sag_source_config_id`` is never taken.
     """
-    from zleap.sag.db import get_session_factory
     from zleap.sag.db.models import (
+        DataSource,
         Entity,
         EventEntity,
         SourceChunk,
-        SourceConfig,
         SourceEvent,
     )
 
-    sessions = sag_session_factory or get_session_factory()
+    if sag_session_factory is None:
+        raise RuntimeError("0.8.2 无全局会话工厂:smoke test 必须注入 sag_session_factory")
+    sessions = sag_session_factory
 
     def _fail(message: str) -> ValidationError:
         return ValidationError(
@@ -51,29 +52,29 @@ async def smoke_test_installation(
         )
 
     async with sessions() as session:
-        if await session.get(SourceConfig, source_config_id) is None:
+        if await session.get(DataSource, source_config_id) is None:
             raise _fail(f"shadow SAG partition missing: {source_config_id}")
         actual = {
             "chunks": await session.scalar(
                 select(func.count())
                 .select_from(SourceChunk)
-                .where(SourceChunk.source_config_id == source_config_id)
+                .where(SourceChunk.data_source_id == source_config_id)
             ),
             "events": await session.scalar(
                 select(func.count())
                 .select_from(SourceEvent)
-                .where(SourceEvent.source_config_id == source_config_id)
+                .where(SourceEvent.data_source_id == source_config_id)
             ),
             "entities": await session.scalar(
                 select(func.count())
                 .select_from(Entity)
-                .where(Entity.source_config_id == source_config_id)
+                .where(Entity.data_source_id == source_config_id)
             ),
             "event_entities": await session.scalar(
                 select(func.count())
                 .select_from(EventEntity)
                 .join(SourceEvent, SourceEvent.id == EventEntity.event_id)
-                .where(SourceEvent.source_config_id == source_config_id)
+                .where(SourceEvent.data_source_id == source_config_id)
             ),
         }
         for kind, expected in expected_counts.items():
@@ -88,7 +89,7 @@ async def smoke_test_installation(
         if actual.get("chunks"):
             sample_chunk_id = await session.scalar(
                 select(SourceChunk.id)
-                .where(SourceChunk.source_config_id == source_config_id)
+                .where(SourceChunk.data_source_id == source_config_id)
                 .order_by(SourceChunk.id)
                 .limit(1)
             )

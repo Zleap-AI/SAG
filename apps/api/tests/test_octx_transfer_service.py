@@ -8,6 +8,7 @@ import pytest_asyncio
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.datastructures import UploadFile
+from zleap.sag.db.schema import create_missing_relation_tables
 
 
 def test_vector_progress_gate_throttles_same_stage_but_flushes_transitions() -> None:
@@ -286,7 +287,6 @@ async def test_structured_import_activates_source_only_after_shadow_is_ready(tra
     from sqlalchemy import func, select
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
     from starlette.datastructures import UploadFile
-    from zleap.sag.db.base import Base as SagBase
     from zleap.sag.db.models import SourceChunk, SourceEvent
 
     from sag_api.core.config import Settings
@@ -364,6 +364,20 @@ async def test_structured_import_activates_source_only_after_shadow_is_ready(tra
             self.ids.append(job_id)
 
     class EngineManager:
+        async def get_sag_embedding(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                model="test/embedding",
+                base_url="https://embedding.invalid/v1",
+                dimensions=2,
+            )
+
+        async def _vector_store(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace()
+
         released: list[str] = []
         session_factory_requests: list[str] = []
 
@@ -395,8 +409,7 @@ async def test_structured_import_activates_source_only_after_shadow_is_ready(tra
 
     sag_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'sag.db'}")
     sag_sessions = async_sessionmaker(sag_engine, expire_on_commit=False)
-    async with sag_engine.begin() as connection:
-        await connection.run_sync(SagBase.metadata.create_all)
+    await create_missing_relation_tables(sag_engine, "normal")
     storage = OctxStorage(tmp_path / "octx", max_upload_bytes=10 * 1024 * 1024)
     queue = Queue()
     engine_manager = EngineManager()
@@ -459,15 +472,14 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
 
     from octx import open_octx, validate_octx
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from zleap.sag.db.base import Base as SagBase
     from zleap.sag.db.models import (
         Article,
         ArticleParseStatus,
+        DataSource,
         Entity,
         EntityType,
         EventEntity,
         SourceChunk,
-        SourceConfig,
         SourceEvent,
     )
 
@@ -502,6 +514,20 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
             self.ids.append(job_id)
 
     class EngineManager:
+        async def get_sag_embedding(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                model="test/embedding",
+                base_url="https://embedding.invalid/v1",
+                dimensions=2,
+            )
+
+        async def _vector_store(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace()
+
         @asynccontextmanager
         async def maintenance(self, source_config_id, source=None):
             assert source_config_id == "src_export"
@@ -509,8 +535,7 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
 
     sag_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'export-sag.db'}")
     sag_sessions = async_sessionmaker(sag_engine, expire_on_commit=False)
-    async with sag_engine.begin() as connection:
-        await connection.run_sync(SagBase.metadata.create_all)
+    await create_missing_relation_tables(sag_engine, "normal")
     article_id = str(__import__("uuid").uuid4())
     chunk_id = str(__import__("uuid").uuid4())
     event_id = str(__import__("uuid").uuid4())
@@ -528,18 +553,16 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
             if stored_identity_model is not None
             else None
         )
-        target_config = {"octx_vector_identity": vector_identity} if vector_identity is not None else {}
         sag_session.add(
-            SourceConfig(
+            DataSource(
                 id="src_export",
                 name="Export",
-                target_config=target_config,
             )
         )
         sag_session.add(
             Article(
                 id=article_id,
-                source_config_id="src_export",
+                data_source_id="src_export",
                 title="Export Doc",
                 content="# Export Doc\n\nBody",
                 status="COMPLETED",
@@ -550,7 +573,7 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
             EntityType(
                 id=type_id,
                 scope="source",
-                source_config_id="src_export",
+                data_source_id="src_export",
                 type="topic",
                 name="Topic",
                 weight=1,
@@ -561,7 +584,7 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
         sag_session.add(
             SourceChunk(
                 id=chunk_id,
-                source_config_id="src_export",
+                data_source_id="src_export",
                 source_type="ARTICLE",
                 source_id=article_id,
                 article_id=article_id,
@@ -573,7 +596,7 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
         sag_session.add(
             Entity(
                 id=entity_id,
-                source_config_id="src_export",
+                data_source_id="src_export",
                 entity_type_id=type_id,
                 type="topic",
                 name="OCTX",
@@ -583,7 +606,7 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
         sag_session.add(
             SourceEvent(
                 id=event_id,
-                source_config_id="src_export",
+                data_source_id="src_export",
                 source_type="ARTICLE",
                 source_id=article_id,
                 article_id=article_id,
@@ -610,7 +633,11 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
     queue = Queue()
     try:
         async with transfer_sessions() as session:
-            source = Source(name="Export", sag_source_config_id="src_export")
+            source = Source(
+                name="Export",
+                sag_source_config_id="src_export"[:36],
+                config={"octx_vector_identity": vector_identity} if vector_identity is not None else {},
+            )
             session.add(source)
             await session.flush()
             document = Document(
@@ -773,11 +800,17 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
 
                 class RoundTripVectors:
                     indexes: list[str] = []
+                    published: tuple[str, ...] = ()
 
-                    async def bulk_index(self, *, index, documents, return_details, routing):
-                        assert routing == "src_roundtrip"
-                        self.indexes.append(index)
-                        return {"success_count": len(documents), "error_count": 0}
+                    async def upsert(self, collection, records):
+                        from zleap.sag.core.adapters.models import BulkResult
+
+                        self.indexes.append(collection)
+                        assert all(record.payload["data_source_id"] == "src_roundtrip" for record in records)
+                        return BulkResult(succeeded_ids=tuple(record.id for record in records))
+
+                    async def publish(self, collections):
+                        self.published = tuple(collections)
 
                 roundtrip_vectors = RoundTripVectors()
                 rebuilt = await rebuild_vectors(
@@ -797,10 +830,11 @@ async def test_export_transfer_builds_immutable_fully_validated_release(
                 }
                 assert roundtrip_vectors.indexes == [
                     "source_chunks",
-                    "event_vectors",
+                    "event_vectors_wide",
                     "entity_vectors",
                     "event_entity_vectors",
                 ]
+                assert roundtrip_vectors.published == tuple(roundtrip_vectors.indexes)
 
             class RoundTripEngine:
                 async def get_chunk(self, *_args, **_kwargs):
@@ -935,7 +969,6 @@ async def test_startup_recovery_fails_exhausted_octx_job_instead_of_requeueing(
 @pytest.mark.asyncio
 async def test_smoke_test_installation_rejects_missing_shadow_partition(tmp_path):
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from zleap.sag.db.base import Base as SagBase
 
     from sag_api.core.error_taxonomy import ErrorCode
     from sag_api.core.errors import ValidationError
@@ -943,10 +976,23 @@ async def test_smoke_test_installation_rejects_missing_shadow_partition(tmp_path
 
     sag_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'smoke-missing.db'}")
     sag_sessions = async_sessionmaker(sag_engine, expire_on_commit=False)
-    async with sag_engine.begin() as connection:
-        await connection.run_sync(SagBase.metadata.create_all)
+    await create_missing_relation_tables(sag_engine, "normal")
 
     class EngineManager:
+        async def get_sag_embedding(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                model="test/embedding",
+                base_url="https://embedding.invalid/v1",
+                dimensions=2,
+            )
+
+        async def _vector_store(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace()
+
         async def get_chunk(self, *args, **kwargs):  # pragma: no cover - unused
             raise AssertionError("get_chunk should not run when partition is missing")
 
@@ -971,8 +1017,7 @@ async def test_smoke_test_installation_rejects_missing_shadow_partition(tmp_path
 @pytest.mark.asyncio
 async def test_smoke_test_installation_rejects_row_count_mismatch(tmp_path):
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from zleap.sag.db.base import Base as SagBase
-    from zleap.sag.db.models import SourceConfig
+    from zleap.sag.db.models import DataSource
 
     from sag_api.core.error_taxonomy import ErrorCode
     from sag_api.core.errors import ValidationError
@@ -980,13 +1025,26 @@ async def test_smoke_test_installation_rejects_row_count_mismatch(tmp_path):
 
     sag_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'smoke-count.db'}")
     sag_sessions = async_sessionmaker(sag_engine, expire_on_commit=False)
-    async with sag_engine.begin() as connection:
-        await connection.run_sync(SagBase.metadata.create_all)
+    await create_missing_relation_tables(sag_engine, "normal")
     async with sag_sessions() as session:
-        session.add(SourceConfig(id="octx_shadow_empty", name="Shadow", target_config={}))
+        session.add(DataSource(id="octx_shadow_empty", name="Shadow"))
         await session.commit()
 
     class EngineManager:
+        async def get_sag_embedding(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                model="test/embedding",
+                base_url="https://embedding.invalid/v1",
+                dimensions=2,
+            )
+
+        async def _vector_store(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace()
+
         async def get_chunk(self, *args, **kwargs):  # pragma: no cover - unused
             raise AssertionError("get_chunk should not run when counts mismatch")
 
@@ -1011,8 +1069,7 @@ async def test_smoke_test_installation_rejects_row_count_mismatch(tmp_path):
 @pytest.mark.asyncio
 async def test_smoke_test_installation_wraps_engine_search_failure(tmp_path):
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from zleap.sag.db.base import Base as SagBase
-    from zleap.sag.db.models import SourceConfig
+    from zleap.sag.db.models import DataSource
 
     from sag_api.core.error_taxonomy import ErrorCode
     from sag_api.core.errors import ValidationError
@@ -1020,13 +1077,26 @@ async def test_smoke_test_installation_wraps_engine_search_failure(tmp_path):
 
     sag_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'smoke-search.db'}")
     sag_sessions = async_sessionmaker(sag_engine, expire_on_commit=False)
-    async with sag_engine.begin() as connection:
-        await connection.run_sync(SagBase.metadata.create_all)
+    await create_missing_relation_tables(sag_engine, "normal")
     async with sag_sessions() as session:
-        session.add(SourceConfig(id="octx_shadow_ok", name="Shadow", target_config={}))
+        session.add(DataSource(id="octx_shadow_ok", name="Shadow"))
         await session.commit()
 
     class EngineManager:
+        async def get_sag_embedding(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                model="test/embedding",
+                base_url="https://embedding.invalid/v1",
+                dimensions=2,
+            )
+
+        async def _vector_store(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace()
+
         async def get_chunk(self, *args, **kwargs):
             return {"chunk_id": "x", "content": "y"}
 
@@ -1054,7 +1124,6 @@ async def test_structured_import_reports_validation_error_when_smoke_test_fails(
     from octx.sag_align import write_structured_to_workspace
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
     from starlette.datastructures import UploadFile
-    from zleap.sag.db.base import Base as SagBase
 
     from sag_api.core.config import Settings
     from sag_api.core.error_taxonomy import ErrorCode
@@ -1103,6 +1172,20 @@ async def test_structured_import_reports_validation_error_when_smoke_test_fails(
             self.ids.append(job_id)
 
     class EngineManager:
+        async def get_sag_embedding(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                model="test/embedding",
+                base_url="https://embedding.invalid/v1",
+                dimensions=2,
+            )
+
+        async def _vector_store(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace()
+
         async def release(self, source_config_id: str) -> None:  # pragma: no cover
             pass
 
@@ -1117,8 +1200,7 @@ async def test_structured_import_reports_validation_error_when_smoke_test_fails(
 
     sag_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'sag.db'}")
     sag_sessions = async_sessionmaker(sag_engine, expire_on_commit=False)
-    async with sag_engine.begin() as connection:
-        await connection.run_sync(SagBase.metadata.create_all)
+    await create_missing_relation_tables(sag_engine, "normal")
     storage = OctxStorage(tmp_path / "octx", max_upload_bytes=10 * 1024 * 1024)
     queue = Queue()
     try:
@@ -1178,7 +1260,7 @@ async def test_import_rechecks_confirmed_source_revision_after_acquiring_lease(t
 
     monkeypatch.setattr(octx_transfer_service, "execute_structured_import", structured)
     async with transfer_sessions() as session:
-        source = Source(id="revision-source", name="Source", sag_source_config_id="revision-config")
+        source = Source(id="revision-source", name="Source", sag_source_config_id="revision-config"[:36])
         asset = OctxAsset(id="revision-asset", name="Asset", ownership=OctxAssetOwnership.IMPORTED)
         release = OctxRelease(
             id="revision-release",
@@ -1228,7 +1310,6 @@ async def test_structured_import_persists_and_resumes_vector_checkpoint(transfer
     from octx.sag_align import write_structured_to_workspace
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
     from starlette.datastructures import UploadFile
-    from zleap.sag.db.base import Base as SagBase
 
     from sag_api.core.config import Settings
     from sag_api.db.models import OctxTransfer
@@ -1276,6 +1357,20 @@ async def test_structured_import_persists_and_resumes_vector_checkpoint(transfer
             self.ids.append(job_id)
 
     class EngineManager:
+        async def get_sag_embedding(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                model="test/embedding",
+                base_url="https://embedding.invalid/v1",
+                dimensions=2,
+            )
+
+        async def _vector_store(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace()
+
         async def release(self, source_config_id: str) -> None:  # pragma: no cover
             pass
 
@@ -1313,8 +1408,7 @@ async def test_structured_import_persists_and_resumes_vector_checkpoint(transfer
 
     sag_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'sag.db'}")
     sag_sessions = async_sessionmaker(sag_engine, expire_on_commit=False)
-    async with sag_engine.begin() as connection:
-        await connection.run_sync(SagBase.metadata.create_all)
+    await create_missing_relation_tables(sag_engine, "normal")
     storage = OctxStorage(tmp_path / "octx", max_upload_bytes=10 * 1024 * 1024)
     queue = Queue()
     try:
@@ -1412,6 +1506,20 @@ async def test_knowledge_import_persists_nested_document_progress(transfer_sessi
     )
 
     class EngineManager:
+        async def get_sag_embedding(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                model="test/embedding",
+                base_url="https://embedding.invalid/v1",
+                dimensions=2,
+            )
+
+        async def _vector_store(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace()
+
         async def get_sag_session_factory(self, _source_config_id):
             return object()
 
@@ -1506,6 +1614,20 @@ async def test_knowledge_import_activates_documents_with_foreign_keys_enabled(tr
     monkeypatch.setattr(octx_transfer_service.settings, "upload_dir", str(tmp_path / "uploads"))
 
     class EngineManager:
+        async def get_sag_embedding(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                model="test/embedding",
+                base_url="https://embedding.invalid/v1",
+                dimensions=2,
+            )
+
+        async def _vector_store(self, *_args, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace()
+
         async def get_sag_session_factory(self, _source_config_id):
             return object()
 
@@ -1574,7 +1696,7 @@ async def test_export_rejects_sources_without_any_ready_document(transfer_sessio
             raise AssertionError(f"unexpected export job: {job_id}")
 
     async with transfer_sessions() as session:
-        source = Source(name="No READY", sag_source_config_id="no-ready")
+        source = Source(name="No READY", sag_source_config_id="no-ready"[:36])
         session.add(source)
         await session.flush()
         if document_status is not None:
@@ -1624,7 +1746,7 @@ async def test_mixed_source_requires_signed_ready_only_export_decision(
 
     queue = Queue()
     async with transfer_sessions() as session:
-        source = Source(name="Mixed", sag_source_config_id="mixed-source")
+        source = Source(name="Mixed", sag_source_config_id="mixed-source"[:36])
         session.add(source)
         await session.flush()
         ready = Document(
@@ -1703,7 +1825,7 @@ async def test_ready_only_decision_cancels_when_no_ready_documents_remain(transf
 
     queue = Queue()
     async with transfer_sessions() as session:
-        source = Source(name="Changing source", sag_source_config_id="changing-source")
+        source = Source(name="Changing source", sag_source_config_id="changing-source"[:36])
         session.add(source)
         await session.flush()
         ready = Document(
@@ -1766,7 +1888,7 @@ async def test_repeated_export_request_reuses_active_transfer(
 
     queue = Queue()
     async with transfer_sessions() as session:
-        source = Source(name="One export", sag_source_config_id="one-export")
+        source = Source(name="One export", sag_source_config_id="one-export"[:36])
         session.add(source)
         await session.flush()
         session.add(
@@ -1813,7 +1935,7 @@ async def test_document_export_freezes_one_ready_document_and_serializes_source(
 
     queue = Queue()
     async with transfer_sessions() as session:
-        source = Source(name="Documents", sag_source_config_id="document-export")
+        source = Source(name="Documents", sag_source_config_id="document-export"[:36])
         session.add(source)
         await session.flush()
         first = Document(
@@ -1906,7 +2028,7 @@ async def test_document_export_client_transfer_id_reuses_completed_request(
     queue = Queue()
     transfer_id = "b" * 32
     async with transfer_sessions() as session:
-        source = Source(name="Documents", sag_source_config_id="idempotent-document-export")
+        source = Source(name="Documents", sag_source_config_id="idempotent-document-export"[:36])
         session.add(source)
         await session.flush()
         document = Document(
@@ -1963,7 +2085,7 @@ async def test_document_export_preserves_octx_semver_prerelease(
             return None
 
     async with transfer_sessions() as session:
-        source = Source(name="Documents", sag_source_config_id="semver-document-export")
+        source = Source(name="Documents", sag_source_config_id="semver-document-export"[:36])
         session.add(source)
         await session.flush()
         document = Document(
@@ -2000,7 +2122,7 @@ async def test_document_export_rejects_non_ready_document(transfer_sessions):
             raise AssertionError("non-ready document must not be queued")
 
     async with transfer_sessions() as session:
-        source = Source(name="Documents", sag_source_config_id="not-ready-export")
+        source = Source(name="Documents", sag_source_config_id="not-ready-export"[:36])
         session.add(source)
         await session.flush()
         document = Document(
@@ -2046,7 +2168,7 @@ async def test_stale_ready_only_decision_refreshes_selection_without_queueing(
 
     queue = Queue()
     async with transfer_sessions() as session:
-        source = Source(name="Changing", sag_source_config_id="changing-source")
+        source = Source(name="Changing", sag_source_config_id="changing-source"[:36])
         session.add(source)
         await session.flush()
         first = Document(
