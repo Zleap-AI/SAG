@@ -26,7 +26,7 @@ async def test_public_document_reads_hide_logically_deleted_rows(hidden_status):
     async with SessionLocal() as session:
         source = Source(
             name=f"hidden-read-{uuid4().hex}",
-            sag_source_config_id=f"hidden-read-config-{uuid4().hex}",
+            sag_source_config_id=(f"hidden-read-config-{uuid4().hex}")[:36],
         )
         session.add(source)
         await session.flush()
@@ -46,945 +46,346 @@ async def test_public_document_reads_hide_logically_deleted_rows(hidden_status):
             await get_public_document(session, source, document.id)
 
 
+
 @pytest.mark.asyncio
-async def test_incremental_processor_pauses_after_inflight_chunks_and_resumes(monkeypatch):
-    from sag_api.sag.dto import ProcessCheckpoint
+async def _processor_with_fake_engine(
+    *,
+    ingest=None,
+    extract=None,
+    max_concurrency=30,
+    chunk_mode="standard",
+    document_title="doc",
+):
     from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
 
-    processor = IncrementalDocumentProcessor(object(), "source-config", max_concurrency=2)
-    active = 0
-    peak_active = 0
-    both_started = asyncio.Event()
+    engine = SimpleNamespace(ingest=ingest, extract=extract)
+    processor = IncrementalDocumentProcessor(
+        engine,
+        "source-config",
+        max_concurrency=max_concurrency,
+        chunk_max_tokens=1000,
+        chunk_mode=chunk_mode,
+        document_title=document_title,
+    )
+    return processor
 
-    async def extract_chunk(chunk_id: str):
-        nonlocal active, peak_active
-        active += 1
-        peak_active = max(peak_active, active)
-        if active == 2:
-            both_started.set()
-        await both_started.wait()
-        await asyncio.sleep(0)
-        active -= 1
-        return [f"event-{chunk_id}"], 100
 
-    normalized: list[list[str]] = []
-    restored: list[list[str]] = []
+def _chunk_set_ref(*, chunk_ids=("c1", "c2"), generation_id="gen-1"):
+    from zleap.sag.pipeline import ChunkSetRef, SourceType, WriteStatus
 
-    async def normalize(chunk_ids: list[str]):
-        normalized.append(chunk_ids)
+    return ChunkSetRef(
+        data_source_id="source-config",
+        source_type=SourceType.ARTICLE,
+        source_id="article-1",
+        source_version="sv-1",
+        chunk_version="cv-1",
+        generation_id=generation_id,
+        chunk_ids=tuple(chunk_ids),
+        client_key_to_chunk_id={},
+        relation_status=WriteStatus.SUCCEEDED,
+        vector_status=WriteStatus.SUCCEEDED,
+    )
 
-    async def restore(event_ids: list[str]):
-        restored.append(list(event_ids))
 
-    monkeypatch.setattr(processor, "_extract_chunk", extract_chunk)
-    monkeypatch.setattr(processor, "_normalize_event_ranks", normalize)
-    monkeypatch.setattr(processor, "_restore_checkpoint_events", restore)
+def _event_ref(*, event_ids=("e1",), stats=None, zero_chunks=()):
+    from types import SimpleNamespace
 
+    return SimpleNamespace(
+        event_ids=tuple(event_ids),
+        event_count=len(event_ids),
+        stats=dict(stats or {"zero_event_chunks": list(zero_chunks)}),
+    )
+
+
+@pytest.mark.asyncio
+async def test_ingest_builds_generation_checkpoint_and_outcome():
+    """0.8.2:ingest 返回的 ChunkSetRef 定位信息(generation/version)固化进断点。"""
+    from sag_api.sag.dto import ProcessCheckpoint, ProcessOutcome
+
+    captured: dict = {}
+
+    async def ingest(path, *, descriptor, chunk_options, index_options):
+        captured["path"] = path
+        captured["chunk_options"] = chunk_options
+        captured["index_options"] = index_options
+        assert descriptor.title == "doc"
+        return _chunk_set_ref()
+
+    async def extract(chunk_set, options, *, observer, cancellation):
+        captured["extract_chunk_ids"] = chunk_set.chunk_ids
+        captured["options"] = options
+        return _event_ref()
+
+    processor = await _processor_with_fake_engine(ingest=ingest, extract=extract)
     snapshots: list[ProcessCheckpoint] = []
-    pause_requested = False
 
-    async def on_checkpoint(value: ProcessCheckpoint):
-        nonlocal pause_requested
-        snapshots.append(value)
-        pause_requested = True
+    async def on_checkpoint(value):
+        snapshots.append(value.model_copy(deep=True))
+
+    outcome = await processor.process(
+        "/tmp/doc.md",
+        checkpoint=ProcessCheckpoint(),
+        on_checkpoint=on_checkpoint,
+        should_pause=_return_false,
+    )
+
+    assert isinstance(outcome, ProcessOutcome)
+    assert outcome.source_id == "article-1"
+    assert outcome.chunk_count == 2
+    assert outcome.event_count == 1
+    assert outcome.processed_chunk_ids == ["c1", "c2"]
+    assert outcome.paused is False
+    # ingest 断点:generation 信息已持久化
+    assert snapshots[0].generation_id == "gen-1"
+    assert snapshots[0].chunk_version == "cv-1"
+    assert snapshots[0].source_version == "sv-1"
+    assert snapshots[0].chunk_ids == ["c1", "c2"]
+    assert captured["chunk_options"].max_tokens == 1000
+    assert captured["chunk_options"].strategy == "standard"
+
+
+@pytest.mark.asyncio
+async def test_extract_receives_contract_limits_and_concurrency():
+    """0.8.2:实体契约与并发经 ExtractionOptions 传给引擎,不再由 SAG 拦截。"""
+    from sag_api.sag.dto import ProcessCheckpoint
+
+    captured: dict = {}
+
+    async def extract(chunk_set, options, *, observer, cancellation):
+        captured["options"] = options
+        return _event_ref()
+
+    processor = await _processor_with_fake_engine(extract=extract, max_concurrency=30)
+
+    await processor.process(
+        None,
+        checkpoint=ProcessCheckpoint(
+            source_id="article-1",
+            chunk_ids=["c1", "c2"],
+            generation_id="gen-1",
+            chunk_version="cv-1",
+            source_version="sv-1",
+        ),
+        on_checkpoint=_noop_checkpoint,
+        should_pause=_return_false,
+    )
+
+    options = captured["options"]
+    assert options.contract == "rich"
+    assert options.source_type == "article"
+    assert options.limits.min_entities_per_event == 1
+    assert options.execution.max_concurrency == 30
+    assert options.guidance_rules  # 知识型事项要求仍然透传
+
+
+@pytest.mark.asyncio
+async def test_progress_observer_updates_checkpoint():
+    """0.8.2:EXTRACT 的 PROGRESS 事件映射为断点进度(节流写入)。"""
+    from zleap.sag.pipeline.events import StageEvent, StageEventType, StageName
+
+    from sag_api.sag.dto import ProcessCheckpoint
+
+    received: list[StageEvent] = []
+
+    async def extract(chunk_set, options, *, observer, cancellation):
+        await observer(
+            StageEvent(run_id="r", stage=StageName.EXTRACT, type=StageEventType.PROGRESS, completed=1, total=2)
+        )
+        await observer(
+            StageEvent(run_id="r", stage=StageName.EXTRACT, type=StageEventType.PROGRESS, completed=2, total=2)
+        )
+        received.extend([])
+        return _event_ref()
+
+    processor = await _processor_with_fake_engine(extract=extract)
+    snapshots: list[ProcessCheckpoint] = []
+
+    async def on_checkpoint(value):
+        snapshots.append(value.model_copy(deep=True))
+
+    outcome = await processor.process(
+        None,
+        checkpoint=ProcessCheckpoint(
+            source_id="article-1",
+            chunk_ids=["c1", "c2"],
+            generation_id="gen-1",
+            chunk_version="cv-1",
+            source_version="sv-1",
+        ),
+        on_checkpoint=on_checkpoint,
+        should_pause=_return_false,
+    )
+
+    # 完成事件 + 最终落盘断点
+    progress_snapshots = [s for s in snapshots if len(s.processed_chunk_ids) == 2]
+    assert progress_snapshots, "PROGRESS 完成事件应触发断点写入"
+    assert outcome.processed_chunk_ids == ["c1", "c2"]
+
+
+@pytest.mark.asyncio
+async def test_pause_via_cancellation_returns_paused_outcome():
+    """0.8.2:暂停经 CancellationToken 驱动,取消后返回 paused 结果。"""
+    from zleap.sag.pipeline.errors import PipelineCancelledError
+
+    from sag_api.sag.dto import ProcessCheckpoint
+
+    async def extract(chunk_set, options, *, observer, cancellation):
+        while not cancellation.is_cancelled:
+            await asyncio.sleep(0.01)
+        raise PipelineCancelledError("流水线已取消", stage="extract", run_id="r", code="pipeline_cancelled")
+
+    processor = await _processor_with_fake_engine(extract=extract)
 
     async def should_pause():
-        return pause_requested
-
-    initial = ProcessCheckpoint(chunk_ids=["c1", "c2", "c3", "c4", "c5"])
-    paused = await processor.process(
-        None,
-        checkpoint=initial,
-        on_checkpoint=on_checkpoint,
-        should_pause=should_pause,
-    )
-
-    assert peak_active == 2
-    assert paused.paused is True
-    assert len(paused.processed_chunk_ids) == 2
-    assert paused.token_usage == 200
-    assert normalized == []
-    assert restored
-    assert set(restored[-1]) == {"event-c1", "event-c2"}
-
-    pause_requested = False
-    resumed = await processor.process(
-        None,
-        checkpoint=snapshots[-1],
-        on_checkpoint=lambda value: _append_checkpoint(snapshots, value),
-        should_pause=should_pause,
-    )
-
-    assert resumed.paused is False
-    assert set(resumed.processed_chunk_ids) == {"c1", "c2", "c3", "c4", "c5"}
-    assert resumed.event_count == 5
-    assert resumed.token_usage == 500
-    assert normalized == [["c1", "c2", "c3", "c4", "c5"]]
-    assert set(restored[-1]) == {
-        "event-c1",
-        "event-c2",
-        "event-c3",
-        "event-c4",
-        "event-c5",
-    }
-
-
-@pytest.mark.asyncio
-async def test_incremental_processor_restores_events_before_publishing_checkpoint(monkeypatch):
-    """The graph must be able to read every event advertised by a live checkpoint."""
-    from sag_api.sag.dto import ProcessCheckpoint
-    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
-
-    processor = IncrementalDocumentProcessor(object(), "source-config", max_concurrency=1)
-    restored: set[str] = set()
-    snapshots: list[ProcessCheckpoint] = []
-
-    async def extract_chunk(chunk_id: str):
-        return {
-            "chunk-1": ["event-1", "event-2"],
-            "chunk-2": ["event-3"],
-        }[chunk_id], 10
-
-    async def restore(event_ids: list[str]):
-        restored.update(event_ids)
-
-    async def publish(value: ProcessCheckpoint):
-        # `on_checkpoint` persists document.event_count. Once it becomes visible to
-        # the detail page, those same event ids must already be visible to /graph.
-        assert set(value.event_ids) <= restored
-        snapshots.append(value)
-
-    async def no_op(_ids):
-        return None
-
-    monkeypatch.setattr(processor, "_extract_chunk", extract_chunk)
-    monkeypatch.setattr(processor, "_restore_checkpoint_events", restore)
-    monkeypatch.setattr(processor, "_normalize_event_ranks", no_op)
-
-    outcome = await processor.process(
-        None,
-        checkpoint=ProcessCheckpoint(chunk_ids=["chunk-1", "chunk-2"]),
-        on_checkpoint=publish,
-        should_pause=_return_false,
-    )
-
-    assert [snapshot.event_count for snapshot in snapshots] == [2, 3]
-    assert outcome.event_count == 3
-    assert restored == {"event-1", "event-2", "event-3"}
-
-
-@pytest.mark.asyncio
-async def test_incremental_processor_passes_chunk_settings_to_zleap(monkeypatch):
-    from sag_api.sag import incremental_processor as processor_module
-    from sag_api.sag.dto import ProcessCheckpoint
-    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
-
-    seen = {}
-
-    class FakeLoader:
-        def __init__(self, *, parser=None):
-            seen["fallback_title"] = parser.extract_title("普通正文，没有 Markdown 标题")
-            seen["explicit_title"] = parser.extract_title("# 正文标题\n\n内容")
-
-        async def load(self, config):
-            seen["max_tokens"] = config.max_tokens
-            seen["chunk_mode"] = config.chunk_mode
-            return SimpleNamespace(source_id="document-1", chunk_ids=["chunk-1"])
-
-    async def complete_headings(chunk_ids, source_config_id):
-        seen["heading_vector_chunks"] = chunk_ids
-        seen["heading_vector_source"] = source_config_id
-        return 1
-
-    async def pause_after_loading():
         return True
 
-    monkeypatch.setattr(processor_module, "DocumentLoader", FakeLoader)
-    monkeypatch.setattr(
-        processor_module,
-        "complete_loaded_chunk_heading_vectors",
-        complete_headings,
-    )
-    processor = IncrementalDocumentProcessor(
-        object(),
-        "source-config",
-        max_concurrency=2,
-        chunk_max_tokens=1_600,
-        chunk_mode="heading_strict",
-        document_title="人类简史",
-    )
-
     outcome = await processor.process(
-        "/tmp/book.md",
-        checkpoint=ProcessCheckpoint(),
-        on_checkpoint=lambda value: _append_checkpoint([], value),
-        should_pause=pause_after_loading,
+        None,
+        checkpoint=ProcessCheckpoint(
+            source_id="article-1",
+            chunk_ids=["c1", "c2"],
+            generation_id="gen-1",
+            chunk_version="cv-1",
+            source_version="sv-1",
+        ),
+        on_checkpoint=_append_checkpoint,
+        should_pause=should_pause,
     )
 
-    assert seen == {
-        "fallback_title": "人类简史",
-        "explicit_title": "正文标题",
-        "max_tokens": 1_600,
-        "chunk_mode": "heading_strict",
-        "heading_vector_chunks": ["chunk-1"],
-        "heading_vector_source": "source-config",
-    }
-    assert outcome.source_id == "document-1"
+    assert outcome.paused is True
+    assert outcome.event_count == 0
 
 
 @pytest.mark.asyncio
-async def test_incremental_processor_records_successful_eventless_chunks(monkeypatch):
+async def test_resume_skips_ingest_and_rebuilds_chunk_set():
+    """断点携带 generation 信息时,恢复路径不再重新 ingest。"""
     from sag_api.sag.dto import ProcessCheckpoint
-    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
 
-    processor = IncrementalDocumentProcessor(object(), "source-config", max_concurrency=1)
+    calls: list[str] = []
 
-    async def extract_chunk(_chunk_id: str):
-        return [], 42
+    async def ingest(*_args, **_kwargs):
+        calls.append("ingest")
+        raise AssertionError("resume must not re-ingest")
 
-    async def no_op(_ids):
-        return None
+    captured: dict = {}
 
-    monkeypatch.setattr(processor, "_extract_chunk", extract_chunk)
-    monkeypatch.setattr(processor, "_restore_checkpoint_events", no_op)
-    monkeypatch.setattr(processor, "_normalize_event_ranks", no_op)
-    snapshots: list[ProcessCheckpoint] = []
+    async def extract(chunk_set, options, *, observer, cancellation):
+        captured["chunk_set"] = chunk_set
+        return _event_ref(event_ids=("e1", "e2"), stats={})
+
+    processor = await _processor_with_fake_engine(ingest=ingest, extract=extract)
 
     outcome = await processor.process(
         None,
-        checkpoint=ProcessCheckpoint(chunk_ids=["chunk-without-event"]),
-        on_checkpoint=lambda value: _append_checkpoint(snapshots, value),
+        checkpoint=ProcessCheckpoint(
+            source_id="article-1",
+            chunk_ids=["c1", "c2"],
+            generation_id="gen-1",
+            chunk_version="cv-1",
+            source_version="sv-1",
+        ),
+        on_checkpoint=_noop_checkpoint,
         should_pause=_return_false,
     )
 
-    assert outcome.processed_chunk_ids == ["chunk-without-event"]
-    assert outcome.eventless_chunk_ids == ["chunk-without-event"]
-    assert outcome.event_count == 0
-    assert snapshots[-1].eventless_chunk_ids == ["chunk-without-event"]
+    assert calls == []
+    assert captured["chunk_set"].data_source_id == "source-config"
+    assert captured["chunk_set"].source_id == "article-1"
+    assert captured["chunk_set"].chunk_ids == ("c1", "c2")
+    assert captured["chunk_set"].generation_id == "gen-1"
+    assert outcome.event_count == 2
 
 
 @pytest.mark.asyncio
-async def test_incremental_processor_unwraps_taskgroup_chunk_failure(monkeypatch):
-    from zleap.sag.exceptions import ExtractError
-
+async def test_checkpoint_without_generation_raises():
+    """旧断点(无 generation 定位信息)必须显式报错,不能静默重建。"""
     from sag_api.sag.dto import ProcessCheckpoint
-    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
 
-    processor = IncrementalDocumentProcessor(object(), "source-config", max_concurrency=2)
+    async def extract(*_args, **_kwargs):
+        raise AssertionError("should not extract")
 
-    async def extract_chunk(chunk_id: str):
-        if chunk_id == "broken":
-            raise ExtractError("结构化输出达到上限并被截断")
-        await asyncio.sleep(0.01)
-        return ["event-ok"], 10
+    processor = await _processor_with_fake_engine(extract=extract)
 
-    async def no_op(_ids):
-        return None
-
-    monkeypatch.setattr(processor, "_extract_chunk", extract_chunk)
-    monkeypatch.setattr(processor, "_restore_checkpoint_events", no_op)
-    monkeypatch.setattr(processor, "_normalize_event_ranks", no_op)
-
-    with pytest.raises(ExtractError, match="达到上限并被截断"):
+    with pytest.raises(RuntimeError, match="generation_id"):
         await processor.process(
             None,
-            checkpoint=ProcessCheckpoint(chunk_ids=["broken", "other"]),
-            on_checkpoint=lambda value: _append_checkpoint([], value),
+            checkpoint=ProcessCheckpoint(source_id="article-1", chunk_ids=["c1"]),
+            on_checkpoint=_append_checkpoint,
             should_pause=_return_false,
         )
 
 
 @pytest.mark.asyncio
-async def test_extract_chunk_tracks_tokens_from_wrapped_llm_client(monkeypatch):
-    from sag_api.sag import incremental_processor as processor_module
-    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
-
-    class FakeLeafClient:
-        async def chat(self, messages, **kwargs):
-            return SimpleNamespace(
-                content='{"data": {"items": []}}',
-                usage=SimpleNamespace(total_tokens=321),
-            )
-
-    class FakeRetryClient:
-        def __init__(self):
-            self.client = FakeLeafClient()
-
-        async def chat(self, messages, **kwargs):
-            return await self.client.chat(messages, **kwargs)
-
-    class FakeExtractor:
-        def __init__(self, **kwargs):
-            self.client = FakeRetryClient()
-
-        async def _get_llm_client(self):
-            return self.client
-
-        async def extract(self, config):
-            assert "观点、事实、定义" in config.custom_requirements
-            assert config.enable_strict_filtering is False
-            # zleap-sag 的重试客户端会让结构化输出直接调用内层客户端。
-            await self.client.client.chat([SimpleNamespace(content="西游记")])
-            return [SimpleNamespace(id="event-1")]
-
-    monkeypatch.setattr(processor_module, "EventExtractor", FakeExtractor)
-    engine = SimpleNamespace(_extractor=SimpleNamespace(prompt_manager=object(), model_config={}))
-    processor = IncrementalDocumentProcessor(engine, "source-config", max_concurrency=1)
-
-    event_ids, token_usage = await processor._extract_chunk("chunk-1")
-
-    assert event_ids == ["event-1"]
-    assert token_usage == 321
-
-
-@pytest.mark.asyncio
-async def test_extract_chunk_normalizes_unambiguous_entity_type_alias(monkeypatch):
-    import json
-
-    from sag_api.sag import incremental_processor as processor_module
-    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
-
-    payload = {
-        "type": "response",
-        "data": {
-            "items": [
-                {
-                    "entities": [
-                        {
-                            "location": "中东",
-                            "name": "中东",
-                            "description": "尼安德特人演化的主要地区之一",
-                        }
-                    ]
-                }
-            ],
-            "meta": {"reason": "ok"},
-        },
-    }
-
-    class FakeLeafClient:
-        async def chat(self, messages, **kwargs):
-            return SimpleNamespace(
-                content=json.dumps(payload, ensure_ascii=False),
-                usage=SimpleNamespace(total_tokens=42),
-            )
-
-    class FakeRetryClient:
-        def __init__(self):
-            self.client = FakeLeafClient()
-
-    class FakeExtractor:
-        def __init__(self, **kwargs):
-            self.client = FakeRetryClient()
-
-        async def _get_llm_client(self):
-            return self.client
-
-        async def extract(self, config):
-            request = {"data": {"meta": {"entity_types": [{"type": "location", "description": "地点"}]}}}
-            response = await self.client.client.chat([SimpleNamespace(content=json.dumps(request, ensure_ascii=False))])
-            entity = json.loads(response.content)["data"]["items"][0]["entities"][0]
-            assert entity == {
-                "name": "中东",
-                "description": "尼安德特人演化的主要地区之一",
-                "type": "location",
-            }
-            return [SimpleNamespace(id="event-1")]
-
-    monkeypatch.setattr(processor_module, "EventExtractor", FakeExtractor)
-    engine = SimpleNamespace(_extractor=SimpleNamespace(prompt_manager=object(), model_config={}))
-    processor = IncrementalDocumentProcessor(engine, "source-config", max_concurrency=1)
-
-    event_ids, token_usage = await processor._extract_chunk("chunk-1")
-
-    assert event_ids == ["event-1"]
-    assert token_usage == 42
-
-
-def test_extraction_response_does_not_guess_ambiguous_entity_type():
-    import json
-
-    from sag_api.sag.incremental_processor import _normalize_extraction_response
-
-    payload = {
-        "data": {
-            "items": [
-                {
-                    "entities": [
-                        {
-                            "location": "中东",
-                            "region": "西亚",
-                            "name": "中东",
-                            "description": "地区",
-                        }
-                    ]
-                }
-            ]
-        }
-    }
-    original = json.dumps(payload, ensure_ascii=False)
-    response = SimpleNamespace(content=original)
-
-    assert _normalize_extraction_response(response, {"location", "region"}) == 0
-    assert response.content == original
-
-
-def test_extraction_response_does_not_invent_unknown_entity_type():
-    import json
-
-    from sag_api.sag.incremental_processor import _normalize_extraction_response
-
-    payload = {
-        "data": {
-            "items": [
-                {
-                    "entities": [
-                        {
-                            "unknown": "中东",
-                            "name": "中东",
-                            "description": "地区",
-                        }
-                    ]
-                }
-            ]
-        }
-    }
-    original = json.dumps(payload, ensure_ascii=False)
-    response = SimpleNamespace(content=original)
-
-    assert _normalize_extraction_response(response, {"location"}) == 0
-    assert response.content == original
-
-
-def test_extraction_response_downgrades_overflow_integer_entity_value():
-    import json
-
-    from sag_api.sag.incremental_processor import _normalize_extraction_response
-
-    response = SimpleNamespace(
-        content=json.dumps(
-            {
-                "data": {
-                    "items": [
-                        {
-                            "entities": [
-                                {
-                                    "type": "metric",
-                                    "name": "累计交易笔数",
-                                    "description": "统计指标",
-                                    "value_type": "int",
-                                    "value": "9223372036854775808",
-                                }
-                            ]
-                        }
-                    ]
-                }
-            },
-            ensure_ascii=False,
-        )
-    )
-
-    assert _normalize_extraction_response(response, {"metric"}) == 1
-    entity = json.loads(response.content)["data"]["items"][0]["entities"][0]
-    assert entity["value_type"] == "text"
-    assert entity["value"] == "9223372036854775808"
-
-
-def test_extraction_response_keeps_sqlite_integer_boundaries():
-    import json
-
-    from sag_api.sag.incremental_processor import _normalize_extraction_response
-
-    values = ["-9223372036854775808", "9223372036854775807"]
-    response = SimpleNamespace(
-        content=json.dumps(
-            {
-                "data": {
-                    "items": [
-                        {
-                            "entities": [
-                                {
-                                    "type": "metric",
-                                    "name": value,
-                                    "description": "统计指标",
-                                    "value_type": "int",
-                                    "value": value,
-                                }
-                                for value in values
-                            ]
-                        }
-                    ]
-                }
-            },
-            ensure_ascii=False,
-        )
-    )
-
-    assert _normalize_extraction_response(response, {"metric"}) == 0
-    entities = json.loads(response.content)["data"]["items"][0]["entities"]
-    assert [entity["value_type"] for entity in entities] == ["int", "int"]
-
-
-def test_upstream_entity_value_parser_downgrades_overflow_integer():
-    from zleap.sag.modules.extract.parser import EntityValueParser
-
-    from sag_api.sag.incremental_processor import _install_sqlite_integer_guard
-
-    _install_sqlite_integer_guard()
-    fields = EntityValueParser().parse_to_typed_fields("9223372036854775808笔", entity_type="metric")
-
-    assert fields["value_type"] == "text"
-    assert fields["int_value"] is None
-
-
-@pytest.mark.asyncio
-async def test_extract_chunk_downgrades_overflow_integer_before_sag_persists(monkeypatch):
-    import json
-
-    from sag_api.sag import incremental_processor as processor_module
-    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
-
-    payload = {
-        "data": {
-            "items": [
-                {
-                    "entities": [
-                        {
-                            "type": "metric",
-                            "name": "9223372036854775808笔",
-                            "description": "累计交易笔数",
-                        }
-                    ]
-                }
-            ]
-        }
-    }
-
-    class FakeLeafClient:
-        async def chat(self, messages, **kwargs):
-            return SimpleNamespace(
-                content=json.dumps(payload, ensure_ascii=False),
-                usage=SimpleNamespace(total_tokens=42),
-            )
-
-    class FakeRetryClient:
-        def __init__(self):
-            self.client = FakeLeafClient()
-
-    class FakeExtractor:
-        def __init__(self, **kwargs):
-            self.client = FakeRetryClient()
-
-        async def _get_llm_client(self):
-            return self.client
-
-        async def extract(self, config):
-            request = {"data": {"meta": {"entity_types": [{"type": "metric", "description": "指标"}]}}}
-            response = await self.client.client.chat([SimpleNamespace(content=json.dumps(request, ensure_ascii=False))])
-            entity = json.loads(response.content)["data"]["items"][0]["entities"][0]
-            assert entity["value_type"] == "text"
-            return [SimpleNamespace(id="event-1")]
-
-    monkeypatch.setattr(processor_module, "EventExtractor", FakeExtractor)
-    engine = SimpleNamespace(_extractor=SimpleNamespace(prompt_manager=object(), model_config={}))
-    processor = IncrementalDocumentProcessor(engine, "source-config", max_concurrency=1)
-
-    assert await processor._extract_chunk("chunk-1") == (["event-1"], 42)
-
-
-@pytest.mark.asyncio
-async def test_extract_chunk_raises_when_sag_swallows_chunk_failure(monkeypatch):
-    from sag_api.sag import incremental_processor as processor_module
-    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
-
-    class FakeClient:
-        async def chat(self, messages, **kwargs):
-            return SimpleNamespace(content="{}", usage=SimpleNamespace(total_tokens=23))
-
-    class SwallowingExtractor:
-        def __init__(self, **kwargs):
-            self.client = FakeClient()
-
-        async def _get_llm_client(self):
-            return self.client
-
-        async def extract_from_chunk(self, chunk, config):
-            await self.client.chat([SimpleNamespace(content="book")])
-            raise RuntimeError("response schema is invalid")
-
-        async def extract(self, config):
-            try:
-                await self.extract_from_chunk(SimpleNamespace(id=config.chunk_ids[0]), config)
-            except Exception:
-                # Mirrors zleap-sag 0.7.x: the batch helper logs a chunk failure
-                # and returns an empty event list instead of propagating it.
-                return []
-            raise AssertionError("expected the fake chunk to fail")
-
-    monkeypatch.setattr(processor_module, "EventExtractor", SwallowingExtractor)
-    engine = SimpleNamespace(_extractor=SimpleNamespace(prompt_manager=object(), model_config={}))
-    processor = IncrementalDocumentProcessor(engine, "source-config", max_concurrency=1)
-
-    with pytest.raises(RuntimeError, match="response schema is invalid"):
-        await processor._extract_chunk("chunk-1")
-
-
-@pytest.mark.asyncio
-async def test_extract_chunk_retries_event_without_entity_before_save(monkeypatch):
-    """Persisting the first invalid Event would violate the OCTX Event→Entity contract."""
-    from sag_api.sag import incremental_processor as processor_module
-    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
-
-    class FakeClient:
-        async def chat(self, messages, **kwargs):
-            return SimpleNamespace(content="{}", usage=SimpleNamespace(total_tokens=10))
-
-    class FakeExtractor:
-        created = 0
-        saved: list[str] = []
-
-        def __init__(self, **kwargs):
-            self.attempt = FakeExtractor.created
-            FakeExtractor.created += 1
-            self.client = FakeClient()
-
-        async def _get_llm_client(self):
-            return self.client
-
-        async def _save_events(self, events, config):
-            FakeExtractor.saved.extend(event.id for event in events)
-            return events
-
-        async def extract(self, config):
-            await self.client.chat([SimpleNamespace(content="knowledge")])
-            event = SimpleNamespace(
-                id=f"event-{self.attempt}",
-                content="Event body",
-                event_associations=[] if self.attempt == 0 else [object()],
-                children=[],
-            )
-            await self._save_events([event], config)
-            return [event]
-
-    monkeypatch.setattr(processor_module, "EventExtractor", FakeExtractor)
-    engine = SimpleNamespace(
-        _extractor=SimpleNamespace(prompt_manager=object(), model_config={})
-    )
-    processor = IncrementalDocumentProcessor(
-        engine,
-        "source-config",
-        max_concurrency=1,
-        event_entity_attempts=2,
-    )
-
-    event_ids, token_usage = await processor._extract_chunk("chunk-1")
-
-    assert event_ids == ["event-1"]
-    assert token_usage == 20
-    assert FakeExtractor.saved == ["event-1"]
-
-
-@pytest.mark.asyncio
-async def test_extract_chunk_retries_event_without_content_before_save(monkeypatch):
-    """An Event with entities but no body must never cross the persistence boundary."""
-    from sag_api.sag import incremental_processor as processor_module
-    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
-
-    class FakeClient:
-        async def chat(self, messages, **kwargs):
-            return SimpleNamespace(content="{}", usage=SimpleNamespace(total_tokens=10))
-
-    class FakeExtractor:
-        created = 0
-        saved: list[str] = []
-
-        def __init__(self, **kwargs):
-            self.attempt = FakeExtractor.created
-            FakeExtractor.created += 1
-            self.client = FakeClient()
-
-        async def _get_llm_client(self):
-            return self.client
-
-        async def _save_events(self, events, config):
-            FakeExtractor.saved.extend(event.id for event in events)
-            return events
-
-        async def extract(self, config):
-            await self.client.chat([SimpleNamespace(content="knowledge")])
-            event = SimpleNamespace(
-                id=f"event-{self.attempt}",
-                content="   " if self.attempt == 0 else "Event body",
-                event_associations=[object()],
-                children=[],
-            )
-            await self._save_events([event], config)
-            return [event]
-
-    monkeypatch.setattr(processor_module, "EventExtractor", FakeExtractor)
-    engine = SimpleNamespace(
-        _extractor=SimpleNamespace(prompt_manager=object(), model_config={})
-    )
-    processor = IncrementalDocumentProcessor(
-        engine,
-        "source-config",
-        max_concurrency=1,
-        event_entity_attempts=2,
-    )
-
-    event_ids, token_usage = await processor._extract_chunk("chunk-1")
-
-    assert event_ids == ["event-1"]
-    assert token_usage == 20
-    assert FakeExtractor.saved == ["event-1"]
-
-
-@pytest.mark.asyncio
-async def test_extract_chunk_becomes_eventless_after_entity_contract_exhaustion(
-    monkeypatch,
-):
-    """Repeated invalid Events must yield an eventless Chunk, never an incomplete graph."""
-    from sag_api.sag import incremental_processor as processor_module
-    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
-
-    class FakeClient:
-        async def chat(self, messages, **kwargs):
-            return SimpleNamespace(content="{}", usage=SimpleNamespace(total_tokens=7))
-
-    class FakeExtractor:
-        created = 0
-        save_calls = 0
-
-        def __init__(self, **kwargs):
-            self.attempt = FakeExtractor.created
-            FakeExtractor.created += 1
-            self.client = FakeClient()
-
-        async def _get_llm_client(self):
-            return self.client
-
-        async def _save_events(self, events, config):
-            FakeExtractor.save_calls += 1
-            return events
-
-        async def extract(self, config):
-            await self.client.chat([SimpleNamespace(content="knowledge")])
-            event = SimpleNamespace(
-                id=f"event-{self.attempt}",
-                event_associations=[],
-                children=[],
-            )
-            await self._save_events([event], config)
-            return [event]
-
-    monkeypatch.setattr(processor_module, "EventExtractor", FakeExtractor)
-    engine = SimpleNamespace(
-        _extractor=SimpleNamespace(prompt_manager=object(), model_config={})
-    )
-    processor = IncrementalDocumentProcessor(
-        engine,
-        "source-config",
-        max_concurrency=1,
-        event_entity_attempts=2,
-    )
-
-    assert await processor._extract_chunk("chunk-1") == ([], 14)
-    assert FakeExtractor.created == 2
-    assert FakeExtractor.save_calls == 0
-
-
-def test_event_entity_schema_is_strengthened_without_mutating_prompt_schema():
-    """Mutating the shared prompt schema would leak one request's policy into others."""
-    from sag_api.sag.incremental_processor import _strengthen_event_entity_schema
-
-    original = {
-        "definitions": {
-            "event": {
-                "type": "object",
-                "required": ["title"],
-                "properties": {
-                    "entities": {"type": "array", "items": {}},
-                    "content": {"type": "string"},
-                },
-            }
-        }
-    }
-
-    strengthened = _strengthen_event_entity_schema(original)
-
-    assert original["definitions"]["event"]["required"] == ["title"]
-    event = strengthened["definitions"]["event"]
-    assert event["required"] == ["title", "entities", "content"]
-    assert event["properties"]["entities"]["minItems"] == 1
-    assert event["properties"]["content"]["minLength"] == 1
-
-
-def test_strengthen_event_entity_schema_passes_null_schema_through():
-    """The DeepSeek json_object compat path in ``sag.compat`` calls
-    ``chat_with_schema(response_schema=None, response_format={"type":"json_object"})``.
-    ``strengthened_chat_with_schema`` forwards that ``None`` into the strengthener,
-    where ``dict(None)`` used to raise ``'NoneType' object is not iterable`` and crash
-    the whole chunk extraction (``Chunk提取失败: 提取失败: 'NoneType' object is not iterable``)
-    before the LLM was ever called.  A null schema must strengthen to a no-op."""
-    from sag_api.sag.incremental_processor import _strengthen_event_entity_schema
-
-    assert _strengthen_event_entity_schema(None) is None
-    # Any other non-mapping value is likewise returned unchanged, never coerced.
-    assert _strengthen_event_entity_schema("not-a-schema") == "not-a-schema"
-
-
-@pytest.mark.asyncio
-async def test_strengthened_wrapper_forwards_null_response_schema():
-    """End-to-end guard: the schema-strengthening wrapper installed on the LLM
-    client must pass ``response_schema=None`` straight through to the underlying
-    ``chat_with_schema`` (json_object mode) instead of crashing in the strengthener."""
-    from sag_api.sag.incremental_processor import _strengthen_event_entity_schema
-
-    seen: dict[str, object] = {}
-
-    async def original_chat_with_schema(messages, **kwargs):
-        seen.update(kwargs)
-        return SimpleNamespace(content="{}")
-
-    # Mirror the wrapper installed in IncrementalDocumentProcessor.
-    async def strengthened_chat_with_schema(
-        *args,
-        _original_chat_with_schema=original_chat_with_schema,
-        **kwargs,
-    ):
-        call_args = list(args)
-        if "response_schema" in kwargs:
-            kwargs = {
-                **kwargs,
-                "response_schema": _strengthen_event_entity_schema(kwargs["response_schema"]),
-            }
-        elif len(call_args) >= 2:
-            call_args[1] = _strengthen_event_entity_schema(call_args[1])
-        return await _original_chat_with_schema(*call_args, **kwargs)
-
-    await strengthened_chat_with_schema(
-        [{"role": "user", "content": "x"}],
-        response_schema=None,
-        response_format={"type": "json_object"},
-    )
-    assert seen["response_schema"] is None
-    assert seen["response_format"] == {"type": "json_object"}
-
-
-def test_event_entity_attempt_setting_is_bounded():
-    """An unbounded contract retry would amplify LLM cost and stall document jobs."""
-    from pydantic import ValidationError
-
-    from sag_api.core.config import Settings
-
-    assert Settings(_env_file=None).document_event_entity_attempts == 2
-    assert Settings(
-        _env_file=None, document_event_entity_attempts=3
-    ).document_event_entity_attempts == 3
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, document_event_entity_attempts=0)
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, document_event_entity_attempts=4)
-
-
-@pytest.mark.asyncio
-async def test_extract_chunk_passes_strengthened_schema_to_llm(monkeypatch):
-    """A weak provider path must receive the strongest schema SAG can express."""
-    from sag_api.sag import incremental_processor as processor_module
-    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
-
-    class FakeClient:
-        async def chat(self, messages, **kwargs):
-            return SimpleNamespace(content="{}", usage=SimpleNamespace(total_tokens=3))
-
-        async def chat_with_schema(self, messages, *, response_schema):
-            event = response_schema["definitions"]["event"]
-            assert "entities" in event["required"]
-            assert "content" in event["required"]
-            assert event["properties"]["entities"]["minItems"] == 1
-            assert event["properties"]["content"]["minLength"] == 1
-            return await self.chat(messages)
-
-    class FakeExtractor:
-        def __init__(self, **kwargs):
-            self.client = FakeClient()
-
-        async def _get_llm_client(self):
-            return self.client
-
-        async def _save_events(self, events, config):
-            return events
-
-        async def extract(self, config):
-            schema = {
-                "definitions": {
-                        "event": {
-                            "required": ["title"],
-                            "properties": {
-                                "entities": {"type": "array"},
-                                "content": {"type": "string"},
-                            },
-                        }
-                }
-            }
-            await self.client.chat_with_schema([], response_schema=schema)
-            event = SimpleNamespace(
-                id="event-1",
-                content="Event body",
-                event_associations=[object()],
-                children=[],
-            )
-            await self._save_events([event], config)
-            return [event]
-
-    monkeypatch.setattr(processor_module, "EventExtractor", FakeExtractor)
-    processor = IncrementalDocumentProcessor(
-        SimpleNamespace(
-            _extractor=SimpleNamespace(prompt_manager=object(), model_config={})
-        ),
-        "source-config",
-        max_concurrency=1,
-    )
-
-    assert await processor._extract_chunk("chunk-1") == (["event-1"], 3)
-
-
-@pytest.mark.asyncio
-async def test_entity_contract_exhaustion_is_persisted_in_checkpoint(monkeypatch):
-    """Without durable diagnostics, an eventless quality fallback is indistinguishable from no Event."""
+async def test_zero_event_chunks_mapped_from_stats():
+    """0.8.2:无事件分块经 stats.zero_event_chunks 映射,不再逐块计数。"""
     from sag_api.sag.dto import ProcessCheckpoint
-    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
 
-    processor = IncrementalDocumentProcessor(
-        SimpleNamespace(_extractor=object()),
-        "source-config",
-        max_concurrency=1,
-    )
-    processor._event_entity_rejection_counts = {"chunk-1": 2}
+    async def extract(chunk_set, options, *, observer, cancellation):
+        return _event_ref(event_ids=(), zero_chunks=["c2"])
 
-    async def exhausted(_chunk_id):
-        return [], 14
+    processor = await _processor_with_fake_engine(extract=extract)
 
-    async def publish(checkpoint):
-        snapshots.append(checkpoint)
-
-    snapshots: list[ProcessCheckpoint] = []
-    monkeypatch.setattr(processor, "_extract_chunk", exhausted)
-    await processor._extract_remaining(
-        ["chunk-1"],
-        current=ProcessCheckpoint(chunk_ids=["chunk-1"]),
-        on_checkpoint=publish,
+    outcome = await processor.process(
+        None,
+        checkpoint=ProcessCheckpoint(
+            source_id="article-1",
+            chunk_ids=["c1", "c2"],
+            generation_id="gen-1",
+            chunk_version="cv-1",
+            source_version="sv-1",
+        ),
+        on_checkpoint=_noop_checkpoint,
         should_pause=_return_false,
     )
 
-    quality = snapshots[-1].event_entity_quality
-    assert quality.rejected_attempts == 2
-    assert quality.eventless_after_contract == ["chunk-1"]
-    assert quality.reason_counts == {"entities_missing": 2}
+    assert outcome.eventless_chunk_ids == ["c2"]
+    assert outcome.event_count == 0
+    assert outcome.paused is False
+
+
+@pytest.mark.asyncio
+async def test_extraction_batch_failure_propagates():
+    """zleap 批次失败必须上抛(带 layer/stage 由 EngineManager 翻译),不得吞掉。"""
+    from zleap.sag.pipeline.errors import PipelineError
+
+    from sag_api.sag.dto import ProcessCheckpoint
+
+    async def extract(chunk_set, options, *, observer, cancellation):
+        raise PipelineError("chunk 重试耗尽", stage="extract", code="chunk_retry_exhausted")
+
+    processor = await _processor_with_fake_engine(extract=extract)
+
+    with pytest.raises(PipelineError):
+        await processor.process(
+            None,
+            checkpoint=ProcessCheckpoint(
+                source_id="article-1",
+                chunk_ids=["c1"],
+                generation_id="gen-1",
+                chunk_version="cv-1",
+                source_version="sv-1",
+            ),
+            on_checkpoint=_append_checkpoint,
+            should_pause=_return_false,
+        )
+
+
+def test_event_entity_attempt_setting_is_bounded():
+    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
+
+    engine = SimpleNamespace()
+    low = IncrementalDocumentProcessor(engine, "c", max_concurrency=1, event_entity_attempts=0)
+    high = IncrementalDocumentProcessor(engine, "c", max_concurrency=1, event_entity_attempts=99)
+    assert low._event_entity_attempts == 1
+    assert high._event_entity_attempts == 3
 
 
 async def _return_false():
     return False
+
+
+async def _noop_checkpoint(_value):
+    return None
 
 
 async def _append_checkpoint(snapshots, value):
@@ -1007,7 +408,7 @@ async def test_pause_and_resume_document_service():
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="resume-source", sag_source_config_id="resume-source-config")
+        source = Source(name="resume-source", sag_source_config_id="resume-source-config"[:36])
         session.add(source)
         await session.flush()
         document = Document(
@@ -1036,6 +437,9 @@ async def test_pause_and_resume_document_service():
                     "event_count": 1,
                     "event_ids": ["e1"],
                     "token_usage": 12_000,
+                    "generation_id": "generation-1",
+                    "chunk_version": "chunk-version-1",
+                    "source_version": "source-version-1",
                 }
             },
         )
@@ -1090,6 +494,79 @@ async def test_pause_and_resume_document_service():
 
 
 @pytest.mark.asyncio
+async def test_resume_legacy_checkpoint_restarts_from_file_or_blocks_without_it(tmp_path):
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.core.errors import ConflictError
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.services.document_service import resume_document
+
+    class FakeQueue:
+        def __init__(self):
+            self.ids = []
+
+        async def enqueue(self, job_id: str):
+            self.ids.append(job_id)
+
+    await init_db()
+    source_file = tmp_path / "legacy.md"
+    source_file.write_text("legacy", encoding="utf-8")
+    async with SessionLocal() as session:
+        source = Source(
+            name=f"legacy-resume-{uuid4().hex}",
+            sag_source_config_id=(f"legacy-resume-{uuid4().hex}")[:36],
+        )
+        session.add(source)
+        await session.flush()
+        documents = [
+            Document(
+                source_id=source.id,
+                filename="legacy.md",
+                storage_path=str(source_file),
+                status=DocumentStatus.PAUSED,
+            ),
+            Document(
+                source_id=source.id,
+                filename="missing.md",
+                storage_path=str(tmp_path / "missing.md"),
+                status=DocumentStatus.PAUSED,
+            ),
+        ]
+        session.add_all(documents)
+        await session.flush()
+        jobs = [
+            Job(
+                type=JobType.PROCESS_DOCUMENT,
+                status=JobStatus.PAUSED,
+                source_id=source.id,
+                document_id=document.id,
+                payload={
+                    "process_checkpoint": {
+                        "source_id": "legacy-source",
+                        "chunk_ids": ["chunk-1"],
+                    }
+                },
+            )
+            for document in documents
+        ]
+        session.add_all(jobs)
+        await session.commit()
+
+        queue = FakeQueue()
+        resumed = await resume_document(
+            session, source, documents[0].id, job_queue=queue
+        )
+        assert "process_checkpoint" not in resumed.payload
+        assert documents[0].status is DocumentStatus.PENDING
+        assert queue.ids == [jobs[0].id]
+
+        with pytest.raises(ConflictError, match="原文件"):
+            await resume_document(session, source, documents[1].id, job_queue=queue)
+        await session.refresh(jobs[1])
+        assert jobs[1].status is JobStatus.PAUSED
+
+
+@pytest.mark.asyncio
 async def test_delete_document_persists_deleting_and_queues_cleanup():
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.db.models import Document, Job, Source
@@ -1109,7 +586,7 @@ async def test_delete_document_persists_deleting_and_queues_cleanup():
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="delete-source", sag_source_config_id="delete-source-config")
+        source = Source(name="delete-source", sag_source_config_id="delete-source-config"[:36])
         session.add(source)
         await session.flush()
         document = Document(
@@ -1188,7 +665,7 @@ async def test_concurrent_delete_requests_share_one_cleanup_job():
     async with SessionLocal() as session:
         source = Source(
             name="concurrent-delete-request",
-            sag_source_config_id="concurrent-delete-request-config",
+            sag_source_config_id="concurrent-delete-request-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -1259,7 +736,7 @@ async def test_pause_and_resume_only_control_process_jobs():
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="action-guards", sag_source_config_id="action-guards-config")
+        source = Source(name="action-guards", sag_source_config_id="action-guards-config"[:36])
         session.add(source)
         await session.flush()
         deleting = Document(
@@ -1343,7 +820,7 @@ async def test_delete_document_job_removes_document_after_processing_stops(tmp_p
     path = tmp_path / "deleting.md"
     path.write_text("content")
     async with SessionLocal() as session:
-        source = Source(name="delete-worker", sag_source_config_id="delete-worker-config")
+        source = Source(name="delete-worker", sag_source_config_id="delete-worker-config"[:36])
         session.add(source)
         await session.flush()
         document = Document(
@@ -1455,7 +932,7 @@ async def test_reprocess_ready_document_replaces_all_previous_derived_data():
     async with SessionLocal() as session:
         source = Source(
             name="replace-source",
-            sag_source_config_id="replace-source-config",
+            sag_source_config_id="replace-source-config"[:36],
             document_count=2,
             chunk_count=99,
             event_count=88,
@@ -1575,7 +1052,7 @@ async def test_reprocess_cleanup_job_deletes_old_data_before_queuing_processing(
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="reprocess-worker", sag_source_config_id="reprocess-config")
+        source = Source(name="reprocess-worker", sag_source_config_id="reprocess-config"[:36])
         session.add(source)
         await session.flush()
         document = Document(
@@ -1662,7 +1139,7 @@ async def test_reprocess_cleanup_does_not_queue_processing_after_delete_request(
     async with SessionLocal() as session:
         source = Source(
             name="delete-during-reprocess-cleanup",
-            sag_source_config_id="delete-during-reprocess-cleanup-config",
+            sag_source_config_id="delete-during-reprocess-cleanup-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -1738,7 +1215,7 @@ async def test_concurrent_reprocess_requests_share_one_cleanup_job():
     async with SessionLocal() as session:
         source = Source(
             name="concurrent-reprocess",
-            sag_source_config_id="concurrent-reprocess-config",
+            sag_source_config_id="concurrent-reprocess-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -1821,7 +1298,7 @@ async def test_retrying_failed_reprocess_cleanup_stays_in_maintenance_flow():
     async with SessionLocal() as session:
         source = Source(
             name="failed-reprocess-cleanup",
-            sag_source_config_id="failed-reprocess-cleanup-config",
+            sag_source_config_id="failed-reprocess-cleanup-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -1890,7 +1367,7 @@ async def test_delete_after_reprocess_request_uses_maintenance_cleanup():
     async with SessionLocal() as session:
         source = Source(
             name="delete-after-reprocess",
-            sag_source_config_id="delete-after-reprocess-config",
+            sag_source_config_id="delete-after-reprocess-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -1959,7 +1436,7 @@ async def test_delete_after_failed_reprocess_keeps_old_engine_ids_for_cleanup():
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="failed-reprocess-delete", sag_source_config_id="failed-config")
+        source = Source(name="failed-reprocess-delete", sag_source_config_id="failed-config"[:36])
         session.add(source)
         await session.flush()
         document = Document(
@@ -2107,7 +1584,7 @@ async def test_pause_cannot_overwrite_delete_that_commits_after_job_lookup(monke
     async with SessionLocal() as session:
         source = Source(
             name="pause-delete-cas",
-            sag_source_config_id="pause-delete-cas-config",
+            sag_source_config_id="pause-delete-cas-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -2191,7 +1668,7 @@ async def test_resume_cannot_overwrite_delete_that_commits_after_job_lookup(monk
     async with SessionLocal() as session:
         source = Source(
             name="resume-delete-cas",
-            sag_source_config_id="resume-delete-cas-config",
+            sag_source_config_id="resume-delete-cas-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -2267,7 +1744,7 @@ async def test_pause_rejects_ready_document_while_job_completion_is_committing()
     async with SessionLocal() as session:
         source = Source(
             name="pause-finish-cas",
-            sag_source_config_id="pause-finish-cas-config",
+            sag_source_config_id="pause-finish-cas-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -2338,7 +1815,7 @@ async def test_process_exit_cannot_overwrite_concurrent_delete(
     async with SessionLocal() as session:
         source = Source(
             name=f"{engine_mode}-delete-cas",
-            sag_source_config_id=f"{engine_mode}-delete-cas-config",
+            sag_source_config_id=(f"{engine_mode}-delete-cas-config")[:36],
         )
         session.add(source)
         await session.flush()
@@ -2423,7 +1900,7 @@ async def test_resume_uses_supervised_dispatch_after_persisting_queued_state():
     async with SessionLocal() as session:
         source = Source(
             name="resume-durable-dispatch",
-            sag_source_config_id="resume-durable-dispatch-config",
+            sag_source_config_id="resume-durable-dispatch-config"[:36],
         )
         session.add(source)
         await session.flush()

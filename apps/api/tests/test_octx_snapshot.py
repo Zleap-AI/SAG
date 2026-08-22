@@ -6,21 +6,21 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from zleap.sag.db.schema import create_missing_relation_tables
 
 
 @pytest.mark.asyncio
 async def test_export_snapshot_creates_fully_validated_structured_workspace(tmp_path):
     from octx import create_octx, open_octx
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from zleap.sag.db.base import Base
     from zleap.sag.db.models import (
         Article,
         ArticleParseStatus,
+        DataSource,
         Entity,
         EntityType,
         EventEntity,
         SourceChunk,
-        SourceConfig,
         SourceEvent,
     )
 
@@ -36,16 +36,15 @@ async def test_export_snapshot_creates_fully_validated_structured_workspace(tmp_
     original_event_title = "Full imported OCTX title " + ("x" * 300)
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'engine.db'}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await create_missing_relation_tables(engine, "normal")
     async with sessions() as session:
-        session.add(SourceConfig(id=source_config_id, name="Snapshot", target_config={}))
+        session.add(DataSource(id=source_config_id, name="Snapshot"))
         session.add(
             Article(
                 id=article_id,
-                source_config_id=source_config_id,
+                data_source_id=source_config_id,
                 title="Snapshot document",
-                source_id="external-doc",
+                document_id="external-doc",
                 content="# Snapshot document\n\nA production export.",
                 status="COMPLETED",
                 parse_status=ArticleParseStatus.COMPLETED,
@@ -55,7 +54,7 @@ async def test_export_snapshot_creates_fully_validated_structured_workspace(tmp_
             EntityType(
                 id=entity_type_id,
                 scope="source",
-                source_config_id=source_config_id,
+                data_source_id=source_config_id,
                 type="topic",
                 name="Topic",
                 weight=Decimal("1.00"),
@@ -66,7 +65,7 @@ async def test_export_snapshot_creates_fully_validated_structured_workspace(tmp_
         session.add(
             SourceChunk(
                 id=chunk_id,
-                source_config_id=source_config_id,
+                data_source_id=source_config_id,
                 source_type="ARTICLE",
                 source_id=article_id,
                 article_id=article_id,
@@ -79,7 +78,7 @@ async def test_export_snapshot_creates_fully_validated_structured_workspace(tmp_
         session.add(
             Entity(
                 id=entity_id,
-                source_config_id=source_config_id,
+                data_source_id=source_config_id,
                 entity_type_id=entity_type_id,
                 type="topic",
                 name="OCTX",
@@ -89,7 +88,7 @@ async def test_export_snapshot_creates_fully_validated_structured_workspace(tmp_
         session.add(
             SourceEvent(
                 id=event_id,
-                source_config_id=source_config_id,
+                data_source_id=source_config_id,
                 source_type="ARTICLE",
                 source_id=article_id,
                 article_id=article_id,
@@ -190,15 +189,14 @@ async def test_export_snapshot_preserves_selected_parent_event_identity(tmp_path
     """A selected child must retain its selected parent's stored OCTX identity."""
     from octx import create_octx
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from zleap.sag.db.base import Base
     from zleap.sag.db.models import (
         Article,
         ArticleParseStatus,
+        DataSource,
         Entity,
         EntityType,
         EventEntity,
         SourceChunk,
-        SourceConfig,
         SourceEvent,
     )
 
@@ -219,14 +217,13 @@ async def test_export_snapshot_preserves_selected_parent_event_identity(tmp_path
     parent_record_id = "018f5f7e-89ab-7def-8123-0123456789c2"
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'parent-identity.db'}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await create_missing_relation_tables(engine, "normal")
     async with sessions() as session:
-        session.add(SourceConfig(id=source_config_id, name="Parent identity", target_config={}))
+        session.add(DataSource(id=source_config_id, name="Parent identity"))
         session.add(
             Article(
                 id=article_id,
-                source_config_id=source_config_id,
+                data_source_id=source_config_id,
                 title="Selected document",
                 content="Selected document content.",
                 status="COMPLETED",
@@ -236,7 +233,7 @@ async def test_export_snapshot_preserves_selected_parent_event_identity(tmp_path
         session.add(
             SourceChunk(
                 id=chunk_id,
-                source_config_id=source_config_id,
+                data_source_id=source_config_id,
                 source_type="ARTICLE",
                 source_id=article_id,
                 article_id=article_id,
@@ -249,7 +246,7 @@ async def test_export_snapshot_preserves_selected_parent_event_identity(tmp_path
             EntityType(
                 id=entity_type_id,
                 scope="source",
-                source_config_id=source_config_id,
+                data_source_id=source_config_id,
                 type="topic",
                 name="Topic",
                 weight=Decimal("1.00"),
@@ -259,7 +256,7 @@ async def test_export_snapshot_preserves_selected_parent_event_identity(tmp_path
         session.add(
             Entity(
                 id=entity_id,
-                source_config_id=source_config_id,
+                data_source_id=source_config_id,
                 entity_type_id=entity_type_id,
                 type="topic",
                 name="Parent identity",
@@ -270,7 +267,7 @@ async def test_export_snapshot_preserves_selected_parent_event_identity(tmp_path
             [
                 SourceEvent(
                     id=parent_event_id,
-                    source_config_id=source_config_id,
+                    data_source_id=source_config_id,
                     source_type="ARTICLE",
                     source_id=article_id,
                     article_id=article_id,
@@ -284,7 +281,7 @@ async def test_export_snapshot_preserves_selected_parent_event_identity(tmp_path
                 ),
                 SourceEvent(
                     id=child_event_id,
-                    source_config_id=source_config_id,
+                    data_source_id=source_config_id,
                     source_type="ARTICLE",
                     source_id=article_id,
                     article_id=article_id,
@@ -342,15 +339,14 @@ async def test_document_snapshot_detaches_parent_outside_selected_article(tmp_pa
     """A child whose parent is outside the selected documents becomes a root Event."""
     from octx import create_octx
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from zleap.sag.db.base import Base
     from zleap.sag.db.models import (
         Article,
         ArticleParseStatus,
+        DataSource,
         Entity,
         EntityType,
         EventEntity,
         SourceChunk,
-        SourceConfig,
         SourceEvent,
     )
 
@@ -367,15 +363,14 @@ async def test_document_snapshot_detaches_parent_outside_selected_article(tmp_pa
     entity_type_id = str(uuid.uuid4())
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'cross-document-parent.db'}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await create_missing_relation_tables(engine, "normal")
     async with sessions() as session:
-        session.add(SourceConfig(id=source_config_id, name="Cross document parent", target_config={}))
+        session.add(DataSource(id=source_config_id, name="Cross document parent"))
         for article_id, title in ((parent_article_id, "Parent document"), (child_article_id, "Child document")):
             session.add(
                 Article(
                     id=article_id,
-                    source_config_id=source_config_id,
+                    data_source_id=source_config_id,
                     title=title,
                     content=f"{title} content.",
                     status="COMPLETED",
@@ -389,7 +384,7 @@ async def test_document_snapshot_detaches_parent_outside_selected_article(tmp_pa
             session.add(
                 SourceChunk(
                     id=chunk_id,
-                    source_config_id=source_config_id,
+                    data_source_id=source_config_id,
                     source_type="ARTICLE",
                     source_id=article_id,
                     article_id=article_id,
@@ -402,7 +397,7 @@ async def test_document_snapshot_detaches_parent_outside_selected_article(tmp_pa
             EntityType(
                 id=entity_type_id,
                 scope="source",
-                source_config_id=source_config_id,
+                data_source_id=source_config_id,
                 type="topic",
                 name="Topic",
                 weight=Decimal("1.00"),
@@ -412,7 +407,7 @@ async def test_document_snapshot_detaches_parent_outside_selected_article(tmp_pa
         session.add(
             Entity(
                 id=entity_id,
-                source_config_id=source_config_id,
+                data_source_id=source_config_id,
                 entity_type_id=entity_type_id,
                 type="topic",
                 name="Cross document parent",
@@ -423,7 +418,7 @@ async def test_document_snapshot_detaches_parent_outside_selected_article(tmp_pa
             [
                 SourceEvent(
                     id=parent_event_id,
-                    source_config_id=source_config_id,
+                    data_source_id=source_config_id,
                     source_type="ARTICLE",
                     source_id=parent_article_id,
                     article_id=parent_article_id,
@@ -436,7 +431,7 @@ async def test_document_snapshot_detaches_parent_outside_selected_article(tmp_pa
                 ),
                 SourceEvent(
                     id=child_event_id,
-                    source_config_id=source_config_id,
+                    data_source_id=source_config_id,
                     source_type="ARTICLE",
                     source_id=child_article_id,
                     article_id=child_article_id,
@@ -498,12 +493,11 @@ async def test_export_snapshot_projects_only_frozen_ready_articles(tmp_path):
     """Selecting one READY document must not leak another document's graph into the package."""
     from octx import create_octx, open_octx
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from zleap.sag.db.base import Base
     from zleap.sag.db.models import (
         Article,
         ArticleParseStatus,
+        DataSource,
         SourceChunk,
-        SourceConfig,
     )
 
     from sag_api.sag.octx_snapshot import export_snapshot
@@ -513,15 +507,14 @@ async def test_export_snapshot_projects_only_frozen_ready_articles(tmp_path):
     excluded_article = str(uuid.uuid4())
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'frozen.db'}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await create_missing_relation_tables(engine, "normal")
     async with sessions() as session:
-        session.add(SourceConfig(id=source_config_id, name="Frozen", target_config={}))
+        session.add(DataSource(id=source_config_id, name="Frozen"))
         for rank, article_id in enumerate((selected_article, excluded_article)):
             session.add(
                 Article(
                     id=article_id,
-                    source_config_id=source_config_id,
+                    data_source_id=source_config_id,
                     title=f"Document {rank}",
                     content=f"Body {rank}",
                     status="COMPLETED",
@@ -531,7 +524,7 @@ async def test_export_snapshot_projects_only_frozen_ready_articles(tmp_path):
             session.add(
                 SourceChunk(
                     id=str(uuid.uuid4()),
-                    source_config_id=source_config_id,
+                    data_source_id=source_config_id,
                     source_type="ARTICLE",
                     source_id=article_id,
                     article_id=article_id,
@@ -589,12 +582,11 @@ async def test_export_snapshot_projects_only_frozen_ready_articles(tmp_path):
 async def test_export_snapshot_rejects_stored_event_without_entity(tmp_path):
     """A legacy incomplete graph must identify the document the user can reprocess."""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from zleap.sag.db.base import Base
     from zleap.sag.db.models import (
         Article,
         ArticleParseStatus,
+        DataSource,
         SourceChunk,
-        SourceConfig,
         SourceEvent,
     )
 
@@ -605,14 +597,13 @@ async def test_export_snapshot_rejects_stored_event_without_entity(tmp_path):
     chunk_id = str(uuid.uuid4())
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'broken.db'}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await create_missing_relation_tables(engine, "normal")
     async with sessions() as session:
-        session.add(SourceConfig(id=source_config_id, name="Broken", target_config={}))
+        session.add(DataSource(id=source_config_id, name="Broken"))
         session.add(
             Article(
                 id=article_id,
-                source_config_id=source_config_id,
+                data_source_id=source_config_id,
                 title="Broken",
                 content="Body",
                 status="COMPLETED",
@@ -622,7 +613,7 @@ async def test_export_snapshot_rejects_stored_event_without_entity(tmp_path):
         session.add(
             SourceChunk(
                 id=chunk_id,
-                source_config_id=source_config_id,
+                data_source_id=source_config_id,
                 source_type="ARTICLE",
                 source_id=article_id,
                 article_id=article_id,
@@ -635,7 +626,7 @@ async def test_export_snapshot_rejects_stored_event_without_entity(tmp_path):
             session.add(
                 SourceEvent(
                     id=str(uuid.uuid4()),
-                    source_config_id=source_config_id,
+                    data_source_id=source_config_id,
                     source_type="ARTICLE",
                     source_id=article_id,
                     article_id=article_id,
@@ -691,15 +682,14 @@ async def test_export_snapshot_rejects_stored_event_without_entity(tmp_path):
 @pytest.mark.asyncio
 async def test_vector_rebuilder_requires_all_four_partition_indexes(tmp_path):
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from zleap.sag.db.base import Base
     from zleap.sag.db.models import (
         Article,
         ArticleParseStatus,
+        DataSource,
         Entity,
         EntityType,
         EventEntity,
         SourceChunk,
-        SourceConfig,
         SourceEvent,
     )
 
@@ -713,14 +703,13 @@ async def test_vector_rebuilder_requires_all_four_partition_indexes(tmp_path):
     entity_type_id = str(uuid.uuid4())
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'vectors.db'}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await create_missing_relation_tables(engine, "normal")
     async with sessions() as session:
-        session.add(SourceConfig(id=scid, name="Vectors", target_config={}))
+        session.add(DataSource(id=scid, name="Vectors"))
         session.add(
             Article(
                 id=article_id,
-                source_config_id=scid,
+                data_source_id=scid,
                 title="Doc",
                 content="Body",
                 status="COMPLETED",
@@ -731,7 +720,7 @@ async def test_vector_rebuilder_requires_all_four_partition_indexes(tmp_path):
             EntityType(
                 id=entity_type_id,
                 scope="source",
-                source_config_id=scid,
+                data_source_id=scid,
                 type="topic",
                 name="Topic",
                 weight=Decimal("1.00"),
@@ -742,7 +731,7 @@ async def test_vector_rebuilder_requires_all_four_partition_indexes(tmp_path):
         session.add(
             SourceChunk(
                 id=chunk_id,
-                source_config_id=scid,
+                data_source_id=scid,
                 source_type="ARTICLE",
                 source_id=article_id,
                 article_id=article_id,
@@ -754,7 +743,7 @@ async def test_vector_rebuilder_requires_all_four_partition_indexes(tmp_path):
         session.add(
             Entity(
                 id=entity_id,
-                source_config_id=scid,
+                data_source_id=scid,
                 entity_type_id=entity_type_id,
                 type="topic",
                 name="OCTX",
@@ -764,7 +753,7 @@ async def test_vector_rebuilder_requires_all_four_partition_indexes(tmp_path):
         session.add(
             SourceEvent(
                 id=event_id,
-                source_config_id=scid,
+                data_source_id=scid,
                 source_type="ARTICLE",
                 source_id=article_id,
                 article_id=article_id,
@@ -808,15 +797,17 @@ async def test_vector_rebuilder_requires_all_four_partition_indexes(tmp_path):
 
     class Vectors:
         indexes: list[str] = []
+        published: tuple[str, ...] = ()
 
-        async def bulk_index(self, *, index, documents, return_details, routing):
-            assert routing == scid and return_details is True
-            self.indexes.append(index)
-            return {
-                "success": True,
-                "success_count": len(documents),
-                "error_count": 0,
-            }
+        async def upsert(self, collection, records):
+            from zleap.sag.core.adapters.models import BulkResult
+
+            self.indexes.append(collection)
+            assert all(record.payload["data_source_id"] == scid for record in records)
+            return BulkResult(succeeded_ids=tuple(record.id for record in records))
+
+        async def publish(self, collections):
+            self.published = tuple(collections)
 
     vectors = Vectors()
     embedding = Embedding()
@@ -835,10 +826,11 @@ async def test_vector_rebuilder_requires_all_four_partition_indexes(tmp_path):
     assert stats == {"chunks": 1, "events": 1, "entities": 1, "event_entities": 1}
     assert vectors.indexes == [
         "source_chunks",
-        "event_vectors",
+        "event_vectors_wide",
         "entity_vectors",
         "event_entity_vectors",
     ]
+    assert vectors.published == tuple(vectors.indexes)
     assert [item["current_kind"] for item in checkpoints if item.get("batch_state") == "started"] == [
         "chunks",
         "events",

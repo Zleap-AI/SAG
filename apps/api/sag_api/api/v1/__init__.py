@@ -14,6 +14,7 @@ from sag_api.api.v1 import (
     openai,
     search,
     sources,
+    storage_bootstrap,  # [storage-bootstrap]
     system,
     universe,
 )
@@ -32,6 +33,7 @@ for _module in (
     openai,
     activity,
     attachments,
+    storage_bootstrap,  # [storage-bootstrap]
     system,
     universe,
     octx,

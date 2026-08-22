@@ -349,23 +349,21 @@ async def import_structured_plan(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> ImportStats:
     """Atomically materialize one plan into a new isolated zleap-sag partition."""
-    from zleap.sag.db import get_session_factory
     from zleap.sag.db.models import (
         Article,
         ArticleParseStatus,
         ArticleSection,
+        DataSource,
         Entity,
         EntityType,
         EventEntity,
         SourceChunk,
-        SourceConfig,
         SourceEvent,
     )
 
-    from sag_api.core.config import settings
-    from sag_api.sag.octx_vector_protocol import configured_embedding_identity
-
-    sessions = session_factory or get_session_factory()
+    if session_factory is None:
+        raise RuntimeError("0.8.2 无全局会话工厂:import_structured_plan 必须注入 session_factory")
+    sessions = session_factory
     counts = {
         "documents": 0,
         "chunks": 0,
@@ -373,14 +371,10 @@ async def import_structured_plan(
         "entities": 0,
         "event_entities": 0,
     }
-    target_config: dict[str, Any] = {"octx": {"id_namespace": id_namespace}}
-    vector_identity = configured_embedding_identity(settings)
-    if vector_identity is not None:
-        target_config["octx_vector_identity"] = vector_identity
     with OctxPlanStore(plan_path, id_namespace, create=False) as plan:
         _validate_sag_compatibility(plan)
         async with sessions() as session:
-            source_config = await session.get(SourceConfig, source_config_id)
+            source_config = await session.get(DataSource, source_config_id)
             if source_config is not None:
                 expected = {
                     "documents": plan.count("document"),
@@ -394,7 +388,7 @@ async def import_structured_plan(
                         await session.scalar(
                             select(func.count())
                             .select_from(Article)
-                            .where(Article.source_config_id == source_config_id)
+                            .where(Article.data_source_id == source_config_id)
                         )
                         or 0
                     ),
@@ -402,7 +396,7 @@ async def import_structured_plan(
                         await session.scalar(
                             select(func.count())
                             .select_from(SourceChunk)
-                            .where(SourceChunk.source_config_id == source_config_id)
+                            .where(SourceChunk.data_source_id == source_config_id)
                         )
                         or 0
                     ),
@@ -410,13 +404,13 @@ async def import_structured_plan(
                         await session.scalar(
                             select(func.count())
                             .select_from(SourceEvent)
-                            .where(SourceEvent.source_config_id == source_config_id)
+                            .where(SourceEvent.data_source_id == source_config_id)
                         )
                         or 0
                     ),
                     "entities": int(
                         await session.scalar(
-                            select(func.count()).select_from(Entity).where(Entity.source_config_id == source_config_id)
+                            select(func.count()).select_from(Entity).where(Entity.data_source_id == source_config_id)
                         )
                         or 0
                     ),
@@ -425,27 +419,27 @@ async def import_structured_plan(
                             select(func.count())
                             .select_from(EventEntity)
                             .join(SourceEvent, SourceEvent.id == EventEntity.event_id)
-                            .where(SourceEvent.source_config_id == source_config_id)
+                            .where(SourceEvent.data_source_id == source_config_id)
                         )
                         or 0
                     ),
                 }
                 derived_count = sum(actual.values())
-                partition_namespace = dict((source_config.target_config or {}).get("octx") or {}).get("id_namespace")
-                if derived_count and actual == expected and partition_namespace == id_namespace:
+                # 迁移注记:0.8.2 DataSource 无 target_config;id_namespace /
+                # 向量复用身份元数据待迁入 SAG 元库 Source.config(octx 向量
+                # 复用信任暂时关闭,导出走向量重建的安全路径)。
+                if derived_count and actual == expected:
                     return ImportStats(counts=expected)
                 if derived_count:
                     raise OctxPlanError(f"refusing to overwrite existing SAG partition: {source_config_id}")
                 source_config.name = source_name[:100]
                 source_config.description = "OCTX shadow installation"
-                source_config.target_config = target_config
             else:
                 session.add(
-                    SourceConfig(
+                    DataSource(
                         id=source_config_id,
                         name=source_name[:100],
                         description="OCTX shadow installation",
-                        target_config=target_config,
                     )
                 )
             await session.flush()
@@ -462,9 +456,9 @@ async def import_structured_plan(
                 session.add(
                     Article(
                         id=local_article_id,
-                        source_config_id=source_config_id,
+                        data_source_id=source_config_id,
                         title=_title(document),
-                        source_id=document_id,
+                        document_id=document_id,
                         summary=description,
                         content=str(document.get("body") or ""),
                         status="COMPLETED",
@@ -507,7 +501,7 @@ async def import_structured_plan(
                 session.add(
                     SourceChunk(
                         id=local_chunk_id,
-                        source_config_id=source_config_id,
+                        data_source_id=source_config_id,
                         source_type="ARTICLE",
                         source_id=local_article_id,
                         article_id=local_article_id,
@@ -527,7 +521,7 @@ async def import_structured_plan(
                     EntityType(
                         id=local_type_id,
                         scope="source",
-                        source_config_id=source_config_id,
+                        data_source_id=source_config_id,
                         article_id=None,
                         type=type_key,
                         name=type_key,
@@ -549,7 +543,7 @@ async def import_structured_plan(
                 session.add(
                     Entity(
                         id=plan.local_id("entity", entity_id),
-                        source_config_id=source_config_id,
+                        data_source_id=source_config_id,
                         entity_type_id=type_ids[type_key],
                         type=type_key,
                         name=name,
@@ -575,7 +569,7 @@ async def import_structured_plan(
                 summary = str(event.get("summary") or content[:2000] or event["title"])
                 model = SourceEvent(
                     id=plan.local_id("event", event_id),
-                    source_config_id=source_config_id,
+                    data_source_id=source_config_id,
                     source_type="ARTICLE",
                     source_id=local_article_id,
                     article_id=local_article_id,

@@ -1,6 +1,9 @@
+/** @vitest-environment jsdom */
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api, ApiError } from "./api";
+import { clearToken, setToken } from "./auth";
 
 class FakeXMLHttpRequest {
   static instances: FakeXMLHttpRequest[] = [];
@@ -45,6 +48,7 @@ function setResponse(response: typeof FakeXMLHttpRequest.nextResponse) {
 }
 
 afterEach(() => {
+  clearToken();
   FakeXMLHttpRequest.instances = [];
   setResponse({
     status: 201,
@@ -52,6 +56,41 @@ afterEach(() => {
     headers: { "X-Request-Id": "request-success" },
   });
   vi.unstubAllGlobals();
+});
+
+describe("unauthorized request ownership", () => {
+  function unauthorizedResponse() {
+    return new Response('{"error":{"code":"auth_error","message":"expired"}}', {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  it("leaves choice endpoint 401 handling to the storage bootstrap gate", async () => {
+    const location = { href: "http://localhost/", host: "localhost" };
+    vi.stubGlobal("window", { location });
+    setToken("expired-token");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(unauthorizedResponse()));
+
+    await expect(api.chooseStorageBootstrap("migrate")).rejects.toMatchObject({
+      status: 401,
+    } satisfies Partial<ApiError>);
+
+    expect(document.cookie).toContain("expired-token");
+    expect(location.href).toBe("http://localhost/");
+  });
+
+  it("clears credentials and redirects an ordinary endpoint 401", async () => {
+    const location = { href: "http://localhost/", host: "localhost" };
+    vi.stubGlobal("window", { location });
+    setToken("expired-token");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(unauthorizedResponse()));
+
+    await expect(api.capabilities()).rejects.toMatchObject({ status: 401 });
+
+    expect(document.cookie).not.toContain("expired-token");
+    expect(location.href).toBe("/login");
+  });
 });
 
 describe("uploadDocumentWithProgress", () => {

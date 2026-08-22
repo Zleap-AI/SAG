@@ -13,7 +13,7 @@ async def test_sqlite_document_timestamp_serializes_as_utc():
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="timestamp-source", sag_source_config_id="timestamp-source-config")
+        source = Source(name="timestamp-source", sag_source_config_id="timestamp-source-config"[:36])
         session.add(source)
         await session.flush()
         document = Document(

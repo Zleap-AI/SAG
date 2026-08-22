@@ -166,7 +166,7 @@ async def test_document_export_binding_is_independent_from_source_binding(
         source = Source(
             name="source",
             source_type=SourceType.DOCUMENT,
-            sag_source_config_id="source-config",
+            sag_source_config_id="source-config"[:36],
             status=SourceStatus.ACTIVE,
         )
         session.add(source)

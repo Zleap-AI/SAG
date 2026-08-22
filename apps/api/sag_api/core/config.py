@@ -114,6 +114,8 @@ class Settings(BaseSettings):
     sag_vector_provider: Literal["lancedb", "es", "pgvector", "oceanbase"] = "lancedb"
     sag_relational_provider: Literal["sqlite", "postgres", "mysql", "oceanbase"] | None = None
     sag_language: Literal["zh", "en"] = "zh"
+    # 仅对默认 SQLite + LanceDB 的 0.7.1 存量库执行旁路、可回滚升级。
+    storage_upgrade_enabled: bool = True
 
     # 生产单库（pgvector）时复用同一 Postgres —— 由这些字段拼装
     sag_pg_host: str = "localhost"
@@ -133,6 +135,10 @@ class Settings(BaseSettings):
     llm_context_window: int = _DEFAULT_LLM_PROVIDER.default_context_window
     llm_timeout_ms: int = Field(default=60_000, ge=1_000, le=600_000)
     llm_max_retries: int = Field(default=2, ge=0, le=10)
+    # auto 首选 json_schema，仅在网关明确返回“不支持”时按接入能力缓存降级。
+    llm_structured_output_mode: Literal[
+        "auto", "json_schema", "json_object", "prompt_only"
+    ] = "auto"
     # 部署方可显式锁定 LLM 接入配置；普通 SAG_LLM_* 仅作为首次启动默认值。
     lock_llm_config: bool = False
     # 透传给 chat/completions 的额外请求体（JSON），如 {"enable_thinking": false}；
