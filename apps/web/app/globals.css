@@ -3735,6 +3735,11 @@
   .answer-prose p {
     margin: 0.375rem 0;
   }
+  .answer-prose .katex-display {
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
   .answer-prose--streaming > :last-child::after {
     display: inline-block;
     width: 2px;

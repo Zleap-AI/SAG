@@ -2,7 +2,7 @@
  * 把整份 Markdown 切成若干「块」，供分块渲染使用（大文件卡顿优化）。
  *
  * 目标：在顶层空行处断句，但绝不切断跨行结构——代码围栏（``` / ~~~）、
- * 表格连续行——否则各块独立解析会渲染错乱。小段落会合并到 ~TARGET 字符的
+ * 展示公式围栏（$$）、表格连续行——否则各块独立解析会渲染错乱。小段落会合并到 ~TARGET 字符的
  * 目标窗口以控制块数；标题（ATX `#`）优先另起一块，保证章节边界自然。
  *
  * 不变式：blocks.join("") === 原文（不丢字、不改字），仅在边界插入分块点。
@@ -13,6 +13,8 @@
 const TARGET_CHARS = 5000;
 
 const FENCE_RE = /^\s{0,3}(`{3,}|~{3,})/;
+const DISPLAY_MATH_FENCE_RE = /^\s{0,3}(\${2,})\s*$/;
+const BRACKET_DISPLAY_MATH_FENCE_RE = /^\s{0,3}\\([\[\]])\s*$/;
 const HEADING_RE = /^\s{0,3}#{1,6}\s/;
 const TABLE_ROW_RE = /^\s{0,3}\|/;
 
@@ -20,6 +22,17 @@ const TABLE_ROW_RE = /^\s{0,3}\|/;
 function fenceMarker(line: string): string | null {
   const match = FENCE_RE.exec(line);
   return match ? match[1][0] : null;
+}
+
+/** 一行是否是展示公式围栏；返回完整的美元符号标记（$$、$$$ 等）。 */
+function displayMathFenceMarker(line: string): string | null {
+  const match = DISPLAY_MATH_FENCE_RE.exec(line);
+  return match ? match[1] : null;
+}
+
+function bracketDisplayMathFenceMarker(line: string): "[" | "]" | null {
+  const match = BRACKET_DISPLAY_MATH_FENCE_RE.exec(line);
+  return match?.[1] === "[" || match?.[1] === "]" ? match[1] : null;
 }
 
 /**
@@ -31,6 +44,8 @@ function toParagraphs(text: string): string[] {
   const units: string[] = [];
   let current: string[] = [];
   let fence: string | null = null; // 当前打开的围栏标记（null 表示不在围栏内）
+  let displayMathFence: string | null = null;
+  let bracketDisplayMath = false;
 
   const flush = () => {
     if (current.length) {
@@ -53,12 +68,40 @@ function toParagraphs(text: string): string[] {
       continue;
     }
 
+    if (displayMathFence) {
+      current.push(withNl);
+      const closingMathFence = displayMathFenceMarker(line);
+      if (closingMathFence && closingMathFence.length >= displayMathFence.length) {
+        displayMathFence = null;
+      }
+      continue;
+    }
+
+    if (bracketDisplayMath) {
+      current.push(withNl);
+      if (bracketDisplayMathFenceMarker(line) === "]") bracketDisplayMath = false;
+      continue;
+    }
+
     const openMarker = fenceMarker(line);
     if (openMarker) {
       // 段落中途遇到围栏起始：先收尾已有段落，再进入围栏。
       flush();
       current.push(withNl);
       fence = openMarker;
+      continue;
+    }
+
+    const mathFenceMarker = displayMathFenceMarker(line);
+    if (mathFenceMarker) {
+      current.push(withNl);
+      displayMathFence = mathFenceMarker;
+      continue;
+    }
+
+    if (bracketDisplayMathFenceMarker(line) === "[") {
+      current.push(withNl);
+      bracketDisplayMath = true;
       continue;
     }
 
