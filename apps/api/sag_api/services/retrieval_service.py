@@ -245,6 +245,7 @@ def rerank_sections(
     semantic: list[RetrievedSection],
     *,
     lexical: list[RetrievedSection] | None = None,
+    exact_lexical_keys: set[tuple[str, str]] | None = None,
     limit: int,
     analysis: QueryAnalysis | None = None,
 ) -> RerankResult:
@@ -255,7 +256,12 @@ def rerank_sections(
         segmentation_enabled=settings.search_chinese_segmentation_enabled,
     )
     lexical = lexical or []
-    exact_keys = {_section_key(section) for section in lexical}
+    lexical_keys = {_section_key(section) for section in lexical}
+    exact_keys = (
+        lexical_keys
+        if exact_lexical_keys is None
+        else lexical_keys.intersection(exact_lexical_keys)
+    )
     merged: dict[tuple[str, str], tuple[RetrievedSection, int]] = {}
     for index, section in enumerate([*semantic, *lexical]):
         key = _section_key(section)
@@ -284,14 +290,18 @@ def rerank_sections(
         key: _lexical_relevance(query, section, analysis=effective)
         for key, (section, _index) in candidates
     }
-    has_lexical_signal = any(key in exact_keys or score >= 0.2 for key, score in lexical_scores.items())
+    has_lexical_signal = any(
+        key in lexical_keys or score >= 0.2
+        for key, score in lexical_scores.items()
+    )
     ranked: list[tuple[float, float, int, RetrievedSection]] = []
 
     for position, (key, (section, original_index)) in enumerate(candidates):
         raw = max(0.0, min(1.0, float(section.score or 0.0)))
         lexical_score = lexical_scores[key]
         exact = key in exact_keys
-        if _is_boilerplate(section) and not exact and lexical_score < 0.35:
+        lexical_match = key in lexical_keys
+        if _is_boilerplate(section) and not lexical_match and lexical_score < 0.35:
             continue
         rank_score = 1.0 - position / denominator
         combined = min(
@@ -299,7 +309,7 @@ def rerank_sections(
             raw * 0.5 + rank_score * 0.2 + lexical_score * 0.3 + (0.15 if exact else 0.0),
         )
         if has_lexical_signal:
-            relevant = exact or lexical_score >= 0.2
+            relevant = lexical_match or lexical_score >= 0.2
         else:
             relevant = raw >= semantic_floor
         if not relevant:
@@ -326,15 +336,22 @@ async def _lexical_sections(
     *,
     analysis: QueryAnalysis,
     exclude_source_ids_by_config: DocumentSourceExclusions | None = None,
-) -> list[RetrievedSection]:
+) -> tuple[list[RetrievedSection], set[tuple[str, str]]]:
     grep_chunks = getattr(engine_manager, "grep_chunks", None)
     terms = analysis.lookup_terms
     if not callable(grep_chunks) or not terms:
-        return []
+        return [], set()
 
     semaphore = asyncio.Semaphore(max(1, settings.search_source_concurrency))
+    expanded_keys = {
+        normalize_lexical_text(term)
+        for term in analysis.expanded_terms
+    }
 
-    async def one(source: SearchSource, term: str) -> list[RetrievedSection]:
+    async def one(
+        source: SearchSource,
+        term: str,
+    ) -> tuple[list[RetrievedSection], bool]:
         async with semaphore:
             try:
                 options: dict[str, Any] = {
@@ -361,8 +378,8 @@ async def _lexical_sections(
                     **options,
                 )
             except Exception:  # noqa: BLE001
-                return []
-        return [
+                return [], False
+        sections = [
             RetrievedSection(
                 chunk_id=row.get("chunk_id"),
                 heading=row.get("heading") or "精确匹配",
@@ -374,9 +391,17 @@ async def _lexical_sections(
             )
             for index, row in enumerate(rows)
         ]
+        return sections, normalize_lexical_text(term) not in expanded_keys
 
     groups = await asyncio.gather(*(one(source, term) for source in sources for term in terms))
-    return [section for group in groups for section in group]
+    sections = [section for group, _strong in groups for section in group]
+    exact_keys = {
+        _section_key(section)
+        for group, strong in groups
+        if strong
+        for section in group
+    }
+    return sections, exact_keys
 
 
 async def retrieve_relevant_sections(
@@ -413,7 +438,7 @@ async def retrieve_relevant_sections(
         and exclusions
     ):
         search_options["exclude_source_ids_by_config"] = exclusions
-    outcome, lexical = await asyncio.gather(
+    outcome, lexical_recall = await asyncio.gather(
         engine_manager.search_many(targets, query, **search_options),
         _lexical_sections(
             engine_manager,
@@ -422,6 +447,7 @@ async def retrieve_relevant_sections(
             exclude_source_ids_by_config=exclusions,
         ),
     )
+    lexical, exact_lexical_keys = lexical_recall
     # A delete can commit while either engine query is in flight. Re-read the
     # persisted barrier before returning evidence so the delete is linearized.
     hidden = await _hidden_document_derivatives(sources)
@@ -439,6 +465,7 @@ async def retrieve_relevant_sections(
         query,
         semantic_sections,
         lexical=lexical_sections,
+        exact_lexical_keys=exact_lexical_keys,
         limit=requested_limit,
         analysis=analysis,
     )

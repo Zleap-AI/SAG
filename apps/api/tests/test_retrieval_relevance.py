@@ -175,6 +175,62 @@ async def test_glued_alnum_query_recalls_distant_terms_from_the_same_document():
 
 
 @pytest.mark.asyncio
+async def test_exact_glued_token_ranks_above_expansion_only_match():
+    from uuid import uuid4
+
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Source
+    from sag_api.sag import SearchOutcome
+    from sag_api.services.retrieval_service import retrieve_relevant_sections
+
+    class LexicalEngine:
+        async def search_many(self, _targets, query, **_kwargs):
+            return SearchOutcome(query=query, sections=[], stats={})
+
+        async def grep_chunks(self, _source_config_id, term, **_kwargs):
+            rows = {
+                "ai": [
+                    {
+                        "chunk_id": "expansion-only",
+                        "heading": "AI 项目 2028 路线图",
+                        "snippet": "这是两个分散词的普通匹配。",
+                        "source_id": "article-expansion",
+                    }
+                ],
+                "ai2028": [
+                    {
+                        "chunk_id": "exact-token",
+                        "heading": "产品编号",
+                        "snippet": "正式编号为 AI2028。",
+                        "source_id": "article-exact",
+                    }
+                ],
+            }
+            return rows.get(term, [])
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(
+            name="exact-token-priority",
+            sag_source_config_id=f"exact-token-{uuid4().hex}",
+        )
+        session.add(source)
+        await session.commit()
+
+        outcome = await retrieve_relevant_sections(
+            LexicalEngine(),
+            [source],
+            "AI2028",
+            top_k=8,
+        )
+
+    assert [item.chunk_id for item in outcome.sections] == [
+        "exact-token",
+        "expansion-only",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_natural_chinese_question_recalls_trailing_topic_term():
     from uuid import uuid4
 
