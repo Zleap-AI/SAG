@@ -22,6 +22,10 @@ _RESTORE = (
     "search_top_k",
     "sag_language",
     "llm_api_key",
+    "embedding_model",
+    "embedding_base_url",
+    "embedding_api_key",
+    "embedding_dimensions",
     "document_parser",
     "mineru_provider",
     "mineru_base_url",
@@ -266,13 +270,15 @@ async def _register(c, email):
 
 @pytest.mark.asyncio
 async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatch):
-    from sqlalchemy import delete
+    from sqlalchemy import delete, select
 
     from sag_api.core.db import SessionLocal
-    from sag_api.db.models import Setting
+    from sag_api.db.models import Document, Setting, Source
+    from sag_api.enums import DocumentStatus
     from sag_api.main import app
 
     snapshot = {k: getattr(settings, k) for k in _RESTORE}
+    seeded_source_id: str | None = None
     transport = httpx.ASGITransport(app=app)
     try:
         async with app.router.lifespan_context(app):
@@ -391,12 +397,86 @@ async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatc
                 assert settings.llm_max_retries == 3
                 assert settings.document_chunk_max_tokens == 1_600
                 assert settings.document_chunk_mode == "heading_strict"
+                runtime_settings = app.state.knowledge_runtime._settings
+                assert app.state.llm._settings is runtime_settings
+                assert app.state.engine_manager._settings is runtime_settings
+                assert runtime_settings.llm_model == "test-model-x"
+                assert runtime_settings.llm_provider == "anthropic"
+                assert runtime_settings.document_chunk_max_tokens == 1_600
+                assert runtime_settings.search_top_k == 5
                 g = (await c.get("/api/v1/system/model-config", headers=A)).json()
                 assert g["llm_model"] == "test-model-x" and g["search_top_k"] == 5
                 assert g["sag_language"] == "en"
                 assert g["llm_timeout_ms"] == 45_000 and g["llm_max_retries"] == 3
                 assert g["document_chunk_max_tokens"] == 1_600
                 assert g["document_chunk_mode"] == "heading_strict"
+
+                # 已入库文档仍使用旧向量空间时，禁止直接切换 Embedding 身份。
+                previous_embedding = (
+                    settings.embedding_model,
+                    settings.embedding_dimensions,
+                )
+                async with SessionLocal() as s:
+                    source = Source(
+                        name="embedding-guard",
+                        sag_source_config_id="embedding-guard-source",
+                    )
+                    s.add(source)
+                    await s.flush()
+                    seeded_source_id = source.id
+                    s.add(
+                        Document(
+                            source_id=source.id,
+                            filename="indexed.md",
+                            content_type="text/markdown",
+                            storage_path="/tmp/indexed.md",
+                            status=DocumentStatus.READY,
+                            sag_source_id="indexed-document",
+                        )
+                    )
+                    await s.commit()
+
+                incompatible = await c.put(
+                    "/api/v1/system/model-config",
+                    headers=A,
+                    json={
+                        "embedding_model": "replacement-embedding",
+                        "embedding_dimensions": 1_536,
+                    },
+                )
+                assert incompatible.status_code == 409
+                assert "已有入库文档" in incompatible.text
+                assert (
+                    settings.embedding_model,
+                    settings.embedding_dimensions,
+                ) == previous_embedding
+                assert (
+                    runtime_settings.embedding_model,
+                    runtime_settings.embedding_dimensions,
+                ) == previous_embedding
+                async with SessionLocal() as s:
+                    stored_config = await s.scalar(
+                        select(Setting).where(
+                            Setting.scope == "global",
+                            Setting.key == "model_config",
+                        )
+                    )
+                    assert stored_config is not None
+                    assert stored_config.value.get("embedding_model") != "replacement-embedding"
+
+                compatible = await c.put(
+                    "/api/v1/system/model-config",
+                    headers=A,
+                    json={
+                        "embedding_base_url": "https://embedding.example/v1",
+                        "embedding_api_key": "sk-embedding-replacement",
+                    },
+                )
+                assert compatible.status_code == 200
+                assert compatible.json()["config"]["embedding_api_key_set"] is True
+                assert runtime_settings.embedding_base_url == "https://embedding.example/v1"
+                assert runtime_settings.embedding_api_key == "sk-embedding-replacement"
+                assert "sk-embedding-replacement" not in compatible.text
 
                 # 密钥：设假 key → set=True 且不回显明文
                 r = await c.put(
@@ -418,6 +498,9 @@ async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatc
                 assert r.json()["config"]["mineru_base_url"] == "https://api.302ai.cn"
                 assert r.json()["config"]["mineru_api_key_set"] is True
                 assert "sk-fake" not in r.text
+                assert runtime_settings.mineru_provider == "302"
+                assert runtime_settings.mineru_base_url == "https://api.302ai.cn"
+                assert runtime_settings.mineru_api_key == "sk-fake-xyz"
                 # 留空提交 → 保留原 key（仍 set），同时更新其他字段
                 r = await c.put(
                     "/api/v1/system/model-config",
@@ -492,6 +575,9 @@ async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatc
                 ).status_code == 422
     finally:
         async with SessionLocal() as s:
+            if seeded_source_id is not None:
+                await s.execute(delete(Document).where(Document.source_id == seeded_source_id))
+                await s.execute(delete(Source).where(Source.id == seeded_source_id))
             await s.execute(
                 delete(Setting).where(
                     Setting.scope == "global",

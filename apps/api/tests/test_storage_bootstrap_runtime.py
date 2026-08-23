@@ -323,6 +323,46 @@ async def test_runtime_restart_publishes_new_dependencies(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_runtime_applies_non_engine_settings_without_resetting_engines(
+    tmp_path: Path,
+) -> None:
+    factory = _RuntimeFactory()
+    active_path = tmp_path / "active-engine"
+    runtime = KnowledgeRuntime(settings, object(), active_path=active_path, factory=factory)
+    app = SimpleNamespace(state=SimpleNamespace(), source_mcp=None)
+    await runtime.start(app)
+    engine_manager = app.state.engine_manager
+    reset_count = factory.calls.count("engine_manager.stop")
+
+    updated = settings.model_copy(update={"search_top_k": 17})
+    await runtime.apply_settings(updated, reset_engines=False)
+
+    assert runtime._settings.search_top_k == 17
+    assert runtime._settings.data_dir == str(active_path)
+    assert app.state.engine_manager is engine_manager
+    assert factory.calls.count("engine_manager.stop") == reset_count
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_resets_cached_engines_after_engine_settings_change(
+    tmp_path: Path,
+) -> None:
+    factory = _RuntimeFactory()
+    runtime = KnowledgeRuntime(settings, object(), active_path=tmp_path, factory=factory)
+    app = SimpleNamespace(state=SimpleNamespace(), source_mcp=None)
+    await runtime.start(app)
+    reset_count = factory.calls.count("engine_manager.stop")
+
+    updated = settings.model_copy(update={"llm_model": "replacement-model"})
+    await runtime.apply_settings(updated, reset_engines=True)
+
+    assert runtime._settings.llm_model == "replacement-model"
+    assert factory.calls.count("engine_manager.stop") == reset_count + 1
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
 async def test_runtime_stop_preserves_replaced_app_state(tmp_path: Path) -> None:
     factory = _RuntimeFactory()
     runtime = KnowledgeRuntime(settings, object(), active_path=tmp_path, factory=factory)

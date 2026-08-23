@@ -15,10 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sag_api.core.config import Settings
 from sag_api.core.config import settings as _settings
-from sag_api.core.errors import ConfigurationError
+from sag_api.core.errors import ConfigurationError, ConflictError
 from sag_api.core.logging import get_logger
 from sag_api.core.model_providers import get_model_provider
-from sag_api.db.models import Setting
+from sag_api.db.models import Document, Setting
 from sag_api.enums import SEARCH_STRATEGIES, normalize_search_strategy
 
 _SCOPE = "global"
@@ -108,6 +108,33 @@ _OFFICIAL_MINERU_BASE_URL = "https://mineru.net/api/v4"
 
 async def _load_row(session: AsyncSession, key: str = _KEY) -> Setting | None:
     return await session.scalar(select(Setting).where(Setting.scope == _SCOPE, Setting.key == key))
+
+
+def _embedding_identity(settings: Settings, patch: dict) -> tuple[str, int]:
+    model = str(patch.get("embedding_model", settings.embedding_model))
+    dimensions = patch.get("embedding_dimensions", settings.embedding_dimensions)
+    return model, int(dimensions or 1024)
+
+
+async def _reject_incompatible_embedding_change(
+    session: AsyncSession,
+    patch: dict,
+) -> None:
+    if _embedding_identity(_settings, patch) == _embedding_identity(_settings, {}):
+        return
+    indexed_document_id = await session.scalar(
+        select(Document.id)
+        .where(
+            Document.is_active.is_(True),
+            Document.sag_source_id.is_not(None),
+        )
+        .limit(1)
+    )
+    if indexed_document_id is not None:
+        raise ConflictError(
+            "当前知识库已有入库文档，更换 Embedding 模型或维度会导致现有向量失效；"
+            "请先清理并重新入库文档，或等待向量重建功能。"
+        )
 
 
 def _normalize_overrides(overrides: dict) -> dict:
@@ -269,6 +296,7 @@ async def save_model_config(session: AsyncSession, patch: dict) -> dict:
     - 密钥字段值为空 → 忽略（保留原密钥，避免误清空）；空值仅经显式非空覆盖；
     - 可空字段（base_url / dimensions）值为空 → 置 None（清除）。
     """
+    await _reject_incompatible_embedding_change(session, patch)
     row = await _load_row(session)
     raw = dict(row.value) if row and isinstance(row.value, dict) else {}
     stored = _normalize_overrides(raw)
