@@ -1,7 +1,7 @@
 {
   "name": "sag-web",
   "private": true,
-  "version": "1.6.9",
+  "version": "1.7.0",
   "packageManager": "npm@10.9.2",
   "engines": {
     "node": ">=20"
@@ -42,6 +42,7 @@
     "clsx": "2.1.1",
     "cmdk": "^1.1.1",
     "d3-force": "^3.0.0",
+    "katex": "^0.16.47",
     "lucide-react": "0.469.0",
     "motion": "^12.42.2",
     "next": "15.5.20",
@@ -51,7 +52,9 @@
     "react-dom": "19.0.0",
     "react-markdown": "^10.1.0",
     "react-resizable-panels": "^2.1.9",
+    "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
     "sonner": "1.7.1",
     "tailwind-merge": "2.6.0",
     "three": "0.185.1"
