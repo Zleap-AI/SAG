@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from fastapi import UploadFile
+from octx import open_octx
 
 _SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+-]*$")
 
@@ -50,9 +51,16 @@ class StoredUpload:
 
 
 class OctxStorage:
-    def __init__(self, root: Path, *, max_upload_bytes: int) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        max_upload_bytes: int,
+        recovery_roots: tuple[Path, ...] = (),
+    ) -> None:
         self.root = root.resolve()
         self.max_upload_bytes = max_upload_bytes
+        self.recovery_roots = tuple(path.resolve() for path in recovery_roots)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     @staticmethod
@@ -71,15 +79,63 @@ class OctxStorage:
         return self.root / "document-workspaces" / self._component(document_id)
 
     def resolve_key(self, key: str) -> Path:
+        return self._resolve_below(self.root, key)
+
+    @staticmethod
+    def _resolve_below(root: Path, key: str) -> Path:
         logical = PurePosixPath(key)
         if logical.is_absolute() or not logical.parts or any(
             part in {"", ".", ".."} for part in logical.parts
         ):
             raise ValueError("invalid OCTX artifact key")
-        candidate = (self.root / Path(*logical.parts)).resolve()
-        if candidate != self.root and self.root not in candidate.parents:
+        candidate = (root / Path(*logical.parts)).resolve()
+        if candidate != root and root not in candidate.parents:
             raise ValueError("invalid OCTX artifact key")
         return candidate
+
+    def resolve_release(self, key: str, package_digest: str) -> Path:
+        target = self.resolve_key(key)
+        if target.is_file():
+            return target
+        expected = package_digest.removeprefix("sha256:")
+        if len(expected) != 64:
+            return target
+        for root in self.recovery_roots:
+            preserved = self._resolve_below(root, key)
+            if not preserved.is_file() or self._package_digest(preserved) != package_digest:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            try:
+                os.link(preserved, target)
+            except OSError as error:
+                if error.errno == errno.EEXIST:
+                    return target
+                if error.errno not in {errno.EXDEV, errno.EPERM, errno.EACCES}:
+                    raise
+                try:
+                    descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o400)
+                except FileExistsError:
+                    return target
+                try:
+                    with os.fdopen(descriptor, "wb") as output, preserved.open("rb") as source:
+                        shutil.copyfileobj(source, output, length=1024 * 1024)
+                        output.flush()
+                        os.fsync(output.fileno())
+                except BaseException:
+                    target.unlink(missing_ok=True)
+                    raise
+            target.chmod(0o400)
+            return target
+        return target
+
+    @staticmethod
+    def _package_digest(path: Path) -> str | None:
+        try:
+            with open_octx(path, validate=True) as package:
+                release = package.manifest.get("release")
+                return str(release.get("package_digest")) if isinstance(release, dict) else None
+        except Exception:  # noqa: BLE001 - invalid preservation candidates are ignored
+            return None
 
     def release_key(self, asset_id: str, version: str, package_digest: str) -> str:
         asset = self._component(asset_id)

@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
-from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from sag_agent import AgentRuntime
 from sag_api import __version__
 from sag_api.api.v1 import api_router
 from sag_api.branding import PRODUCT_NAME
@@ -18,12 +16,10 @@ from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal, dispose_db, init_db
 from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
 from sag_api.core.errors import ApiError
-from sag_api.core.litellm_policy import install_litellm_policy, uninstall_litellm_policy
 from sag_api.core.logging import RequestContextMiddleware, configure_logging, get_logger
-from sag_api.generation import LLMClient
-from sag_api.jobs import InProcessAsyncQueue
-from sag_api.sag import EngineManager
-from sag_api.sag.compat import install_zleap_sag_extract_compat
+
+# [storage-bootstrap] 唯一允许的 upgrades 包入口；删除 sag_api/upgrades/ 时还原本行
+from sag_api.upgrades.integration import bind_storage_bootstrap, install_storage_bootstrap_middleware
 
 log = get_logger("app")
 
@@ -53,95 +49,29 @@ async def lifespan(app: FastAPI):
 
     await apply_startup_overrides(SessionLocal)
 
-    # 播种默认 agent（开箱即用的主对话入口；幂等）
-    from sag_api.services.agent_domain import get_default_agent
+    # [storage-bootstrap] 引导用户迁移存量数据；删除 sag_api/upgrades/ 时连同下方 finally 中标注的两行一起还原
+    storage_bootstrap = bind_storage_bootstrap(app, settings, SessionLocal)
+    storage_status = await storage_bootstrap.inspect()
 
-    async with SessionLocal() as _session:
-        await get_default_agent(_session)
-
-    from sag_api.services.octx_recovery_service import recover_octx_state
-
-    async with SessionLocal() as _session:
-        recovery = await recover_octx_state(_session)
-        if any(recovery.values()):
-            log.info("OCTX 启动恢复完成 %s", recovery)
-
-    # zleap-sag 内部也调用 LiteLLM；全局 pre-call policy 让它与 Muse 生成链
-    # 共享相同的 provider 参数，而不修改依赖包。
-    install_zleap_sag_extract_compat()
-    litellm_policy = install_litellm_policy(settings)
-    app.state.engine_manager = EngineManager(settings)
-    app.state.llm = LLMClient(settings)
-    app.state.agent_runtime = AgentRuntime()
-    await app.state.agent_runtime.start()
-    app.state.job_queue = InProcessAsyncQueue(
-        SessionLocal, app.state.engine_manager, concurrency=settings.job_concurrency
-    )
-    await app.state.job_queue.start()
-
-    # 后台预热最近使用的信源引擎（不阻塞启动；失败不影响服务）
-    warmup_task = asyncio.create_task(_warmup_engines(app.state.engine_manager))
-
-    log.info(
-        "sag-api 已启动 · env=%s · llm_configured=%s · vector=%s",
-        settings.environment,
-        settings.llm_configured,
-        settings.sag_vector_provider,
-    )
-    source_mcp = getattr(app.state, "source_mcp", None)
     try:
-        # MCP 端点的会话管理器需在 lifespan 内运行；失败仅关闭 /mcp，不影响其余服务
-        async with AsyncExitStack() as stack:
-            if source_mcp is not None:
-                try:
-                    await stack.enter_async_context(source_mcp.session_manager.run())
-                    log.info("MCP 端点已就绪 · /mcp/（全库）· 可选 ?source_id=<信源 id>")
-                except Exception as e:  # noqa: BLE001
-                    log.warning("MCP 会话管理器启动失败（/mcp 不可用）：%s", e)
-            yield
+        if storage_status.runtime_ready:
+            await storage_bootstrap.install_runtime()
+        else:
+            log.info("存储引导等待用户选择 phase=%s", storage_status.phase.value)
+        yield
     finally:
-        try:
-            warmup_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await warmup_task
-            await app.state.agent_runtime.stop()
-            await app.state.job_queue.stop()
-            await app.state.engine_manager.aclose_all()
-            await dispose_db()
-        finally:
-            uninstall_litellm_policy(litellm_policy)
-
-
-async def _warmup_engines(engine_manager: EngineManager) -> None:
-    """预热最近更新的信源引擎，缩短用户首个操作的等待。"""
-    if settings.engine_warmup_count <= 0:
-        return
-    try:
-        from sqlalchemy import select
-
-        from sag_api.db.models import Source
-
-        async with SessionLocal() as session:
-            rows = (
-                (
-                    await session.execute(
-                        select(Source).order_by(Source.updated_at.desc()).limit(settings.engine_warmup_count)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-        for source in rows:
+        failures: list[BaseException] = []
+        for cleanup in (
+            storage_bootstrap.wait,  # [storage-bootstrap]
+            storage_bootstrap.stop_runtime,  # [storage-bootstrap]
+            dispose_db,
+        ):
             try:
-                await engine_manager.provision(source.sag_source_config_id, source)
-            except Exception as e:  # noqa: BLE001
-                log.warning("预热引擎失败 source=%s: %s", source.id, e)
-        if rows:
-            log.info("已预热 %d 个信源引擎", len(rows))
-    except asyncio.CancelledError:
-        raise
-    except Exception as e:  # noqa: BLE001
-        log.warning("引擎预热任务异常：%s", e)
+                await cleanup()
+            except BaseException as error:
+                failures.append(error)
+        if failures:
+            raise BaseExceptionGroup("application shutdown failed", failures)
 
 
 def create_app() -> FastAPI:
@@ -171,6 +101,8 @@ def create_app() -> FastAPI:
             r")(:\d+)?"
         )
     app.add_middleware(CORSMiddleware, **cors_kwargs)
+    # [storage-bootstrap] 存储引导期间拦截未就绪请求（删除 sag_api/upgrades/ 时还原本行）
+    install_storage_bootstrap_middleware(app)
     # 请求追踪（放在 CORS 之后添加 → 更外层执行，最先分配 request_id）
     app.add_middleware(RequestContextMiddleware)
 

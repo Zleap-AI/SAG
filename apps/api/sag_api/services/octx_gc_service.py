@@ -17,7 +17,7 @@ from sag_api.octx.storage import OctxStorage
 
 _VECTOR_INDEXES = (
     "source_chunks",
-    "event_vectors",
+    "event_vectors_wide",
     "event_entity_vectors",
     "entity_vectors",
 )
@@ -36,11 +36,24 @@ def _literal(value: str) -> str:
 async def _delete_vector_partition(
     client: Any, index: str, source_config_id: str
 ) -> None:
+    """按 data_source_id 删除一个分区:优先 0.8.2 VectorStore(query+delete),
+    兼容测试/遗留客户端形态(_open_table / delete_by_query / _engine)。"""
+    from zleap.sag.core.adapters.models import Filter, VectorQuery
+
+    if callable(getattr(client, "query", None)):
+        hits = await client.query(
+            index,
+            VectorQuery(filters=Filter.eq("data_source_id", source_config_id), limit=100_000),
+        )
+        if hits:
+            await client.delete(index, tuple(str(hit.id) for hit in hits))
+        return
+
     open_table = getattr(client, "_open_table", None)
     if callable(open_table):
         table = await open_table(index)
         if table is not None:
-            await table.delete(f"source_config_id = {_literal(source_config_id)}")
+            await table.delete(f"data_source_id = {_literal(source_config_id)}")
         return
 
     raw_client = getattr(client, "client", client)
@@ -48,7 +61,7 @@ async def _delete_vector_partition(
     if callable(delete_by_query):
         await delete_by_query(
             index=index,
-            query={"term": {"source_config_id": source_config_id}},
+            query={"term": {"data_source_id": source_config_id}},
             conflicts="proceed",
             refresh=True,
         )
@@ -59,11 +72,11 @@ async def _delete_vector_partition(
         quote = "`" if client.__class__.__name__ == "OceanBaseVectorStore" else '"'
         statement = text(
             f"DELETE FROM {quote}{index}{quote} "
-            "WHERE source_config_id = :source_config_id"
+            "WHERE data_source_id = :data_source_id"
         )
         async with engine_factory().begin() as connection:
             await connection.execute(
-                statement, {"source_config_id": source_config_id}
+                statement, {"data_source_id": source_config_id}
             )
         return
 
@@ -79,23 +92,19 @@ async def delete_source_partition(
     vector_client: Any = None,
 ) -> None:
     """Idempotently delete one exact zleap-sag relational/vector partition."""
-    if sag_session_factory is None:
-        from zleap.sag.db import get_session_factory
-
-        sag_session_factory = get_session_factory()
-    if vector_client is None:
-        from zleap.sag.core.storage.client import get_vector_client
-
-        vector_client = get_vector_client()
+    if sag_session_factory is None or vector_client is None:
+        raise RuntimeError(
+            "0.8.2 无全局会话工厂/向量客户端:delete_source_partition 必须注入引擎级资源"
+        )
 
     for index in _VECTOR_INDEXES:
         await _delete_vector_partition(vector_client, index, source_config_id)
 
-    from zleap.sag.db.models import SourceConfig
+    from zleap.sag.db.models import DataSource
 
     async with sag_session_factory() as sag_session:
         await sag_session.execute(
-            delete(SourceConfig).where(SourceConfig.id == source_config_id)
+            delete(DataSource).where(DataSource.id == source_config_id)
         )
         await sag_session.commit()
 
@@ -158,6 +167,12 @@ async def gc_installation(
     ):
         raise ConflictError("installation still owns active documents")
 
+    if sag_session_factory is None and engine_manager is not None:
+        sag_session_factory = await engine_manager.get_sag_session_factory(
+            installation.sag_source_config_id
+        )
+    if vector_client is None and engine_manager is not None:
+        vector_client = await engine_manager._vector_store(installation.sag_source_config_id)
     await delete_source_partition(
         installation.sag_source_config_id,
         sag_session_factory=sag_session_factory,

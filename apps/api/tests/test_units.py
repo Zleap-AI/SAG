@@ -43,11 +43,32 @@ def test_model_provider_registry_is_the_public_source_of_truth():
 
 def test_build_engine_config_zero_infra():
     cfg = build_engine_config(settings)
-    assert cfg.vector_provider == "lancedb"  # 默认零依赖向量后端
+    # 0.8.2:向量后端为显式 VectorConfig 家族;lancedb 由 EngineConfig 从 data_dir 派生
+    assert cfg.vector is not None
+    assert cfg.vector.provider == "lancedb"
+    assert cfg.storage_mode == "normal"
+    assert cfg.relational is not None
+    assert cfg.relational.provider == "sqlite"  # 零基础设施:由 data_dir 派生 SQLite
     assert cfg.llm.model == settings.routed_llm_model
     assert cfg.llm.max_tokens == settings.llm_max_tokens
     assert cfg.llm.provider == "litellm"
     assert cfg.data_dir == settings.data_dir
+
+
+def test_engine_config_presets_structured_output_mode_by_model():
+    from zleap.sag.core.ai.structured import StructuredOutputMode
+
+    deepseek = Settings(_env_file=None, llm_provider="openai", llm_model="deepseek-v4-flash", llm_api_key="k")
+    assert build_engine_config(deepseek).llm.structured_output_mode == StructuredOutputMode.JSON_SCHEMA
+
+    qwen = Settings(_env_file=None, llm_provider="openai", llm_model="qwen3.6-flash", llm_api_key="k")
+    assert build_engine_config(qwen).llm.structured_output_mode == StructuredOutputMode.JSON_SCHEMA
+
+    explicit = Settings(_env_file=None, llm_structured_output_mode="json_object")
+    assert build_engine_config(explicit).llm.structured_output_mode == StructuredOutputMode.JSON_OBJECT
+
+    prompt_only = Settings(_env_file=None, llm_structured_output_mode="prompt_only")
+    assert build_engine_config(prompt_only).llm.structured_output_mode == StructuredOutputMode.PROMPT_ONLY
 
 
 @pytest.mark.parametrize(
@@ -639,301 +660,6 @@ def test_citation_events_use_source_and_chunk_composite_key_and_are_bounded():
     assert [item["id"] for item in citations[1]["event_refs"]] == ["b-1"]
     assert citations[1]["event_refs"][0]["summary"] == ""
     assert citations[1]["event_refs"][0]["category"] == ""
-
-
-@pytest.mark.asyncio
-async def test_zleap_sag_extract_compat_repairs_missing_meta():
-    from zleap.sag.modules.extract.processor import EventProcessor
-
-    from sag_api.sag.compat import install_zleap_sag_extract_compat
-
-    class FakeLLM:
-        async def chat_with_schema(self, _messages, response_schema):
-            data_schema = response_schema["properties"]["data"]
-            meta_schema = data_schema["properties"]["meta"]
-            assert "meta" not in data_schema.get("required", [])
-            assert "reason" not in meta_schema.get("required", [])
-            return {"type": "response", "data": {"items": []}}
-
-    install_zleap_sag_extract_compat()
-
-    schema = {
-        "type": "object",
-        "required": ["type", "data"],
-        "properties": {
-            "type": {"const": "response"},
-            "data": {
-                "type": "object",
-                "required": ["items", "meta"],
-                "properties": {
-                    "items": {"type": "array"},
-                    "meta": {
-                        "type": "object",
-                        "required": ["reason"],
-                        "properties": {"reason": {"type": "string"}},
-                    },
-                },
-            },
-        },
-    }
-    fake_processor = SimpleNamespace(llm_client=FakeLLM())
-
-    result = await EventProcessor._call_llm_with_retry(fake_processor, [], schema)
-
-    assert result["data"]["items"] == []
-    assert result["data"]["meta"]["reason"]
-
-
-@pytest.mark.asyncio
-async def test_zleap_sag_extract_compat_repairs_missing_is_valid():
-    from zleap.sag.modules.extract.processor import EventProcessor
-
-    from sag_api.sag.compat import install_zleap_sag_extract_compat
-
-    class FakeLLM:
-        async def chat_with_schema(self, _messages, response_schema):
-            event_schema = response_schema["definitions"]["event"]
-            assert "is_valid" not in event_schema.get("required", [])
-            return {
-                "type": "response",
-                "data": {
-                    "meta": {"reason": "ok"},
-                    "items": [
-                        {
-                            "title": "顶层事项",
-                            "content": "事项内容",
-                            "references": [1],
-                            "children": [
-                                {
-                                    "title": "子事项",
-                                    "content": "子事项内容",
-                                    "references": [1],
-                                }
-                            ],
-                        }
-                    ],
-                },
-            }
-
-    install_zleap_sag_extract_compat()
-
-    schema = {
-        "type": "object",
-        "required": ["type", "data"],
-        "properties": {
-            "type": {"const": "response"},
-            "data": {
-                "type": "object",
-                "required": ["items", "meta"],
-                "properties": {
-                    "items": {"type": "array", "items": {"$ref": "#/definitions/event"}},
-                    "meta": {
-                        "type": "object",
-                        "required": ["reason"],
-                        "properties": {"reason": {"type": "string"}},
-                    },
-                },
-            },
-        },
-        "definitions": {
-            "event": {
-                "type": "object",
-                "required": ["title", "content", "references", "is_valid"],
-                "properties": {
-                    "title": {"type": "string"},
-                    "content": {"type": "string"},
-                    "references": {"type": "array", "items": {"type": "integer"}},
-                    "is_valid": {"type": "boolean"},
-                    "children": {"type": "array", "items": {"$ref": "#/definitions/event"}},
-                },
-            },
-        },
-    }
-    fake_processor = SimpleNamespace(llm_client=FakeLLM())
-
-    result = await EventProcessor._call_llm_with_retry(fake_processor, [], schema)
-
-    item = result["data"]["items"][0]
-    assert item["is_valid"] is True
-    assert item["children"][0]["is_valid"] is True
-
-
-@pytest.mark.asyncio
-async def test_zleap_sag_extract_compat_repairs_empty_and_missing_references():
-    from zleap.sag.modules.extract.processor import EventProcessor
-
-    from sag_api.sag.compat import install_zleap_sag_extract_compat
-
-    class FakeLLM:
-        async def chat_with_schema(self, _messages, response_schema):
-            event_schema = response_schema["definitions"]["event"]
-            required = event_schema.get("required", [])
-            # Soft fields must be dropped from required and lose the minItems floor.
-            assert "references" not in required
-            assert "title" not in required
-            assert "content" not in required
-            assert "minItems" not in event_schema["properties"]["references"]
-            return {
-                "type": "response",
-                "data": {
-                    "meta": {"reason": "ok"},
-                    "items": [
-                        # Model omitted references entirely and left title empty.
-                        {"content": "有内容但缺少引用与标题"},
-                        {
-                            "title": "父事项",
-                            "content": "父事项内容",
-                            "references": [1],
-                            "children": [
-                                # Child returned references as empty list.
-                                {"title": "子事项", "content": "子内容", "references": []}
-                            ],
-                        },
-                    ],
-                },
-            }
-
-    install_zleap_sag_extract_compat()
-
-    schema = {
-        "type": "object",
-        "required": ["type", "data"],
-        "properties": {
-            "type": {"const": "response"},
-            "data": {
-                "type": "object",
-                "required": ["items", "meta"],
-                "properties": {
-                    "items": {"type": "array", "items": {"$ref": "#/definitions/event"}},
-                    "meta": {
-                        "type": "object",
-                        "required": ["reason"],
-                        "properties": {"reason": {"type": "string"}},
-                    },
-                },
-            },
-        },
-        "definitions": {
-            "event": {
-                "type": "object",
-                "required": ["title", "content", "references", "is_valid"],
-                "properties": {
-                    "title": {"type": "string"},
-                    "content": {"type": "string"},
-                    "references": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "minItems": 1,
-                    },
-                    "is_valid": {"type": "boolean"},
-                    "children": {"type": "array", "items": {"$ref": "#/definitions/event"}},
-                },
-            },
-        },
-    }
-    fake_processor = SimpleNamespace(llm_client=FakeLLM())
-
-    result = await EventProcessor._call_llm_with_retry(fake_processor, [], schema)
-
-    first, second = result["data"]["items"]
-    # Missing references/title backfilled to schema-shaped defaults; is_valid too.
-    assert first["references"] == []
-    assert first["title"] == ""
-    assert first["is_valid"] is True
-    # Non-empty references and provided fields are left untouched.
-    assert second["references"] == [1]
-    assert second["title"] == "父事项"
-    assert second["children"][0]["references"] == []
-
-
-@pytest.mark.asyncio
-async def test_zleap_sag_extract_compat_falls_back_to_json_object_when_json_schema_is_unavailable():
-    from zleap.sag.core.ai.base import BaseLLMClient
-    from zleap.sag.core.ai.models import LLMMessage, LLMResponse, LLMRole
-    from zleap.sag.modules.extract.processor import EventProcessor
-
-    from sag_api.sag.compat import install_zleap_sag_extract_compat
-
-    class JsonObjectOnlyClient(BaseLLMClient):
-        def __init__(self):
-            self.config = SimpleNamespace(
-                model="moonshotai/kimi-k3",
-                base_url="https://api.example.test/v1",
-            )
-            self.response_formats = []
-
-        async def chat(self, _messages, **kwargs):
-            response_format = kwargs.get("response_format")
-            self.response_formats.append(response_format)
-            if response_format and response_format.get("type") == "json_schema":
-                raise RuntimeError("This response_format type is unavailable now")
-            assert response_format == {"type": "json_object"}
-            return LLMResponse(
-                content='{"type":"response","data":{"items":[],"meta":{"reason":"ok"}}}',
-                model="moonshotai/kimi-k3",
-            )
-
-        async def chat_stream(self, *_args, **_kwargs):
-            if False:
-                yield ""
-
-    install_zleap_sag_extract_compat()
-    schema = {
-        "type": "object",
-        "required": ["type", "data"],
-        "properties": {
-            "type": {"const": "response"},
-            "data": {
-                "type": "object",
-                "required": ["items", "meta"],
-                "properties": {
-                    "items": {"type": "array"},
-                    "meta": {
-                        "type": "object",
-                        "required": ["reason"],
-                        "properties": {"reason": {"type": "string"}},
-                    },
-                },
-            },
-        },
-    }
-    client = JsonObjectOnlyClient()
-    fake_processor = SimpleNamespace(llm_client=client)
-
-    result = await EventProcessor._call_llm_with_retry(
-        fake_processor,
-        [LLMMessage(role=LLMRole.USER, content="extract")],
-        schema,
-    )
-
-    assert result["data"]["meta"]["reason"] == "ok"
-    assert [item["type"] for item in client.response_formats] == ["json_schema", "json_object"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("model", ["openai/deepseek-v4-flash", "openai/deepseek-v3"])
-async def test_zleap_sag_extract_compat_uses_json_object_directly_for_deepseek(model):
-    from zleap.sag.modules.extract.processor import EventProcessor
-
-    from sag_api.sag.compat import install_zleap_sag_extract_compat
-
-    class DeepSeekClient:
-        def __init__(self):
-            self.config = SimpleNamespace(model=model)
-            self.calls = []
-
-        async def chat_with_schema(self, _messages, response_schema, **kwargs):
-            self.calls.append((response_schema, kwargs.get("response_format")))
-            return {"type": "response", "data": {"items": [], "meta": {"reason": "ok"}}}
-
-    install_zleap_sag_extract_compat()
-    schema = {"type": "object", "properties": {"type": {"const": "response"}}}
-    client = DeepSeekClient()
-
-    result = await EventProcessor._call_llm_with_retry(SimpleNamespace(llm_client=client), [], schema)
-
-    assert result["data"]["meta"]["reason"] == "ok"
-    assert client.calls == [(None, {"type": "json_object"})]
 
 
 def test_agent_name_is_injected_into_prompt():

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.db import get_session
@@ -20,12 +20,20 @@ async def register(body: RegisterRequest, session: AsyncSession = Depends(get_se
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest, session: AsyncSession = Depends(get_session)) -> TokenResponse:
+async def login(
+    body: LoginRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> TokenResponse:
+    coordinator = getattr(request.app.state, "storage_bootstrap", None)  # [storage-bootstrap]
+    maintenance_login = coordinator is not None and not coordinator.runtime_ready()  # [storage-bootstrap]
     user = await authenticate_or_register(
         session,
         name=body.name,
         email=body.email,
         password=body.password,
+        allow_create=not maintenance_login,
+        exact_existing=maintenance_login,
     )
     return TokenResponse(access_token=create_access_token(user.id), user=UserOut.model_validate(user))
 

@@ -20,15 +20,22 @@ class RetrievedSection(BaseModel):
     source_config_id: str | None = None
 
     @classmethod
-    def from_section(cls, s: dict[str, Any]) -> RetrievedSection:
+    def from_section(cls, s: Any) -> RetrievedSection:
+        if not isinstance(s, dict):
+            model_dump = getattr(s, "model_dump", None)
+            if not callable(model_dump):
+                raise TypeError(f"unsupported search section: {type(s).__name__}")
+            s = model_dump()
+        metadata = s.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
         return cls(
-            chunk_id=s.get("chunk_id"),
-            heading=(s.get("heading") or "").strip(),
+            chunk_id=s.get("chunk_id") or s.get("id"),
+            heading=(s.get("heading") or s.get("title") or metadata.get("heading") or "").strip(),
             content=(s.get("content") or "").strip(),
             score=float(s.get("score") or 0.0),
-            rank=int(s.get("rank") or 0),
+            rank=int(s.get("rank") or metadata.get("rank") or 0),
             source_id=s.get("source_id"),
-            source_config_id=s.get("source_config_id"),
+            source_config_id=s.get("source_config_id") or s.get("data_source_id"),
         )
 
 
@@ -41,7 +48,11 @@ class SearchOutcome(BaseModel):
 
     @classmethod
     def from_result(cls, result: Any) -> SearchOutcome:
-        raw_sections = getattr(result, "sections", None) or []
+        raw_sections = (
+            getattr(result, "sections", None)
+            or getattr(result, "chunks", None)
+            or []
+        )
         query = getattr(result, "query", "") or ""
         if not isinstance(query, str):
             query = str(query)
@@ -216,6 +227,10 @@ class ProcessCheckpoint(BaseModel):
     event_ids: list[str] = []
     eventless_chunk_ids: list[str] = []
     token_usage: int = 0
+    # 管线定位信息：chunk_version 为恢复必需；普通 ingest 的 generation_id 可为空。
+    generation_id: str | None = None
+    chunk_version: str | None = None
+    source_version: str | None = None
     event_entity_quality: EventEntityQuality = Field(
         default_factory=EventEntityQuality
     )

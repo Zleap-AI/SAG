@@ -165,6 +165,18 @@ def install_zleap_sag_extract_compat() -> None:
 
     from zleap.sag.modules.extract.processor import EventProcessor
 
+    # zleap-sag 0.8.2 重写了 EventProcessor(修复循环/契约校验内置),原补丁目标
+    # ``_call_llm_with_retry`` 已不存在。缺失字段修复(meta/is_valid/references)
+    # 与 json_object 降级待 zleap 内置(REQ-6),本安装函数在 0.8.2 上退化为空操作;
+    # 纯函数(_relax_extract_schema / _repair_extract_response 等)保留供测试与
+    # 迁移期复用。
+    if not hasattr(EventProcessor, "_call_llm_with_retry"):
+        log.warning(
+            "zleap-sag 0.8.2 已无 EventProcessor._call_llm_with_retry,"
+            "跳过 extract compat 补丁(REQ-6 待 zleap 内置 provider 降级)"
+        )
+        return
+
     current = EventProcessor._call_llm_with_retry
     if getattr(current, "_sag_api_extract_meta_compat", False):
         return

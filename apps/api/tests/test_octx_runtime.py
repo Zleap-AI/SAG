@@ -8,6 +8,23 @@ import pytest
 from starlette.datastructures import UploadFile
 
 
+def _create_test_octx(tmp_path, name: str):
+    from octx import create_octx, open_octx
+
+    source = tmp_path / f"{name}-source"
+    source.mkdir()
+    (source / "index.md").write_text(
+        '---\nokf_version: "1.0"\n---\n# Index\n\n- [Sample](sample.md)\n',
+        encoding="utf-8",
+    )
+    (source / "sample.md").write_text("# Sample\n\nMigrated package.\n", encoding="utf-8")
+    package = tmp_path / f"{name}.octx"
+    create_octx(tmp_path / f"{name}-workspace", source=source, output=package, name=name)
+    with open_octx(package, validate=True) as opened:
+        digest = str(opened.manifest["release"]["package_digest"])
+    return package, digest
+
+
 def test_desktop_main_prepares_frozen_multiprocessing_before_uvicorn(monkeypatch):
     """A frozen child must dispatch to multiprocessing instead of starting a second API."""
     from sag_api import desktop
@@ -174,6 +191,83 @@ def test_storage_rejects_escape_and_never_overwrites_release(tmp_path):
             "sha256:" + "a" * 64,
         )
     assert storage.resolve_key(key).read_bytes() == b"first"
+
+
+def test_storage_restores_digest_verified_release_from_migration_preservation(tmp_path):
+    """A migrated READY release must remain downloadable from its preserved artifact."""
+    from sag_api.octx.storage import OctxStorage
+
+    package, digest = _create_test_octx(tmp_path, "preserved")
+    key = f"releases/asset/1.0.0/{digest[7:]}.octx"
+    preserved_root = tmp_path / "original-engine" / "octx"
+    preserved = preserved_root / key
+    preserved.parent.mkdir(parents=True)
+    preserved.write_bytes(package.read_bytes())
+    storage = OctxStorage(
+        tmp_path / "current-engine" / "octx",
+        max_upload_bytes=1024,
+        recovery_roots=(preserved_root,),
+    )
+
+    restored = storage.resolve_release(key, digest)
+
+    assert restored.read_bytes() == package.read_bytes()
+    assert storage.resolve_key(key).read_bytes() == package.read_bytes()
+
+
+def test_default_storage_recovers_completed_migration_artifact(tmp_path, monkeypatch):
+    """Already-migrated desktop users must recover releases moved with the old engine."""
+    from sag_api.services import octx_transfer_service
+
+    package, digest = _create_test_octx(tmp_path, "migrated")
+    key = f"releases/asset/1.0.0/{digest[7:]}.octx"
+    data_dir = tmp_path / "engine"
+    preserved = (
+        tmp_path
+        / ".storage-upgrades"
+        / "zleap-sag-0.7.1-to-0.8.2"
+        / "original-engine"
+        / "octx"
+        / key
+    )
+    preserved.parent.mkdir(parents=True)
+    preserved.write_bytes(package.read_bytes())
+    monkeypatch.setattr(octx_transfer_service.settings, "data_dir", str(data_dir))
+
+    storage = octx_transfer_service.default_octx_storage()
+    restored = storage.resolve_release(key, digest)
+
+    assert restored == data_dir / "octx" / key
+    assert restored.read_bytes() == package.read_bytes()
+
+
+def test_storage_copies_preserved_release_when_hard_links_are_denied(tmp_path, monkeypatch):
+    """macOS filesystem policy must not block restoration when hard-linking is denied."""
+    import errno
+
+    from sag_api.octx import storage as storage_module
+    from sag_api.octx.storage import OctxStorage
+
+    package, digest = _create_test_octx(tmp_path, "copy-fallback")
+    key = f"releases/asset/1.0.0/{digest[7:]}.octx"
+    preserved_root = tmp_path / "original-engine" / "octx"
+    preserved = preserved_root / key
+    preserved.parent.mkdir(parents=True)
+    preserved.write_bytes(package.read_bytes())
+    storage = OctxStorage(
+        tmp_path / "current-engine" / "octx",
+        max_upload_bytes=1024,
+        recovery_roots=(preserved_root,),
+    )
+
+    def deny_hard_link(_source, _target):
+        raise OSError(errno.EPERM, "hard links denied")
+
+    monkeypatch.setattr(storage_module.os, "link", deny_hard_link)
+
+    restored = storage.resolve_release(key, digest)
+
+    assert restored.read_bytes() == package.read_bytes()
 
 
 def test_octx_errors_map_to_stable_sag_envelopes():

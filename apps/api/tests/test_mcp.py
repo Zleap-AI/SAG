@@ -45,8 +45,12 @@ async def test_source_mcp_lists_and_calls_tools_over_engine():
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
             A = await _register(c, "mcpsrv@t.com")
-            src = (await c.post("/api/v1/sources", headers=A, json={"name": "MCP 源"})).json()
-            src2 = (await c.post("/api/v1/sources", headers=A, json={"name": "第二个 MCP 源"})).json()
+            _src_resp = await c.post("/api/v1/sources", headers=A, json={"name": "MCP 源"})
+            assert _src_resp.status_code == 201, _src_resp.text
+            src = _src_resp.json()
+            _src2_resp = await c.post("/api/v1/sources", headers=A, json={"name": "第二个 MCP 源"})
+            assert _src2_resp.status_code == 201, _src2_resp.text
+            src2 = _src2_resp.json()
             async with SessionLocal() as s:
                 sources = tuple(
                     (
@@ -382,7 +386,9 @@ async def test_mcp_binding_validation_and_source_descriptor():
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
             A = await _register(c, "mcpbind@t.com")
-            src = (await c.post("/api/v1/sources", headers=A, json={"name": "描述源"})).json()
+            _resp_88610024 = await c.post("/api/v1/sources", headers=A, json={"name": "描述源"})
+            assert _resp_88610024.status_code == 201, _resp_88610024.text
+            src = _resp_88610024.json()
 
             desc = await c.get(f"/api/v1/sources/{src['id']}/mcp", headers=A)
             assert desc.status_code == 200, desc.text

@@ -153,9 +153,16 @@ def _export_progress(detail: dict[str, Any]) -> float:
 
 
 def default_octx_storage() -> OctxStorage:
+    engine = Path(settings.data_dir).expanduser().resolve()
+    upgrade_root = engine.parent / ".storage-upgrades"
+    migration_id = "zleap-sag-0.7.1-to-0.8.2"
     return OctxStorage(
-        Path(settings.data_dir) / "octx",
+        engine / "octx",
         max_upload_bytes=settings.octx_max_upload_mb * 1024 * 1024,
+        recovery_roots=(
+            upgrade_root / migration_id / "original-engine" / "octx",
+            upgrade_root / "backups" / migration_id / "engine" / "octx",
+        ),
     )
 
 
@@ -639,6 +646,8 @@ async def execute_structured_import(
             reuse_batch_size=settings.octx_reused_vector_batch_size,
             enable_vector_reuse=settings.octx_arrow_vector_reuse_enabled,
             session_factory=sag_session_factory,
+            embedding_client=await engine_manager.get_sag_embedding(source_config_id),
+            vector_store=await engine_manager._vector_store(source_config_id),
             on_checkpoint=save_vector_checkpoint,
             package_path=package_path,
             plan_path=plan_path,
@@ -1137,6 +1146,7 @@ async def create_export_transfer(
     version: str | None,
     job_queue: JobQueue,
     requested_by_user_id: str | None = None,
+    storage: OctxStorage | None = None,
 ) -> OctxTransfer:
     active = await session.scalar(
         select(OctxTransfer)
@@ -1196,14 +1206,21 @@ async def create_export_transfer(
     binding = await session.get(OctxSourceBinding, source_id)
     active_release = await session.get(OctxRelease, binding.active_release_id) if binding else None
     active_asset = await session.get(OctxAsset, binding.asset_id) if binding else None
-    if (
+    reusable_original = bool(
         not excluded
         and binding is not None
         and active_release is not None
         and active_asset is not None
         and active_asset.ownership is OctxAssetOwnership.IMPORTED
         and binding.content_revision == binding.released_revision
-    ):
+    )
+    if reusable_original:
+        artifact_storage = storage or default_octx_storage()
+        reusable_original = artifact_storage.resolve_release(
+            active_release.artifact_key,
+            active_release.package_digest,
+        ).is_file()
+    if reusable_original:
         transfer = OctxTransfer(
             direction=OctxTransferDirection.EXPORT,
             status=OctxTransferStatus.READY,
@@ -1654,19 +1671,14 @@ async def execute_export(
     # to carry complete vectors from the source partition. The stored identity
     # controls whether the profile is compatible or rebuild_required; importers
     # make the final reuse decision and export never calls the embedding provider.
-    from zleap.sag.db.models import SourceConfig
-
-    async with sag_session_factory() as sag_session:
-        source_config = await sag_session.get(SourceConfig, source.sag_source_config_id)
-    target_config = source_config.target_config if source_config is not None else None
-    stored_vector_identity = target_config.get("octx_vector_identity") if isinstance(target_config, dict) else None
+    # 迁移注记:0.8.2 起 DataSource 无 target_config,向量身份改存业务库 Source.config。
+    source_config = source.config if isinstance(source.config, dict) else {}
+    stored_vector_identity = source_config.get("octx_vector_identity")
     if not isinstance(stored_vector_identity, dict):
         stored_vector_identity = None
-    if vector_store is None:
+    if vector_store is None and engine_manager is not None:
         try:
-            from zleap.sag.core.storage.client import get_vector_client
-
-            vector_store = get_vector_client()
+            vector_store = await engine_manager._vector_store(source.sag_source_config_id, source)
         except Exception:
             # Missing vector storage must not block a valid structured export,
             # but the degradation must stay diagnosable in task logs.
