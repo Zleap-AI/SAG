@@ -227,7 +227,7 @@ class ProcessCheckpoint(BaseModel):
     event_ids: list[str] = []
     eventless_chunk_ids: list[str] = []
     token_usage: int = 0
-    # 0.8.2 管线定位信息:恢复路径重建 ChunkSetRef 必需。
+    # 管线定位信息：chunk_version 为恢复必需；普通 ingest 的 generation_id 可为空。
     generation_id: str | None = None
     chunk_version: str | None = None
     source_version: str | None = None

@@ -187,11 +187,9 @@ class IncrementalDocumentProcessor:
         )
 
     def _chunk_set_ref(self, current: ProcessCheckpoint) -> ChunkSetRef:
-        """从断点重建 ChunkSetRef(恢复路径必须携带 generation 定位信息)。"""
-        if current.generation_id is None or current.chunk_version is None:
-            raise RuntimeError(
-                "断点缺少 generation_id/chunk_version，无法重建 ChunkSetRef；请重新处理文档"
-            )
+        """从断点重建 ChunkSetRef；普通 ingest 的 generation_id 可为空。"""
+        if not current.chunk_version:
+            raise RuntimeError("断点缺少 chunk_version，无法重建 ChunkSetRef；请重新处理文档")
         if current.source_id is None:
             raise RuntimeError("断点缺少 source_id，无法重建 ChunkSetRef")
         return ChunkSetRef(

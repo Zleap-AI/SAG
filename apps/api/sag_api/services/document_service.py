@@ -505,7 +505,7 @@ async def resume_document(
     is_legacy_checkpoint = (
         isinstance(checkpoint, dict)
         and bool(checkpoint.get("chunk_ids"))
-        and (not checkpoint.get("generation_id") or not checkpoint.get("chunk_version"))
+        and not checkpoint.get("chunk_version")
     )
     if is_legacy_checkpoint:
         if not os.path.isfile(document.storage_path):

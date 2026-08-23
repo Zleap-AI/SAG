@@ -297,8 +297,42 @@ async def test_resume_skips_ingest_and_rebuilds_chunk_set():
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_without_generation_raises():
-    """旧断点(无 generation 定位信息)必须显式报错,不能静默重建。"""
+async def test_ingest_without_generation_continues_non_durable_extract():
+    """0.10.0 普通 ingest 的 generation_id=None 仍必须继续 Extract。"""
+    from sag_api.sag.dto import ProcessCheckpoint
+
+    captured: dict = {}
+
+    async def ingest(path, *, descriptor, chunk_options, index_options):
+        return _chunk_set_ref(chunk_ids=("c1",), generation_id=None)
+
+    async def extract(chunk_set, options, *, observer, cancellation):
+        captured["chunk_set"] = chunk_set
+        return _event_ref(event_ids=("e1",), stats={})
+
+    processor = await _processor_with_fake_engine(ingest=ingest, extract=extract)
+    snapshots: list[ProcessCheckpoint] = []
+
+    async def on_checkpoint(value):
+        snapshots.append(value.model_copy(deep=True))
+
+    outcome = await processor.process(
+        "/tmp/fresh-upload.md",
+        checkpoint=ProcessCheckpoint(),
+        on_checkpoint=on_checkpoint,
+        should_pause=_return_false,
+    )
+
+    assert snapshots[0].generation_id is None
+    assert snapshots[0].chunk_version == "cv-1"
+    assert captured["chunk_set"].generation_id is None
+    assert captured["chunk_set"].chunk_version == "cv-1"
+    assert outcome.event_count == 1
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_without_chunk_version_raises():
+    """真正缺少 chunk_version 的旧断点不能伪造 ChunkSetRef。"""
     from sag_api.sag.dto import ProcessCheckpoint
 
     async def extract(*_args, **_kwargs):
@@ -306,11 +340,11 @@ async def test_checkpoint_without_generation_raises():
 
     processor = await _processor_with_fake_engine(extract=extract)
 
-    with pytest.raises(RuntimeError, match="generation_id"):
+    with pytest.raises(RuntimeError, match="chunk_version"):
         await processor.process(
             None,
             checkpoint=ProcessCheckpoint(source_id="article-1", chunk_ids=["c1"]),
-            on_checkpoint=_append_checkpoint,
+            on_checkpoint=_noop_checkpoint,
             should_pause=_return_false,
         )
 
@@ -437,7 +471,7 @@ async def test_pause_and_resume_document_service():
                     "event_count": 1,
                     "event_ids": ["e1"],
                     "token_usage": 12_000,
-                    "generation_id": "generation-1",
+                    "generation_id": None,
                     "chunk_version": "chunk-version-1",
                     "source_version": "source-version-1",
                 }
@@ -464,6 +498,8 @@ async def test_pause_and_resume_document_service():
         assert resumed_job.status == JobStatus.QUEUED
         assert resumed_job.payload["resume_requested"] is True
         assert "pause_requested" not in resumed_job.payload
+        assert resumed_job.payload["process_checkpoint"]["generation_id"] is None
+        assert resumed_job.payload["process_checkpoint"]["chunk_version"] == "chunk-version-1"
         assert resumed_job.payload["_scheduler"]["priority"] == 10
         assert document.status == DocumentStatus.EXTRACTING
         assert document.progress == 52 and document.token_usage == 12_000
