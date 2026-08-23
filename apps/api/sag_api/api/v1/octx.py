@@ -143,7 +143,10 @@ async def download_artifact(
     if transfer.status is not OctxTransferStatus.READY or not transfer.artifact_key:
         raise ConflictError("OCTX artifact is not ready")
     storage = default_octx_storage()
-    path = storage.resolve_key(transfer.artifact_key)
+    path = storage.resolve_release(
+        transfer.artifact_key,
+        str(transfer.package_digest or ""),
+    )
     if not path.is_file():
         raise NotFoundError("OCTX artifact is missing")
     digest = str(transfer.package_digest or "")

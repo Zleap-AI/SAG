@@ -44,6 +44,23 @@ def test_swap_restores_original_when_second_rename_fails(tmp_path: Path, monkeyp
     assert not rollback.exists()
 
 
+def test_swap_preserves_octx_artifacts_in_current_engine(tmp_path: Path) -> None:
+    """The engine schema swap must not move application-level OCTX releases offline."""
+    engine = tmp_path / "engine"
+    staging = tmp_path / "staging"
+    rollback = tmp_path / "rollback"
+    artifact = engine / "octx" / "releases" / "asset" / "1.0.0" / "package.octx"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"existing-package")
+    staging.mkdir()
+    (staging / "marker").write_text("current", encoding="utf-8")
+
+    swap_engine(engine, staging, rollback)
+
+    assert (engine / "octx" / artifact.relative_to(engine / "octx")).read_bytes() == b"existing-package"
+    assert (rollback / "octx" / artifact.relative_to(engine / "octx")).read_bytes() == b"existing-package"
+
+
 @pytest.mark.asyncio
 async def test_verified_phase_completes_swap_after_process_dies_between_renames(
     tmp_path: Path,

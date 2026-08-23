@@ -1915,6 +1915,147 @@ async def test_repeated_export_request_reuses_active_transfer(
 
 
 @pytest.mark.asyncio
+async def test_missing_imported_release_is_rebuilt_instead_of_reported_ready(
+    transfer_sessions,
+    tmp_path,
+):
+    """A missing imported package must not produce a false completed export."""
+    from sag_api.db.models import (
+        Document,
+        OctxAsset,
+        OctxRelease,
+        OctxSourceBinding,
+        Source,
+    )
+    from sag_api.enums import (
+        DocumentStatus,
+        OctxAssetOwnership,
+        OctxReleaseOrigin,
+        OctxTransferStatus,
+    )
+    from sag_api.octx.storage import OctxStorage
+    from sag_api.services.octx_transfer_service import create_export_transfer
+
+    class Queue:
+        ids: list[str] = []
+
+        async def enqueue(self, job_id: str) -> None:
+            self.ids.append(job_id)
+
+    queue = Queue()
+    storage = OctxStorage(tmp_path / "current" / "octx", max_upload_bytes=1024)
+    async with transfer_sessions() as session:
+        source = Source(name="Imported", sag_source_config_id="missing-imported-release")
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="ready.md",
+            storage_path="/tmp/ready.md",
+            status=DocumentStatus.READY,
+            sag_source_id="article-ready",
+            is_active=True,
+        )
+        asset = OctxAsset(
+            id="0191f6a0-0000-7000-8000-000000000201",
+            name="Imported",
+            ownership=OctxAssetOwnership.IMPORTED,
+        )
+        release = OctxRelease(
+            id="missing-imported-release",
+            asset_id=asset.id,
+            version="1.0.0",
+            package_digest="sha256:" + "a" * 64,
+            manifest={},
+            artifact_key="releases/imported/1.0.0/missing.octx",
+            created_by=OctxReleaseOrigin.IMPORT,
+        )
+        session.add_all([document, asset, release])
+        await session.flush()
+        session.add(
+            OctxSourceBinding(
+                source_id=source.id,
+                asset_id=asset.id,
+                active_release_id=release.id,
+                content_revision=1,
+                released_revision=1,
+            )
+        )
+        await session.commit()
+
+        transfer = await create_export_transfer(
+            session,
+            source.id,
+            version=None,
+            job_queue=queue,
+            storage=storage,
+        )
+
+        assert transfer.status is OctxTransferStatus.QUEUED
+        assert transfer.package_version is None
+        assert transfer.checkpoint["selected_version"] == "1.0.1"
+        assert len(queue.ids) == 1
+
+
+@pytest.mark.asyncio
+async def test_download_ready_transfer_restores_migrated_artifact(
+    transfer_sessions,
+    tmp_path,
+    monkeypatch,
+):
+    """Downloading an old READY transfer must restore its digest-matched package."""
+    from pathlib import Path
+
+    from octx import create_octx, open_octx
+
+    from sag_api.api.v1 import octx as octx_api
+    from sag_api.db.models import OctxTransfer
+    from sag_api.enums import OctxTransferDirection, OctxTransferStatus
+    from sag_api.octx.storage import OctxStorage
+
+    source = tmp_path / "ready-source"
+    source.mkdir()
+    (source / "index.md").write_text(
+        '---\nokf_version: "1.0"\n---\n# Index\n\n- [Sample](sample.md)\n',
+        encoding="utf-8",
+    )
+    (source / "sample.md").write_text("# Sample\n\nReady package.\n", encoding="utf-8")
+    package = tmp_path / "ready.octx"
+    create_octx(tmp_path / "ready-workspace", source=source, output=package, name="Ready")
+    with open_octx(package, validate=True) as opened:
+        digest = str(opened.manifest["release"]["package_digest"])
+    key = f"releases/asset/1.0.0/{digest[7:]}.octx"
+    preserved_root = tmp_path / "original-engine" / "octx"
+    preserved = preserved_root / key
+    preserved.parent.mkdir(parents=True)
+    preserved.write_bytes(package.read_bytes())
+    storage = OctxStorage(
+        tmp_path / "current-engine" / "octx",
+        max_upload_bytes=1024,
+        recovery_roots=(preserved_root,),
+    )
+    monkeypatch.setattr(octx_api, "default_octx_storage", lambda: storage)
+
+    async with transfer_sessions() as session:
+        transfer = OctxTransfer(
+            id="ready-migrated-transfer",
+            direction=OctxTransferDirection.EXPORT,
+            status=OctxTransferStatus.READY,
+            progress=1.0,
+            artifact_key=key,
+            package_digest=digest,
+            package_version="1.0.0",
+            checkpoint={"asset_name": "Migrated"},
+        )
+        session.add(transfer)
+        await session.commit()
+
+        response = await octx_api.download_artifact(transfer.id, object(), session)
+
+    assert Path(response.path).read_bytes() == package.read_bytes()
+
+
+@pytest.mark.asyncio
 async def test_document_export_freezes_one_ready_document_and_serializes_source(
     transfer_sessions,
 ):

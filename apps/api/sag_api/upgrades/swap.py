@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 from sag_api.upgrades.types import StorageUpgradeError
@@ -32,6 +33,10 @@ def swap_engine(engine: Path, staging: Path, rollback: Path) -> None:
             stage="swap",
             recoverable=True,
         )
+
+    preserved_octx = engine / "octx"
+    if preserved_octx.is_dir():
+        shutil.copytree(preserved_octx, staging / "octx", dirs_exist_ok=True)
 
     os.replace(engine, rollback)
     try:

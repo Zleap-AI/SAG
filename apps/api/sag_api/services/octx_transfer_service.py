@@ -153,9 +153,16 @@ def _export_progress(detail: dict[str, Any]) -> float:
 
 
 def default_octx_storage() -> OctxStorage:
+    engine = Path(settings.data_dir).expanduser().resolve()
+    upgrade_root = engine.parent / ".storage-upgrades"
+    migration_id = "zleap-sag-0.7.1-to-0.8.2"
     return OctxStorage(
-        Path(settings.data_dir) / "octx",
+        engine / "octx",
         max_upload_bytes=settings.octx_max_upload_mb * 1024 * 1024,
+        recovery_roots=(
+            upgrade_root / migration_id / "original-engine" / "octx",
+            upgrade_root / "backups" / migration_id / "engine" / "octx",
+        ),
     )
 
 
@@ -1139,6 +1146,7 @@ async def create_export_transfer(
     version: str | None,
     job_queue: JobQueue,
     requested_by_user_id: str | None = None,
+    storage: OctxStorage | None = None,
 ) -> OctxTransfer:
     active = await session.scalar(
         select(OctxTransfer)
@@ -1198,14 +1206,21 @@ async def create_export_transfer(
     binding = await session.get(OctxSourceBinding, source_id)
     active_release = await session.get(OctxRelease, binding.active_release_id) if binding else None
     active_asset = await session.get(OctxAsset, binding.asset_id) if binding else None
-    if (
+    reusable_original = bool(
         not excluded
         and binding is not None
         and active_release is not None
         and active_asset is not None
         and active_asset.ownership is OctxAssetOwnership.IMPORTED
         and binding.content_revision == binding.released_revision
-    ):
+    )
+    if reusable_original:
+        artifact_storage = storage or default_octx_storage()
+        reusable_original = artifact_storage.resolve_release(
+            active_release.artifact_key,
+            active_release.package_digest,
+        ).is_file()
+    if reusable_original:
         transfer = OctxTransfer(
             direction=OctxTransferDirection.EXPORT,
             status=OctxTransferStatus.READY,
