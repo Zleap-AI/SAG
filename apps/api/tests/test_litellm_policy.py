@@ -65,6 +65,47 @@ async def test_auto_downgrades_once_and_caches_by_provider_base_url_model(
 
 
 @pytest.mark.asyncio
+async def test_auto_downgrades_deepseek_unavailable_response_format_wording(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def completion(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        if kwargs["response_format"]["type"] == "json_schema":
+            raise GatewayError(
+                "OpenAIException - This response_format type is unavailable now",
+                400,
+            )
+        return {"ok": True}
+
+    monkeypatch.setattr(litellm, "acompletion", completion)
+    handle = install_litellm_policy(
+        Settings(
+            _env_file=None,
+            llm_provider="openai",
+            llm_base_url="https://api.deepseek.com",
+            llm_model="deepseek-v4-flash",
+            llm_structured_output_mode="auto",
+        )
+    )
+    try:
+        assert await litellm.acompletion(
+            **_schema_request(
+                model="openai/deepseek-v4-flash",
+                api_base="https://api.deepseek.com",
+            )
+        ) == {"ok": True}
+    finally:
+        uninstall_litellm_policy(handle)
+
+    assert [call["response_format"]["type"] for call in calls] == [
+        "json_schema",
+        "json_object",
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("message", "status"),
     [

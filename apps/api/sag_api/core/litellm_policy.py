@@ -95,9 +95,11 @@ def should_downgrade_json_schema(
     if not _json_schema_request(request) or _status_code(error) not in {400, 422}:
         return False
     summary = str(error).casefold()
-    names_schema = "json_schema" in summary or (
-        "response_format" in summary and "schema" in summary
-    )
+    # The request check above already proves the rejected format was
+    # ``json_schema``.  Some OpenAI-compatible gateways (including DeepSeek
+    # v4 Flash) only report that the response_format *type* is unavailable,
+    # without echoing the concrete type name.
+    names_structured_output = "json_schema" in summary or "response_format" in summary
     unsupported = any(
         phrase in summary
         for phrase in (
@@ -106,9 +108,10 @@ def should_downgrade_json_schema(
             "does not support",
             "isn't supported",
             "not support",
+            "unavailable",
         )
     )
-    return names_schema and unsupported
+    return names_structured_output and unsupported
 
 
 def _thinking_override(extra_body: object) -> bool | None:
