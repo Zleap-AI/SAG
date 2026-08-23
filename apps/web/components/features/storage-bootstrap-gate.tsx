@@ -109,10 +109,7 @@ export function StorageBootstrapGateView({
             {t("title")}
           </h1>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            {t("description", {
-              source: status.detected_version ?? t("unknownVersion"),
-              target: status.target_version,
-            })}
+            {t("description")}
           </p>
         </header>
 

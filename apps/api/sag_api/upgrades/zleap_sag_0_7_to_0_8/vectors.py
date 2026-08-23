@@ -115,13 +115,15 @@ def _convert(
             recoverable=True,
         )
     vectors = _vectors(item)
-    missing_vectors = sorted(
-        name for name in REQUIRED_VECTORS[legacy_collection] if not vectors.get(name)
-    )
+    if legacy_collection == "source_chunks" and "heading_vector" not in vectors and vectors.get("content_vector"):
+        # Older SAG releases could persist a valid content vector without a
+        # heading vector. Reusing it keeps the chunk searchable without making
+        # the storage migration depend on an external embedding service.
+        vectors["heading_vector"] = list(vectors["content_vector"])
+    missing_vectors = sorted(name for name in REQUIRED_VECTORS[legacy_collection] if not vectors.get(name))
     if missing_vectors:
         raise StorageUpgradeError(
-            f"legacy vector {record_id} is missing required fields: "
-            f"{', '.join(missing_vectors)}",
+            f"legacy vector {record_id} is missing required fields: {', '.join(missing_vectors)}",
             stage="vectors",
             recoverable=True,
         )

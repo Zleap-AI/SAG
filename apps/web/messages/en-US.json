@@ -110,7 +110,7 @@
   },
   "StorageBootstrap": {
     "title": "Choose how to upgrade knowledge storage",
-    "description": "A legacy knowledge base from version {source} was detected. Choose how to handle it before upgrading to {target}.",
+    "description": "This release updates the underlying knowledge storage engine. Migrate the existing knowledge base, or preserve the old data and start with a fresh one.",
     "unknownVersion": "an earlier",
     "loading": "Checking knowledge storage status…",
     "loadFailed": "Failed to check storage status. Try again.",

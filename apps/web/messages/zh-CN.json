@@ -110,7 +110,7 @@
   },
   "StorageBootstrap": {
     "title": "需要选择知识库存储方式",
-    "description": "检测到 {source} 版本的旧知识库。升级到 {target} 前，请选择处理方式。",
+    "description": "本次版本升级包含底层知识存储引擎更新。请选择迁移现有知识库，或保留旧数据并创建全新知识库。",
     "unknownVersion": "早期",
     "loading": "正在检查知识库存储状态…",
     "loadFailed": "存储状态检查失败，请重试。",

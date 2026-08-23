@@ -177,6 +177,10 @@ describe("StorageBootstrapGateView", () => {
 
   it("shows existing-account login without registration when a choice is required", () => {
     const html = renderView(status("choice_required"));
+    expect(html).toContain("本次版本升级包含底层知识存储引擎更新");
+    expect(html).toContain("迁移现有知识库，或保留旧数据并创建全新知识库");
+    expect(html).not.toContain("0.7");
+    expect(html).not.toContain("0.8.2");
     expect(html).toContain("使用现有账户登录");
     expect(html).not.toContain("注册");
     expect(html).not.toContain("/Users/owner/legacy-engine");
