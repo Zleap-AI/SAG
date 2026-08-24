@@ -378,13 +378,18 @@ export function StorageBootstrapGate({ children }: { children: React.ReactNode }
         setStatus(previousStatus);
         return;
       }
-      const acceptedButResponseLost =
-        error instanceof ApiError &&
-        (error.status === 409 ||
-          (error.status === 0 && ["timeout", "network", "aborted"].includes(error.code)));
-      if (!acceptedButResponseLost) {
+      try {
+        const authoritativeStatus = await loadStatus(api.storageBootstrap);
+        if (!mountedRef.current) return;
+        if (authoritativeStatus.phase !== "choice_required") {
+          setStatus(authoritativeStatus);
+          return;
+        }
         setStatus(previousStatus);
         setErrorMessage(errorText(error, t("submitFailed")));
+      } catch {
+        // The POST and reconciliation result are both unknown. Keep the gate
+        // locked in processing so the status poller can converge safely.
       }
     } finally {
       submittingRef.current = false;
