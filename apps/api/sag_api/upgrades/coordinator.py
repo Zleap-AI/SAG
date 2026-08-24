@@ -50,6 +50,33 @@ class StorageBootstrapCoordinator:
         except StorageUpgradeError as error:
             return self._publish_probe_failure(error)
 
+        if (
+            self.settings.storage_bootstrap_policy == "windows_fresh"
+            and (
+                probe.version is StorageVersion.LEGACY_0_7
+                or (
+                    state is not None
+                    and state.choice is StorageChoice.MIGRATE
+                    and state.phase
+                    in (StorageBootstrapPhase.PROCESSING, StorageBootstrapPhase.FAILED)
+                )
+            )
+        ):
+            state = BootstrapState(
+                phase=StorageBootstrapPhase.PROCESSING,
+                source_version=probe.version.value,
+                target_version="0.8.2",
+                choice=StorageChoice.FRESH,
+                actor_user_id=state.actor_user_id if state is not None else "desktop-windows",
+                adapter_id="fresh-knowledge-workspace",
+                stage="queued",
+                preserved_path=str(active),
+                diagnostic_path=str(self.store.path),
+            )
+            self.store.save(state)
+            self._schedule(state)
+            return self._status_from_state(state)
+
         if state is not None and state.choice is not None:
             state.preserved_path = state.preserved_path or str(active)
             if state.phase is StorageBootstrapPhase.READY:
@@ -163,7 +190,12 @@ class StorageBootstrapCoordinator:
                 self.store.save(state)
                 context = StorageUpgradeContext(self.settings, self.session_factory)
                 if state.choice is StorageChoice.FRESH:
-                    report = await FreshKnowledgeWorkspaceAdapter().create(context)
+                    report = await FreshKnowledgeWorkspaceAdapter().create(
+                        context,
+                        preserve_legacy_in_place=(
+                            self.settings.storage_bootstrap_policy == "windows_fresh"
+                        ),
+                    )
                 else:
                     probe = await self._probe()
                     adapter = next(

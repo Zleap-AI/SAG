@@ -15,6 +15,7 @@ import {
   loadOrCreateRuntimeSecret,
   resolveStableWebPort,
 } from "./runtime-state";
+import { storageBootstrapPolicy } from "./runtime-policy";
 
 export interface ManagedRuntime {
   readonly webUrl: string;
@@ -128,6 +129,7 @@ function startPythonRuntime(
       SAG_CORS_ORIGINS: webOrigin,
       SAG_DESKTOP_HOST: desktopConfig.apiHost,
       SAG_DESKTOP_PORT: String(desktopConfig.apiPort),
+      SAG_STORAGE_BOOTSTRAP_POLICY: storageBootstrapPolicy(process.platform),
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
