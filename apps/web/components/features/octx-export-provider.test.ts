@@ -1,6 +1,45 @@
 import { describe, expect, it } from "vitest";
 
-import { projectDesktopDiagnostics } from "./octx-export-provider";
+import type { PersistedOctxExportTask } from "@/lib/octx-export-tasks";
+
+import { artifactFilename, projectDesktopDiagnostics } from "./octx-export-provider";
+
+describe("artifactFilename", () => {
+  it("preserves the knowledge base name and uses the OCTX suffix", () => {
+    const task = {
+      transferId: "transfer-1",
+      sourceId: "source-1",
+      sourceName: "AI 手册",
+      filenameHint: "AI 手册",
+      autoDownloaded: false,
+      createdAt: "2026-08-24T00:00:00.000Z",
+      transfer: {
+        id: "transfer-1",
+        direction: "export",
+        status: "ready",
+        progress: 1,
+        asset: null,
+        release: { id: "release-1", version: "1.0.0", package_digest: "sha256:test" },
+        target_source_id: "source-1",
+        installation_id: null,
+        allowed_actions: [],
+        decision_token: null,
+        conflicts: [],
+        excluded_documents: [],
+        record_counts: {},
+        capabilities: {},
+        validation_report: null,
+        warnings: [],
+        error: null,
+        cancellation_requested: false,
+        created_at: "2026-08-24T00:00:00.000Z",
+        updated_at: "2026-08-24T00:00:00.000Z",
+      },
+    } satisfies PersistedOctxExportTask;
+
+    expect(artifactFilename(task)).toBe("AI 手册-OCTX.octx");
+  });
+});
 
 describe("projectDesktopDiagnostics", () => {
   it("omits raw desktop log data from OCTX diagnostics downloads", () => {

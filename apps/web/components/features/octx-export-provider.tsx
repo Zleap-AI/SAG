@@ -48,12 +48,13 @@ function triggerDownload(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function artifactFilename(task: PersistedOctxExportTask): string {
-  const version = task.transfer.release?.version ?? "release";
+export function artifactFilename(task: PersistedOctxExportTask): string {
   const stem = (task.filenameHint ?? task.transfer.asset?.name ?? task.sourceName ?? "source")
-    .replace(/[^\w.\-]+/g, "_")
-    .slice(0, 60);
-  return `${stem}-${version}.octx`;
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
+    .replace(/[. ]+$/g, "")
+    .slice(0, 80) || "source";
+  return `${stem}-OCTX.octx`;
 }
 
 function downloadJson(value: unknown, filename: string) {
