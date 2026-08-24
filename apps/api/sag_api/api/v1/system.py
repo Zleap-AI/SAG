@@ -55,14 +55,22 @@ async def health() -> dict:
 
 
 @router.get("/ready")
-async def ready() -> JSONResponse:
-    """就绪探针：数据库可连通才 200，否则 503（供 compose/K8s 健康检查）。"""
+async def ready(request: Request) -> JSONResponse:
+    """就绪探针：数据库与知识运行时均就绪才返回 200。"""
     try:
         async with SessionLocal() as session:
             await session.execute(text("SELECT 1"))
     except Exception as e:  # noqa: BLE001
         log.warning("就绪检查失败：%s", e)
         return JSONResponse(status_code=503, content={"status": "unavailable", "db": False})
+
+    runtime = getattr(request.app.state, "knowledge_runtime", None)
+    coordinator = getattr(request.app.state, "storage_bootstrap", None)  # [storage-bootstrap]
+    if runtime is None or not runtime.ready:
+        content: dict[str, object] = {"status": "unavailable", "db": True}
+        if coordinator is not None:
+            content["phase"] = coordinator.public_status()["phase"]
+        return JSONResponse(status_code=503, content=content)
     return JSONResponse(content={"status": "ready", "db": True})
 
 
@@ -163,7 +171,7 @@ async def quick_setup_302(
         raise ConflictError("模型配置已存在，请在设置中修改")
 
     config = await settings_service.save_302_quick_setup(session, body.api_key)
-    await request.app.state.engine_manager.aclose_all()
+    await request.app.state.knowledge_runtime.apply_settings(settings, reset_engines=True)
     return {"config": config, "capabilities": _capabilities()}
 
 
@@ -195,18 +203,22 @@ async def update_model_config(
     }
     engine_changed = any(before.get(key) != config.get(key) for key in engine_fields)
     engine_changed = engine_changed or bool(patch.get("llm_api_key") or patch.get("embedding_api_key"))
-    if engine_changed:
-        await request.app.state.engine_manager.aclose_all()
+    await request.app.state.knowledge_runtime.apply_settings(
+        settings,
+        reset_engines=engine_changed,
+    )
     return {"config": config, "capabilities": _capabilities()}
 
 
 @router.post("/model-config/mineru/302")
 async def configure_302_mineru(
+    request: Request,
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """已有 302 LLM/Embedding 用户一键复用服务端保存的 Key 启用 MinerU。"""
     config = await settings_service.save_302_mineru_setup(session)
+    await request.app.state.knowledge_runtime.apply_settings(settings, reset_engines=False)
     return {"config": config, "capabilities": _capabilities()}
 
 

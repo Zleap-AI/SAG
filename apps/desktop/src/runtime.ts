@@ -169,7 +169,7 @@ export async function startPackagedRuntime(): Promise<ManagedRuntime> {
     await Promise.all([
       waitForHttp(webHealthUrl, desktopConfig.startupTimeoutMs),
       waitForHttp(
-        `${apiUrl}/api/v1/system/ready`,
+        `${apiUrl}/api/v1/system/health`,
         desktopConfig.startupTimeoutMs,
       ),
     ]);

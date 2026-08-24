@@ -140,6 +140,13 @@ async def test_302_quick_model_setup(monkeypatch: pytest.MonkeyPatch):
                 assert settings.embedding_api_key == fake_key
                 assert settings.mineru_api_key == fake_key
                 assert settings.effective_document_parser == "mineru"
+                runtime_settings = app.state.knowledge_runtime._settings
+                assert app.state.llm._settings is runtime_settings
+                assert app.state.engine_manager._settings is runtime_settings
+                assert runtime_settings.llm_api_key == fake_key
+                assert runtime_settings.embedding_api_key == fake_key
+                assert runtime_settings.mineru_api_key == fake_key
+                assert runtime_settings.embedding_model == "Qwen/Qwen3-Embedding-4B"
 
                 configured_status = await client.get(
                     "/api/v1/system/model-setup", headers=headers

@@ -35,7 +35,7 @@ async def test_pending_fast_delete_falls_back_when_process_is_claimed_mid_reques
     async with SessionLocal() as session:
         source = Source(
             name="pending-fast-delete-claim-race",
-            sag_source_config_id=f"pending-fast-delete-{uuid4().hex}",
+            sag_source_config_id=(f"pending-fast-delete-{uuid4().hex}")[:36],
             document_count=1,
         )
         session.add(source)
@@ -140,7 +140,7 @@ async def test_permanent_maintenance_window_failure_becomes_delete_failed():
     async with SessionLocal() as session:
         source = Source(
             name="broken-maintenance-window",
-            sag_source_config_id=f"broken-window-{uuid4().hex}",
+            sag_source_config_id=(f"broken-window-{uuid4().hex}")[:36],
         )
         session.add(source)
         await session.flush()
@@ -206,7 +206,7 @@ async def test_retryable_maintenance_window_failure_is_bounded_and_retried():
     async with SessionLocal() as session:
         source = Source(
             name="flaky-maintenance-window",
-            sag_source_config_id=f"flaky-window-{uuid4().hex}",
+            sag_source_config_id=(f"flaky-window-{uuid4().hex}")[:36],
         )
         session.add(source)
         await session.flush()
@@ -270,7 +270,7 @@ async def test_never_started_pending_document_is_deleted_without_using_a_worker(
     async with SessionLocal() as session:
         source = Source(
             name="pending-fast-delete",
-            sag_source_config_id="pending-fast-delete-config",
+            sag_source_config_id="pending-fast-delete-config"[:36],
             document_count=1,
         )
         session.add(source)
@@ -334,7 +334,7 @@ async def test_concurrent_pending_deletes_share_one_completed_job(tmp_path):
     async with SessionLocal() as session:
         source = Source(
             name="concurrent-pending-delete",
-            sag_source_config_id="concurrent-pending-delete-config",
+            sag_source_config_id="concurrent-pending-delete-config"[:36],
             document_count=1,
         )
         session.add(source)
@@ -417,7 +417,7 @@ async def test_delete_during_loading_is_cooperative_and_does_not_hard_cancel():
     async with SessionLocal() as session:
         source = Source(
             name="loading-delete",
-            sag_source_config_id="loading-delete-config",
+            sag_source_config_id="loading-delete-config"[:36],
             document_count=1,
         )
         session.add(source)
@@ -483,7 +483,7 @@ async def test_delete_waits_for_source_idle_outside_the_worker_queue():
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="park-delete", sag_source_config_id="park-delete-config")
+        source = Source(name="park-delete", sag_source_config_id="park-delete-config"[:36])
         session.add(source)
         await session.flush()
         document = Document(
@@ -555,7 +555,7 @@ async def test_reprocess_cleanup_waits_for_source_idle_outside_the_worker_queue(
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="park-reprocess", sag_source_config_id="park-reprocess-config")
+        source = Source(name="park-reprocess", sag_source_config_id="park-reprocess-config"[:36])
         session.add(source)
         await session.flush()
         document = Document(
@@ -619,7 +619,7 @@ async def test_maintenance_release_happens_after_peer_resume_is_durable():
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="release-order", sag_source_config_id="release-order-config")
+        source = Source(name="release-order", sag_source_config_id="release-order-config"[:36])
         session.add(source)
         await session.flush()
         peer_document = Document(
@@ -673,7 +673,7 @@ async def test_cascaded_reprocess_job_does_not_leave_source_maintenance_stuck():
     async with SessionLocal() as session:
         source = Source(
             name="cascaded-reprocess-maintenance",
-            sag_source_config_id="cascaded-reprocess-maintenance-config",
+            sag_source_config_id="cascaded-reprocess-maintenance-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -761,7 +761,7 @@ async def test_coordinator_closes_window_when_only_maintenance_job_disappears():
     async with SessionLocal() as session:
         source = Source(
             name="missing-only-maintenance",
-            sag_source_config_id="missing-only-maintenance-config",
+            sag_source_config_id="missing-only-maintenance-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -820,7 +820,7 @@ async def test_dispatch_restores_missing_running_maintenance_registration():
     async with SessionLocal() as session:
         source = Source(
             name="restore-running-maintenance",
-            sag_source_config_id="restore-running-maintenance-config",
+            sag_source_config_id="restore-running-maintenance-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -903,7 +903,7 @@ async def test_same_source_deletes_share_one_maintenance_window_and_run_serially
     monkeypatch.setattr(universe_service, "schedule_universe_refresh", no_universe_refresh)
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="batch-delete", sag_source_config_id="batch-delete-config")
+        source = Source(name="batch-delete", sag_source_config_id="batch-delete-config"[:36])
         session.add(source)
         await session.flush()
         documents = [
@@ -997,7 +997,7 @@ async def test_stop_waits_for_workers_before_releasing_maintenance_windows():
             assert worker.done()
             return SimpleNamespace(
                 id=source_id,
-                sag_source_config_id=f"config-{source_id}",
+                sag_source_config_id=(f"config-{source_id}")[:36],
             )
 
     class Engine:
@@ -1055,7 +1055,7 @@ async def test_new_maintenance_request_is_dispatched_after_previous_window_close
 
     await init_db()
     async with SessionLocal() as session:
-        source = Source(name="closing-race", sag_source_config_id="closing-race-config")
+        source = Source(name="closing-race", sag_source_config_id="closing-race-config"[:36])
         session.add(source)
         await session.flush()
         next_job = Job(
@@ -1115,7 +1115,7 @@ async def test_closing_maintenance_window_retries_transient_engine_failure(
     async with SessionLocal() as session:
         source = Source(
             name="transient-maintenance-close",
-            sag_source_config_id="transient-maintenance-close-config",
+            sag_source_config_id="transient-maintenance-close-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -1188,7 +1188,7 @@ async def test_stop_tracks_coordinator_while_it_closes_a_ghost_window():
     async with SessionLocal() as session:
         source = Source(
             name="tracked-ghost-close",
-            sag_source_config_id="tracked-ghost-close-config",
+            sag_source_config_id="tracked-ghost-close-config"[:36],
         )
         session.add(source)
         await session.commit()
@@ -1230,7 +1230,7 @@ async def test_maintenance_close_supervises_peer_enqueue_failure():
     async with SessionLocal() as session:
         source = Source(
             name="durable-peer-release",
-            sag_source_config_id="durable-peer-release-config",
+            sag_source_config_id="durable-peer-release-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -1304,7 +1304,7 @@ async def test_concurrent_finish_calls_close_and_resume_once():
     async with SessionLocal() as session:
         source = Source(
             name="concurrent-maintenance-finish",
-            sag_source_config_id="concurrent-maintenance-finish-config",
+            sag_source_config_id="concurrent-maintenance-finish-config"[:36],
         )
         session.add(source)
         await session.flush()
@@ -1380,7 +1380,7 @@ async def test_stop_releases_window_when_dispatch_and_release_both_fail():
     async with SessionLocal() as session:
         source = Source(
             name="dispatch-and-release-failure",
-            sag_source_config_id="dispatch-and-release-failure-config",
+            sag_source_config_id="dispatch-and-release-failure-config"[:36],
         )
         session.add(source)
         await session.commit()

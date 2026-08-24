@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from zleap.sag import DataEngine
+from zleap.sag.pipeline import SearchOptions, SearchRequest, SearchScope
 
 from sag_api.core.config import Settings
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
@@ -258,29 +259,46 @@ class EngineManager:
         self._schema_ready = False
         self._universe_indexes_ready = False
         # 一次性 monkey-patch zleap 检索链,把每 step 的 `_timings` 送回 SearchOutcome.stats
+        # 0.8.2 检索模块已重写,probe 内部 ImportError 时静默跳过(REQ-7 待 zleap 内置耗时统计)。
         _install_timings_probe()
 
-    async def _ensure_universe_query_indexes(self) -> None:
+    async def _relational_session_factory(
+        self, source_config_id: str, source: Source | None = None
+    ) -> Any:
+        """0.8.2 起 zleap 无全局会话工厂;经引擎注入的 RelationalStore 访问关系库。"""
+        slot = await self._slot(source_config_id, source)
+        return slot.engine.resources.relational.session_factory()
+
+    async def _vector_store(self, source_config_id: str, source: Source | None = None) -> Any:
+        """0.8.2 起向量访问经引擎注入的 VectorStore(替代 get_vector_client)。"""
+        slot = await self._slot(source_config_id, source)
+        return slot.engine.resources.vector
+
+    async def get_sag_embedding(self, source_config_id: str, source: Source | None = None) -> Any:
+        """0.8.2 起 embedding 经引擎注入(替代 get_embedding_client)。"""
+        slot = await self._slot(source_config_id, source)
+        return slot.engine.resources.embedding
+
+    async def _ensure_universe_query_indexes(self, engine: Any) -> None:
         """Best-effort composite indexes for bounded timeline and neighbor reads."""
         if self._universe_indexes_ready:
             return
         self._universe_indexes_ready = True
         try:
             from sqlalchemy import Index, func
-            from zleap.sag.db import get_engine
             from zleap.sag.db.models import EventEntity, SourceEvent
 
             specs = (
                 (
                     "idx_universe_event_timeline",
-                    SourceEvent.source_config_id,
+                    SourceEvent.data_source_id,
                     SourceEvent.start_time,
                     SourceEvent.created_time,
                     SourceEvent.id,
                 ),
                 (
                     "idx_universe_event_category_timeline",
-                    SourceEvent.source_config_id,
+                    SourceEvent.data_source_id,
                     SourceEvent.category,
                     SourceEvent.start_time,
                     SourceEvent.created_time,
@@ -314,7 +332,7 @@ class EngineManager:
                         )
 
                     table = quote(SourceEvent.__table__.name)
-                    source = quote(SourceEvent.source_config_id.name)
+                    source = quote(SourceEvent.data_source_id.name)
                     category = quote(SourceEvent.category.name)
                     start = quote(SourceEvent.start_time.name)
                     created = quote(SourceEvent.created_time.name)
@@ -351,19 +369,19 @@ class EngineManager:
                     )
                     Index(
                         "idx_universe_event_effective_timeline",
-                        SourceEvent.source_config_id,
+                        SourceEvent.data_source_id,
                         event_time,
                         SourceEvent.id,
                     ).create(sync_connection, checkfirst=True)
                     Index(
                         "idx_universe_event_category_effective_timeline",
-                        SourceEvent.source_config_id,
+                        SourceEvent.data_source_id,
                         SourceEvent.category,
                         event_time,
                         SourceEvent.id,
                     ).create(sync_connection, checkfirst=True)
 
-            async with get_engine().begin() as connection:
+            async with engine.resources.relational.engine().begin() as connection:
                 await connection.run_sync(create_missing)
         except Exception:  # noqa: BLE001 - indexes are an optimization, never availability
             log.exception("创建知识宇宙查询索引失败，继续使用现有索引")
@@ -373,8 +391,8 @@ class EngineManager:
     # 默认已经是 fast;此处保留翻译点是为了给后续 precise 变体和 telemetry 区分留位置。
     _FACADE_TO_ZLEAP_STRATEGY: dict[str, str] = {
         "vector": "vector",
-        "multi": "multi",
-        "multi_es_fast": "multi_es",
+        "multi": "full_expand",
+        "multi_es_fast": "pruned_expand_rff",
     }
 
     _VECTOR_PROVIDER_LEXICAL_SUPPORT: dict[str, bool] = {
@@ -488,46 +506,45 @@ class EngineManager:
         self,
         source_config_id: str,
         source: Source | None = None,
+        engine: Any | None = None,
     ) -> None:
         """Ensure the zleap-sag parent row exists before derived data is written.
 
-        ``DataEngine.start()`` initializes storage schemas but does not create a
-        ``SourceConfig`` row. The upstream ``ingest()`` convenience method normally
-        creates it; our incremental processor uses the lower-level loader directly,
-        so the adapter must preserve that invariant itself.
+        0.8.2 把 0.7.1 的 ``SourceConfig`` 换成 ``DataSource``,且无全局会话工厂;
+        这里经注入的 engine 访问关系库。SAG 专属的 octx 向量复用元数据
+        (原 target_config)改存 SAG 元库 ``Source.config``,不再写入 zleap 库
+        (迁移注记:向量复用信任暂降级为关闭,导出走向量重建的安全路径)。
         """
         from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-        from zleap.sag.db import SourceConfig, get_session_factory
+        from zleap.sag.db import DataSource
 
-        from sag_api.sag.octx_vector_protocol import configured_embedding_identity
+        effective_engine = engine
+        if effective_engine is None:
+            slot = await self._slot(source_config_id, source)
+            effective_engine = slot.engine
 
         name = str(getattr(source, "name", "") or f"sag-{source_config_id[-8:]}")[:100]
         description = str(getattr(source, "description", "") or "created by sag EngineManager")[:255]
-        vector_identity = configured_embedding_identity(self._settings)
         try:
-            session_factory = get_session_factory()
+            session_factory = effective_engine.resources.relational.session_factory()
             async with session_factory() as session:
-                existing = await session.get(SourceConfig, source_config_id)
+                existing = await session.get(DataSource, source_config_id)
                 if existing is not None:
                     return
-                target_config = {}
-                if vector_identity is not None:
-                    target_config["octx_vector_identity"] = vector_identity
-                source_config = SourceConfig(
+                data_source = DataSource(
                     id=source_config_id,
                     name=name,
                     description=description,
-                    target_config=target_config,
                 )
-                session.add(source_config)
+                session.add(data_source)
                 try:
-                    await _commit_with_sqlite_lock_retry(session, source_config)
+                    await _commit_with_sqlite_lock_retry(session, data_source)
                 except IntegrityError:
                     # Another process may have provisioned the same source between
                     # our read and insert. Treat that race as success only when the
                     # parent row is now present.
                     await session.rollback()
-                    if await session.get(SourceConfig, source_config_id) is None:
+                    if await session.get(DataSource, source_config_id) is None:
                         raise
         except SQLAlchemyError as error:
             from sag_api.core.errors import UpstreamError
@@ -552,15 +569,18 @@ class EngineManager:
                     config = self._config_for(source)
                     engine = DataEngine(
                         config,
-                        source_config_id=source_config_id,
+                        data_source_id=source_config_id,
                         health_check=False,
                     )
                     with map_sag_errors(stage=ErrorStage.CONFIG):
+                        # 0.8.2:pgvector/oceanbase 等向量后端在 start() 前必须先
+                        # init_schema() 显式创建关系表与向量模式对象,否则 start()
+                        # 抛 StorageInitializationRequiredError。
+                        await self._ensure_engine_schema(engine)
                         await engine.start()
                     try:
-                        await self._ensure_engine_schema(engine)
-                        await self._ensure_source_config(source_config_id, source)
-                        await self._ensure_universe_query_indexes()
+                        await self._ensure_source_config(source_config_id, source, engine)
+                        await self._ensure_universe_query_indexes(engine)
                     except Exception:
                         try:
                             await engine.aclose()
@@ -778,6 +798,8 @@ class EngineManager:
                         deleted = await delete_document_records(
                             source_config_id,
                             document_source_id,
+                            session_factory=slot.engine.resources.relational.session_factory(),
+                            vector_store=slot.engine.resources.vector,
                         )
                 finally:
                     async with slot.state_lock:
@@ -882,7 +904,17 @@ class EngineManager:
             # concurrent searches can queue forever before the timed region starts.
             with map_sag_errors(stage=ErrorStage.RETRIEVE):
                 async with self.use(source_config_id, source) as engine:
-                    return await engine.search(query, strategy=engine_strategy, top_k=top_k)
+                    return await engine.search(
+                        SearchRequest(
+                            query=query,
+                            scope=SearchScope(data_source_ids=(source_config_id,)),
+                            options=SearchOptions(
+                                strategy=engine_strategy,
+                                top_k=top_k,
+                                return_type="chunk",
+                            ),
+                        )
+                    )
 
         # 开一个 timings 桶,捕获 zleap 检索链内部的每 step 耗时(见 _timings_probe)。
         bucket, token = _timings_capture_scope()
@@ -1111,19 +1143,17 @@ class EngineManager:
         sources_by_config = {source_config_id: source for source_config_id, source in targets}
         source_config_ids = list(sources_by_config)
         await self._ensure_read_runtime(sources_by_config)
+        from zleap.sag.core.adapters.models import Filter, VectorQuery
 
-        from zleap.sag.core.storage.client import get_es_client
-        from zleap.sag.core.storage.repositories.source_chunk_repository import (
-            SourceChunkRepository,
-        )
-        from zleap.sag.modules.load.processor import DocumentProcessor
-
-        async def recall() -> tuple[list[dict[str, Any]], dict[str, float]]:
+        async def recall() -> tuple[list[Any], dict[str, float]]:
             timings: dict[str, float] = {}
             t0 = time.perf_counter()
-            query_vector = await DocumentProcessor().generate_embedding(query)
+            # 0.8.2:向量检索经引擎注入的 VectorStore,payload 键为 data_source_id。
+            primary_config_id = source_config_ids[0]
+            slot = await self._slot(primary_config_id, sources_by_config[primary_config_id])
+            engine = slot.engine
+            query_vector = await engine.resources.embedding.generate(query)
             timings["vector.embedding"] = round((time.perf_counter() - t0) * 1000, 2)
-            repository = SourceChunkRepository(get_es_client())
             t1 = time.perf_counter()
             exclusions = {
                 source_config_id: tuple(
@@ -1140,39 +1170,28 @@ class EngineManager:
             exclusions = {
                 source_config_id: source_ids for source_config_id, source_ids in exclusions.items() if source_ids
             }
+            filters = [Filter.one_of("data_source_id", tuple(source_config_ids))]
             if exclusions:
-                from zleap.sag.core.storage.query import Q
-
-                filter_query = Q(
-                    "bool",
-                    filter=[Q("terms", source_config_id=source_config_ids)],
-                    must_not=[
-                        Q(
-                            "bool",
-                            filter=[
-                                Q("term", source_config_id=source_config_id),
-                                Q("terms", source_id=list(source_ids)),
-                            ],
-                        )
-                        for source_config_id, source_ids in exclusions.items()
-                    ],
-                ).to_dict()
-                docs = await repository.es_client.vector_search(
-                    index=repository.INDEX_NAME,
-                    field="content_vector",
+                exclusion_pairs = [
+                    Filter.all(
+                        Filter.eq("data_source_id", source_config_id),
+                        Filter.one_of("source_id", tuple(source_ids)),
+                    )
+                    for source_config_id, source_ids in exclusions.items()
+                ]
+                filters.append(Filter.negate(Filter.any(*exclusion_pairs)))
+            hits = await engine.resources.vector.query(
+                "source_chunks",
+                VectorQuery(
                     vector=query_vector,
-                    size=top_k,
-                    filter_query=filter_query,
-                )
-            else:
-                docs = await repository.search_similar_by_content(
-                    query_vector=query_vector,
-                    k=top_k,
-                    source_config_ids=source_config_ids,
-                )
-            timings["vector.es_search"] = round((time.perf_counter() - t1) * 1000, 2)
+                    vector_field="content_vector",
+                    filters=Filter.all(*filters),
+                    limit=top_k,
+                ),
+            )
+            timings["vector.search"] = round((time.perf_counter() - t1) * 1000, 2)
             timings["vector.total"] = round((time.perf_counter() - t0) * 1000, 2)
-            return docs, timings
+            return hits, timings
 
         hits, batch_timings = await asyncio.wait_for(
             recall(),
@@ -1182,22 +1201,20 @@ class EngineManager:
         sections: dict[tuple[str, str], RetrievedSection] = {}
         loose: list[RetrievedSection] = []
         for hit in hits:
-            source_config_id = str(hit.get("source_config_id") or "").strip()
+            payload = dict(getattr(hit, "payload", None) or {})
+            source_config_id = str(payload.get("data_source_id") or "").strip()
             if source_config_id not in allowed_sources:
                 continue
-            try:
-                score = float(hit.get("_score") or hit.get("score") or 0.0)
-            except (TypeError, ValueError):
-                continue
+            score = float(getattr(hit, "score", 0.0) or 0.0)
             if not math.isfinite(score):
                 continue
             section = RetrievedSection(
-                chunk_id=str(hit.get("chunk_id") or "").strip() or None,
-                heading=str(hit.get("heading") or "").strip(),
-                content=str(hit.get("content") or "").strip(),
+                chunk_id=str(getattr(hit, "id", "") or "").strip() or None,
+                heading=str(payload.get("heading") or "").strip(),
+                content=str(payload.get("content") or "").strip(),
                 score=max(0.0, min(1.0, score)),
-                rank=int(hit.get("rank") or 0),
-                source_id=str(hit.get("source_id") or "").strip() or None,
+                rank=int(payload.get("rank") or 0),
+                source_id=str(payload.get("source_id") or "").strip() or None,
                 source_config_id=source_config_id,
             )
             if not section.chunk_id:
@@ -1253,27 +1270,32 @@ class EngineManager:
         candidate_limit = min(200, max(bounded_limit * 4, 24))
 
         await self._ensure_read_runtime(sources_by_config)
-
-        from zleap.sag.core.storage.client import get_es_client
-        from zleap.sag.core.storage.repositories.event_repository import (
-            EventVectorRepository,
-        )
-        from zleap.sag.modules.load.processor import DocumentProcessor
+        from zleap.sag.core.adapters.models import Filter, VectorQuery
 
         async def recall_vectors() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-            query_vector = await DocumentProcessor().generate_embedding(query)
-            repository = EventVectorRepository(get_es_client())
+            slot = await self._slot(source_config_ids[0], sources_by_config[source_config_ids[0]])
+            engine = slot.engine
+            query_vector = await engine.resources.embedding.generate(query)
+            store = engine.resources.vector
+            filters = Filter.one_of("data_source_id", tuple(source_config_ids))
+
+            async def channel(field: str, k: int) -> list[dict[str, Any]]:
+                hits = await store.query(
+                    "event_vectors_wide",
+                    VectorQuery(vector=query_vector, vector_field=field, filters=filters, limit=k),
+                )
+                return [
+                    {
+                        "event_id": str(getattr(hit, "id", "")),
+                        "source_config_id": str((getattr(hit, "payload", None) or {}).get("data_source_id") or ""),
+                        "score": float(getattr(hit, "score", 0.0) or 0.0),
+                    }
+                    for hit in hits
+                ]
+
             return await asyncio.gather(
-                repository.search_similar_by_title(
-                    query_vector=query_vector,
-                    k=candidate_limit,
-                    source_config_ids=source_config_ids,
-                ),
-                repository.search_similar_by_content(
-                    query_vector=query_vector,
-                    k=candidate_limit,
-                    source_config_ids=source_config_ids,
-                ),
+                channel("title_vector", candidate_limit),
+                channel("content_vector", candidate_limit),
             )
 
         title_hits, content_hits = await asyncio.wait_for(
@@ -1370,19 +1392,18 @@ class EngineManager:
         )
 
         from sqlalchemy import and_, func, or_, select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import Entity, EventEntity, SourceEvent
 
         section_filters = [
             and_(
-                SourceEvent.source_config_id == source_config_id,
+                SourceEvent.data_source_id == source_config_id,
                 SourceEvent.chunk_id.in_(chunk_ids),
             )
             for source_config_id, chunk_ids in chunk_ids_by_config.items()
         ]
         event_filters = [
             and_(
-                SourceEvent.source_config_id == source_config_id,
+                SourceEvent.data_source_id == source_config_id,
                 SourceEvent.id.in_(event_ids),
             )
             for source_config_id, event_ids in direct_event_ids_by_config.items()
@@ -1404,7 +1425,7 @@ class EngineManager:
         chunk_rank = (
             func.row_number()
             .over(
-                partition_by=(SourceEvent.source_config_id, SourceEvent.chunk_id),
+                partition_by=(SourceEvent.data_source_id, SourceEvent.chunk_id),
                 order_by=(SourceEvent.rank.asc(), SourceEvent.id.asc()),
             )
             .label("chunk_rank")
@@ -1412,7 +1433,7 @@ class EngineManager:
         ranked_events = (
             select(
                 SourceEvent.id.label("id"),
-                SourceEvent.source_config_id.label("source_config_id"),
+                SourceEvent.data_source_id.label("source_config_id"),
                 SourceEvent.source_id.label("source_id"),
                 SourceEvent.title.label("title"),
                 SourceEvent.summary.label("summary"),
@@ -1437,7 +1458,7 @@ class EngineManager:
                 rank_condition,
                 ranked_events.c.id.in_(direct_event_ids),
             )
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as session:
             event_rows = (
                 (
@@ -1551,7 +1572,7 @@ class EngineManager:
                     .join(Entity, Entity.id == EventEntity.entity_id)
                     .where(
                         EventEntity.event_id.in_(event_ids),
-                        Entity.source_config_id.in_(requested_config_ids),
+                        Entity.data_source_id.in_(requested_config_ids),
                     )
                     .order_by(EventEntity.weight.desc(), EventEntity.created_time.asc())
                     .limit(association_limit)
@@ -1613,11 +1634,10 @@ class EngineManager:
         """读取该源的事件—实体图谱，按热度（关联事件数）排序。extract 后才有数据。"""
         await self._slot(source_config_id, source)  # 确保引擎 / DB 已初始化
         from sqlalchemy import func, select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import Entity, EventEntity
 
         heat = func.count(EventEntity.id)
-        conds = [Entity.source_config_id == source_config_id]
+        conds = [Entity.data_source_id == source_config_id]
         if types:
             conds.append(Entity.type.in_(list(types)))
         stmt = (
@@ -1628,7 +1648,7 @@ class EngineManager:
             .order_by(heat.desc())
             .limit(limit)
         )
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as s:
             rows = (await s.execute(stmt)).all()
         return [
@@ -1659,16 +1679,15 @@ class EngineManager:
         """
         await self._slot(source_config_id, source)
         from sqlalchemy import func, select, update
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import Entity, EventEntity, SourceEvent
 
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as s:
             if not source_ids:
                 return SourceGraphInfo()
 
             event_scope = (
-                SourceEvent.source_config_id == source_config_id,
+                SourceEvent.data_source_id == source_config_id,
                 SourceEvent.source_id.in_(source_ids),
             )
             visible_event = SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")
@@ -1788,7 +1807,7 @@ class EngineManager:
                     .join(Entity, Entity.id == EventEntity.entity_id)
                     .where(
                         EventEntity.event_id.in_(event_ids),
-                        Entity.source_config_id == source_config_id,
+                        Entity.data_source_id == source_config_id,
                     )
                     .order_by(EventEntity.weight.desc(), EventEntity.created_time.asc())
                     .limit(association_limit)
@@ -1866,7 +1885,6 @@ class EngineManager:
         """某实体关联事件的文本片段（用于生成人格）。"""
         await self._slot(source_config_id, source)
         from sqlalchemy import select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import EventEntity, SourceEvent
 
         stmt = (
@@ -1875,7 +1893,7 @@ class EngineManager:
             .where(EventEntity.entity_id == entity_id)
             .limit(limit)
         )
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         snippets: list[str] = []
         async with sf() as s:
             for title, summary, content in (await s.execute(stmt)).all():
@@ -1895,14 +1913,13 @@ class EngineManager:
         """Return aggregate-only statistics; never materialize event/entity rows."""
         await self._slot(source_config_id, source)
         from sqlalchemy import case, func, select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import Entity, EventEntity, SourceEvent
 
         buckets = max(1, min(int(bucket_count), 24))
         categories = max(0, min(int(category_limit), 16))
         event_time = func.coalesce(SourceEvent.start_time, SourceEvent.created_time)
         active_event = SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as session:
             event_count, min_time, max_time = (
                 await session.execute(
@@ -1911,7 +1928,7 @@ class EngineManager:
                         func.min(event_time),
                         func.max(event_time),
                     ).where(
-                        SourceEvent.source_config_id == source_config_id,
+                        SourceEvent.data_source_id == source_config_id,
                         active_event,
                     )
                 )
@@ -1919,7 +1936,7 @@ class EngineManager:
             entity_count = int(
                 (
                     await session.execute(
-                        select(func.count(Entity.id)).where(Entity.source_config_id == source_config_id)
+                        select(func.count(Entity.id)).where(Entity.data_source_id == source_config_id)
                     )
                 ).scalar_one()
                 or 0
@@ -1929,8 +1946,8 @@ class EngineManager:
                 .join(SourceEvent, SourceEvent.id == EventEntity.event_id)
                 .join(Entity, Entity.id == EventEntity.entity_id)
                 .where(
-                    SourceEvent.source_config_id == source_config_id,
-                    Entity.source_config_id == source_config_id,
+                    SourceEvent.data_source_id == source_config_id,
+                    Entity.data_source_id == source_config_id,
                     active_event,
                 )
                 .distinct()
@@ -1946,7 +1963,7 @@ class EngineManager:
                     await session.execute(
                         select(category, func.count(SourceEvent.id).label("count"))
                         .where(
-                            SourceEvent.source_config_id == source_config_id,
+                            SourceEvent.data_source_id == source_config_id,
                             active_event,
                         )
                         .group_by(category)
@@ -1978,7 +1995,7 @@ class EngineManager:
                     bucket_values = (
                         await session.execute(
                             select(*count_columns).where(
-                                SourceEvent.source_config_id == source_config_id,
+                                SourceEvent.data_source_id == source_config_id,
                                 active_event,
                             )
                         )
@@ -2027,7 +2044,7 @@ class EngineManager:
                     .where(
                         EventEntity.entity_id.in_(entity_ids),
                         EventEntity.created_time <= as_of_db,
-                        SourceEvent.source_config_id == source_config_id,
+                        SourceEvent.data_source_id == source_config_id,
                         event_time <= as_of_db,
                         SourceEvent.created_time <= as_of_db,
                         (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
@@ -2069,7 +2086,7 @@ class EngineManager:
             .where(
                 EventEntity.event_id.in_(event_ids),
                 EventEntity.created_time <= as_of_db,
-                Entity.source_config_id == source_config_id,
+                Entity.data_source_id == source_config_id,
                 Entity.created_time <= as_of_db,
             )
             .group_by(EventEntity.event_id, EventEntity.entity_id)
@@ -2107,7 +2124,7 @@ class EngineManager:
                 .join(Entity, Entity.id == ranked_relations.c.entity_id)
                 .where(
                     ranked_relations.c.relation_rank <= bounded_entities,
-                    Entity.source_config_id == source_config_id,
+                    Entity.data_source_id == source_config_id,
                 )
                 .order_by(
                     ranked_relations.c.event_id,
@@ -2201,7 +2218,6 @@ class EngineManager:
         """
         await self._slot(source_config_id, source)
         from sqlalchemy import and_, func, or_, select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import SourceEvent
 
         bounded_limit = max(1, min(int(limit), 24))
@@ -2252,7 +2268,7 @@ class EngineManager:
         as_of_db = _database_time(as_of)
         event_time = func.coalesce(SourceEvent.start_time, SourceEvent.created_time)
         filters = [
-            SourceEvent.source_config_id == source_config_id,
+            SourceEvent.data_source_id == source_config_id,
             (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
             event_time <= as_of_db,
             SourceEvent.created_time <= as_of_db,
@@ -2298,7 +2314,7 @@ class EngineManager:
             else (event_time.asc(), SourceEvent.rank.desc(), SourceEvent.id.desc())
         )
 
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as session:
             event_rows = (
                 await session.execute(
@@ -2325,7 +2341,7 @@ class EngineManager:
             # an event's depth is its position in the canonical order. One count
             # for the page head; the page itself is contiguous in that order.
             base_filters = [
-                SourceEvent.source_config_id == source_config_id,
+                SourceEvent.data_source_id == source_config_id,
                 (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
                 event_time <= as_of_db,
                 SourceEvent.created_time <= as_of_db,
@@ -2494,7 +2510,6 @@ class EngineManager:
         """Read one explicit hop with a hard cap and stable keyset cursor."""
         await self._slot(source_config_id, source)
         from sqlalchemy import and_, func, or_, select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import Entity, EventEntity, SourceEvent
 
         hard_limit = 8 if node_kind == "event" else 4
@@ -2541,7 +2556,7 @@ class EngineManager:
             self._settings.secret_key,
         )
 
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as session:
             as_of_db = _database_time(as_of)
             if node_kind == "event":
@@ -2560,7 +2575,7 @@ class EngineManager:
                             SourceEvent.start_time,
                         ).where(
                             SourceEvent.id == node_id,
-                            SourceEvent.source_config_id == source_config_id,
+                            SourceEvent.data_source_id == source_config_id,
                             (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
                             event_time <= as_of_db,
                             SourceEvent.created_time <= as_of_db,
@@ -2589,7 +2604,7 @@ class EngineManager:
                             .select_from(unique_event_relations)
                             .join(Entity, Entity.id == unique_event_relations.c.entity_id)
                             .where(
-                                Entity.source_config_id == source_config_id,
+                                Entity.data_source_id == source_config_id,
                                 Entity.created_time <= as_of_db,
                             )
                         )
@@ -2625,7 +2640,7 @@ class EngineManager:
                         .join(Entity, Entity.id == unique_event_relations.c.entity_id)
                         .where(
                             *filters,
-                            Entity.source_config_id == source_config_id,
+                            Entity.data_source_id == source_config_id,
                             Entity.created_time <= as_of_db,
                         )
                         .order_by(
@@ -2706,7 +2721,7 @@ class EngineManager:
                 await session.execute(
                     select(Entity.id, Entity.name, Entity.type, Entity.description).where(
                         Entity.id == node_id,
-                        Entity.source_config_id == source_config_id,
+                        Entity.data_source_id == source_config_id,
                         Entity.created_time <= as_of_db,
                     )
                 )
@@ -2730,7 +2745,7 @@ class EngineManager:
             )
             effective_after = after
             base_filters = [
-                SourceEvent.source_config_id == source_config_id,
+                SourceEvent.data_source_id == source_config_id,
                 (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
                 event_time <= as_of_db,
                 SourceEvent.created_time <= as_of_db,
@@ -2898,10 +2913,9 @@ class EngineManager:
         """Read node metadata only; graph neighborhoods are served by universe_expand."""
         await self._slot(source_config_id, source)
         from sqlalchemy import select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import Entity, SourceEvent
 
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as session:
             if node_kind == "event":
                 event = (
@@ -2917,7 +2931,7 @@ class EngineManager:
                             SourceEvent.start_time,
                         ).where(
                             SourceEvent.id == node_id,
-                            SourceEvent.source_config_id == source_config_id,
+                            SourceEvent.data_source_id == source_config_id,
                             (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
                         )
                     )
@@ -2945,7 +2959,7 @@ class EngineManager:
                 await session.execute(
                     select(Entity.id, Entity.name, Entity.type, Entity.description).where(
                         Entity.id == node_id,
-                        Entity.source_config_id == source_config_id,
+                        Entity.data_source_id == source_config_id,
                     )
                 )
             ).one_or_none()
@@ -2970,10 +2984,9 @@ class EngineManager:
         """分块大纲：heading + rank（可限定单文档），供 MCP outline。"""
         await self._slot(source_config_id, source)
         from sqlalchemy import select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import SourceChunk
 
-        conds = [SourceChunk.source_config_id == source_config_id]
+        conds = [SourceChunk.data_source_id == source_config_id]
         if doc_sag_id:
             conds.append(SourceChunk.source_id == doc_sag_id)
         stmt = (
@@ -2982,7 +2995,7 @@ class EngineManager:
             .order_by(SourceChunk.rank)
             .limit(limit)
         )
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as s:
             rows = (await s.execute(stmt)).all()
         return [{"chunk_id": cid, "heading": (h or "").strip(), "rank": int(r or 0)} for cid, h, r in rows]
@@ -2997,15 +3010,14 @@ class EngineManager:
         """读取成功入库时保存的整篇 Markdown；不存在或内容为空时返回 None。"""
         await self._slot(source_config_id, source)
         from sqlalchemy import select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import Article
 
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as session:
             content = await session.scalar(
                 select(Article.content).where(
                     Article.id == article_id,
-                    Article.source_config_id == source_config_id,
+                    Article.data_source_id == source_config_id,
                 )
             )
         return str(content) if content else None
@@ -3022,7 +3034,6 @@ class EngineManager:
         """精确文本匹配（LIKE，大小写不敏感）：语义检索之外的确定性查找。"""
         await self._ensure_read_runtime({source_config_id: source})
         from sqlalchemy import select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import SourceChunk
 
         needle = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -3030,7 +3041,7 @@ class EngineManager:
             sorted({value.strip() for value in exclude_source_ids if isinstance(value, str) and value.strip()})
         )
         conditions = [
-            SourceChunk.source_config_id == source_config_id,
+            SourceChunk.data_source_id == source_config_id,
             SourceChunk.content.ilike(f"%{needle}%", escape="\\"),
         ]
         if excluded:
@@ -3046,7 +3057,7 @@ class EngineManager:
             .order_by(SourceChunk.rank)
             .limit(limit)
         )
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as s:
             rows = (await s.execute(stmt)).all()
         out = []
@@ -3109,16 +3120,15 @@ class EngineManager:
 
         await self._slot(source_config_id, source)
         from sqlalchemy import select
-        from zleap.sag.db import get_session_factory
         from zleap.sag.db.models import SourceChunk
 
-        sf = get_session_factory()
+        sf = await self._relational_session_factory(source_config_id)
         async with sf() as s:
             row = (
                 await s.execute(
                     select(SourceChunk).where(
                         SourceChunk.id == chunk_id,
-                        SourceChunk.source_config_id == source_config_id,
+                        SourceChunk.data_source_id == source_config_id,
                     )
                 )
             ).scalar_one_or_none()

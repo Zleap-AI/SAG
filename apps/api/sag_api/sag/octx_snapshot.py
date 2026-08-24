@@ -118,7 +118,6 @@ async def export_snapshot(
     ``compatible`` or ``rebuild_required``. It is never derived from the current
     runtime configuration, and export never calls the embedding provider.
     """
-    from zleap.sag.db import get_session_factory
     from zleap.sag.db.models import Article, Entity, EventEntity, SourceChunk, SourceEvent
 
     root = Path(workspace)
@@ -155,7 +154,9 @@ async def export_snapshot(
         for document in documents
         if getattr(document, "is_active", True) and getattr(document, "sag_source_id", None)
     }
-    sessions = session_factory or get_session_factory()
+    if session_factory is None:
+        raise RuntimeError("0.8.2 无全局会话工厂:export_snapshot 必须注入 session_factory")
+    sessions = session_factory
     source_config_id = str(source.sag_source_config_id)
     selected_ids = tuple(
         dict.fromkeys(
@@ -185,7 +186,7 @@ async def export_snapshot(
                 articles = await session.stream_scalars(
                     select(Article)
                     .where(
-                        Article.source_config_id == source_config_id,
+                        Article.data_source_id == source_config_id,
                         Article.id.in_(selected_ids),
                     )
                     .order_by(Article.id)
@@ -223,7 +224,7 @@ async def export_snapshot(
             chunk_total = int(
                 await session.scalar(
                     select(func.count(SourceChunk.id)).where(
-                        SourceChunk.source_config_id == source_config_id,
+                        SourceChunk.data_source_id == source_config_id,
                         SourceChunk.article_id.in_(selected_ids),
                     )
                 )
@@ -233,7 +234,7 @@ async def export_snapshot(
                 rows = await session.stream_scalars(
                     select(SourceChunk)
                     .where(
-                        SourceChunk.source_config_id == source_config_id,
+                        SourceChunk.data_source_id == source_config_id,
                         SourceChunk.article_id.in_(selected_ids),
                     )
                     .order_by(SourceChunk.article_id, SourceChunk.rank, SourceChunk.id)
@@ -264,7 +265,7 @@ async def export_snapshot(
                         await report("chunks", counts["chunks"], chunk_total)
 
             selected_event_filter = (
-                SourceEvent.source_config_id == source_config_id,
+                SourceEvent.data_source_id == source_config_id,
                 SourceEvent.article_id.in_(selected_ids),
                 SourceEvent.not_deleted(),
             )
@@ -301,7 +302,7 @@ async def export_snapshot(
                     .join(SourceEvent, SourceEvent.id == EventEntity.event_id)
                     .outerjoin(
                         Entity,
-                        (Entity.id == EventEntity.entity_id) & (Entity.source_config_id == source_config_id),
+                        (Entity.id == EventEntity.entity_id) & (Entity.data_source_id == source_config_id),
                     )
                     .where(*selected_event_filter, Entity.id.is_(None))
                     .distinct()
@@ -330,7 +331,7 @@ async def export_snapshot(
                     select(func.count(func.distinct(Entity.id)))
                     .join(EventEntity, EventEntity.entity_id == Entity.id)
                     .join(SourceEvent, SourceEvent.id == EventEntity.event_id)
-                    .where(*selected_event_filter, Entity.source_config_id == source_config_id)
+                    .where(*selected_event_filter, Entity.data_source_id == source_config_id)
                 )
                 or 0
             )
@@ -340,7 +341,7 @@ async def export_snapshot(
                     select(Entity)
                     .join(EventEntity, EventEntity.entity_id == Entity.id)
                     .join(SourceEvent, SourceEvent.id == EventEntity.event_id)
-                    .where(*selected_event_filter, Entity.source_config_id == source_config_id)
+                    .where(*selected_event_filter, Entity.data_source_id == source_config_id)
                     .distinct()
                     .order_by(Entity.id)
                     .execution_options(yield_per=500)
@@ -376,7 +377,7 @@ async def export_snapshot(
                         parent_event,
                         and_(
                             parent_event.id == SourceEvent.parent_id,
-                            parent_event.source_config_id == source_config_id,
+                            parent_event.data_source_id == source_config_id,
                             parent_event.article_id.in_(selected_ids),
                             parent_event.not_deleted(),
                         ),
@@ -435,7 +436,7 @@ async def export_snapshot(
                     .join(SourceEvent, SourceEvent.id == EventEntity.event_id)
                     .join(
                         Entity,
-                        (Entity.id == EventEntity.entity_id) & (Entity.source_config_id == source_config_id),
+                        (Entity.id == EventEntity.entity_id) & (Entity.data_source_id == source_config_id),
                     )
                     .where(*selected_event_filter)
                     .order_by(EventEntity.event_id, EventEntity.entity_id, EventEntity.id)

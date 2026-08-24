@@ -213,52 +213,55 @@ async def test_search_many_caps_candidates_and_concurrency(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_vector_search_many_uses_one_cross_source_embedding(monkeypatch):
-    from zleap.sag.core.storage import client as storage_client
-    from zleap.sag.core.storage.repositories.source_chunk_repository import (
-        SourceChunkRepository,
-    )
-    from zleap.sag.modules.load.processor import DocumentProcessor
+    from types import SimpleNamespace
 
     from sag_api.core.config import settings
     from sag_api.sag.engine_manager import EngineManager
 
     manager = EngineManager(settings)
     embedding_queries: list[str] = []
-    repository_calls: list[tuple[int, list[str]]] = []
+    store_calls: list[tuple[str, object]] = []
+
+    class _Embedding:
+        async def generate(self, query):
+            embedding_queries.append(query)
+            return [0.1, 0.2]
+
+    class _VectorStore:
+        async def query(self, collection, request):
+            store_calls.append((collection, request))
+            return [
+                SimpleNamespace(
+                    id="chunk-2",
+                    score=0.88,
+                    payload={
+                        "chunk_id": "chunk-2",
+                        "source_id": "document-2",
+                        "data_source_id": "source-2",
+                        "heading": "跨源命中",
+                        "content": "只生成一次查询向量。",
+                        "rank": 3,
+                    },
+                )
+            ]
+
+    slot = SimpleNamespace(
+        engine=SimpleNamespace(
+            resources=SimpleNamespace(
+                embedding=_Embedding(),
+                vector=_VectorStore(),
+            )
+        )
+    )
 
     async def runtime_ready(_sources):
         return None
 
-    async def generate_embedding(_processor, query):
-        embedding_queries.append(query)
-        return [0.1, 0.2]
-
-    async def search_chunks(
-        _repository,
-        *,
-        query_vector,
-        k,
-        source_config_ids,
-        **_kwargs,
-    ):
-        assert query_vector == [0.1, 0.2]
-        repository_calls.append((k, source_config_ids))
-        return [
-            {
-                "chunk_id": "chunk-2",
-                "source_id": "document-2",
-                "source_config_id": "source-2",
-                "heading": "跨源命中",
-                "content": "只生成一次查询向量。",
-                "rank": 3,
-                "_score": 0.88,
-            }
-        ]
+    async def fake_slot(*_args, **_kwargs):
+        return slot
 
     monkeypatch.setattr(manager, "_ensure_read_runtime", runtime_ready)
-    monkeypatch.setattr(DocumentProcessor, "generate_embedding", generate_embedding)
-    monkeypatch.setattr(SourceChunkRepository, "search_similar_by_content", search_chunks)
-    monkeypatch.setattr(storage_client, "get_es_client", lambda: object())
+    monkeypatch.setattr(manager, "_slot", fake_slot)
 
     outcome = await manager.search_many(
         [("source-1", None), ("source-2", None)],
@@ -268,7 +271,12 @@ async def test_vector_search_many_uses_one_cross_source_embedding(monkeypatch):
     )
 
     assert embedding_queries == ["跨源查询"]
-    assert repository_calls == [(9, ["source-1", "source-2"])]
+    assert len(store_calls) == 1
+    collection, request = store_calls[0]
+    assert collection == "source_chunks"
+    assert request.vector_field == "content_vector"
+    assert request.limit == 9
+    assert request.filters.children[0].field == "data_source_id"
     assert outcome.sections[0].chunk_id == "chunk-2"
     assert outcome.stats["chunk_recall"] == "batch-vector"
 
@@ -345,7 +353,7 @@ async def test_search_source_candidates_use_database_limit_and_explicit_order(mo
                     Source(
                         id=source_id,
                         name=f"候选源 {index}",
-                        sag_source_config_id=f"candidate-{source_id}",
+                        sag_source_config_id=(f"candidate-{source_id}")[:36],
                         chunk_count=10_000 + index,
                         event_count=index,
                     )
@@ -368,12 +376,14 @@ async def test_search_source_candidates_use_database_limit_and_explicit_order(mo
 
 
 @pytest.mark.asyncio
-async def test_multi_es_fast_translates_to_zleap_multi_es(monkeypatch):
-    """门面 multi_es_fast → zleap multi_es;stats.requested/effective 都保留门面名。
+async def test_multi_es_fast_uses_zleap_082_typed_search_contract(monkeypatch):
+    """门面 multi_es_fast → 0.8.2 pruned_expand_rff typed SearchRequest。
 
     这是 vector vs multi_es_fast 评测能真的分出差异的前提:如果翻译层错把 multi_es_fast
     折成 vector,eval-compare 会给出两列相同结果。
     """
+    from zleap.sag.pipeline import SearchHit, SearchRequest, SearchResult
+
     from sag_api.core.config import settings
     from sag_api.sag.engine_manager import EngineManager
 
@@ -383,26 +393,29 @@ async def test_multi_es_fast_translates_to_zleap_multi_es(monkeypatch):
 
     @asynccontextmanager
     async def fake_use(*_args, **_kwargs):
-        class _Result:
-            def __init__(self, query: str):
-                self.query = query
-                # zleap engine yields dict-shape sections; from_section reads .get.
-                self.sections = [
-                    {
-                        "chunk_id": "c1",
-                        "heading": "h",
-                        "content": "body",
-                        "score": 0.5,
-                        "rank": 1,
-                        "source_config_id": "cfg-1",
-                    }
-                ]
-                self.stats = {"chunk_recall": "multi_es"}
-
         class _Engine:
-            async def search(self, query, *, strategy, top_k):
-                captured_strategies.append(strategy)
-                return _Result(query)
+            async def search(self, request):
+                assert isinstance(request, SearchRequest)
+                captured_strategies.append(request.options.strategy)
+                assert request.scope.data_source_ids == ("cfg-1",)
+                assert request.options.top_k == 6
+                assert request.options.return_type == "chunk"
+                return SearchResult(
+                    query=request.query,
+                    original_query=request.query,
+                    chunks=(
+                        SearchHit(
+                            id="c1",
+                            chunk_id="c1",
+                            title="h",
+                            content="body",
+                            score=0.5,
+                            data_source_id="cfg-1",
+                            metadata={"rank": 1},
+                        ),
+                    ),
+                    stats={"chunk_recall": "pruned_expand_rff"},
+                )
 
         yield _Engine()
 
@@ -415,7 +428,10 @@ async def test_multi_es_fast_translates_to_zleap_multi_es(monkeypatch):
         top_k=6,
     )
 
-    assert captured_strategies == ["multi_es"]
+    assert captured_strategies == ["pruned_expand_rff"]
+    assert outcome.sections[0].chunk_id == "c1"
+    assert outcome.sections[0].heading == "h"
+    assert outcome.sections[0].source_config_id == "cfg-1"
     assert outcome.stats["requested_strategy"] == "multi_es_fast"
     assert outcome.stats["effective_strategy"] == "multi_es_fast"
     assert outcome.stats["fallback_used"] is False
@@ -591,55 +607,55 @@ async def _register_eval(client: httpx.AsyncClient) -> dict[str, str]:
 async def test_vector_search_excludes_hidden_document_sources_before_top_k(
     monkeypatch,
 ):
-    from zleap.sag.core.storage import client as storage_client
-    from zleap.sag.modules.load.processor import DocumentProcessor
+    from types import SimpleNamespace
 
     from sag_api.core.config import settings
     from sag_api.sag.engine_manager import EngineManager
 
-    class VectorClient:
-        def __init__(self):
-            self.filter_query = None
+    captured: dict[str, object] = {}
 
-        async def vector_search(
-            self,
-            *,
-            index,
-            field,
-            vector,
-            size,
-            filter_query,
-            **_kwargs,
-        ):
-            assert index == "source_chunks"
-            assert field == "content_vector"
-            assert vector == [0.1, 0.2]
-            assert size == 8
-            self.filter_query = filter_query
+    class _Embedding:
+        async def generate(self, _query):
+            return [0.1, 0.2]
+
+    class _VectorStore:
+        async def query(self, collection, request):
+            captured["collection"] = collection
+            captured["request"] = request
             return [
-                {
-                    "chunk_id": "visible-chunk",
-                    "source_id": "visible-document",
-                    "source_config_id": "source-1",
-                    "heading": "健康文档",
-                    "content": "删除失败的文档不能占满候选。",
-                    "rank": 0,
-                    "_score": 0.9,
-                }
+                SimpleNamespace(
+                    id="visible-chunk",
+                    score=0.9,
+                    payload={
+                        "chunk_id": "visible-chunk",
+                        "source_id": "visible-document",
+                        "data_source_id": "source-1",
+                        "heading": "健康文档",
+                        "content": "删除失败的文档不能占满候选。",
+                        "rank": 0,
+                    },
+                )
             ]
 
     manager = EngineManager(settings)
-    vector_client = VectorClient()
+
+    slot = SimpleNamespace(
+        engine=SimpleNamespace(
+            resources=SimpleNamespace(
+                embedding=_Embedding(),
+                vector=_VectorStore(),
+            )
+        )
+    )
 
     async def runtime_ready(_sources):
         return None
 
-    async def generate_embedding(_processor, _query):
-        return [0.1, 0.2]
+    async def fake_slot(*_args, **_kwargs):
+        return slot
 
     monkeypatch.setattr(manager, "_ensure_read_runtime", runtime_ready)
-    monkeypatch.setattr(DocumentProcessor, "generate_embedding", generate_embedding)
-    monkeypatch.setattr(storage_client, "get_es_client", lambda: vector_client)
+    monkeypatch.setattr(manager, "_slot", fake_slot)
 
     outcome = await manager.search_many(
         [("source-1", None), ("source-2", None)],
@@ -653,49 +669,40 @@ async def test_vector_search_excludes_hidden_document_sources_before_top_k(
     )
 
     assert [section.chunk_id for section in outcome.sections] == ["visible-chunk"]
-    assert vector_client.filter_query == {
-        "bool": {
-            "filter": [{"terms": {"source_config_id": ["source-1", "source-2"]}}],
-            "must_not": [
-                {
-                    "bool": {
-                        "filter": [
-                            {"term": {"source_config_id": "source-1"}},
-                            {"terms": {"source_id": ["hidden-a", "hidden-b"]}},
-                        ]
-                    }
-                },
-                {
-                    "bool": {
-                        "filter": [
-                            {"term": {"source_config_id": "source-2"}},
-                            {"terms": {"source_id": ["hidden-c"]}},
-                        ]
-                    }
-                },
-            ],
-        }
-    }
+    request = captured["request"]
+    filters = request.filters
+    # filters = all(one_of(data_source_id, [s1, s2]), negate(any(pair...)))
+    assert filters.operator == "and"
+    assert filters.children[0].operator == "in"
+    assert filters.children[0].field == "data_source_id"
+    exclusion = filters.children[1]
+    assert exclusion.operator == "not"
+    pairs = exclusion.children[0]
+    assert pairs.operator == "or"
+    assert len(pairs.children) == 2
+    assert pairs.children[0].children[0].value == "source-1"
+    assert pairs.children[0].children[1].value == ("hidden-a", "hidden-b")
+    assert pairs.children[1].children[1].value == ("hidden-c",)
 
 
 @pytest.mark.asyncio
 async def test_grep_excludes_hidden_document_source_before_limit():
-    from zleap.sag.db import get_session_factory
     from zleap.sag.db.models import SourceChunk
 
     from sag_api.core.config import settings
     from sag_api.sag.engine_manager import EngineManager
 
-    source_config_id = f"grep-prefilter-{uuid.uuid4().hex}"
+    source_config_id = f"grep-{uuid.uuid4().hex}"[:36]
     manager = EngineManager(settings)
     try:
         await manager.provision(source_config_id)
-        async with get_session_factory()() as session:
+        session_factory = await manager.get_sag_session_factory(source_config_id)
+        async with session_factory() as session:
             session.add_all(
                 [
                     SourceChunk(
                         id=uuid.uuid4().hex,
-                        source_config_id=source_config_id,
+                        data_source_id=source_config_id,
                         source_type="ARTICLE",
                         source_id="hidden-document",
                         heading="隐藏文档",
@@ -704,7 +711,7 @@ async def test_grep_excludes_hidden_document_source_before_limit():
                     ),
                     SourceChunk(
                         id=uuid.uuid4().hex,
-                        source_config_id=source_config_id,
+                        data_source_id=source_config_id,
                         source_type="ARTICLE",
                         source_id="visible-document",
                         heading="健康文档",
