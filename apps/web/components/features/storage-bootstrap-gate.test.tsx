@@ -299,6 +299,23 @@ describe("StorageBootstrapGate interactions", () => {
     },
   );
 
+  it("keeps the accepted choice locked when the submit response times out", async () => {
+    setToken("owner-token");
+    vi.spyOn(api, "storageBootstrap").mockResolvedValue(status("choice_required"));
+    vi.spyOn(api, "chooseStorageBootstrap").mockRejectedValue(
+      new ApiError(0, "timeout", "请求超时，请检查网络后重试"),
+    );
+    const mounted = await mountGate();
+
+    await click(button(mounted.container, "迁移旧知识库"));
+    await click(button(mounted.container, "确认并开始"));
+
+    expect(mounted.container.textContent).toContain("正在准备新的知识库存储");
+    expect(mounted.container.textContent).not.toContain("请求超时");
+    expect([...mounted.container.querySelectorAll("button")]).toHaveLength(0);
+    await unmount(mounted.root, mounted.container);
+  });
+
   it("owns choice 401, clears the token, and returns to existing-account login", async () => {
     setToken("expired-token");
     vi.spyOn(api, "storageBootstrap").mockResolvedValue(status("choice_required"));

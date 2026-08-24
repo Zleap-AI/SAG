@@ -351,22 +351,41 @@ export function StorageBootstrapGate({ children }: { children: React.ReactNode }
 
   async function submitChoice(choice: StorageChoice) {
     if (submittingRef.current) return;
+    const previousStatus = status;
     submittingRef.current = true;
     setSubmitting(true);
     setErrorMessage(null);
+    setSelectedChoice(null);
+    setStatus((current) => current ? {
+      ...current,
+      phase: "processing",
+      choices: [],
+      stage: "queued",
+      error: null,
+      recoverable: false,
+      runtime_ready: false,
+      accepted_choice: choice,
+    } : current);
     try {
       const nextStatus = await api.chooseStorageBootstrap(choice);
       if (!mountedRef.current) return;
       setStatus(nextStatus);
-      setSelectedChoice(null);
     } catch (error) {
       if (!mountedRef.current) return;
       if (error instanceof ApiError && error.status === 401) {
         clearToken();
         setAuthenticated(false);
-        setSelectedChoice(null);
+        setStatus(previousStatus);
+        return;
       }
-      setErrorMessage(errorText(error, t("submitFailed")));
+      const acceptedButResponseLost =
+        error instanceof ApiError &&
+        (error.status === 409 ||
+          (error.status === 0 && ["timeout", "network", "aborted"].includes(error.code)));
+      if (!acceptedButResponseLost) {
+        setStatus(previousStatus);
+        setErrorMessage(errorText(error, t("submitFailed")));
+      }
     } finally {
       submittingRef.current = false;
       if (mountedRef.current) setSubmitting(false);
