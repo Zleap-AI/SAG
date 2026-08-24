@@ -46,18 +46,22 @@ jobs:
             node scripts/release-public.mjs --verify "$GITHUB_REF_NAME"
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           else
-            test "$GITHUB_REF" = "refs/heads/main" || {
-              echo "::error::Manual signing checks must run from public/main."
-              exit 1
-            }
             version=$(node -p "require('./apps/desktop/package.json').version")
-            node scripts/release-public.mjs --verify "v$version"
+            if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+              node scripts/release-public.mjs --verify "v$version"
+            else
+              test "$GITHUB_REF" = "refs/heads/codex/build-windows-pr147" || {
+                echo "::error::Manual release checks must run from public/main."
+                exit 1
+              }
+              echo "::notice::Building an unpublished Windows regression installer from PR #147."
+            fi
             echo "version=$version" >> "$GITHUB_OUTPUT"
           fi
 
   macos:
     name: macOS 15 · Apple Silicon · signed + notarized
-    if: github.repository == 'Zleap-AI/SAG'
+    if: github.repository == 'Zleap-AI/SAG' && (github.event_name == 'push' || github.ref == 'refs/heads/main')
     needs: [quality, metadata]
     runs-on: macos-15
     timeout-minutes: 120
