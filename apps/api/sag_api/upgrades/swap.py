@@ -36,7 +36,12 @@ def swap_engine(engine: Path, staging: Path, rollback: Path) -> None:
 
     preserved_octx = engine / "octx"
     if preserved_octx.is_dir():
-        shutil.copytree(preserved_octx, staging / "octx", dirs_exist_ok=True)
+        shutil.copytree(
+            preserved_octx,
+            staging / "octx",
+            dirs_exist_ok=True,
+            copy_function=shutil.copyfile,
+        )
 
     os.replace(engine, rollback)
     try:

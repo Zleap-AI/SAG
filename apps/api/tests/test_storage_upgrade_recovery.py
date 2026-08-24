@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
 
 from sag_api.core.config import Settings
+from sag_api.upgrades.backup import create_backup
 from sag_api.upgrades.contracts import StorageUpgradeContext
 from sag_api.upgrades.contracts import UpgradeReport as StorageMigrationResult
 from sag_api.upgrades.journal import MigrationJournal
@@ -12,6 +14,35 @@ from sag_api.upgrades.swap import swap_engine
 from sag_api.upgrades.types import MigrationPhase, StorageLayout, StorageUpgradeError
 from sag_api.upgrades.zleap_sag_0_7_to_0_8.adapter import ZleapSag071To082Adapter
 from sag_api.upgrades.zleap_sag_0_7_to_0_8.migrator import MIGRATION_ID
+
+
+def test_backup_copies_octx_payload_without_windows_restricted_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = tmp_path / "engine"
+    artifact = engine / "octx" / "releases" / "asset" / "1.0.0" / "package.octx"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"existing-package")
+    layout = StorageLayout(
+        root=tmp_path,
+        engine=engine,
+        sag_db=None,
+        upgrades=tmp_path / ".storage-upgrades",
+        backups=tmp_path / ".storage-upgrades" / "backups",
+        staging=tmp_path / ".storage-upgrades" / "staging",
+    )
+    original_copystat = shutil.copystat
+
+    def reject_octx_metadata(source, destination, *, follow_symlinks=True):
+        if Path(source).suffix == ".octx":
+            raise PermissionError(5, "Access is denied", destination)
+        return original_copystat(source, destination, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(shutil, "copystat", reject_octx_metadata)
+
+    backup = create_backup(layout, "migration", source_version="0.7.1")
+
+    assert (backup.engine_path / artifact.relative_to(engine)).read_bytes() == b"existing-package"
 
 
 def test_swap_restores_original_when_second_rename_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -44,7 +75,9 @@ def test_swap_restores_original_when_second_rename_fails(tmp_path: Path, monkeyp
     assert not rollback.exists()
 
 
-def test_swap_preserves_octx_artifacts_in_current_engine(tmp_path: Path) -> None:
+def test_swap_preserves_octx_artifacts_in_current_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The engine schema swap must not move application-level OCTX releases offline."""
     engine = tmp_path / "engine"
     staging = tmp_path / "staging"
@@ -54,6 +87,14 @@ def test_swap_preserves_octx_artifacts_in_current_engine(tmp_path: Path) -> None
     artifact.write_bytes(b"existing-package")
     staging.mkdir()
     (staging / "marker").write_text("current", encoding="utf-8")
+    original_copystat = shutil.copystat
+
+    def reject_octx_metadata(source, destination, *, follow_symlinks=True):
+        if Path(source).suffix == ".octx":
+            raise PermissionError(5, "Access is denied", destination)
+        return original_copystat(source, destination, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(shutil, "copystat", reject_octx_metadata)
 
     swap_engine(engine, staging, rollback)
 

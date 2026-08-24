@@ -133,7 +133,10 @@ def create_backup(layout: StorageLayout, migration_id: str, *, source_version: s
     temporary = Path(tempfile.mkdtemp(prefix=f".{migration_id}.", dir=layout.backups))
     try:
         engine_copy = temporary / "engine"
-        shutil.copytree(layout.engine, engine_copy)
+        # Backup data bytes only. copy2 also replays source metadata, which can
+        # turn OCTX artifacts into Windows read-only files and fail with
+        # WinError 5 while copying or cleaning an interrupted backup.
+        shutil.copytree(layout.engine, engine_copy, copy_function=shutil.copyfile)
         engine_size, engine_sha256 = _tree_stats(engine_copy)
 
         sag_copy: Path | None = None
