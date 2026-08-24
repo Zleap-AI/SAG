@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sag_api.upgrades.octx_files import copy_durable_octx
 from sag_api.upgrades.types import StorageLayout, StorageUpgradeError
 
 
@@ -133,10 +134,23 @@ def create_backup(layout: StorageLayout, migration_id: str, *, source_version: s
     temporary = Path(tempfile.mkdtemp(prefix=f".{migration_id}.", dir=layout.backups))
     try:
         engine_copy = temporary / "engine"
+        engine_octx = layout.engine / "octx"
+
+        def ignore_octx_root(directory: str, names: list[str]) -> set[str]:
+            if Path(directory) == layout.engine and "octx" in names:
+                return {"octx"}
+            return set()
+
         # Backup data bytes only. copy2 also replays source metadata, which can
         # turn OCTX artifacts into Windows read-only files and fail with
         # WinError 5 while copying or cleaning an interrupted backup.
-        shutil.copytree(layout.engine, engine_copy, copy_function=shutil.copyfile)
+        shutil.copytree(
+            layout.engine,
+            engine_copy,
+            ignore=ignore_octx_root,
+            copy_function=shutil.copyfile,
+        )
+        copy_durable_octx(engine_octx, engine_copy / "octx")
         engine_size, engine_sha256 = _tree_stats(engine_copy)
 
         sag_copy: Path | None = None

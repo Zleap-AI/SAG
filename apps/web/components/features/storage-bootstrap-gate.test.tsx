@@ -301,7 +301,9 @@ describe("StorageBootstrapGate interactions", () => {
 
   it("keeps the accepted choice locked when the submit response times out", async () => {
     setToken("owner-token");
-    vi.spyOn(api, "storageBootstrap").mockResolvedValue(status("choice_required"));
+    vi.spyOn(api, "storageBootstrap")
+      .mockResolvedValueOnce(status("choice_required"))
+      .mockRejectedValueOnce(new ApiError(0, "timeout", "请求超时，请检查网络后重试"));
     vi.spyOn(api, "chooseStorageBootstrap").mockRejectedValue(
       new ApiError(0, "timeout", "请求超时，请检查网络后重试"),
     );
@@ -312,6 +314,30 @@ describe("StorageBootstrapGate interactions", () => {
 
     expect(mounted.container.textContent).toContain("正在准备新的知识库存储");
     expect(mounted.container.textContent).not.toContain("请求超时");
+    expect([...mounted.container.querySelectorAll("button")]).toHaveLength(0);
+    await unmount(mounted.root, mounted.container);
+  });
+
+  it("uses authoritative processing state after a gateway timeout", async () => {
+    setToken("owner-token");
+    const load = vi
+      .spyOn(api, "storageBootstrap")
+      .mockResolvedValueOnce(status("choice_required"))
+      .mockResolvedValueOnce(status("processing", {
+        stage: "backup",
+        accepted_choice: "migrate",
+      }));
+    vi.spyOn(api, "chooseStorageBootstrap").mockRejectedValue(
+      new ApiError(504, "gateway_timeout", "Gateway Timeout"),
+    );
+    const mounted = await mountGate();
+
+    await click(button(mounted.container, "迁移旧知识库"));
+    await click(button(mounted.container, "确认并开始"));
+
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(mounted.container.textContent).toContain("正在备份业务数据");
+    expect(mounted.container.textContent).not.toContain("Gateway Timeout");
     expect([...mounted.container.querySelectorAll("button")]).toHaveLength(0);
     await unmount(mounted.root, mounted.container);
   });

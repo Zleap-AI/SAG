@@ -45,6 +45,44 @@ def test_backup_copies_octx_payload_without_windows_restricted_metadata(
     assert (backup.engine_path / artifact.relative_to(engine)).read_bytes() == b"existing-package"
 
 
+def test_backup_skips_transient_octx_staging_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = tmp_path / "engine"
+    release = engine / "octx" / "releases" / "asset" / "1.0.0" / "package.octx"
+    workspace = engine / "octx" / "workspaces" / "source" / ".octx" / "state.json"
+    transient = engine / "octx" / "staging" / "transfer" / "export-1" / "workspace" / "document.md"
+    for path, payload in (
+        (release, b"existing-package"),
+        (workspace, b"persistent-state"),
+        (transient, b"temporary-export"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    layout = StorageLayout(
+        root=tmp_path,
+        engine=engine,
+        sag_db=None,
+        upgrades=tmp_path / ".storage-upgrades",
+        backups=tmp_path / ".storage-upgrades" / "backups",
+        staging=tmp_path / ".storage-upgrades" / "staging",
+    )
+    original_copyfile = shutil.copyfile
+
+    def reject_transient_staging(source, destination, *, follow_symlinks=True):
+        if Path(source).is_relative_to(engine / "octx" / "staging"):
+            raise FileNotFoundError(2, "No such file or directory", destination)
+        return original_copyfile(source, destination, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(shutil, "copyfile", reject_transient_staging)
+
+    backup = create_backup(layout, "migration", source_version="0.7.1")
+
+    assert (backup.engine_path / release.relative_to(engine)).read_bytes() == b"existing-package"
+    assert (backup.engine_path / workspace.relative_to(engine)).read_bytes() == b"persistent-state"
+    assert not (backup.engine_path / "octx" / "staging").exists()
+
+
 def test_swap_restores_original_when_second_rename_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     engine = tmp_path / "engine"
     staging = tmp_path / "staging"
@@ -100,6 +138,34 @@ def test_swap_preserves_octx_artifacts_in_current_engine(
 
     assert (engine / "octx" / artifact.relative_to(engine / "octx")).read_bytes() == b"existing-package"
     assert (rollback / "octx" / artifact.relative_to(engine / "octx")).read_bytes() == b"existing-package"
+
+
+def test_swap_replaces_octx_left_by_an_interrupted_windows_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = tmp_path / "engine"
+    staging = tmp_path / "staging"
+    rollback = tmp_path / "rollback"
+    artifact = engine / "octx" / "releases" / "asset" / "1.0.0" / "package.octx"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"existing-package")
+    stale = staging / artifact.relative_to(engine)
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"partial-package")
+    (staging / "marker").write_text("current", encoding="utf-8")
+    original_copyfile = shutil.copyfile
+
+    def reject_existing_destination(source, destination, *, follow_symlinks=True):
+        if Path(destination).exists():
+            raise PermissionError(5, "Access is denied", destination)
+        return original_copyfile(source, destination, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(shutil, "copyfile", reject_existing_destination)
+
+    swap_engine(engine, staging, rollback)
+
+    assert artifact.read_bytes() == b"existing-package"
+    assert (engine / "marker").read_text(encoding="utf-8") == "current"
 
 
 @pytest.mark.asyncio
