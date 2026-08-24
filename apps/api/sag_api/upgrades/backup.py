@@ -179,7 +179,10 @@ def create_backup(layout: StorageLayout, migration_id: str, *, source_version: s
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        with draft_manifest.open("rb") as source:
+        # Windows rejects FlushFileBuffers (os.fsync) on a read-only handle.
+        # Reopen without truncating the completed manifest, but keep the handle
+        # writable so the durability barrier works on every desktop platform.
+        with draft_manifest.open("r+b") as source:
             os.fsync(source.fileno())
         os.replace(temporary, destination)
         return _load_manifest(manifest_path)

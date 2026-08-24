@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import errno
+import os
 import shutil
 from pathlib import Path
 
@@ -14,6 +16,43 @@ from sag_api.upgrades.swap import swap_engine
 from sag_api.upgrades.types import MigrationPhase, StorageLayout, StorageUpgradeError
 from sag_api.upgrades.zleap_sag_0_7_to_0_8.adapter import ZleapSag071To082Adapter
 from sag_api.upgrades.zleap_sag_0_7_to_0_8.migrator import MIGRATION_ID
+
+
+def test_backup_fsync_uses_windows_compatible_writable_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = tmp_path / "engine"
+    engine.mkdir()
+    (engine / "sag.db").write_bytes(b"engine-data")
+    layout = StorageLayout(
+        root=tmp_path,
+        engine=engine,
+        sag_db=None,
+        upgrades=tmp_path / ".storage-upgrades",
+        backups=tmp_path / ".storage-upgrades" / "backups",
+        staging=tmp_path / ".storage-upgrades" / "staging",
+    )
+    original_open = Path.open
+    original_fsync = os.fsync
+    modes_by_descriptor: dict[int, str] = {}
+
+    def track_open(path: Path, mode: str = "r", *args, **kwargs):
+        handle = original_open(path, mode, *args, **kwargs)
+        modes_by_descriptor[handle.fileno()] = mode
+        return handle
+
+    def reject_read_only_fsync(descriptor: int) -> None:
+        mode = modes_by_descriptor.get(descriptor, "")
+        if "r" in mode and "+" not in mode:
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(Path, "open", track_open)
+    monkeypatch.setattr(os, "fsync", reject_read_only_fsync)
+
+    backup = create_backup(layout, "migration", source_version="0.7.1")
+
+    assert backup.manifest_path.is_file()
 
 
 def test_backup_copies_octx_payload_without_windows_restricted_metadata(
