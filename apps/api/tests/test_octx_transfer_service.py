@@ -2045,7 +2045,7 @@ async def test_download_ready_transfer_restores_migrated_artifact(
             artifact_key=key,
             package_digest=digest,
             package_version="1.0.0",
-            checkpoint={"asset_name": "Migrated"},
+            checkpoint={"asset_name": "AI 手册"},
         )
         session.add(transfer)
         await session.commit()
@@ -2053,6 +2053,7 @@ async def test_download_ready_transfer_restores_migrated_artifact(
         response = await octx_api.download_artifact(transfer.id, object(), session)
 
     assert Path(response.path).read_bytes() == package.read_bytes()
+    assert response.filename == "AI 手册-OCTX.octx"
 
 
 @pytest.mark.asyncio

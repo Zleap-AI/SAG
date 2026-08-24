@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, Depends, File, Header, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -150,13 +152,12 @@ async def download_artifact(
     if not path.is_file():
         raise NotFoundError("OCTX artifact is missing")
     digest = str(transfer.package_digest or "")
+    raw_name = str((transfer.checkpoint or {}).get("asset_name") or transfer.asset_id or transfer.id)
+    filename_stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", raw_name.strip()).rstrip(". ")[:80] or "source"
     return FileResponse(
         path,
         media_type="application/vnd.octx+zip",
-        filename=(
-            f"{str((transfer.checkpoint or {}).get('asset_name') or transfer.asset_id or transfer.id)}"
-            f"-{transfer.package_version or 'release'}.octx"
-        ),
+        filename=f"{filename_stem}-OCTX.octx",
         headers={"ETag": f'"{digest}"', "Digest": digest},
     )
 
