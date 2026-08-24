@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shutil
 import sqlite3
 from dataclasses import asdict
@@ -14,6 +13,7 @@ from sag_api.sag.config_builder import build_engine_config
 from sag_api.upgrades.backup import create_backup, prepare_staging
 from sag_api.upgrades.contracts import StorageUpgradeContext, UpgradeReport
 from sag_api.upgrades.detector import detect_storage
+from sag_api.upgrades.directory_replace import replace_directory
 from sag_api.upgrades.journal import MigrationJournal, UpgradeLock
 from sag_api.upgrades.swap import rollback_engine, swap_engine
 from sag_api.upgrades.types import (
@@ -156,7 +156,7 @@ async def migrate_071_to_082(context: StorageUpgradeContext) -> UpgradeReport:
                         backup_path=rollback if rollback.exists() else None,
                         diagnostic_path=journal.path,
                     )
-                os.replace(staging, layout.engine)
+                replace_directory(staging, layout.engine)
                 journal.advance(MigrationPhase.SWAPPED, report={"recovered": True})
                 return await _finish_swapped_checkpoint(
                     settings,

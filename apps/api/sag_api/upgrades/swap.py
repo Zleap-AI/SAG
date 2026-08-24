@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
+from sag_api.upgrades.directory_replace import replace_directory
 from sag_api.upgrades.octx_files import copy_durable_octx
 from sag_api.upgrades.types import StorageUpgradeError
 
@@ -38,11 +38,11 @@ def swap_engine(engine: Path, staging: Path, rollback: Path) -> None:
     if preserved_octx.is_dir():
         copy_durable_octx(preserved_octx, staging / "octx", replace=True)
 
-    os.replace(engine, rollback)
+    replace_directory(engine, rollback)
     try:
-        os.replace(staging, engine)
+        replace_directory(staging, engine)
     except Exception as error:
-        os.replace(rollback, engine)
+        replace_directory(rollback, engine)
         raise StorageUpgradeError(
             f"atomic engine swap failed: {error}",
             stage="swap",
@@ -64,11 +64,11 @@ def rollback_engine(engine: Path, rollback: Path, failed_target: Path) -> None:
             recoverable=False,
             diagnostic_path=failed_target,
         )
-    os.replace(engine, failed_target)
+    replace_directory(engine, failed_target)
     try:
-        os.replace(rollback, engine)
+        replace_directory(rollback, engine)
     except Exception as error:
-        os.replace(failed_target, engine)
+        replace_directory(failed_target, engine)
         raise StorageUpgradeError(
             f"engine rollback failed: {error}",
             stage="rollback",

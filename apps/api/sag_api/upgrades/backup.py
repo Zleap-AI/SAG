@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sag_api.upgrades.directory_replace import (
+    is_transient_windows_replace_error,
+    replace_directory,
+)
 from sag_api.upgrades.octx_files import copy_durable_octx
 from sag_api.upgrades.types import StorageLayout, StorageUpgradeError
 
@@ -103,6 +107,38 @@ def _load_manifest(path: Path) -> BackupManifest:
     )
 
 
+def _recover_completed_temporary_backup(
+    layout: StorageLayout,
+    migration_id: str,
+    *,
+    source_version: str,
+    destination: Path,
+) -> BackupManifest | None:
+    if not layout.backups.is_dir():
+        return None
+    candidates = sorted(
+        layout.backups.glob(f".{migration_id}.*"),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for candidate in candidates:
+        candidate_manifest = candidate / "manifest.json"
+        if not candidate_manifest.is_file():
+            continue
+        try:
+            manifest = _load_manifest(candidate_manifest)
+            if manifest.migration_id != migration_id or manifest.source_version != source_version:
+                continue
+            engine_size, engine_sha256 = _tree_stats(manifest.engine_path)
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if (engine_size, engine_sha256) != (manifest.engine_size, manifest.engine_sha256):
+            continue
+        replace_directory(candidate, destination)
+        return _load_manifest(destination / "manifest.json")
+    return None
+
+
 def create_backup(layout: StorageLayout, migration_id: str, *, source_version: str) -> BackupManifest:
     destination = layout.backups / migration_id
     manifest_path = destination / "manifest.json"
@@ -129,9 +165,19 @@ def create_backup(layout: StorageLayout, migration_id: str, *, source_version: s
             backup_path=destination,
         )
 
+    recovered = _recover_completed_temporary_backup(
+        layout,
+        migration_id,
+        source_version=source_version,
+        destination=destination,
+    )
+    if recovered is not None:
+        return recovered
+
     _preflight_space(layout)
     layout.backups.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{migration_id}.", dir=layout.backups))
+    completed = False
     try:
         engine_copy = temporary / "engine"
         engine_octx = layout.engine / "octx"
@@ -184,10 +230,11 @@ def create_backup(layout: StorageLayout, migration_id: str, *, source_version: s
         # writable so the durability barrier works on every desktop platform.
         with draft_manifest.open("r+b") as source:
             os.fsync(source.fileno())
-        os.replace(temporary, destination)
+        completed = True
+        replace_directory(temporary, destination)
         return _load_manifest(manifest_path)
-    except Exception:
-        if temporary.exists():
+    except Exception as error:
+        if temporary.exists() and not (completed and is_transient_windows_replace_error(error)):
             shutil.rmtree(temporary)
         raise
 

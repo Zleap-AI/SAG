@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,84 @@ from sag_api.upgrades.swap import swap_engine
 from sag_api.upgrades.types import MigrationPhase, StorageLayout, StorageUpgradeError
 from sag_api.upgrades.zleap_sag_0_7_to_0_8.adapter import ZleapSag071To082Adapter
 from sag_api.upgrades.zleap_sag_0_7_to_0_8.migrator import MIGRATION_ID
+
+
+class WindowsAccessDenied(PermissionError):
+    winerror = 5
+
+
+def test_backup_retries_transient_windows_directory_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = tmp_path / "engine"
+    engine.mkdir()
+    (engine / "payload.bin").write_bytes(b"legacy-data")
+    layout = StorageLayout(
+        root=tmp_path,
+        engine=engine,
+        sag_db=None,
+        upgrades=tmp_path / ".storage-upgrades",
+        backups=tmp_path / ".storage-upgrades" / "backups",
+        staging=tmp_path / ".storage-upgrades" / "staging",
+    )
+    original_replace = os.replace
+    attempts = 0
+
+    def transient_windows_lock(source: Path, destination: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise WindowsAccessDenied(errno.EACCES, "Access is denied", source, None, destination)
+        original_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", transient_windows_lock)
+    monkeypatch.setattr(time, "sleep", lambda _delay: None)
+
+    backup = create_backup(layout, "migration", source_version="0.7.1")
+
+    assert backup.manifest_path.is_file()
+    assert attempts == 3
+
+
+def test_backup_reuses_completed_temporary_directory_after_windows_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = tmp_path / "engine"
+    engine.mkdir()
+    (engine / "payload.bin").write_bytes(b"legacy-data")
+    layout = StorageLayout(
+        root=tmp_path,
+        engine=engine,
+        sag_db=None,
+        upgrades=tmp_path / ".storage-upgrades",
+        backups=tmp_path / ".storage-upgrades" / "backups",
+        staging=tmp_path / ".storage-upgrades" / "staging",
+    )
+    original_replace = os.replace
+
+    def persistent_windows_lock(source: Path, destination: Path) -> None:
+        raise WindowsAccessDenied(errno.EACCES, "Access is denied", source, None, destination)
+
+    monkeypatch.setattr(os, "replace", persistent_windows_lock)
+    monkeypatch.setattr(time, "sleep", lambda _delay: None)
+
+    with pytest.raises(WindowsAccessDenied):
+        create_backup(layout, "migration", source_version="0.7.1")
+
+    completed = list(layout.backups.glob(".migration.*/manifest.json"))
+    assert len(completed) == 1
+
+    monkeypatch.setattr(os, "replace", original_replace)
+
+    def reject_duplicate_copy(*_args, **_kwargs):
+        raise AssertionError("completed backup must be promoted without copying again")
+
+    monkeypatch.setattr(shutil, "copytree", reject_duplicate_copy)
+
+    backup = create_backup(layout, "migration", source_version="0.7.1")
+
+    assert backup.manifest_path.is_file()
+    assert not completed[0].exists()
 
 
 def test_backup_fsync_uses_windows_compatible_writable_handle(
@@ -131,9 +210,9 @@ def test_swap_restores_original_when_second_rename_fails(tmp_path: Path, monkeyp
     (engine / "marker").write_text("legacy", encoding="utf-8")
     (staging / "marker").write_text("current", encoding="utf-8")
 
-    from sag_api.upgrades import swap as swap_module
+    from sag_api.upgrades import directory_replace as directory_replace_module
 
-    original_replace = swap_module.os.replace
+    original_replace = directory_replace_module.os.replace
     calls = 0
 
     def fail_second(source: Path, destination: Path) -> None:
@@ -143,13 +222,44 @@ def test_swap_restores_original_when_second_rename_fails(tmp_path: Path, monkeyp
             raise OSError("injected swap failure")
         original_replace(source, destination)
 
-    monkeypatch.setattr(swap_module.os, "replace", fail_second)
+    monkeypatch.setattr(directory_replace_module.os, "replace", fail_second)
     with pytest.raises(StorageUpgradeError, match="atomic engine swap"):
         swap_engine(engine, staging, rollback)
 
     assert (engine / "marker").read_text(encoding="utf-8") == "legacy"
     assert (staging / "marker").read_text(encoding="utf-8") == "current"
     assert not rollback.exists()
+
+
+def test_swap_retries_transient_windows_directory_replaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = tmp_path / "engine"
+    staging = tmp_path / "staging"
+    rollback = tmp_path / "rollback"
+    engine.mkdir()
+    staging.mkdir()
+    (engine / "marker").write_text("legacy", encoding="utf-8")
+    (staging / "marker").write_text("current", encoding="utf-8")
+    original_replace = os.replace
+    attempts: dict[tuple[Path, Path], int] = {}
+
+    def transient_windows_lock(source: Path, destination: Path) -> None:
+        key = (Path(source), Path(destination))
+        attempts[key] = attempts.get(key, 0) + 1
+        if attempts[key] == 1:
+            raise WindowsAccessDenied(errno.EACCES, "Access is denied", source, None, destination)
+        original_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", transient_windows_lock)
+    monkeypatch.setattr(time, "sleep", lambda _delay: None)
+
+    swap_engine(engine, staging, rollback)
+
+    assert (engine / "marker").read_text(encoding="utf-8") == "current"
+    assert (rollback / "marker").read_text(encoding="utf-8") == "legacy"
+    assert attempts[(engine, rollback)] == 2
+    assert attempts[(staging, engine)] == 2
 
 
 def test_swap_preserves_octx_artifacts_in_current_engine(
@@ -242,10 +352,24 @@ async def test_verified_phase_completes_swap_after_process_dies_between_renames(
         return StorageMigrationResult("migrated", recovered_journal.path, rollback)
 
     monkeypatch.setattr("sag_api.upgrades.zleap_sag_0_7_to_0_8.migrator._finish_swapped_checkpoint", finish)
+    original_replace = os.replace
+    recovery_attempts = 0
+
+    def transient_windows_lock(source: Path, destination: Path) -> None:
+        nonlocal recovery_attempts
+        if Path(source) == staging and Path(destination) == layout.engine:
+            recovery_attempts += 1
+            if recovery_attempts == 1:
+                raise WindowsAccessDenied(errno.EACCES, "Access is denied", source, None, destination)
+        original_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", transient_windows_lock)
+    monkeypatch.setattr(time, "sleep", lambda _delay: None)
 
     result = await ZleapSag071To082Adapter().migrate(
         StorageUpgradeContext(settings=settings, session_factory=None)
     )
 
     assert result.status == "migrated"
+    assert recovery_attempts == 2
     assert (rollback / "marker").read_text(encoding="utf-8") == "legacy"
