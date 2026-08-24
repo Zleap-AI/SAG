@@ -52,14 +52,23 @@ from sag_api.enums import (
     SourceStatus,
     SourceType,
 )
+from sag_api.sag.config_builder import build_engine_config
 from sag_api.upgrades.active_engine import ActiveEngineStore
 from sag_api.upgrades.backup import _tree_stats
-from sag_api.upgrades.contracts import StorageUpgradeContext
+from sag_api.upgrades.contracts import (
+    StorageBootstrapPhase,
+    StorageChoice,
+    StorageUpgradeContext,
+)
+from sag_api.upgrades.coordinator import StorageBootstrapCoordinator
+from sag_api.upgrades.detector import detect_storage
 from sag_api.upgrades.fresh_workspace import (
     FRESH_WORKSPACE_ID,
     KNOWLEDGE_TABLES,
     FreshKnowledgeWorkspaceAdapter,
 )
+from sag_api.upgrades.state import BootstrapState, BootstrapStateStore
+from sag_api.upgrades.types import StorageLayout, StorageVersion
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "zleap_sag_071"
 
@@ -237,6 +246,123 @@ async def test_fresh_workspace_preserves_user_settings_and_legacy_engine_then_is
         with sqlite3.connect(first.backup_path / "sag.db") as backup:
             assert backup.execute("SELECT count(*) FROM users").fetchone() == (1,)
             assert backup.execute("SELECT count(*) FROM documents").fetchone() == (1,)
+    finally:
+        await meta_engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_migration_active_is_current", (False, True))
+async def test_windows_desktop_policy_starts_fresh_without_migrating_legacy_engine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_migration_active_is_current: bool,
+) -> None:
+    legacy_engine = tmp_path / "engine"
+    legacy_engine.mkdir()
+    with zipfile.ZipFile(FIXTURE_DIR / "fixture.zip") as archive:
+        archive.extractall(legacy_engine)
+    legacy_before = _tree_stats(legacy_engine)
+    staging = (
+        tmp_path
+        / ".storage-upgrades"
+        / "staging"
+        / "zleap-sag-0.7.1-to-0.8.2"
+        / "engine"
+    )
+    staging.mkdir(parents=True)
+    (staging / "failed-migration.txt").write_text("preserve", encoding="utf-8")
+
+    database = tmp_path / "sag.db"
+    meta_engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
+    async with meta_engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(meta_engine, expire_on_commit=False)
+    settings = Settings(
+        data_dir=str(legacy_engine),
+        database_url=f"sqlite+aiosqlite:///{database}",
+        storage_bootstrap_policy="windows_fresh",
+        llm_api_key="fixture",
+        embedding_api_key="fixture",
+        embedding_dimensions=12,
+        _env_file=None,
+    )
+    if failed_migration_active_is_current:
+        interrupted_target = tmp_path / "engine-0.8.2-interrupted-migration"
+        engine = DataEngine(
+            build_engine_config(
+                settings,
+                overrides={"data_dir": str(interrupted_target)},
+            ),
+            health_check=False,
+        )
+        try:
+            await engine.start()
+        finally:
+            await engine.aclose()
+        ActiveEngineStore(
+            tmp_path / ".storage-upgrades" / "active-engine.json"
+        ).activate(legacy_engine, interrupted_target)
+    state_store = BootstrapStateStore(
+        tmp_path / ".storage-upgrades" / "bootstrap.json"
+    )
+    state_store.save(
+        BootstrapState(
+            phase=StorageBootstrapPhase.FAILED,
+            source_version="legacy_0_7",
+            target_version="0.8.2",
+            choice=StorageChoice.MIGRATE,
+            adapter_id="zleap-sag-0.7.1-to-0.8.2",
+            stage="swap",
+            error="WinError 5",
+        )
+    )
+
+    def reject_legacy_backup(*_args, **_kwargs):
+        raise AssertionError("Windows fresh startup must not copy the legacy engine")
+
+    monkeypatch.setattr(
+        "sag_api.upgrades.fresh_workspace.create_backup",
+        reject_legacy_backup,
+    )
+    try:
+        await _seed_all_domains(session_factory)
+        coordinator = StorageBootstrapCoordinator(
+            settings,
+            session_factory,
+            on_ready=lambda: None,
+        )
+
+        status = await coordinator.inspect()
+        await coordinator.wait()
+
+        completed = state_store.load()
+        assert status.phase is StorageBootstrapPhase.PROCESSING
+        assert completed is not None
+        assert completed.phase is StorageBootstrapPhase.READY
+        assert completed.choice is StorageChoice.FRESH
+        assert completed.report is not None
+        metadata_backup = Path(completed.report["backup_path"]) / "sag.db"
+        assert metadata_backup.is_file()
+        with sqlite3.connect(metadata_backup) as backup:
+            assert backup.execute("SELECT count(*) FROM users").fetchone() == (1,)
+            assert backup.execute("SELECT count(*) FROM documents").fetchone() == (1,)
+
+        layout = StorageLayout.from_settings(settings)
+        active = ActiveEngineStore(layout.upgrades / "active-engine.json").resolve(
+            legacy_engine
+        )
+        active_settings = settings.model_copy(update={"data_dir": str(active)})
+        assert active != legacy_engine
+        assert detect_storage(
+            StorageLayout.from_settings(active_settings),
+            active_settings,
+        ).version is StorageVersion.CURRENT
+        assert _tree_stats(legacy_engine) == legacy_before
+        assert (staging / "failed-migration.txt").read_text(encoding="utf-8") == "preserve"
+        assert await _count(session_factory, "users") == 1
+        assert await _count(session_factory, "settings") == 1
+        for table in KNOWLEDGE_TABLES:
+            assert await _count(session_factory, table) == 0
     finally:
         await meta_engine.dispose()
 
