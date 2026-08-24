@@ -119,6 +119,8 @@ class Settings(BaseSettings):
     sag_language: Literal["zh", "en"] = "zh"
     # 仅对默认 SQLite + LanceDB 的 0.7.1 存量库执行旁路、可回滚升级。
     storage_upgrade_enabled: bool = True
+    # Windows 桌面端临时使用全新工作区，避免任何旧引擎目录迁移。
+    storage_bootstrap_policy: Literal["prompt", "windows_fresh"] = "prompt"
 
     # 生产单库（pgvector）时复用同一 Postgres —— 由这些字段拼装
     sag_pg_host: str = "localhost"

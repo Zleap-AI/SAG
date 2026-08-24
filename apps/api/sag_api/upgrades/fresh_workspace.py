@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,7 +15,7 @@ from zleap.sag import DataEngine
 
 from sag_api.sag.config_builder import build_engine_config
 from sag_api.upgrades.active_engine import ActiveEngineStore
-from sag_api.upgrades.backup import create_backup
+from sag_api.upgrades.backup import create_backup, create_sqlite_backup
 from sag_api.upgrades.contracts import FreshWorkspacePhase, StorageUpgradeContext, UpgradeReport
 from sag_api.upgrades.detector import detect_storage
 from sag_api.upgrades.journal import UpgradeLock
@@ -44,6 +45,44 @@ KNOWLEDGE_TABLES = (
     "sources",
 )
 FRESH_WORKSPACE_PHASES = tuple(FreshWorkspacePhase)
+PRESERVED_METADATA_DIR = "preserved-metadata"
+
+
+def _metadata_snapshot_is_valid(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as database:
+            return database.execute("PRAGMA quick_check").fetchone() == ("ok",)
+    except sqlite3.Error:
+        return False
+
+
+def _preserve_metadata_in_place(
+    layout: StorageLayout,
+    journal: FreshWorkspaceJournal,
+) -> Path:
+    if layout.sag_db is None or not layout.sag_db.is_file():
+        raise StorageUpgradeError(
+            "Windows fresh workspace requires the local metadata database",
+            stage="fresh_backup",
+            recoverable=True,
+            diagnostic_path=journal.path,
+        )
+    backup_root = journal.path.parent / PRESERVED_METADATA_DIR
+    backup_root.mkdir(parents=True, exist_ok=True)
+    snapshot = backup_root / "sag.db"
+    if not _metadata_snapshot_is_valid(snapshot):
+        snapshot.unlink(missing_ok=True)
+        create_sqlite_backup(layout.sag_db, snapshot)
+    if not _metadata_snapshot_is_valid(snapshot):
+        raise StorageUpgradeError(
+            "Windows metadata snapshot failed validation",
+            stage="fresh_backup",
+            recoverable=True,
+            diagnostic_path=journal.path,
+        )
+    return backup_root
 
 
 @dataclass
@@ -148,7 +187,12 @@ async def clear_knowledge_domain(session_factory: Any) -> dict[str, int]:
 class FreshKnowledgeWorkspaceAdapter:
     """Create a clean current engine while preserving account and application settings."""
 
-    async def create(self, context: StorageUpgradeContext) -> UpgradeReport:
+    async def create(
+        self,
+        context: StorageUpgradeContext,
+        *,
+        preserve_legacy_in_place: bool = False,
+    ) -> UpgradeReport:
         settings = context.settings
         layout = StorageLayout.from_settings(settings)
         state_root = layout.upgrades / FRESH_WORKSPACE_ID
@@ -169,16 +213,27 @@ class FreshKnowledgeWorkspaceAdapter:
                 self._require_current_target(settings, journal)
 
             if journal.phase is FreshWorkspacePhase.TARGET_CREATED:
-                backup = create_backup(
-                    layout,
-                    f"fresh-{journal.journal_id}",
-                    source_version="fresh-reset",
-                )
-                journal.advance(
-                    FreshWorkspacePhase.BUSINESS_BACKED_UP,
-                    report={"manifest": str(backup.manifest_path)},
-                )
-                backup_path = backup.backup_root
+                if preserve_legacy_in_place:
+                    backup_path = _preserve_metadata_in_place(layout, journal)
+                    journal.advance(
+                        FreshWorkspacePhase.BUSINESS_BACKED_UP,
+                        report={
+                            "mode": "preserve_in_place",
+                            "metadata_backup": str(backup_path / "sag.db"),
+                            "preserved_engine": str(layout.engine),
+                        },
+                    )
+                else:
+                    backup = create_backup(
+                        layout,
+                        f"fresh-{journal.journal_id}",
+                        source_version="fresh-reset",
+                    )
+                    journal.advance(
+                        FreshWorkspacePhase.BUSINESS_BACKED_UP,
+                        report={"manifest": str(backup.manifest_path)},
+                    )
+                    backup_path = backup.backup_root
             else:
                 backup_path = self._backup_from_journal(journal)
 
@@ -212,6 +267,17 @@ class FreshKnowledgeWorkspaceAdapter:
     @staticmethod
     def _backup_from_journal(journal: FreshWorkspaceJournal) -> Path:
         report = journal.reports.get(FreshWorkspacePhase.BUSINESS_BACKED_UP.value)
+        if isinstance(report, dict) and report.get("mode") == "preserve_in_place":
+            snapshot_value = report.get("metadata_backup")
+            snapshot = Path(str(snapshot_value)) if snapshot_value else None
+            if snapshot is None or not _metadata_snapshot_is_valid(snapshot):
+                raise StorageUpgradeError(
+                    "Windows metadata snapshot is missing",
+                    stage="fresh_backup",
+                    recoverable=False,
+                    diagnostic_path=journal.path,
+                )
+            return snapshot.parent
         manifest = report.get("manifest") if isinstance(report, dict) else None
         path = Path(str(manifest)) if manifest else None
         if path is None or not path.is_file():
