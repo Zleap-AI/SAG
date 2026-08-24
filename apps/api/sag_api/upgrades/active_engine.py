@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from uuid import uuid4
 
+from sag_api.upgrades.directory_replace import replace_path
 from sag_api.upgrades.types import StorageUpgradeError
 
 
@@ -57,7 +57,7 @@ class ActiveEngineStore:
         }
         try:
             temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
-            os.replace(temporary, self.path)
+            replace_path(temporary, self.path)
         finally:
             temporary.unlink(missing_ok=True)
 

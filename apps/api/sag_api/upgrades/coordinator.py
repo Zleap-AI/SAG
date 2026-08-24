@@ -6,6 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from sag_api.upgrades import registry
 from sag_api.upgrades.active_engine import ActiveEngineStore
 from sag_api.upgrades.contracts import (
     StorageBootstrapPhase,
@@ -64,16 +65,13 @@ class StorageBootstrapCoordinator:
 
             if state.phase is StorageBootstrapPhase.FAILED:
                 state.phase = StorageBootstrapPhase.PROCESSING
-                state.stage = "verified" if probe.version is StorageVersion.CURRENT else "queued"
+                state.stage = "queued"
                 state.error = None
                 self.store.save(state)
                 self._schedule(state)
                 return self._status_from_state(state)
 
             if state.phase is StorageBootstrapPhase.PROCESSING:
-                if probe.version is StorageVersion.CURRENT:
-                    state.stage = "verified"
-                    self.store.save(state)
                 self._schedule(state)
                 return self._status_from_state(state)
 
@@ -168,7 +166,16 @@ class StorageBootstrapCoordinator:
                     report = await FreshKnowledgeWorkspaceAdapter().create(context)
                 else:
                     probe = await self._probe()
-                    adapter = select_adapter(probe, target_version="0.8.2")
+                    adapter = next(
+                        (
+                            candidate
+                            for candidate in registry.registered_adapters()
+                            if candidate.migration_id == state.adapter_id
+                        ),
+                        None,
+                    )
+                    if adapter is None:
+                        adapter = select_adapter(probe, target_version="0.8.2")
                     if adapter is None:
                         if probe.version is not StorageVersion.CURRENT:
                             raise StorageUpgradeError(

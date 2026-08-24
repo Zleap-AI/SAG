@@ -5,16 +5,23 @@ import os
 import shutil
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from sag_api.core.config import Settings
+from sag_api.upgrades.active_engine import ActiveEngineStore
 from sag_api.upgrades.backup import create_backup
 from sag_api.upgrades.contracts import StorageUpgradeContext
 from sag_api.upgrades.contracts import UpgradeReport as StorageMigrationResult
 from sag_api.upgrades.journal import MigrationJournal
 from sag_api.upgrades.swap import swap_engine
-from sag_api.upgrades.types import MigrationPhase, StorageLayout, StorageUpgradeError
+from sag_api.upgrades.types import (
+    MigrationPhase,
+    StorageLayout,
+    StorageUpgradeError,
+    StorageVersion,
+)
 from sag_api.upgrades.zleap_sag_0_7_to_0_8.adapter import ZleapSag071To082Adapter
 from sag_api.upgrades.zleap_sag_0_7_to_0_8.migrator import MIGRATION_ID
 
@@ -348,7 +355,10 @@ async def test_verified_phase_completes_swap_after_process_dies_between_renames(
 
     async def finish(_settings, _session_factory, recovered_layout, recovered_journal):
         assert recovered_journal.phase is MigrationPhase.SWAPPED
-        assert (recovered_layout.engine / "marker").read_text(encoding="utf-8") == "current"
+        active = ActiveEngineStore(
+            recovered_layout.upgrades / "active-engine.json"
+        ).resolve(recovered_layout.engine)
+        assert (active / "marker").read_text(encoding="utf-8") == "current"
         return StorageMigrationResult("migrated", recovered_journal.path, rollback)
 
     monkeypatch.setattr("sag_api.upgrades.zleap_sag_0_7_to_0_8.migrator._finish_swapped_checkpoint", finish)
@@ -359,8 +369,7 @@ async def test_verified_phase_completes_swap_after_process_dies_between_renames(
         nonlocal recovery_attempts
         if Path(source) == staging and Path(destination) == layout.engine:
             recovery_attempts += 1
-            if recovery_attempts == 1:
-                raise WindowsAccessDenied(errno.EACCES, "Access is denied", source, None, destination)
+            raise WindowsAccessDenied(errno.EACCES, "Access is denied", source, None, destination)
         original_replace(source, destination)
 
     monkeypatch.setattr(os, "replace", transient_windows_lock)
@@ -371,5 +380,148 @@ async def test_verified_phase_completes_swap_after_process_dies_between_renames(
     )
 
     assert result.status == "migrated"
-    assert recovery_attempts == 2
+    assert recovery_attempts > 1
+    assert not layout.engine.exists()
     assert (rollback / "marker").read_text(encoding="utf-8") == "legacy"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "configured_version",
+    (StorageVersion.EMPTY, StorageVersion.LEGACY_0_7),
+)
+async def test_verified_phase_uses_staging_when_configured_engine_reappears(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured_version: StorageVersion,
+) -> None:
+    settings = Settings(
+        data_dir=str(tmp_path / "engine"),
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'sag.db'}",
+        _env_file=None,
+    )
+    layout = StorageLayout.from_settings(settings)
+    state_root = layout.upgrades / MIGRATION_ID
+    rollback = state_root / "original-engine"
+    staging = layout.staging / MIGRATION_ID / "engine"
+    layout.engine.mkdir(parents=True)
+    if configured_version is StorageVersion.LEGACY_0_7:
+        (layout.engine / "marker").write_text("legacy-copy", encoding="utf-8")
+    rollback.mkdir(parents=True)
+    staging.mkdir(parents=True)
+    (rollback / "marker").write_text("legacy", encoding="utf-8")
+    (staging / "marker").write_text("current", encoding="utf-8")
+
+    journal = MigrationJournal.create(state_root / "journal.json", migration_id=MIGRATION_ID)
+    for phase in (
+        MigrationPhase.BACKED_UP,
+        MigrationPhase.RELATIONAL_MIGRATED,
+        MigrationPhase.VECTORS_MIGRATED,
+        MigrationPhase.CHECKPOINTS_MIGRATED,
+        MigrationPhase.VERIFIED,
+    ):
+        journal.advance(phase)
+
+    def detect_recovery_candidate(recovered_layout, _settings):
+        if recovered_layout.engine == staging:
+            return SimpleNamespace(version=StorageVersion.CURRENT)
+        return SimpleNamespace(version=configured_version)
+
+    async def finish(_settings, _session_factory, recovered_layout, recovered_journal):
+        assert recovered_journal.phase is MigrationPhase.SWAPPED
+        active = ActiveEngineStore(
+            recovered_layout.upgrades / "active-engine.json"
+        ).resolve(recovered_layout.engine)
+        assert (active / "marker").read_text(encoding="utf-8") == "current"
+        return StorageMigrationResult("migrated", recovered_journal.path, rollback)
+
+    monkeypatch.setattr(
+        "sag_api.upgrades.zleap_sag_0_7_to_0_8.migrator.detect_storage",
+        detect_recovery_candidate,
+    )
+    monkeypatch.setattr(
+        "sag_api.upgrades.zleap_sag_0_7_to_0_8.migrator._finish_swapped_checkpoint",
+        finish,
+    )
+
+    result = await ZleapSag071To082Adapter().migrate(
+        StorageUpgradeContext(settings=settings, session_factory=None)
+    )
+
+    active = ActiveEngineStore(layout.upgrades / "active-engine.json").resolve(layout.engine)
+    assert result.status == "migrated"
+    assert active != layout.engine
+    if configured_version is StorageVersion.EMPTY:
+        assert not any(layout.engine.iterdir())
+    else:
+        assert (layout.engine / "marker").read_text(encoding="utf-8") == "legacy-copy"
+    assert (rollback / "marker").read_text(encoding="utf-8") == "legacy"
+
+
+@pytest.mark.asyncio
+async def test_pointer_checkpoint_failure_restores_legacy_over_recreated_empty_engine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        data_dir=str(tmp_path / "engine"),
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'sag.db'}",
+        _env_file=None,
+    )
+    layout = StorageLayout.from_settings(settings)
+    state_root = layout.upgrades / MIGRATION_ID
+    rollback = state_root / "original-engine"
+    active = tmp_path / "engine-0.8.2-migrated-test"
+    layout.engine.mkdir(parents=True)
+    rollback.mkdir(parents=True)
+    active.mkdir(parents=True)
+    (rollback / "marker").write_text("legacy", encoding="utf-8")
+    (active / "marker").write_text("current", encoding="utf-8")
+
+    journal = MigrationJournal.create(state_root / "journal.json", migration_id=MIGRATION_ID)
+    for phase in (
+        MigrationPhase.BACKED_UP,
+        MigrationPhase.RELATIONAL_MIGRATED,
+        MigrationPhase.VECTORS_MIGRATED,
+        MigrationPhase.CHECKPOINTS_MIGRATED,
+        MigrationPhase.VERIFIED,
+    ):
+        journal.advance(phase)
+    journal.advance(
+        MigrationPhase.SWAPPED,
+        report={
+            "mode": "pointer",
+            "active_engine": str(active),
+            "legacy_engine": str(rollback),
+        },
+    )
+
+    monkeypatch.setattr(
+        "sag_api.upgrades.zleap_sag_0_7_to_0_8.migrator._load_relational_report",
+        lambda *_args: SimpleNamespace(generation_by_source={}),
+    )
+
+    async def plan(*_args):
+        return SimpleNamespace()
+
+    async def fail_checkpoint(*_args):
+        raise RuntimeError("checkpoint failed")
+
+    monkeypatch.setattr(
+        "sag_api.upgrades.zleap_sag_0_7_to_0_8.migrator.plan_checkpoint_updates",
+        plan,
+    )
+    monkeypatch.setattr(
+        "sag_api.upgrades.zleap_sag_0_7_to_0_8.migrator.apply_checkpoint_plan",
+        fail_checkpoint,
+    )
+
+    with pytest.raises(RuntimeError, match="checkpoint failed"):
+        await ZleapSag071To082Adapter().migrate(
+            StorageUpgradeContext(settings=settings, session_factory=None)
+        )
+
+    assert not (layout.upgrades / "active-engine.json").exists()
+    assert not journal.path.exists()
+    assert (layout.engine / "marker").read_text(encoding="utf-8") == "legacy"
+    assert not rollback.exists()

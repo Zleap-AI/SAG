@@ -26,7 +26,7 @@ def is_transient_windows_replace_error(error: BaseException) -> bool:
     return getattr(error, "winerror", None) in _WINDOWS_TRANSIENT_REPLACE_ERRORS
 
 
-def replace_directory(source: Path, destination: Path) -> None:
+def replace_path(source: Path, destination: Path) -> None:
     for delay in _WINDOWS_REPLACE_RETRY_DELAYS:
         try:
             os.replace(source, destination)
@@ -36,3 +36,7 @@ def replace_directory(source: Path, destination: Path) -> None:
                 raise
             time.sleep(delay)
     os.replace(source, destination)
+
+
+def replace_directory(source: Path, destination: Path) -> None:
+    replace_path(source, destination)

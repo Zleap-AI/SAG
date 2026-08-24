@@ -14,10 +14,11 @@ from sag_api.upgrades.contracts import (
     StorageBootstrapPhase,
     StorageBootstrapStatus,
     StorageChoice,
+    UpgradeReport,
 )
 from sag_api.upgrades.coordinator import StorageBootstrapCoordinator
 from sag_api.upgrades.state import BootstrapState
-from sag_api.upgrades.types import StorageLayout, StorageVersion
+from sag_api.upgrades.types import StorageLayout, StorageProbe, StorageVersion
 
 
 class _LifecycleDependency:
@@ -285,6 +286,62 @@ async def test_coordinator_retry_drains_retained_runtime_before_replacement(
         "agent_runtime": foreign,
         "job_queue": foreign,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "persisted_phase",
+    (StorageBootstrapPhase.PROCESSING, StorageBootstrapPhase.FAILED),
+)
+async def test_processing_migration_finishes_adapter_after_pointer_already_reports_current(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    persisted_phase: StorageBootstrapPhase,
+) -> None:
+    test_settings = settings.model_copy(update={"data_dir": str(tmp_path / "engine")})
+    coordinator = StorageBootstrapCoordinator(
+        test_settings,
+        object(),
+        on_ready=lambda: None,
+    )
+    coordinator.store.save(
+        BootstrapState(
+            phase=persisted_phase,
+            source_version="legacy_0_7",
+            target_version="0.8.2",
+            choice=StorageChoice.MIGRATE,
+            adapter_id="zleap-sag-0.7.1-to-0.8.2",
+            stage="processing",
+        )
+    )
+    adapter_calls = 0
+
+    class Adapter:
+        migration_id = "zleap-sag-0.7.1-to-0.8.2"
+
+        async def migrate(self, _context):
+            nonlocal adapter_calls
+            adapter_calls += 1
+            return UpgradeReport("migrated")
+
+    monkeypatch.setattr(
+        "sag_api.upgrades.coordinator.detect_storage",
+        lambda *_args: StorageProbe(StorageVersion.CURRENT, "pointer target is current"),
+    )
+    monkeypatch.setattr(
+        "sag_api.upgrades.coordinator.select_adapter",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "sag_api.upgrades.registry.registered_adapters",
+        lambda: (Adapter(),),
+    )
+
+    assert (await coordinator.inspect()).phase is StorageBootstrapPhase.PROCESSING
+    await coordinator.wait()
+
+    assert adapter_calls == 1
+    assert coordinator.store.load().phase is StorageBootstrapPhase.READY
 
 
 @pytest.mark.asyncio
