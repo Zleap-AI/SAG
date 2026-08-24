@@ -58,8 +58,9 @@ class StorageBootstrapController:
     async def install_runtime(self) -> None:
         """Resolve the active engine and (re)start the knowledge runtime once."""
         async with self.runtime_install_lock:
+            active_path = self.active_store.resolve(self.layout.engine)
+            self.settings.activate_data_dir(active_path)
             if self.runtime is None:
-                active_path = self.active_store.resolve(self.layout.engine)
                 self.runtime = KnowledgeRuntime(
                     self.settings,
                     self.session_factory,

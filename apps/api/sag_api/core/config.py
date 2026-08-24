@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, field_validator
+from pydantic import Field, PrivateAttr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from sag_api.core.model_providers import ModelProviderId, get_model_provider
@@ -27,6 +28,8 @@ _DEFAULT_LLM_PROVIDER = get_model_provider("openai")
 
 
 class Settings(BaseSettings):
+    _active_data_dir: str | None = PrivateAttr(default=None)
+
     model_config = SettingsConfigDict(
         env_prefix="SAG_",
         env_file=".env",
@@ -238,6 +241,15 @@ class Settings(BaseSettings):
         except (ZoneInfoNotFoundError, ValueError) as error:
             raise ValueError("timezone 必须是有效的 IANA 时区") from error
         return normalized
+
+    @property
+    def effective_data_dir(self) -> str:
+        """当前进程实际使用的引擎目录；未切换时沿用配置值。"""
+        return self._active_data_dir or self.data_dir
+
+    def activate_data_dir(self, path: str | Path) -> None:
+        """记录存储引导选定的有效引擎目录，不改写持久配置。"""
+        self._active_data_dir = str(Path(path).expanduser().resolve())
 
     @property
     def llm_configured(self) -> bool:

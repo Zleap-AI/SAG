@@ -215,13 +215,15 @@ def test_storage_restores_digest_verified_release_from_migration_preservation(tm
     assert storage.resolve_key(key).read_bytes() == package.read_bytes()
 
 
-def test_default_storage_recovers_completed_migration_artifact(tmp_path, monkeypatch):
-    """Already-migrated desktop users must recover releases moved with the old engine."""
+def test_default_storage_recovers_artifact_into_active_engine(tmp_path, monkeypatch):
+    """A fresh workspace restores preserved releases into its active engine."""
+    from sag_api.core.config import Settings
     from sag_api.services import octx_transfer_service
 
     package, digest = _create_test_octx(tmp_path, "migrated")
     key = f"releases/asset/1.0.0/{digest[7:]}.octx"
-    data_dir = tmp_path / "engine"
+    configured_dir = tmp_path / "engine"
+    active_dir = tmp_path / "engine-0.8.2-fresh"
     preserved = (
         tmp_path
         / ".storage-upgrades"
@@ -232,12 +234,15 @@ def test_default_storage_recovers_completed_migration_artifact(tmp_path, monkeyp
     )
     preserved.parent.mkdir(parents=True)
     preserved.write_bytes(package.read_bytes())
-    monkeypatch.setattr(octx_transfer_service.settings, "data_dir", str(data_dir))
+    test_settings = Settings(data_dir=str(configured_dir), _env_file=None)
+    test_settings.activate_data_dir(active_dir)
+    monkeypatch.setattr(octx_transfer_service, "settings", test_settings)
 
     storage = octx_transfer_service.default_octx_storage()
     restored = storage.resolve_release(key, digest)
 
-    assert restored == data_dir / "octx" / key
+    assert restored == active_dir / "octx" / key
+    assert not (configured_dir / "octx").exists()
     assert restored.read_bytes() == package.read_bytes()
 
 

@@ -153,7 +153,7 @@ def _export_progress(detail: dict[str, Any]) -> float:
 
 
 def default_octx_storage() -> OctxStorage:
-    engine = Path(settings.data_dir).expanduser().resolve()
+    engine = Path(settings.effective_data_dir).expanduser().resolve()
     upgrade_root = engine.parent / ".storage-upgrades"
     migration_id = "zleap-sag-0.7.1-to-0.8.2"
     return OctxStorage(

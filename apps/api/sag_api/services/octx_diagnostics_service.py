@@ -108,7 +108,7 @@ def _package_version(name: str) -> str:
 
 
 def _storage_health() -> dict[str, Any]:
-    configured = Path(settings.data_dir) / "octx"
+    configured = Path(settings.effective_data_dir) / "octx"
     probe = configured
     while not probe.exists() and probe != probe.parent:
         probe = probe.parent

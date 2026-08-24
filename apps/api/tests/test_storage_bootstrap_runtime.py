@@ -566,6 +566,8 @@ async def test_real_ready_coordinator_installs_resolved_runtime_once(
         assert response.json() == {"status": "ready", "db": True}
         assert runtime.active_path == active_path.resolve()
         assert runtime.starts == 1
+        assert test_settings.data_dir == str(configured_path)
+        assert test_settings.effective_data_dir == str(active_path.resolve())
 
     assert runtime.stops == 1
 
