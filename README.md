@@ -92,10 +92,10 @@ The product is deliberately local-first and single-user. It starts with SQLite a
 **SAG: SQL-Retrieval Augmented Generation with Query-Time Dynamic Hyperedges**<br>
 Yuchao Wu*, Junqin Li, XingCheng Liang, Yongjie Chen, Yinghao Liang, Linyuan Mo, and Guanxian Li
 
-[Read the paper](https://arxiv.org/abs/2608.12129) · [Reproduce the benchmark](https://github.com/Zleap-AI/SAG-Benchmark)
+[Read the paper](https://arxiv.org/abs/2606.15971) · [Reproduce the benchmark](https://github.com/Zleap-AI/SAG-Benchmark)
 
 <p align="center">
-  <a href="https://arxiv.org/abs/2608.12129">
+  <a href="https://arxiv.org/abs/2606.15971">
     <img src="docs/assets/readme/paper-first-page.png" alt="First page of the SAG paper" width="900" />
   </a>
 </p>
@@ -154,7 +154,7 @@ Full results:
   <img src="docs/assets/readme/main-result.png" alt="SAG benchmark results" width="940" />
 </p>
 
-See the [paper](https://arxiv.org/abs/2608.12129) and [SAG-Benchmark](https://github.com/Zleap-AI/SAG-Benchmark) for the full method and reproduction scripts.
+See the [paper](https://arxiv.org/abs/2606.15971) and [SAG-Benchmark](https://github.com/Zleap-AI/SAG-Benchmark) for the full method and reproduction scripts.
 
 ---
 
