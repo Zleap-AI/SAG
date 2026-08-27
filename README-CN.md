@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://arxiv.org/abs/2608.12129"><img alt="论文" src="https://img.shields.io/badge/paper-arXiv%3A2608.12129-18181b" /></a>
+  <a href="https://arxiv.org/abs/2606.15971"><img alt="论文" src="https://img.shields.io/badge/paper-arXiv%3A2608.12129-18181b" /></a>
   <a href="https://pypi.org/project/zleap-sag/"><img alt="PyPI" src="https://img.shields.io/pypi/v/zleap-sag?label=zleap--sag&color=18181b" /></a>
   <img alt="SAG 版本" src="https://img.shields.io/badge/SAG-v1.5.3-18181b" />
   <a href="https://github.com/Zleap-AI/SAG/releases/latest"><img alt="桌面版发布" src="https://img.shields.io/github/v/release/Zleap-AI/SAG?label=desktop&color=18181b" /></a>
@@ -88,10 +88,10 @@ SAG 不是传统 RAG 与 GraphRAG 的融合，而是一套替代二者的原创�
 **SAG: SQL-Retrieval Augmented Generation with Query-Time Dynamic Hyperedges**<br>
 Yuchao Wu*、Junqin Li、XingCheng Liang、Yongjie Chen、Yinghao Liang、Linyuan Mo、Guanxian Li
 
-[阅读论文](https://arxiv.org/abs/2608.12129) · [复现跑分](https://github.com/Zleap-AI/SAG-Benchmark)
+[阅读论文](https://arxiv.org/abs/2606.15971) · [复现跑分](https://github.com/Zleap-AI/SAG-Benchmark)
 
 <p align="center">
-  <a href="https://arxiv.org/abs/2608.12129">
+  <a href="https://arxiv.org/abs/2606.15971">
     <img src="docs/assets/readme/paper-first-page.png" alt="SAG 论文首页" width="900" />
   </a>
 </p>
@@ -150,7 +150,7 @@ SAG 内部的语义路径和结构路径都是 SAG 自己检索管线的组成�
   <img src="docs/assets/readme/main-result.png" alt="SAG实验结果" width="940" />
 </p>
 
-完整方法与复现脚本见[论文](https://arxiv.org/abs/2608.12129)和 [SAG-Benchmark](https://github.com/Zleap-AI/SAG-Benchmark)。
+完整方法与复现脚本见[论文](https://arxiv.org/abs/2606.15971)和 [SAG-Benchmark](https://github.com/Zleap-AI/SAG-Benchmark)。
 
 ---
 
