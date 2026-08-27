@@ -48,3 +48,6 @@ apps/api/dist/desktop/
 
 # skill installer output (npx skills add)
 .agents/
+docs/agentic-sag-introduction-related-work.md
+docs/architecture.md
+docs/assets/architecture/sag-runtime-architecture.svg
