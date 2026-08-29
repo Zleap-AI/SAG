@@ -10,6 +10,7 @@ import type {
   Binding,
   BindingTargetType,
   Capabilities,
+  DshIntegrationDescriptor,
   Doc,
   MessagePage,
   ModelConfig,
@@ -1094,6 +1095,40 @@ export const api = {
 
   // 整个 SAG 知识库的 MCP 挂载信息
   knowledgeMcp: () => request<KnowledgeMcpDescriptor>("/api/v1/system/mcp"),
+
+  // DeepSeek Harness 本机连接
+  dshIntegration: () => request<DshIntegrationDescriptor>("/api/v1/system/dsh"),
+  updateDshIntegration: (defaultSourceId: string | null) =>
+    request<DshIntegrationDescriptor>("/api/v1/system/dsh/settings", {
+      method: "PUT",
+      body: JSON.stringify({ default_source_id: defaultSourceId }),
+    }),
+  regenerateDshToken: () =>
+    request<DshIntegrationDescriptor>("/api/v1/system/dsh/regenerate", {
+      method: "POST",
+    }),
+  downloadDshConnection: async (): Promise<Blob> => {
+    const token = getToken();
+    const res = await fetch(`${API_BASE}/api/v1/system/dsh/export`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        "Accept-Language": readClientLocale(),
+      },
+    });
+    if (!res.ok) {
+      let code = "download_failed";
+      let message = res.statusText || clientErrorMessage("requestFailed");
+      try {
+        const body = await res.json();
+        code = body?.error?.code ?? code;
+        message = body?.error?.message ?? message;
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(res.status, code, message);
+    }
+    return res.blob();
+  },
 
   // OCTX 数据包导入/导出
   startOctxExport,

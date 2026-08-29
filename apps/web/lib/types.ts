@@ -307,6 +307,13 @@ export interface KnowledgeMcpDescriptor {
   stdio: { command: string; args: string[]; env: Record<string, string>; note: string };
 }
 
+export interface DshIntegrationDescriptor {
+  schemaVersion: 1;
+  capabilities: string[];
+  upload: { maxMb: number; extensions: string[] };
+  defaultSourceId: string | null;
+}
+
 export interface Thread {
   id: string;
   agent_id: string;

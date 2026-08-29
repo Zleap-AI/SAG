@@ -1,29 +1,93 @@
 from __future__ import annotations
 
+from ipaddress import ip_address
+
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal, get_session
-from sag_api.core.deps import get_current_user
-from sag_api.core.errors import ApiError, ConflictError
+from sag_api.core.deps import get_current_user, get_current_user_or_connector
+from sag_api.core.errors import ApiError, ConflictError, ForbiddenError
 from sag_api.core.logging import get_logger
 from sag_api.core.model_providers import model_provider_catalog
 from sag_api.db.models import Source, User
 from sag_api.generation import LLMClient
 from sag_api.mcp.server import MCP_TOOL_DETAILS, MCP_TOOL_NAMES
 from sag_api.sag.engine_manager import EngineManager
+from sag_api.schemas.dsh_integration import (
+    DshCapabilityDescriptor,
+    DshConnectionDescriptor,
+    DshIntegrationUpdate,
+    DshUploadCapability,
+)
 from sag_api.schemas.system import (
     ModelConfigUpdate,
     QuickModelSetupRequest,
     SystemPreferencesUpdate,
 )
-from sag_api.services import settings_service
+from sag_api.services import dsh_integration_service, settings_service
 
 router = APIRouter(prefix="/system", tags=["system"])
 log = get_logger("system")
+
+DSH_CAPABILITIES = (
+    "sources.list",
+    "sources.create",
+    "knowledge.search",
+    "knowledge.read",
+    "documents.list",
+    "documents.get",
+    "documents.upload",
+    "documents.ingest",
+    "documents.reprocess",
+    "documents.delete",
+)
+
+
+def _request_is_loopback(request: Request) -> bool:
+    """Return whether the ASGI peer is a loopback address."""
+    if request.client is None:
+        return False
+    try:
+        return ip_address(request.client.host).is_loopback
+    except ValueError:
+        return False
+
+
+def _dsh_urls(request: Request) -> tuple[str, str]:
+    """Build HTTP connection URLs from the address the caller actually used."""
+    base_url = str(request.base_url).rstrip("/")
+    return f"{base_url}/api/v1", f"{base_url}/mcp/"
+
+
+def _dsh_capability_descriptor(state: dsh_integration_service.DshIntegrationState) -> DshCapabilityDescriptor:
+    """Project persisted source selection without exposing the connector credential."""
+    return DshCapabilityDescriptor(
+        capabilities=list(DSH_CAPABILITIES),
+        upload=DshUploadCapability(
+            maxMb=settings.max_upload_mb,
+            extensions=sorted(extension.lstrip(".") for extension in settings.allowed_upload_exts),
+        ),
+        defaultSourceId=state.default_source_id,
+    )
+
+
+def _dsh_connection_descriptor(
+    request: Request,
+    state: dsh_integration_service.DshIntegrationState,
+) -> DshConnectionDescriptor:
+    """Build a directly usable descriptor for the current HTTP origin."""
+    api_url, mcp_url = _dsh_urls(request)
+    return DshConnectionDescriptor(
+        name="SAG 知识库",
+        apiUrl=api_url,
+        mcpUrl=mcp_url,
+        accessToken=state.token,
+        defaultSourceId=state.default_source_id,
+    )
 
 
 def _capabilities() -> dict:
@@ -78,6 +142,67 @@ async def ready(request: Request) -> JSONResponse:
 async def capabilities() -> dict:
     """能力探测：供前端判断是否已配置 LLM、当前引擎后端等。"""
     return _capabilities()
+
+
+@router.get("/dsh", response_model=DshCapabilityDescriptor)
+async def dsh_capabilities(
+    _user: User = Depends(get_current_user_or_connector),
+    session: AsyncSession = Depends(get_session),
+) -> DshCapabilityDescriptor:
+    """Return connector capabilities without exposing its credential."""
+    state = await dsh_integration_service.get_or_create_state(session)
+    return _dsh_capability_descriptor(state)
+
+
+@router.get("/dsh-connection", response_model=DshConnectionDescriptor)
+async def discover_dsh_connection(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> DshConnectionDescriptor:
+    """Return the local connector credential only to a loopback peer."""
+    if not _request_is_loopback(request):
+        raise ForbiddenError("仅允许本机访问 DSH 连接配置")
+    state = await dsh_integration_service.get_or_create_state(session)
+    return _dsh_connection_descriptor(request, state)
+
+
+@router.get("/dsh/export")
+async def export_dsh_connection(
+    request: Request,
+    _user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Download the connector descriptor after normal SAG authentication."""
+    state = await dsh_integration_service.get_or_create_state(session)
+    descriptor = _dsh_connection_descriptor(request, state)
+    return Response(
+        content=descriptor.model_dump_json(),
+        media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="sag-dsh.json"'},
+    )
+
+
+@router.put("/dsh/settings", response_model=DshCapabilityDescriptor)
+async def update_dsh_settings(
+    body: DshIntegrationUpdate,
+    _user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> DshCapabilityDescriptor:
+    """Select the source used by DSH when a request omits one."""
+    state = await dsh_integration_service.update_default_source(session, body.default_source_id)
+    await dsh_integration_service.write_connection_file(session)
+    return _dsh_capability_descriptor(state)
+
+
+@router.post("/dsh/regenerate", response_model=DshCapabilityDescriptor)
+async def regenerate_dsh_connection_token(
+    _user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> DshCapabilityDescriptor:
+    """Rotate the connector credential without returning the new secret."""
+    state = await dsh_integration_service.regenerate_token(session)
+    await dsh_integration_service.write_connection_file(session)
+    return _dsh_capability_descriptor(state)
 
 
 @router.get("/model-config")

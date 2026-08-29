@@ -80,6 +80,38 @@ def test_timezone_defaults_to_beijing_and_rejects_invalid(monkeypatch):
         Settings(_env_file=None)
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("HTTP://SAG.EXAMPLE.COM:18080/", "http://sag.example.com:18080"),
+        ("https://sag.example.com/local/sag/", "https://sag.example.com/local/sag"),
+        ("http://[::1]:18080/", "http://[::1]:18080"),
+    ],
+)
+def test_dsh_public_url_is_canonical_http_origin_or_proxy_base(monkeypatch, raw, expected):
+    monkeypatch.delenv("SAG_DSH_PUBLIC_URL", raising=False)
+
+    assert Settings(_env_file=None, dsh_public_url=raw).dsh_public_url == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "sag.example.com:8000",
+        "ftp://sag.example.com",
+        "http://user:secret@sag.example.com",
+        "http://sag.example.com?next=evil",
+        "http://sag.example.com/#fragment",
+        "http://sag.example.com/prefix//nested",
+    ],
+)
+def test_dsh_public_url_rejects_noncanonical_or_credential_bearing_values(monkeypatch, raw):
+    monkeypatch.delenv("SAG_DSH_PUBLIC_URL", raising=False)
+
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, dsh_public_url=raw)
+
+
 def test_provider_base_urls_default_to_302_china_endpoint(monkeypatch):
     for name in ("SAG_LLM_BASE_URL", "SAG_EMBEDDING_BASE_URL", "SAG_MINERU_BASE_URL"):
         monkeypatch.delenv(name, raising=False)
@@ -273,7 +305,7 @@ async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatc
     from sqlalchemy import delete, select
 
     from sag_api.core.db import SessionLocal
-    from sag_api.db.models import Document, Setting, Source
+    from sag_api.db.models import Document, Setting, Source, User
     from sag_api.enums import DocumentStatus
     from sag_api.main import app
 
@@ -584,6 +616,7 @@ async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatc
                     Setting.key.in_(["model_config", "system_preferences"]),
                 )
             )
+            await s.execute(delete(User).where(User.email == "modelcfg@t.com"))
             await s.commit()
         for key, value in snapshot.items():
             setattr(settings, key, value)

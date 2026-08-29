@@ -6,7 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.connectors import registry
 from sag_api.core.db import SessionLocal, get_session
-from sag_api.core.deps import get_current_user, get_engine_manager, get_job_queue
+from sag_api.core.deps import (
+    get_current_user,
+    get_current_user_or_connector,
+    get_engine_manager,
+    get_job_queue,
+)
 from sag_api.db.models import User
 from sag_api.jobs import JobQueue
 from sag_api.mcp.server import MCP_TOOL_DETAILS, MCP_TOOL_NAMES
@@ -35,7 +40,8 @@ async def list_connectors() -> list[ConnectorOut]:
 
 @router.get("", response_model=list[SourceOut])
 async def list_(
-    _user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)
+    _user: User = Depends(get_current_user_or_connector),
+    session: AsyncSession = Depends(get_session),
 ) -> list[SourceOut]:
     return [SourceOut.model_validate(s) for s in await list_sources(session)]
 
@@ -43,7 +49,7 @@ async def list_(
 @router.post("", response_model=SourceOut, status_code=201)
 async def create(
     body: SourceCreate,
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_current_user_or_connector),
     session: AsyncSession = Depends(get_session),
     engine_manager: EngineManager = Depends(get_engine_manager),
 ) -> SourceOut:
@@ -102,7 +108,7 @@ async def delete_(
 async def get_chunk(
     source_id: str,
     chunk_id: str,
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_current_user_or_connector),
     session: AsyncSession = Depends(get_session),
     engine_manager: EngineManager = Depends(get_engine_manager),
 ) -> dict:
