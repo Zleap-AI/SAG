@@ -189,8 +189,10 @@ async def update_dsh_settings(
     session: AsyncSession = Depends(get_session),
 ) -> DshCapabilityDescriptor:
     """Select the source used by DSH when a request omits one."""
-    state = await dsh_integration_service.update_default_source(session, body.default_source_id)
-    await dsh_integration_service.write_connection_file(session)
+    state = await dsh_integration_service.update_default_source_and_publish(
+        session,
+        body.default_source_id,
+    )
     return _dsh_capability_descriptor(state)
 
 
@@ -200,8 +202,7 @@ async def regenerate_dsh_connection_token(
     session: AsyncSession = Depends(get_session),
 ) -> DshCapabilityDescriptor:
     """Rotate the connector credential without returning the new secret."""
-    state = await dsh_integration_service.regenerate_token(session)
-    await dsh_integration_service.write_connection_file(session)
+    state = await dsh_integration_service.regenerate_token_and_publish(session)
     return _dsh_capability_descriptor(state)
 
 

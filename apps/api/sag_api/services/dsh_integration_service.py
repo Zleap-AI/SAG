@@ -174,8 +174,6 @@ def _replace_connection_file(target: Path, payload: dict[str, object]) -> None:
             file.flush()
             os.fsync(file.fileno())
         os.replace(temporary, target)
-        if os.name != "nt":
-            target.chmod(0o600)
     except BaseException:
         try:
             temporary.unlink()
@@ -184,20 +182,92 @@ def _replace_connection_file(target: Path, payload: dict[str, object]) -> None:
         raise
 
 
-async def write_connection_file(session: AsyncSession) -> Path:
-    """Atomically publish the current local connector descriptor for discovery."""
+def _connection_payload(state: DshIntegrationState) -> dict[str, object]:
+    from sag_api.core.config import settings
+
+    return {
+        "schemaVersion": 1,
+        "name": "SAG 知识库",
+        "apiUrl": f"{settings.dsh_public_url}/api/v1",
+        "mcpUrl": f"{settings.dsh_public_url}/mcp/",
+        "accessToken": state.token,
+        "defaultSourceId": state.default_source_id,
+    }
+
+
+def _publish_connection_state(state: DshIntegrationState) -> Path:
     from sag_api.core.config import settings
 
     target = connection_file_path(settings)
+    _replace_connection_file(target, _connection_payload(state))
+    return target
+
+
+async def _commit_and_publish_state(
+    session: AsyncSession,
+    row: Setting,
+    state: DshIntegrationState,
+) -> DshIntegrationState:
+    """Commit and publish one state change, compensating an atomic file-write failure."""
+    previous = _state_from_row(row)
+    row.value = {
+        "token": state.token,
+        "default_source_id": state.default_source_id,
+    }
+    await session.commit()
+    try:
+        _publish_connection_state(state)
+    except OSError as publication_error:
+        row.value = {
+            "token": previous.token,
+            "default_source_id": previous.default_source_id,
+        }
+        try:
+            await session.commit()
+        except Exception as restoration_error:
+            raise ExceptionGroup(
+                "DSH connection publication and state restoration failed",
+                [publication_error, restoration_error],
+            ) from publication_error
+        raise
+    return state
+
+
+async def update_default_source_and_publish(
+    session: AsyncSession,
+    source_id: str | None,
+) -> DshIntegrationState:
+    """Publish a source selection, restoring the previous state if publication fails."""
+    if source_id is not None and await session.get(Source, source_id) is None:
+        raise NotFoundError("信源不存在")
+
+    async with _state_write_lock():
+        row = await _get_or_create_row(session)
+        current = _state_from_row(row)
+        return await _commit_and_publish_state(
+            session,
+            row,
+            DshIntegrationState(token=current.token, default_source_id=source_id),
+        )
+
+
+async def regenerate_token_and_publish(session: AsyncSession) -> DshIntegrationState:
+    """Publish a replacement token, restoring the previous token if publication fails."""
+    async with _state_write_lock():
+        row = await _get_or_create_row(session)
+        current = _state_from_row(row)
+        return await _commit_and_publish_state(
+            session,
+            row,
+            DshIntegrationState(
+                token=_new_token(),
+                default_source_id=current.default_source_id,
+            ),
+        )
+
+
+async def write_connection_file(session: AsyncSession) -> Path:
+    """Atomically publish the current local connector descriptor for discovery."""
     async with _state_write_lock():
         state = _state_from_row(await _get_or_create_row(session))
-        payload: dict[str, object] = {
-            "schemaVersion": 1,
-            "name": "SAG 知识库",
-            "apiUrl": f"{settings.dsh_public_url}/api/v1",
-            "mcpUrl": f"{settings.dsh_public_url}/mcp/",
-            "accessToken": state.token,
-            "defaultSourceId": state.default_source_id,
-        }
-        _replace_connection_file(target, payload)
-    return target
+        return _publish_connection_state(state)

@@ -358,8 +358,9 @@ async def test_regenerate_and_default_source_refresh_the_connection_file(
 
 
 @pytest.mark.asyncio
-async def test_settings_and_regeneration_report_connection_file_write_failure(
-    db_session: AsyncSession,
+async def test_settings_and_regeneration_preserve_state_when_connection_file_write_fails(
+    source: Source,
+    connection_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
     from sag_api.main import create_app
@@ -369,23 +370,34 @@ async def test_settings_and_regeneration_report_connection_file_write_failure(
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=transport, base_url="http://sag") as client:
             auth_headers = await _register(client)
+            async with SessionLocal() as session:
+                before = await get_or_create_state(session)
+            published_before = connection_path.read_bytes()
 
-            async def fail_to_write(*_args, **_kwargs):
+            def fail_to_write(*_args, **_kwargs):
                 raise OSError("read-only config directory")
 
-            monkeypatch.setattr(dsh_integration_service, "write_connection_file", fail_to_write)
+            monkeypatch.setattr(
+                dsh_integration_service,
+                "_replace_connection_file",
+                fail_to_write,
+            )
             changed = await client.put(
                 "/api/v1/system/dsh/settings",
                 headers=auth_headers,
-                json={"default_source_id": None},
+                json={"default_source_id": source.id},
             )
             regenerated = await client.post(
                 "/api/v1/system/dsh/regenerate",
                 headers=auth_headers,
             )
+            async with SessionLocal() as session:
+                after = await get_or_create_state(session)
 
     assert changed.status_code == 500
     assert regenerated.status_code == 500
+    assert after == before
+    assert connection_path.read_bytes() == published_before
 
 
 @pytest.mark.asyncio
