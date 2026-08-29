@@ -58,15 +58,30 @@ StageCallback = Callable[[str], Awaitable[None]]
 
 log = get_logger("sag.incremental")
 
-_KNOWLEDGE_EVENT_REQUIREMENTS = """
-对于书籍、报告、论文等非新闻文档，"事项"也包括可独立理解的观点、事实、定义、
-机制、因果关系、论证和结论，不要求必须包含日期、人物动作或新闻事件。
-只有目录、页眉页脚、广告、乱码、纯链接，或确实与文档主题无关的片段才可返回空结果；
-正文只要包含可复用的知识，就至少保留一个有效的顶级事项。
-每个实体必须严格使用 {"type":"实体类型","name":"实体名称","description":"作用说明"}；
-禁止把实体类型写成字段名，例如不能输出
-{"location":"中东","name":"中东","description":"地区"}。
-""".strip()
+_KNOWLEDGE_EVENT_REQUIREMENTS = {
+    "zh": (
+        '对于书籍、报告、论文等非新闻文档，"事项"也包括可独立理解的观点、事实、定义、\n'
+        "机制、因果关系、论证和结论，不要求必须包含日期、人物动作或新闻事件。\n"
+        "只有目录、页眉页脚、广告、乱码、纯链接，或确实与文档主题无关的片段才可返回空结果；\n"
+        "正文只要包含可复用的知识，就至少保留一个有效的顶级事项。\n"
+        '每个实体必须严格使用 {"type":"实体类型","name":"实体名称","description":"作用说明"}；\n'
+        "禁止把实体类型写成字段名，例如不能输出\n"
+        '{"location":"中东","name":"中东","description":"地区"}。'
+    ),
+    "en": (
+        'For books, reports, papers, and other non-news documents, an "event" also includes\n'
+        "independently understandable viewpoints, facts, definitions, mechanisms, causal\n"
+        "relationships, arguments, and conclusions. It does not need to include a date, a person's\n"
+        "action, or a news event.\n"
+        "Only tables of contents, headers, footers, advertisements, corrupted text, standalone links,\n"
+        "or fragments genuinely unrelated to the document topic may return an empty result. Retain at\n"
+        "least one valid top-level event whenever the main text contains reusable knowledge.\n"
+        "Every entity must strictly use\n"
+        '{"type":"entity type","name":"entity name","description":"role description"}.\n'
+        "Do not use an entity type as a field name. For example, do not output\n"
+        '{"location":"Middle East","name":"Middle East","description":"region"}.'
+    ),
+}
 
 # 进度观察节流:避免把 zleap 的每个 progress 事件都转换成一次 DB 断点写入。
 _PROGRESS_COMMIT_EVERY = 5
@@ -213,12 +228,17 @@ class IncrementalDocumentProcessor:
         on_checkpoint: CheckpointCallback,
     ) -> tuple[bool, Any]:
         """整批抽取;暂停由 CancellationToken + 后台轮询驱动,进度经 observer 透出。"""
+        prompt_language = getattr(getattr(self._engine.resources, "prompts", None), "language", None)
+        requirements = _KNOWLEDGE_EVENT_REQUIREMENTS.get(prompt_language)
+        if requirements is None:
+            raise RuntimeError(f"不支持的抽取提示词语言: {prompt_language!r}")
+
         options = ExtractionOptions(
             source_type="article",
             contract="rich",
             limits=ExtractionLimits(min_entities_per_event=1),
             execution=ExtractionExecutionOptions(max_concurrency=self._max_concurrency),
-            guidance_rules=(_KNOWLEDGE_EVENT_REQUIREMENTS,),
+            guidance_rules=(requirements,),
         )
         cancellation = CancellationToken()
 
