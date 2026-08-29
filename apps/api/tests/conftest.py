@@ -13,6 +13,7 @@ os.environ.setdefault("SAG_UPLOAD_DIR", f"{_TMP}/uploads")
 os.environ["SAG_DSH_CONNECTION_FILE"] = f"{_TMP}/dsh-connection.json"
 os.environ.setdefault("SAG_DEBUG", "false")
 os.environ.setdefault("SAG_SAG_LANGUAGE", "zh")
+os.environ.setdefault("SAG_AUTH_MODE", "password")
 # The suite intentionally shares one temporary SQLite database. Startup warmup
 # would otherwise provision sources persisted by earlier cases in the background
 # while the current case is writing, introducing cross-test lock contention.

@@ -16,6 +16,14 @@ export interface TokenResponse {
   user: User;
 }
 
+export type AuthMode = "local" | "password";
+
+export interface AuthStatus {
+  mode: AuthMode;
+  registration_required: boolean;
+  registration_open: boolean;
+}
+
 export type StorageChoice = "migrate" | "fresh";
 export type StorageBootstrapPhase =
   | "ready"

@@ -348,17 +348,20 @@ docker compose up -d --build       # 重建服务，不删除数据卷
 
 ### 网络与生产安全
 
-默认 Compose 只将 3000 和 8000 端口绑定到 `127.0.0.1`。SAG 当前是本地单用户产品，不要把这两个端口直接暴露到公网。
+默认 Compose 只将 3000 和 8000 端口绑定到 `127.0.0.1`，并使用 `SAG_AUTH_MODE=local`：名字只是本地身份，不是密码认证。不要把这种默认模式直接暴露到不可信网络。
 
 需要自定义端口或在受信局域网访问时：
 
 ```bash
 cp .env.example .env
 # 修改 BIND_ADDRESS、WEB_PORT、API_PORT、SAG_CORS_ORIGINS 和 NEXT_PUBLIC_API_BASE。
+# 对外访问时同时设置 SAG_AUTH_MODE=password，并保持 SAG_ALLOW_REGISTRATION=false。
 docker compose up -d --build
 ```
 
-`NEXT_PUBLIC_API_BASE` 会在构建时写入 Web 镜像，因此修改后必须带 `--build`。服务器部署还应配置 HTTPS，以及 VPN、IP 白名单或反向代理认证等外部访问控制。
+`password` 模式首次打开 Web 页面时会引导创建邮箱和密码；此后登录必须同时提供正确邮箱和密码，不再按名字或首个用户兜底。`SAG_ALLOW_REGISTRATION=false` 仍允许建立首个正式凭据，建立后会关闭后续注册。
+
+`NEXT_PUBLIC_API_BASE` 会在构建时写入 Web 镜像，因此修改后必须带 `--build`。服务器部署还应配置强 `SAG_SECRET_KEY`、HTTPS，以及 VPN、IP 白名单或反向代理限流等防护。当前 `sag auth login --name` 只适用于 `local` 模式；`password` 模式下可先通过 Web 登录，并通过 `SAG_TOKEN` 向 CLI 提供已签发的令牌。
 
 ---
 
@@ -558,7 +561,7 @@ config = EngineConfig.from_env()
 | OpenAPI Schema | [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json) |
 | MCP Streamable HTTP | `http://localhost:8000/mcp/` |
 
-这是**自托管 API**，不是由项目方托管的公共云 API。大部分接口需要 SAG JWT：
+这是**自托管 API**，不是由项目方托管的公共云 API。默认 `local` 模式下，大部分接口使用名字登录签发的 SAG JWT：
 
 ```bash
 curl -s http://localhost:8000/api/v1/auth/login \
@@ -570,6 +573,14 @@ curl -s http://localhost:8000/api/v1/auth/login \
 
 ```http
 Authorization: Bearer <SAG_TOKEN>
+```
+
+启用 `SAG_AUTH_MODE=password` 后，先通过 `POST /auth/register` 建立首个凭据，再使用邮箱密码登录：
+
+```bash
+curl -s http://localhost:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"owner@example.com","password":"<YOUR_PASSWORD>"}'
 ```
 
 #### API 地图

@@ -22,7 +22,7 @@
 | 接入 Codex                  | 已安装 Codex CLI（≥ 0.145）                                 |
 | 接入 Claude Code            | 已安装 Claude Code（≥ 2.1）                                 |
 
-**登录方式**：执行 `sag auth login --name "你的名字"`，或省略 `--name` 后在终端输入名字。CLI 调用 SAG 现有登录接口，并优先把凭据保存到系统凭据存储（macOS Keychain、Windows Credential Manager、Linux Secret Service）。自动化环境也可以使用 `SAG_TOKEN` 环境变量。
+**登录方式**：`sag auth login --name "你的名字"` 适用于默认的 `SAG_AUTH_MODE=local`。启用 `password` 模式时，先通过 SAG Web 页面完成邮箱密码登录，再通过 `SAG_TOKEN` 向 CLI 提供已签发的令牌。CLI 优先把凭据保存到系统凭据存储（macOS Keychain、Windows Credential Manager、Linux Secret Service）。
 
 ## 安装
 

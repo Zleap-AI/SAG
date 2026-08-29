@@ -20,7 +20,7 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
+    name: str = Field(default="", max_length=120)
     email: str = Field(default="", max_length=255)
     password: str | None = Field(default=None, max_length=128)
 

@@ -134,7 +134,10 @@ async def test_choice_is_authenticated_gated_and_idempotent(tmp_path: Path, monk
     app = create_app()
     app.state.storage_bootstrap = coordinator
     from sag_api.core import db as db_module
+    from sag_api.core.config import settings as runtime_settings
     monkeypatch.setattr(db_module, "SessionLocal", sessions)
+    monkeypatch.setattr(runtime_settings, "auth_mode", "password")
+    monkeypatch.setattr(runtime_settings, "allow_registration", True)
     token = __import__("sag_api.core.security", fromlist=["create_access_token"]).create_access_token(user.id)
     headers = {"Authorization": f"Bearer {token}"}
     transport = httpx.ASGITransport(app=app)
@@ -142,6 +145,13 @@ async def test_choice_is_authenticated_gated_and_idempotent(tmp_path: Path, monk
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             public = await client.get("/api/v1/system/storage-bootstrap")
             assert public.status_code == 200
+            registered = await client.post(
+                "/api/v1/auth/register",
+                json={"email": "upgrade@example.test", "password": "StrongPassword123"},
+            )
+            assert registered.status_code == 201
+            auth_status = await client.get("/api/v1/auth/status")
+            assert auth_status.status_code == 200
             assert "preserved_path" not in public.json()
             assert "diagnostic_path" not in public.json()
             assert "accepted_choice" not in public.json()
@@ -196,8 +206,10 @@ async def test_maintenance_login_requires_exact_existing_name_without_side_effec
     app = create_app()
     app.state.storage_bootstrap = coordinator
     from sag_api.core import db as db_module
+    from sag_api.core.config import settings as runtime_settings
 
     monkeypatch.setattr(db_module, "SessionLocal", sessions)
+    monkeypatch.setattr(runtime_settings, "auth_mode", "local")
     transport = httpx.ASGITransport(app=app)
     try:
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -265,7 +277,8 @@ async def test_processing_restart_resumes_and_callback_failure_is_retryable(
         "/api/v1/system/health-details",
         "/api/v1/auth/me-extra",
         "/api/v1/auth/me/profile",
-        "/api/v1/auth/register",
+        "/api/v1/auth/register-extra",
+        "/api/v1/auth/status/details",
         "/mcp",
         "/api/v1/openai/models",
         "/docs",

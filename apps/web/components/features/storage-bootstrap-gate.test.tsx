@@ -64,12 +64,17 @@ function renderView(
         selectedChoice={options.selectedChoice ?? null}
         submitting={false}
         loginName=""
+        loginEmail=""
+        loginPassword=""
+        authStatus={{ mode: "local", registration_required: false, registration_open: false }}
         loginLoading={false}
         errorMessage={null}
         onSelectChoice={vi.fn()}
         onCancelChoice={vi.fn()}
         onConfirmChoice={vi.fn()}
         onLoginNameChange={vi.fn()}
+        onLoginEmailChange={vi.fn()}
+        onLoginPasswordChange={vi.fn()}
         onLogin={vi.fn()}
         onRetry={vi.fn()}
       >
@@ -129,6 +134,11 @@ beforeEach(() => {
     .IS_REACT_ACT_ENVIRONMENT = true;
   clearToken();
   vi.restoreAllMocks();
+  vi.spyOn(api, "authStatus").mockResolvedValue({
+    mode: "local",
+    registration_required: false,
+    registration_open: false,
+  });
 });
 
 afterEach(() => {
@@ -219,6 +229,22 @@ describe("StorageBootstrapGateView", () => {
 });
 
 describe("StorageBootstrapGate interactions", () => {
+  it("uses email and password in the maintenance gate when password authentication is enabled", async () => {
+    vi.mocked(api.authStatus).mockResolvedValue({
+      mode: "password",
+      registration_required: false,
+      registration_open: false,
+    });
+    vi.spyOn(api, "storageBootstrap").mockResolvedValue(status("choice_required"));
+
+    const mounted = await mountGate();
+
+    expect(mounted.container.querySelector('input[type="email"]')).not.toBeNull();
+    expect(mounted.container.querySelector('input[type="password"]')).not.toBeNull();
+    expect(mounted.container.querySelector('input[autocomplete="name"]')).toBeNull();
+    await unmount(mounted.root, mounted.container);
+  });
+
   it("hydrates an existing token and deduplicates Strict Mode startup", async () => {
     setToken("existing-token");
     const load = vi.spyOn(api, "storageBootstrap").mockResolvedValue(status("choice_required"));

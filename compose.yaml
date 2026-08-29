@@ -15,6 +15,7 @@ services:
       # 仅供本地快速启动；切换 prod 时应用会拒绝这个已知弱密钥。
       SAG_SECRET_KEY: ${SAG_SECRET_KEY:-dev-insecure-secret-change-me-in-production-0123456789}
       SAG_CORS_ORIGINS: ${SAG_CORS_ORIGINS:-http://localhost:3000}
+      SAG_AUTH_MODE: ${SAG_AUTH_MODE:-local}
       SAG_ALLOW_REGISTRATION: ${SAG_ALLOW_REGISTRATION:-false}
       # API 仍仅绑定宿主 loopback；允许容器识别经 Docker 网关转发的本机发现请求。
       SAG_DSH_LOCAL_DISCOVERY: ${SAG_DSH_LOCAL_DISCOVERY:-true}

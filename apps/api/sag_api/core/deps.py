@@ -10,6 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_agent import AgentRuntime
+from sag_api.core.config import settings
 from sag_api.core.db import get_session
 from sag_api.core.errors import AuthError
 from sag_api.core.security import decode_token
@@ -22,6 +23,11 @@ from sag_api.services.dsh_integration_service import authenticate_connector
 
 _bearer = HTTPBearer(auto_error=False)
 _AuthKind = Literal["jwt", "connector"]
+
+
+def _require_matching_auth_mode(payload: dict) -> None:
+    if settings.auth_mode == "password" and payload.get("auth_mode") != "password":
+        raise AuthError("认证模式已变更，请重新登录")
 
 
 async def _get_bearer_token(
@@ -42,6 +48,7 @@ async def _authenticate_user_principal(
         user = await authenticate_connector(session, token)
         return (user, "connector") if user is not None else None
     user_id = payload.get("sub")
+    _require_matching_auth_mode(payload)
     user = await get_user(session, user_id) if user_id else None
     return (user, "jwt") if user is not None and user.is_active else None
 
@@ -62,6 +69,7 @@ async def get_current_user(
     except jwt.PyJWTError as error:
         raise AuthError("令牌无效或已过期") from error
     user_id = payload.get("sub")
+    _require_matching_auth_mode(payload)
     user = await get_user(session, user_id) if user_id else None
     if user is None or not user.is_active:
         raise AuthError("用户不存在或已停用")

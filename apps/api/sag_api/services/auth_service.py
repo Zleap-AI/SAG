@@ -17,9 +17,11 @@ async def register_user(session: AsyncSession, *, email: str, password: str, nam
     if existing is not None:
         raise ConflictError("该邮箱已注册")
 
-    # 个人向：首个注册即唯一账号；注册关闭时仅放行首个用户（部署引导）
-    user_count = await session.scalar(select(func.count()).select_from(User)) or 0
-    if user_count > 0 and not settings.allow_registration:
+    # 本地名字身份不算密码账号；切换 password 模式时仍允许建立首个正式凭据。
+    credential_count = await session.scalar(
+        select(func.count()).select_from(User).where(User.email != "")
+    ) or 0
+    if credential_count > 0 and not settings.allow_registration:
         raise ForbiddenError("注册已关闭")
 
     user = User(
