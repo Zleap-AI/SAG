@@ -55,10 +55,15 @@ async def _processor_with_fake_engine(
     max_concurrency=30,
     chunk_mode="standard",
     document_title="doc",
+    language="zh",
 ):
     from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
 
-    engine = SimpleNamespace(ingest=ingest, extract=extract)
+    engine = SimpleNamespace(
+        ingest=ingest,
+        extract=extract,
+        resources=SimpleNamespace(prompts=SimpleNamespace(language=language)),
+    )
     processor = IncrementalDocumentProcessor(
         engine,
         "source-config",
@@ -175,7 +180,38 @@ async def test_extract_receives_contract_limits_and_concurrency():
     assert options.source_type == "article"
     assert options.limits.min_entities_per_event == 1
     assert options.execution.max_concurrency == 30
-    assert options.guidance_rules  # 知识型事项要求仍然透传
+    assert "观点、事实、定义" in options.guidance_rules[0]  # 默认中文知识型事项要求仍然透传
+
+
+@pytest.mark.asyncio
+async def test_extract_guidance_matches_english_engine_prompt_language():
+    """英文引擎不能继续收到中文的 SAG 业务规则。"""
+    from sag_api.sag.dto import ProcessCheckpoint
+
+    captured: dict = {}
+
+    async def extract(chunk_set, options, *, observer, cancellation):
+        captured["options"] = options
+        return _event_ref()
+
+    processor = await _processor_with_fake_engine(extract=extract, language="en")
+
+    await processor.process(
+        None,
+        checkpoint=ProcessCheckpoint(
+            source_id="article-1",
+            chunk_ids=["c1", "c2"],
+            generation_id="gen-1",
+            chunk_version="cv-1",
+            source_version="sv-1",
+        ),
+        on_checkpoint=_noop_checkpoint,
+        should_pause=_return_false,
+    )
+
+    (guidance,) = captured["options"].guidance_rules
+    assert "For books, reports, papers" in guidance
+    assert "观点、事实、定义" not in guidance
 
 
 @pytest.mark.asyncio
