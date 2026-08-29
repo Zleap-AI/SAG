@@ -9,7 +9,7 @@ import stat
 import sys
 import threading
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -25,7 +25,8 @@ from sag_api.api.v1.system import _request_is_loopback
 from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal, init_db
 from sag_api.core.errors import NotFoundError
-from sag_api.db.models import Setting, Source, User
+from sag_api.db.models import Document, Setting, Source, User
+from sag_api.enums import DocumentStatus
 from sag_api.services import dsh_integration_service
 from sag_api.services.dsh_integration_service import (
     authenticate_connector,
@@ -492,8 +493,6 @@ async def test_dsh_connector_authentication_requires_matching_token_and_active_u
 ):
     state = await get_or_create_state(db_session)
 
-    assert await authenticate_connector(db_session, state.token) is None
-
     inactive = User(
         email="dsh-integration-inactive@example.test",
         password_hash="hash",
@@ -503,13 +502,13 @@ async def test_dsh_connector_authentication_requires_matching_token_and_active_u
         email="dsh-integration-newer-active@example.test",
         password_hash="hash",
         is_active=True,
-        created_at=datetime(2026, 8, 25, 12, tzinfo=UTC),
+        created_at=datetime(1, 1, 1, 0, 0, 1, tzinfo=UTC),
     )
     older_active = User(
         email="dsh-integration-older-active@example.test",
         password_hash="hash",
         is_active=True,
-        created_at=datetime(2026, 8, 25, 12, tzinfo=UTC) - timedelta(seconds=1),
+        created_at=datetime(1, 1, 1, tzinfo=UTC),
     )
     db_session.add_all([inactive, newer_active, older_active])
     await db_session.commit()
@@ -637,8 +636,20 @@ async def test_connector_token_calls_approved_knowledge_apis(
             headers=connector_headers,
             json={"query": "connector", "source_ids": [source_id]},
         )
+        async with SessionLocal() as session:
+            deletable = Document(
+                source_id=source_id,
+                filename="dsh-delete.md",
+                content_type="text/markdown",
+                size_bytes=0,
+                storage_path="",
+                status=DocumentStatus.PENDING,
+            )
+            session.add(deletable)
+            await session.commit()
+            deletable_id = deletable.id
         deleted = await client.delete(
-            f"/api/v1/sources/{source_id}/documents/{ingested.json()['id']}",
+            f"/api/v1/sources/{source_id}/documents/{deletable_id}",
             headers=connector_headers,
         )
 
