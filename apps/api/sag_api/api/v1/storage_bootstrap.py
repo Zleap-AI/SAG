@@ -19,7 +19,7 @@ async def _optional_user(
 ) -> User | None:
     if credentials is None:
         return None
-    return await get_current_user(request, credentials, session)
+    return await get_current_user(request, credentials.credentials, session)
 
 
 @router.get("")
