@@ -8,7 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal, get_session
-from sag_api.core.deps import get_current_user, get_engine_manager, get_job_queue
+from sag_api.core.deps import (
+    get_current_user,
+    get_current_user_or_connector,
+    get_engine_manager,
+    get_job_queue,
+)
 from sag_api.core.errors import ApiError, ConflictError, NotFoundError, ValidationError
 from sag_api.core.logging import get_logger
 from sag_api.db.models import User
@@ -59,7 +64,7 @@ def _upload_filename(filename: str | None) -> str:
 @router.get("", response_model=list[DocumentOut])
 async def list_(
     source_id: str,
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_current_user_or_connector),
     session: AsyncSession = Depends(get_session),
 ) -> list[DocumentOut]:
     source = await get_source(session, source_id)
@@ -71,7 +76,7 @@ async def upload(
     source_id: str,
     request: Request = None,
     file: UploadFile = File(...),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_current_user_or_connector),
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> DocumentOut:
@@ -154,7 +159,7 @@ async def upload(
 async def ingest(
     source_id: str,
     body: IngestRequest,
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_current_user_or_connector),
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> DocumentOut:
@@ -177,7 +182,7 @@ async def ingest(
 async def get_(
     source_id: str,
     document_id: str,
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_current_user_or_connector),
     session: AsyncSession = Depends(get_session),
 ) -> DocumentOut:
     source = await get_source(session, source_id)
@@ -282,7 +287,7 @@ async def get_parsed(
 async def reprocess(
     source_id: str,
     document_id: str,
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_current_user_or_connector),
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> JobOut:
@@ -330,7 +335,7 @@ async def resume(
 async def delete_(
     source_id: str,
     document_id: str,
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_current_user_or_connector),
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
 ) -> Ok:

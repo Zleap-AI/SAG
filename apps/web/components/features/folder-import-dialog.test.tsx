@@ -76,4 +76,31 @@ describe("FolderImportDialog", () => {
     expect(html).toContain('checked=""');
     expect(html).toContain("disabled");
   });
+
+  it("keeps long file names inside the dialog width", () => {
+    const longName = `${"long-document-name-".repeat(20)}.pdf`;
+    const plan = buildFolderImportPlan(
+      [new File(["content"], longName)],
+      [],
+      [".pdf"],
+      1024,
+    );
+    const html = renderToStaticMarkup(
+      <NextIntlClientProvider
+        locale="en-US"
+        timeZone="UTC"
+        messages={messages}
+      >
+        <FolderImportSelectionList
+          plan={plan}
+          onSelectAll={vi.fn()}
+          onSelectItem={vi.fn()}
+        />
+      </NextIntlClientProvider>,
+    );
+
+    expect(html).toContain('class="flex min-w-0 flex-col gap-3"');
+    expect(html).toContain('class="max-h-64 min-w-0 space-y-2 overflow-auto"');
+    expect(html).toContain('class="min-w-0 rounded-md border p-3"');
+  });
 });

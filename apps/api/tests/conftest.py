@@ -10,6 +10,7 @@ _TMP = tempfile.mkdtemp(prefix="sag-test-")
 os.environ.setdefault("SAG_DATABASE_URL", f"sqlite+aiosqlite:///{_TMP}/sag.db?timeout=30")
 os.environ.setdefault("SAG_DATA_DIR", f"{_TMP}/sag")
 os.environ.setdefault("SAG_UPLOAD_DIR", f"{_TMP}/uploads")
+os.environ["SAG_DSH_CONNECTION_FILE"] = f"{_TMP}/dsh-connection.json"
 os.environ.setdefault("SAG_DEBUG", "false")
 os.environ.setdefault("SAG_SAG_LANGUAGE", "zh")
 # The suite intentionally shares one temporary SQLite database. Startup warmup

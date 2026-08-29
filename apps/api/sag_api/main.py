@@ -49,6 +49,14 @@ async def lifespan(app: FastAPI):
 
     await apply_startup_overrides(SessionLocal)
 
+    try:
+        from sag_api.services.dsh_integration_service import write_connection_file
+
+        async with SessionLocal() as session:
+            await write_connection_file(session)
+    except OSError as error:
+        log.warning("DSH 本机连接文件刷新失败：%s", error)
+
     # [storage-bootstrap] 引导用户迁移存量数据；删除 sag_api/upgrades/ 时连同下方 finally 中标注的两行一起还原
     storage_bootstrap = bind_storage_bootstrap(app, settings, SessionLocal)
     storage_status = await storage_bootstrap.inspect()

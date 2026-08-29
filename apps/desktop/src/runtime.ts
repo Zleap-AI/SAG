@@ -15,7 +15,11 @@ import {
   loadOrCreateRuntimeSecret,
   resolveStableWebPort,
 } from "./runtime-state";
-import { storageBootstrapPolicy } from "./runtime-policy";
+import {
+  desktopApiEnvironment,
+  localHttpOrigin,
+  storageBootstrapPolicy,
+} from "./runtime-policy";
 
 export interface ManagedRuntime {
   readonly webUrl: string;
@@ -127,8 +131,7 @@ function startPythonRuntime(
       SAG_DEBUG: "false",
       SAG_SECRET_KEY: secretKey,
       SAG_CORS_ORIGINS: webOrigin,
-      SAG_DESKTOP_HOST: desktopConfig.apiHost,
-      SAG_DESKTOP_PORT: String(desktopConfig.apiPort),
+      ...desktopApiEnvironment(desktopConfig.apiHost, desktopConfig.apiPort),
       SAG_STORAGE_BOOTSTRAP_POLICY: storageBootstrapPolicy(process.platform),
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -157,11 +160,11 @@ export async function startPackagedRuntime(): Promise<ManagedRuntime> {
     (port) => isPortAvailable(host, port),
   );
   log.info(`Resolved stable web port ${webPort} (origin http://localhost:${webPort})`);
-  const webHealthUrl = `http://${host}:${webPort}`;
+  const webHealthUrl = localHttpOrigin(host, webPort);
   // Next.js standalone normalizes redirects to localhost. Use that as the UI
   // origin while keeping the actual listener restricted to 127.0.0.1.
   const webUrl = `http://localhost:${webPort}`;
-  const apiUrl = `http://${host}:${desktopConfig.apiPort}`;
+  const apiUrl = localHttpOrigin(host, desktopConfig.apiPort);
   const webRoot = path.join(process.resourcesPath, "web");
 
   const processes: StartedProcess[] = [];
@@ -193,7 +196,7 @@ export async function waitForDevelopmentRuntime(webUrl: string): Promise<Managed
   await waitForHttp(webUrl, desktopConfig.startupTimeoutMs);
   return {
     webUrl,
-    apiUrl: `http://${desktopConfig.apiHost}:${desktopConfig.apiPort}`,
+    apiUrl: localHttpOrigin(desktopConfig.apiHost, desktopConfig.apiPort),
     stop: () => {},
   };
 }

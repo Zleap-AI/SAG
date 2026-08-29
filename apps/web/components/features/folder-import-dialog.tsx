@@ -86,7 +86,7 @@ export function FolderImportSelectionList({
   const selectedCount = selectedFolderImportItems(plan).length;
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex min-w-0 flex-col gap-3">
       <label className="flex items-center gap-2 text-sm font-medium">
         <input
           type="checkbox"
@@ -100,7 +100,7 @@ export function FolderImportSelectionList({
         {t("selectedCount", { count: selectedCount })}
       </p>
       <ul
-        className="max-h-64 space-y-2 overflow-auto"
+        className="max-h-64 min-w-0 space-y-2 overflow-auto"
         aria-label={t("selectedFiles", { count: selectedCount })}
       >
         {plan.items.map((item) => (
@@ -130,7 +130,7 @@ function FolderImportSelectionItem({
   const inputId = `folder-import-select-${item.id}`;
 
   return (
-    <li className="rounded-md border p-3">
+    <li className="min-w-0 rounded-md border p-3">
       <div className="flex items-start gap-2">
         <input
           id={inputId}
@@ -380,7 +380,7 @@ export const FolderImportDialog = React.forwardRef<
 
   return (
     <section
-      className="flex flex-col gap-4 border-t pt-4"
+      className="flex min-w-0 flex-col gap-4 border-t pt-4"
       aria-labelledby="folder-import-title"
     >
       <div>
@@ -436,7 +436,7 @@ export const FolderImportDialog = React.forwardRef<
       />
 
       {step === "choose" ? (
-        <div className="flex flex-col gap-3">
+        <div className="flex min-w-0 flex-col gap-3">
           <div className="grid gap-2 sm:grid-cols-2">
             <Button
               type="button"
@@ -517,7 +517,7 @@ export const FolderImportDialog = React.forwardRef<
       ) : null}
 
       {step === "selection" && plan ? (
-        <div className="flex flex-col gap-3">
+        <div className="flex min-w-0 flex-col gap-3">
           <div>
             <h4 className="text-sm font-medium">{t("selectFiles")}</h4>
             <p className="mt-1 text-xs text-muted-foreground">

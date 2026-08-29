@@ -355,7 +355,7 @@ export default function SourceDetailPage() {
           </DialogHeader>
           {source &&
             (source.connector_kind === "file_upload" ? (
-              <div className="flex flex-col gap-4">
+              <div className="flex min-w-0 flex-col gap-4">
                 <UploadZone
                   sourceId={id}
                   onUploaded={() => {

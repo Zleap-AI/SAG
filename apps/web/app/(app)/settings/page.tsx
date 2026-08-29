@@ -8,6 +8,7 @@ import { AccountSettings } from "@/components/features/account-settings";
 import { AgentSettingsCard } from "@/components/features/agent-settings-card";
 import { AppearanceSettings } from "@/components/features/appearance-settings";
 import { DiagnosticsSettings } from "@/components/features/diagnostics-settings";
+import { DshServiceSettings } from "@/components/features/dsh-service-settings";
 import { KnowledgeConfigForm } from "@/components/features/knowledge-config-form";
 import { McpSettingsCard } from "@/components/features/mcp-settings-card";
 import { McpServiceSettings } from "@/components/features/mcp-service-settings";
@@ -125,6 +126,7 @@ function SettingsPageContent() {
         <TabsContent value="integrations" className="m-0 animate-fade-in">
           <div className="flex flex-col gap-6">
             <McpSettingsCard />
+            <DshServiceSettings />
             <McpServiceSettings />
           </div>
         </TabsContent>

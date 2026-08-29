@@ -16,6 +16,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, PrivateAttr, field_validator
@@ -52,6 +53,11 @@ class Settings(BaseSettings):
     allow_registration: bool = True
     # Dify 外部知识库调用的专用服务密钥；未配置时兼容端点拒绝服务。
     dify_api_key: str | None = None
+    # 供桌面端启动时写入本地 DSH 连接文件的公开地址与可选文件位置。
+    dsh_public_url: str = "http://127.0.0.1:8000"
+    dsh_connection_file: str | None = None
+    dsh_local_discovery: bool = False
+    dsh_local_discovery_bind_address: str = "127.0.0.1"
     # Dify 检索默认优先低延迟向量召回；可显式设为 multi 启用实体扩展与 LLM 精排。
     dify_search_strategy: SearchStrategy = "vector"
 
@@ -243,6 +249,30 @@ class Settings(BaseSettings):
         except (ZoneInfoNotFoundError, ValueError) as error:
             raise ValueError("timezone 必须是有效的 IANA 时区") from error
         return normalized
+
+    @field_validator("dsh_public_url")
+    @classmethod
+    def _validate_dsh_public_url(cls, value: str) -> str:
+        """Normalize the trusted HTTP base used in the on-disk DSH descriptor."""
+        raw = value.strip()
+        parsed = urlsplit(raw)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("dsh_public_url 必须是绝对 HTTP(S) URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("dsh_public_url 不允许包含用户凭证")
+        if parsed.query or parsed.fragment:
+            raise ValueError("dsh_public_url 不允许包含 query 或 fragment")
+        path = parsed.path.rstrip("/")
+        if "//" in path:
+            raise ValueError("dsh_public_url 路径不允许包含连续斜杠")
+        try:
+            port = parsed.port
+        except ValueError as error:
+            raise ValueError("dsh_public_url 端口无效") from error
+        hostname = parsed.hostname.lower()
+        host = f"[{hostname}]" if ":" in hostname else hostname
+        authority = f"{host}:{port}" if port is not None else host
+        return urlunsplit((parsed.scheme.lower(), authority, path, "", ""))
 
     @property
     def effective_data_dir(self) -> str:
