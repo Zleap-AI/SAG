@@ -39,7 +39,7 @@ export function dshInstallCommand() {
 }
 
 export function dshSetupCommand() {
-  return "dsh-sag setup sag-dsh.json";
+  return "dsh plugin --profile web exec dsh-sag setup ./sag-dsh.json";
 }
 
 export function dshConnectionFilename() {

@@ -137,7 +137,9 @@ describe("dsh service settings", () => {
     expect(dshInstallCommand()).toBe(
       "dsh plugin --profile web add @zleap-ai/dsh-sag",
     );
-    expect(dshSetupCommand()).toBe("dsh-sag setup sag-dsh.json");
+    expect(dshSetupCommand()).toBe(
+      "dsh plugin --profile web exec dsh-sag setup ./sag-dsh.json",
+    );
     expect(dshConnectionFilename()).toBe("sag-dsh.json");
     expect(dshConnectionGuidance("ready")).toBe("connectionReady");
     expect(dshConnectionGuidance("download")).toBe("connectionDownload");
@@ -156,7 +158,9 @@ describe("dsh service settings", () => {
       '[aria-label="DeepSeek Harness 的默认知识库"]',
     )).not.toBeNull();
     expect(mounted.container.textContent).toContain("自动发现本机知识库连接");
-    expect(mounted.container.textContent).toContain("dsh-sag setup sag-dsh.json");
+    expect(mounted.container.textContent).toContain(
+      "dsh plugin --profile web exec dsh-sag setup ./sag-dsh.json",
+    );
     expect(button(mounted.container, "复制")).not.toBeNull();
     expect(mounted.container.textContent).toContain("未设置（搜索全部；写入时选择）");
     expect(messages.DshService.noDefaultSource).toBe("未设置（搜索全部；写入时选择）");

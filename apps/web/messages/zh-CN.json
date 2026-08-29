@@ -840,7 +840,7 @@
     "setupCommand": "恢复命令",
     "download": "下载配置",
     "downloading": "下载中…",
-    "downloadSuccess": "连接配置已下载。请在文件所在目录运行 dsh-sag setup sag-dsh.json，或将文件名替换为实际下载路径。",
+    "downloadSuccess": "连接配置已下载。请在文件所在目录运行 dsh plugin --profile web exec dsh-sag setup ./sag-dsh.json，或将文件名替换为实际下载路径。",
     "downloadFailed": "无法下载连接配置",
     "regenerate": "重建连接",
     "regenerateDescription": "生成新的本机连接信息后，请在 DeepSeek Harness 中重新连接。",

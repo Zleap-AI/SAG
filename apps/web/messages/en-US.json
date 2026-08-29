@@ -840,7 +840,7 @@
     "setupCommand": "Recovery command",
     "download": "Download configuration",
     "downloading": "Downloading…",
-    "downloadSuccess": "Configuration downloaded. Run dsh-sag setup sag-dsh.json from its directory, or replace the filename with the downloaded path.",
+    "downloadSuccess": "Configuration downloaded. Run dsh plugin --profile web exec dsh-sag setup ./sag-dsh.json from its directory, or replace the filename with the downloaded path.",
     "downloadFailed": "Unable to download the connection configuration",
     "regenerate": "Rebuild connection",
     "regenerateDescription": "Create fresh local connection information, then reconnect DeepSeek Harness.",
