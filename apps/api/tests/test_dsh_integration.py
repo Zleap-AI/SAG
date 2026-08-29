@@ -584,6 +584,91 @@ async def test_non_loopback_cannot_read_connection_secret():
 
 
 @pytest.mark.asyncio
+async def test_local_discovery_mode_accepts_docker_gateway_for_loopback_target(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from sag_api.api.v1 import system as system_api
+    from sag_api.main import app
+
+    monkeypatch.setattr(settings, "dsh_local_discovery", True)
+    monkeypatch.setattr(settings, "dsh_local_discovery_bind_address", "127.0.0.1")
+    monkeypatch.setattr(system_api, "_docker_gateway_address", lambda: "192.168.65.1")
+    transport = httpx.ASGITransport(app=app, client=("192.168.65.1", 53000))
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://127.0.0.1:8000",
+        ) as client:
+            response = await client.get("/api/v1/system/dsh-connection")
+
+    assert response.status_code == 200
+    assert response.json()["apiUrl"] == "http://127.0.0.1:8000/api/v1"
+
+
+@pytest.mark.asyncio
+async def test_local_discovery_mode_rejects_docker_gateway_for_non_loopback_target(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from sag_api.api.v1 import system as system_api
+    from sag_api.main import app
+
+    monkeypatch.setattr(settings, "dsh_local_discovery", True)
+    monkeypatch.setattr(settings, "dsh_local_discovery_bind_address", "127.0.0.1")
+    monkeypatch.setattr(system_api, "_docker_gateway_address", lambda: "192.168.65.1")
+    transport = httpx.ASGITransport(app=app, client=("192.168.65.1", 53000))
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://192.168.1.20:8000",
+        ) as client:
+            response = await client.get("/api/v1/system/dsh-connection")
+
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_local_discovery_mode_rejects_spoofed_loopback_host(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from sag_api.api.v1 import system as system_api
+    from sag_api.main import app
+
+    monkeypatch.setattr(settings, "dsh_local_discovery", True)
+    monkeypatch.setattr(settings, "dsh_local_discovery_bind_address", "127.0.0.1")
+    monkeypatch.setattr(system_api, "_docker_gateway_address", lambda: "192.168.65.1")
+    transport = httpx.ASGITransport(app=app, client=("192.168.1.20", 53000))
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://127.0.0.1:8000",
+        ) as client:
+            response = await client.get("/api/v1/system/dsh-connection")
+
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_local_discovery_mode_rejects_public_docker_port_binding(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from sag_api.api.v1 import system as system_api
+    from sag_api.main import app
+
+    monkeypatch.setattr(settings, "dsh_local_discovery", True)
+    monkeypatch.setattr(settings, "dsh_local_discovery_bind_address", "0.0.0.0")
+    monkeypatch.setattr(system_api, "_docker_gateway_address", lambda: "192.168.65.1")
+    transport = httpx.ASGITransport(app=app, client=("192.168.65.1", 53000))
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://127.0.0.1:8000",
+        ) as client:
+            response = await client.get("/api/v1/system/dsh-connection")
+
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_connector_token_calls_approved_knowledge_apis(
     monkeypatch: pytest.MonkeyPatch,
 ):

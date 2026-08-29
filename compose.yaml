@@ -16,6 +16,9 @@ services:
       SAG_SECRET_KEY: ${SAG_SECRET_KEY:-dev-insecure-secret-change-me-in-production-0123456789}
       SAG_CORS_ORIGINS: ${SAG_CORS_ORIGINS:-http://localhost:3000}
       SAG_ALLOW_REGISTRATION: ${SAG_ALLOW_REGISTRATION:-false}
+      # API 仍仅绑定宿主 loopback；允许容器识别经 Docker 网关转发的本机发现请求。
+      SAG_DSH_LOCAL_DISCOVERY: ${SAG_DSH_LOCAL_DISCOVERY:-true}
+      SAG_DSH_LOCAL_DISCOVERY_BIND_ADDRESS: ${BIND_ADDRESS:-127.0.0.1}
       # 可选 Dify 外部知识库兼容端点；留空时端点拒绝服务。
       SAG_DIFY_API_KEY: ${SAG_DIFY_API_KEY:-}
       # Dify 专用检索策略；默认 vector 以降低外部知识库请求延迟。

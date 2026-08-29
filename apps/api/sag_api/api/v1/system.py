@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from ipaddress import ip_address
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
@@ -55,6 +57,60 @@ def _request_is_loopback(request: Request) -> bool:
         return ip_address(request.client.host).is_loopback
     except ValueError:
         return False
+
+
+def _request_targets_loopback(request: Request) -> bool:
+    """Return whether the request targets a loopback HTTP origin."""
+    hostname = request.url.hostname
+    if hostname is None:
+        return False
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+@lru_cache(maxsize=1)
+def _docker_gateway_address() -> str | None:
+    """Return the Linux default-route gateway used for host-to-container traffic."""
+    try:
+        routes = Path("/proc/net/route").read_text(encoding="ascii").splitlines()
+    except OSError:
+        return None
+    for route in routes[1:]:
+        fields = route.split()
+        if len(fields) < 3 or fields[1] != "00000000":
+            continue
+        try:
+            gateway = int.from_bytes(bytes.fromhex(fields[2]), byteorder="little")
+            return str(ip_address(gateway))
+        except ValueError:
+            continue
+    return None
+
+
+def _discovery_binding_is_loopback() -> bool:
+    """Return whether Docker publishes the API only on the host loopback."""
+    try:
+        return ip_address(settings.dsh_local_discovery_bind_address).is_loopback
+    except ValueError:
+        return False
+
+
+def _request_can_discover_dsh(request: Request) -> bool:
+    """Allow direct loopback peers or explicit local-container discovery."""
+    if _request_is_loopback(request):
+        return True
+    if request.client is None:
+        return False
+    return (
+        settings.dsh_local_discovery
+        and _discovery_binding_is_loopback()
+        and request.client.host == _docker_gateway_address()
+        and _request_targets_loopback(request)
+    )
 
 
 def _dsh_urls(request: Request) -> tuple[str, str]:
@@ -160,7 +216,7 @@ async def discover_dsh_connection(
     session: AsyncSession = Depends(get_session),
 ) -> DshConnectionDescriptor:
     """Return the local connector credential only to a loopback peer."""
-    if not _request_is_loopback(request):
+    if not _request_can_discover_dsh(request):
         raise ForbiddenError("仅允许本机访问 DSH 连接配置")
     state = await dsh_integration_service.get_or_create_state(session)
     return _dsh_connection_descriptor(request, state)

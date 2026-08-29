@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     # 供桌面端启动时写入本地 DSH 连接文件的公开地址与可选文件位置。
     dsh_public_url: str = "http://127.0.0.1:8000"
     dsh_connection_file: str | None = None
+    dsh_local_discovery: bool = False
+    dsh_local_discovery_bind_address: str = "127.0.0.1"
     # Dify 检索默认优先低延迟向量召回；可显式设为 multi 启用实体扩展与 LLM 精排。
     dify_search_strategy: SearchStrategy = "vector"
 
