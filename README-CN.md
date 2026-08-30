@@ -46,7 +46,7 @@ https://github.com/user-attachments/assets/a080ad1a-5c08-4213-acfa-a226e3c0f68a
 
 **2026 年 8 月 30 日**
 
-SAG 现已支持 [`@zleap-ai/dsh-sag`](https://www.npmjs.com/package/@zleap-ai/dsh-sag)：通过内置的本地 DeepSeek Harness 连接器，可以把 SAG 知识库接入 DSH，在 Agent 中搜索知识、读取原文，并管理信源和文档。
+SAG 现已支持 [`@zleap-ai/dsh-sag`](https://github.com/Zleap-AI/dsh-sag)：通过内置的本地 DeepSeek Harness 连接器，可以把 SAG 知识库接入 DSH，在 Agent 中搜索知识、读取原文，并管理信源和文档。
 
 **2026 年 8 月 13 日**
 

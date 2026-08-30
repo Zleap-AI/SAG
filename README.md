@@ -46,7 +46,7 @@ https://github.com/user-attachments/assets/ac805e3c-ab52-4857-bef6-2865f3831b2f
 
 **August 30, 2026**
 
-SAG now supports [`@zleap-ai/dsh-sag`](https://www.npmjs.com/package/@zleap-ai/dsh-sag). The built-in local DeepSeek Harness connector makes SAG knowledge available to DSH Agents for search, source reading, and source and document management.
+SAG now supports [`@zleap-ai/dsh-sag`](https://github.com/Zleap-AI/dsh-sag). The built-in local DeepSeek Harness connector makes SAG knowledge available to DSH Agents for search, source reading, and source and document management.
 
 **August 13, 2026**
 
