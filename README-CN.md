@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://arxiv.org/abs/2606.15971"><img alt="论文" src="https://img.shields.io/badge/paper-arXiv%3A2606.15971-18181b" /></a>
   <a href="https://pypi.org/project/zleap-sag/"><img alt="PyPI" src="https://img.shields.io/pypi/v/zleap-sag?label=zleap--sag&color=18181b" /></a>
-  <img alt="SAG 版本" src="https://img.shields.io/badge/SAG-v1.8.3-18181b" />
+  <img alt="SAG 版本" src="https://img.shields.io/badge/SAG-v1.8.4-18181b" />
   <a href="https://github.com/Zleap-AI/SAG/releases/latest"><img alt="桌面版发布" src="https://img.shields.io/github/v/release/Zleap-AI/SAG?label=desktop&color=18181b" /></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776ab" />
   <img alt="Node" src="https://img.shields.io/badge/Node-20%2B-339933" />
@@ -43,6 +43,10 @@ https://github.com/user-attachments/assets/a080ad1a-5c08-4213-acfa-a226e3c0f68a
 ## 项目介绍
 
 ### 更新日志
+
+**2026 年 8 月 30 日**
+
+SAG 现已支持 [`@zleap-ai/dsh-sag`](https://github.com/Zleap-AI/dsh-sag)：通过内置的本地 DeepSeek Harness 连接器，可以把 SAG 知识库接入 DSH，在 Agent 中搜索知识、读取原文，并管理信源和文档。
 
 **2026 年 8 月 13 日**
 
