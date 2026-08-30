@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://arxiv.org/abs/2606.15971"><img alt="Paper" src="https://img.shields.io/badge/paper-arXiv%3A2606.15971-18181b" /></a>
   <a href="https://pypi.org/project/zleap-sag/"><img alt="PyPI" src="https://img.shields.io/pypi/v/zleap-sag?label=zleap--sag&color=18181b" /></a>
-  <img alt="SAG version" src="https://img.shields.io/badge/SAG-v1.8.3-18181b" />
+  <img alt="SAG version" src="https://img.shields.io/badge/SAG-v1.8.4-18181b" />
   <a href="https://github.com/Zleap-AI/SAG/releases/latest"><img alt="Desktop release" src="https://img.shields.io/github/v/release/Zleap-AI/SAG?label=desktop&color=18181b" /></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776ab" />
   <img alt="Node" src="https://img.shields.io/badge/Node-20%2B-339933" />
@@ -43,6 +43,10 @@ https://github.com/user-attachments/assets/ac805e3c-ab52-4857-bef6-2865f3831b2f
 ## Project
 
 ### Changelog
+
+**August 30, 2026**
+
+SAG now supports [`@zleap-ai/dsh-sag`](https://www.npmjs.com/package/@zleap-ai/dsh-sag). The built-in local DeepSeek Harness connector makes SAG knowledge available to DSH Agents for search, source reading, and source and document management.
 
 **August 13, 2026**
 
