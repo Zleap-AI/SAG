@@ -5,6 +5,7 @@ import { clientErrorMessage, serverErrorMessage } from "../i18n/client-errors";
 import type { SearchStrategy } from "./retrieval-config";
 import type {
   ActivityItem,
+  AuthStatus,
   Entity,
   Agent,
   Binding,
@@ -644,12 +645,13 @@ async function startOctxDocumentExport(
 
 export const api = {
   // auth / system
+  authStatus: () => request<AuthStatus>("/api/v1/auth/status"),
   register: (b: { email: string; password: string; name?: string }) =>
     request<TokenResponse>("/api/v1/auth/register", {
       method: "POST",
       body: JSON.stringify(b),
     }),
-  login: (b: { name: string; email?: string; password?: string }) =>
+  login: (b: { name?: string; email?: string; password?: string }) =>
     request<TokenResponse>("/api/v1/auth/login", {
       method: "POST",
       body: JSON.stringify(b),

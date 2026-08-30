@@ -8,6 +8,8 @@ ALLOWED_PREFIXES = (
     "/api/v1/system/ready",
     "/api/v1/system/storage-bootstrap",
     "/api/v1/auth/login",
+    "/api/v1/auth/register",
+    "/api/v1/auth/status",
     "/api/v1/auth/me",
 )
 

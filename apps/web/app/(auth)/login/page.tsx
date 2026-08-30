@@ -15,20 +15,45 @@ import { Button } from "@/components/ui/button";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
+import type { AuthStatus } from "@/lib/types";
 
 export default function LaunchPage() {
   const t = useTranslations("Login");
   const router = useRouter();
   const [name, setName] = React.useState("");
+  const [email, setEmail] = React.useState("");
+  const [password, setPassword] = React.useState("");
+  const [authStatus, setAuthStatus] = React.useState<AuthStatus | null>(null);
+  const [statusFailed, setStatusFailed] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
+
+  const loadAuthStatus = React.useCallback(async () => {
+    setStatusFailed(false);
+    try {
+      setAuthStatus(await api.authStatus());
+    } catch {
+      setStatusFailed(true);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void loadAuthStatus();
+  }, [loadAuthStatus]);
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
+    if (!authStatus) return;
     const nextName = name.trim();
-    if (!nextName) return;
+    const nextEmail = email.trim();
+    if (authStatus.mode === "local" && !nextName) return;
+    if (authStatus.mode === "password" && (!nextEmail || !password)) return;
     setLoading(true);
     try {
-      const response = await api.login({ name: nextName });
+      const response = authStatus.registration_required
+        ? await api.register({ name: nextName, email: nextEmail, password })
+        : authStatus.mode === "password"
+          ? await api.login({ email: nextEmail, password })
+          : await api.login({ name: nextName });
       setToken(response.access_token);
       toast.success(t("welcome", { name: response.user.name }));
       router.replace("/chat");
@@ -74,27 +99,90 @@ export default function LaunchPage() {
             onSubmit={onSubmit}
             className="mt-6 flex flex-col gap-4 rounded-lg border bg-background/76 p-5 text-left shadow-lift backdrop-blur-xl"
           >
-            <Field>
-              <FieldLabel htmlFor="name">{t("nameLabel")}</FieldLabel>
-              <Input
-                id="name"
-                required
-                maxLength={120}
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder={t("namePlaceholder")}
-                autoComplete="name"
-                autoFocus
-              />
-            </Field>
+            {!authStatus ? (
+              <div className="py-4 text-center text-sm text-muted-foreground">
+                {statusFailed ? t("statusFailed") : t("loading")}
+              </div>
+            ) : authStatus.mode === "local" ? (
+              <Field>
+                <FieldLabel htmlFor="name">{t("nameLabel")}</FieldLabel>
+                <Input
+                  id="name"
+                  required
+                  maxLength={120}
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  placeholder={t("namePlaceholder")}
+                  autoComplete="name"
+                  autoFocus
+                />
+              </Field>
+            ) : (
+              <>
+                {authStatus.registration_required ? (
+                  <Field>
+                    <FieldLabel htmlFor="name">{t("nameLabel")}</FieldLabel>
+                    <Input
+                      id="name"
+                      maxLength={120}
+                      value={name}
+                      onChange={(event) => setName(event.target.value)}
+                      placeholder={t("namePlaceholder")}
+                      autoComplete="name"
+                    />
+                  </Field>
+                ) : null}
+                <Field>
+                  <FieldLabel htmlFor="email">{t("emailLabel")}</FieldLabel>
+                  <Input
+                    id="email"
+                    type="email"
+                    required
+                    maxLength={255}
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    placeholder={t("emailPlaceholder")}
+                    autoComplete="email"
+                    autoFocus
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="password">{t("passwordLabel")}</FieldLabel>
+                  <Input
+                    id="password"
+                    type="password"
+                    required
+                    minLength={authStatus.registration_required ? 8 : undefined}
+                    maxLength={128}
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    placeholder={t("passwordPlaceholder")}
+                    autoComplete={authStatus.registration_required ? "new-password" : "current-password"}
+                  />
+                </Field>
+              </>
+            )}
+            {statusFailed ? (
+              <Button type="button" variant="outline" onClick={() => void loadAuthStatus()}>
+                {t("retry")}
+              </Button>
+            ) : null}
             <Button
               type="submit"
               size="lg"
-              disabled={loading || !name.trim()}
+              disabled={
+                loading ||
+                !authStatus ||
+                (authStatus.mode === "local" ? !name.trim() : !email.trim() || !password)
+              }
               className="mt-1 w-full"
             >
               {loading ? <Spinner /> : <ArrowRight className="size-4" />}
-              {loading ? t("submitting") : t("submit")}
+              {loading
+                ? t("submitting")
+                : authStatus?.registration_required
+                  ? t("register")
+                  : t("submit")}
             </Button>
           </form>
         </div>

@@ -346,17 +346,20 @@ Default persistence:
 
 ### Network and production safety
 
-The default Compose configuration binds ports 3000 and 8000 to `127.0.0.1`. SAG is currently a local, single-user product; do not expose those ports directly to the public internet.
+The default Compose configuration binds ports 3000 and 8000 to `127.0.0.1` and uses `SAG_AUTH_MODE=local`: the name is a local identity, not password authentication. Do not expose this default mode to an untrusted network.
 
 For custom ports or a trusted LAN address:
 
 ```bash
 cp .env.example .env
 # Edit BIND_ADDRESS, WEB_PORT, API_PORT, SAG_CORS_ORIGINS, and NEXT_PUBLIC_API_BASE.
+# For remote access, also set SAG_AUTH_MODE=password and keep SAG_ALLOW_REGISTRATION=false.
 docker compose up -d --build
 ```
 
-`NEXT_PUBLIC_API_BASE` is compiled into the web image, so changing it requires `--build`. A server deployment should add HTTPS and an external access-control layer such as VPN, IP allowlisting, or reverse-proxy authentication.
+On first launch, `password` mode guides you through creating an email and password. Later sign-ins require both credentials and never fall back to a name or the first user. `SAG_ALLOW_REGISTRATION=false` still permits the first credential account, then closes registration.
+
+`NEXT_PUBLIC_API_BASE` is compiled into the web image, so changing it requires `--build`. A server deployment should also use a strong `SAG_SECRET_KEY`, HTTPS, and protection such as VPN, IP allowlisting, or reverse-proxy rate limiting. The current `sag auth login --name` command is for `local` mode; with `password` mode, sign in through the web UI first and provide the issued token to the CLI through `SAG_TOKEN`.
 
 ---
 
@@ -556,7 +559,7 @@ The self-hosted API is available after starting SAG:
 | OpenAPI schema | [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json) |
 | MCP Streamable HTTP | `http://localhost:8000/mcp/` |
 
-This is a **self-hosted API**, not a hosted public cloud API. Most routes require a SAG JWT:
+This is a **self-hosted API**, not a hosted public cloud API. In the default `local` mode, most routes use a SAG JWT issued after name login:
 
 ```bash
 curl -s http://localhost:8000/api/v1/auth/login \
@@ -568,6 +571,14 @@ Copy `access_token` from the response and send it as:
 
 ```http
 Authorization: Bearer <SAG_TOKEN>
+```
+
+With `SAG_AUTH_MODE=password`, create the first credential through `POST /auth/register`, then sign in with email and password:
+
+```bash
+curl -s http://localhost:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"owner@example.com","password":"<YOUR_PASSWORD>"}'
 ```
 
 #### API map

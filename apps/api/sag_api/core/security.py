@@ -33,6 +33,7 @@ def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> st
     now = datetime.now(UTC)
     payload: dict[str, Any] = {
         "sub": subject,
+        "auth_mode": settings.auth_mode,
         "iat": now,
         "exp": now + timedelta(minutes=settings.access_token_expire_minutes),
     }

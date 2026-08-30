@@ -22,7 +22,7 @@
 | Wire into Codex                      | Codex CLI (≥ 0.145) installed                                             |
 | Wire into Claude Code                | Claude Code (≥ 2.1) installed                                             |
 
-**How to sign in**: run `sag auth login --name "Your name"`, or omit `--name` and enter the name in the terminal. The CLI calls SAG's existing login API and prefers the OS credential store (macOS Keychain, Windows Credential Manager, Linux Secret Service). You can also use the `SAG_TOKEN` environment variable in automation.
+**How to sign in**: `sag auth login --name "Your name"` is for the default `SAG_AUTH_MODE=local`. With `password` mode, sign in through the SAG web UI first, then provide the issued token to the CLI through `SAG_TOKEN`. The CLI prefers the OS credential store (macOS Keychain, Windows Credential Manager, Linux Secret Service).
 
 ## Install
 

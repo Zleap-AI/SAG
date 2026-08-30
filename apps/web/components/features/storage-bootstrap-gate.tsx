@@ -15,6 +15,7 @@ import { api, ApiError } from "@/lib/api";
 import { getToken, setToken, clearToken } from "@/lib/auth";
 import { createStorageBootstrapPoller } from "@/lib/storage-bootstrap";
 import type {
+  AuthStatus,
   StorageBootstrapStatus,
   StorageChoice,
 } from "@/lib/types";
@@ -66,12 +67,17 @@ interface StorageBootstrapGateViewProps {
   selectedChoice: StorageChoice | null;
   submitting: boolean;
   loginName: string;
+  loginEmail: string;
+  loginPassword: string;
+  authStatus: AuthStatus;
   loginLoading: boolean;
   errorMessage: string | null;
   onSelectChoice: (choice: StorageChoice) => void;
   onCancelChoice: () => void;
   onConfirmChoice: () => void;
   onLoginNameChange: (name: string) => void;
+  onLoginEmailChange: (email: string) => void;
+  onLoginPasswordChange: (password: string) => void;
   onLogin: (event: React.FormEvent) => void;
   onRetry: () => void;
   children: React.ReactNode;
@@ -83,12 +89,17 @@ export function StorageBootstrapGateView({
   selectedChoice,
   submitting,
   loginName,
+  loginEmail,
+  loginPassword,
+  authStatus,
   loginLoading,
   errorMessage,
   onSelectChoice,
   onCancelChoice,
   onConfirmChoice,
   onLoginNameChange,
+  onLoginEmailChange,
+  onLoginPasswordChange,
   onLogin,
   onRetry,
   children,
@@ -122,28 +133,68 @@ export function StorageBootstrapGateView({
         {(status.phase === "choice_required" || status.phase === "failed") &&
         !authenticated ? (
           <form onSubmit={onLogin} className="rounded-lg border bg-card p-5 shadow-soft">
-            <h2 className="text-base font-semibold">{t("loginTitle")}</h2>
+            <h2 className="text-base font-semibold">
+              {authStatus.registration_required ? t("setupTitle") : t("loginTitle")}
+            </h2>
             <p className="mt-1 text-sm leading-6 text-muted-foreground">
-              {t("loginDescription")}
+              {authStatus.registration_required ? t("setupDescription") : t("loginDescription")}
             </p>
-            <Field className="mt-5">
-              <FieldLabel htmlFor="storage-bootstrap-name">
-                {t("nameLabel")}
-              </FieldLabel>
-              <Input
-                id="storage-bootstrap-name"
-                required
-                maxLength={120}
-                autoComplete="name"
-                value={loginName}
-                onChange={(event) => onLoginNameChange(event.target.value)}
-                placeholder={t("namePlaceholder")}
-              />
-            </Field>
+            {authStatus.mode === "local" || authStatus.registration_required ? (
+              <Field className="mt-5">
+                <FieldLabel htmlFor="storage-bootstrap-name">
+                  {t("nameLabel")}
+                </FieldLabel>
+                <Input
+                  id="storage-bootstrap-name"
+                  required={authStatus.mode === "local"}
+                  maxLength={120}
+                  autoComplete="name"
+                  value={loginName}
+                  onChange={(event) => onLoginNameChange(event.target.value)}
+                  placeholder={t("namePlaceholder")}
+                />
+              </Field>
+            ) : null}
+            {authStatus.mode === "password" ? (
+              <>
+                <Field className="mt-5">
+                  <FieldLabel htmlFor="storage-bootstrap-email">{t("emailLabel")}</FieldLabel>
+                  <Input
+                    id="storage-bootstrap-email"
+                    type="email"
+                    required
+                    maxLength={255}
+                    autoComplete="email"
+                    value={loginEmail}
+                    onChange={(event) => onLoginEmailChange(event.target.value)}
+                    placeholder={t("emailPlaceholder")}
+                  />
+                </Field>
+                <Field className="mt-5">
+                  <FieldLabel htmlFor="storage-bootstrap-password">{t("passwordLabel")}</FieldLabel>
+                  <Input
+                    id="storage-bootstrap-password"
+                    type="password"
+                    required
+                    minLength={authStatus.registration_required ? 8 : undefined}
+                    maxLength={128}
+                    autoComplete={authStatus.registration_required ? "new-password" : "current-password"}
+                    value={loginPassword}
+                    onChange={(event) => onLoginPasswordChange(event.target.value)}
+                    placeholder={t("passwordPlaceholder")}
+                  />
+                </Field>
+              </>
+            ) : null}
             <Button
               type="submit"
               className="mt-5 w-full"
-              disabled={loginLoading || !loginName.trim()}
+              disabled={
+                loginLoading ||
+                (authStatus.mode === "local"
+                  ? !loginName.trim()
+                  : !loginEmail.trim() || !loginPassword)
+              }
             >
               {loginLoading ? <Spinner /> : <ArrowRight />}
               {loginLoading ? t("loggingIn") : t("login")}
@@ -267,6 +318,13 @@ export function StorageBootstrapGate({ children }: { children: React.ReactNode }
   const [selectedChoice, setSelectedChoice] = React.useState<StorageChoice | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
   const [loginName, setLoginName] = React.useState("");
+  const [loginEmail, setLoginEmail] = React.useState("");
+  const [loginPassword, setLoginPassword] = React.useState("");
+  const [authStatus, setAuthStatus] = React.useState<AuthStatus>({
+    mode: "local",
+    registration_required: false,
+    registration_open: false,
+  });
   const [loginLoading, setLoginLoading] = React.useState(false);
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
   const mountedRef = React.useRef(false);
@@ -293,8 +351,10 @@ export function StorageBootstrapGate({ children }: { children: React.ReactNode }
     setErrorMessage(null);
     try {
       const nextStatus = await loadStatus(loadInitialStatus);
+      const nextAuthStatus = await api.authStatus();
       if (!mountedRef.current) return;
       setStatus(nextStatus);
+      setAuthStatus(nextAuthStatus);
     } catch (error) {
       if (mountedRef.current) {
         setErrorMessage(errorText(error, t("loadFailed")));
@@ -331,11 +391,18 @@ export function StorageBootstrapGate({ children }: { children: React.ReactNode }
   async function handleLogin(event: React.FormEvent) {
     event.preventDefault();
     const name = loginName.trim();
-    if (!name || loginLoading) return;
+    const email = loginEmail.trim();
+    if (loginLoading) return;
+    if (authStatus.mode === "local" && !name) return;
+    if (authStatus.mode === "password" && (!email || !loginPassword)) return;
     setLoginLoading(true);
     setErrorMessage(null);
     try {
-      const response = await api.login({ name });
+      const response = authStatus.registration_required
+        ? await api.register({ name, email, password: loginPassword })
+        : authStatus.mode === "password"
+          ? await api.login({ email, password: loginPassword })
+          : await api.login({ name });
       setToken(response.access_token);
       const nextStatus = await loadStatus(api.storageBootstrap);
       if (!mountedRef.current) return;
@@ -437,12 +504,17 @@ export function StorageBootstrapGate({ children }: { children: React.ReactNode }
       selectedChoice={selectedChoice}
       submitting={submitting}
       loginName={loginName}
+      loginEmail={loginEmail}
+      loginPassword={loginPassword}
+      authStatus={authStatus}
       loginLoading={loginLoading}
       errorMessage={errorMessage}
       onSelectChoice={setSelectedChoice}
       onCancelChoice={() => setSelectedChoice(null)}
       onConfirmChoice={() => void handleConfirmChoice()}
       onLoginNameChange={setLoginName}
+      onLoginEmailChange={setLoginEmail}
+      onLoginPasswordChange={setLoginPassword}
       onLogin={(event) => void handleLogin(event)}
       onRetry={() => void handleRetry()}
     >
