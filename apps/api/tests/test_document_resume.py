@@ -56,6 +56,7 @@ async def _processor_with_fake_engine(
     chunk_mode="standard",
     document_title="doc",
     language="zh",
+    max_entities_per_event=20,
 ):
     from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
 
@@ -71,6 +72,7 @@ async def _processor_with_fake_engine(
         chunk_max_tokens=1000,
         chunk_mode=chunk_mode,
         document_title=document_title,
+        max_entities_per_event=max_entities_per_event,
     )
     return processor
 
@@ -179,8 +181,37 @@ async def test_extract_receives_contract_limits_and_concurrency():
     assert options.contract == "rich"
     assert options.source_type == "article"
     assert options.limits.min_entities_per_event == 1
+    assert options.limits.max_events_per_chunk == 20
+    assert options.limits.max_entities_per_event == 20
     assert options.execution.max_concurrency == 30
     assert "观点、事实、定义" in options.guidance_rules[0]  # 默认中文知识型事项要求仍然透传
+
+
+@pytest.mark.asyncio
+async def test_extract_receives_concise_entity_limit():
+    from sag_api.sag.dto import ProcessCheckpoint
+
+    captured: dict = {}
+
+    async def extract(chunk_set, options, *, observer, cancellation):
+        captured["options"] = options
+        return _event_ref()
+
+    processor = await _processor_with_fake_engine(extract=extract, max_entities_per_event=8)
+    await processor.process(
+        None,
+        checkpoint=ProcessCheckpoint(
+            source_id="article-1",
+            chunk_ids=["c1"],
+            generation_id="gen-1",
+            chunk_version="cv-1",
+            source_version="sv-1",
+        ),
+        on_checkpoint=_noop_checkpoint,
+        should_pause=_return_false,
+    )
+
+    assert captured["options"].limits.max_entities_per_event == 8
 
 
 @pytest.mark.asyncio

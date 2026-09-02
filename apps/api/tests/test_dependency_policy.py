@@ -4,14 +4,14 @@ from pathlib import Path
 import yaml
 
 
-def test_zleap_sag_stays_on_the_supported_0_10_0_release():
+def test_zleap_sag_stays_on_the_supported_0_12_0_release():
     pyproject = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
     project = pyproject["project"]
 
-    assert "zleap-sag==0.10.0" in project["dependencies"]
+    assert "zleap-sag==0.12.0" in project["dependencies"]
     assert project["optional-dependencies"]["postgres"] == [
         "asyncpg>=0.29",
-        "zleap-sag[postgres]==0.10.0",
+        "zleap-sag[postgres]==0.12.0",
     ]
 
 

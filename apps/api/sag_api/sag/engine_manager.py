@@ -254,6 +254,9 @@ class EngineManager:
         self._settings = settings
         self._slots: dict[str, _Slot] = {}
         self._create_lock = asyncio.Lock()
+        # SQLite permits one writer at a time.  Keep local document mutations
+        # serialized across source slots; server databases retain full concurrency.
+        self._sqlite_document_mutation_lock = asyncio.Lock()
         self._lifecycle_gate = _EngineLifecycleGate()
         self._cache_size = max(1, settings.engine_cache_size)
         self._schema_ready = False
@@ -556,6 +559,16 @@ class EngineManager:
                 stage=ErrorStage.PERSIST,
             ) from error
 
+    async def _configure_sqlite_document_store(self, engine: Any) -> None:
+        """Apply bounded writer contention settings to zleap's SQLite store."""
+        if self._settings.sag_relational_provider not in (None, "sqlite"):
+            return
+        from sqlalchemy import text
+
+        async with engine.resources.relational.session_factory()() as session:
+            await session.execute(text("PRAGMA journal_mode=WAL"))
+            await session.execute(text("PRAGMA busy_timeout=30000"))
+
     async def _slot(self, source_config_id: str, source: Source | None = None) -> _Slot:
         slot = self._slots.get(source_config_id)
         if slot is not None and not slot.closing:
@@ -578,6 +591,7 @@ class EngineManager:
                         # 抛 StorageInitializationRequiredError。
                         await self._ensure_engine_schema(engine)
                         await engine.start()
+                        await self._configure_sqlite_document_store(engine)
                     try:
                         await self._ensure_source_config(source_config_id, source, engine)
                         await self._ensure_universe_query_indexes(engine)
@@ -870,9 +884,21 @@ class EngineManager:
                         chunk_max_tokens=self._settings.document_chunk_max_tokens,
                         chunk_mode=self._settings.document_chunk_mode,
                         document_title=document_title,
+                        max_entities_per_event=(
+                            8 if self._settings.document_extraction_profile == "concise" else 20
+                        ),
                         enable_strict_filtering=self._settings.document_strict_filtering,
                         event_entity_attempts=self._settings.document_event_entity_attempts,
                     )
+                    if self._settings.sag_relational_provider in (None, "sqlite"):
+                        async with self._sqlite_document_mutation_lock:
+                            return await processor.process(
+                                path,
+                                checkpoint=effective_checkpoint,
+                                on_checkpoint=on_checkpoint or ignore_checkpoint,
+                                should_pause=effective_should_pause,
+                                on_stage=on_stage,
+                            )
                     return await processor.process(
                         path,
                         checkpoint=effective_checkpoint,

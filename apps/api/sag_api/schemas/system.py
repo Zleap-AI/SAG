@@ -65,6 +65,7 @@ class ModelConfigUpdate(BaseModel):
     document_extract_concurrency: int | None = Field(default=None, ge=1, le=50)
     document_chunk_max_tokens: int | None = Field(default=None, ge=100, le=100_000)
     document_chunk_mode: Literal["standard", "heading_strict"] | None = None
+    document_extraction_profile: Literal["standard", "concise"] | None = None
 
     search_strategy: SearchStrategy | None = None
     search_top_k: int | None = Field(default=None, ge=1, le=50)
@@ -94,6 +95,13 @@ class ModelConfigUpdate(BaseModel):
     def reject_null_chunk_mode(cls, value: str | None) -> str:
         if value is None:
             raise ValueError("切片模式不能为 null")
+        return value
+
+    @field_validator("document_extraction_profile")
+    @classmethod
+    def reject_null_extraction_profile(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("document_extraction_profile cannot be null")
         return value
 
     @field_validator("llm_timeout_ms", "llm_max_retries")
