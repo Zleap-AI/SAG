@@ -565,7 +565,7 @@ class EngineManager:
             return
         from sqlalchemy import text
 
-        async with engine.resources.relational.session_factory() as session:
+        async with engine.resources.relational.session_factory()() as session:
             await session.execute(text("PRAGMA journal_mode=WAL"))
             await session.execute(text("PRAGMA busy_timeout=30000"))
 
