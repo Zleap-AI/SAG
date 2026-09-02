@@ -25,6 +25,7 @@ import {
   type FolderImportPlan,
 } from "@/lib/folder-import";
 import { formatBytes } from "@/lib/format";
+import { generateUuidV4 } from "@/lib/uuid";
 import {
   folderImportDiagnosticData,
   getDiagnosticsStore,
@@ -241,7 +242,7 @@ export const FolderImportDialog = React.forwardRef<
       allowedExts,
       maxMb * 1024 * 1024,
     );
-    const batchId = crypto.randomUUID();
+    const batchId = generateUuidV4();
     const diagnostics = getDiagnosticsStore();
     sessionRef.current = createFolderImportUploadSession({
       batchId,

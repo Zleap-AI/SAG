@@ -97,6 +97,7 @@ class IncrementalDocumentProcessor:
         chunk_max_tokens: int = 1_000,
         chunk_mode: str = "standard",
         document_title: str | None = None,
+        max_entities_per_event: int = 20,
         enable_strict_filtering: bool = False,
         event_entity_attempts: int = 2,
     ) -> None:
@@ -106,6 +107,7 @@ class IncrementalDocumentProcessor:
         self._chunk_max_tokens = chunk_max_tokens
         self._chunk_mode = chunk_mode if chunk_mode in {"standard", "heading_strict"} else "standard"
         self._document_title = (document_title or "").strip()
+        self._max_entities_per_event = max(1, min(20, max_entities_per_event))
 
         # 0.8.2 已内置契约与修复重试,以下 0.7.1 参数仅保留接口兼容:
         # - enable_strict_filtering → zleap 无对应开关(REQ 待对齐),忽略并记录;
@@ -236,7 +238,11 @@ class IncrementalDocumentProcessor:
         options = ExtractionOptions(
             source_type="article",
             contract="rich",
-            limits=ExtractionLimits(min_entities_per_event=1),
+            limits=ExtractionLimits(
+                max_events_per_chunk=20,
+                min_entities_per_event=1,
+                max_entities_per_event=self._max_entities_per_event,
+            ),
             execution=ExtractionExecutionOptions(max_concurrency=self._max_concurrency),
             guidance_rules=(requirements,),
         )

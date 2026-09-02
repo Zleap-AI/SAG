@@ -1,5 +1,6 @@
 import { clearToken, getToken } from "./auth";
 import { getDiagnosticsStore } from "./diagnostics";
+import { generateUuidV4 } from "./uuid";
 import { readClientLocale } from "../i18n/client";
 import { clientErrorMessage, serverErrorMessage } from "../i18n/client-errors";
 import type { SearchStrategy } from "./retrieval-config";
@@ -613,7 +614,7 @@ async function startOctxDocumentExport(
   documentId: string,
   version?: string,
 ): Promise<OctxTransfer> {
-  const transferId = crypto.randomUUID().replaceAll("-", "");
+  const transferId = generateUuidV4().replaceAll("-", "");
   const submit = () =>
     request<OctxTransfer>(
       `/api/v1/sources/${sourceId}/documents/${documentId}/octx-exports`,

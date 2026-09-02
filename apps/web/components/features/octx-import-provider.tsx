@@ -7,6 +7,7 @@ import { useTranslations } from "next-intl";
 import { useKnowledgeWorkspace } from "@/components/features/knowledge-provider";
 import { api, ApiError } from "@/lib/api";
 import { OctxImportTaskManager } from "@/lib/octx-import-manager";
+import { generateUuidV4 } from "@/lib/uuid";
 import {
   OCTX_IMPORT_TASKS_STORAGE_KEY,
   type PersistedOctxImportTask,
@@ -43,7 +44,7 @@ export function OctxImportProvider({ children }: { children: React.ReactNode }) 
       getTransfer: api.getOctxTransfer,
       cancelTransfer: api.cancelOctxTransfer,
       decideImport: api.decideOctxImport,
-      newTransferId: () => crypto.randomUUID().replaceAll("-", ""),
+      newTransferId: () => generateUuidV4().replaceAll("-", ""),
       now: () => new Date().toISOString(),
     });
     managerRef.current = manager;
