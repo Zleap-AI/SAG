@@ -200,7 +200,13 @@ async def test_extract_receives_concise_entity_limit():
     processor = await _processor_with_fake_engine(extract=extract, max_entities_per_event=8)
     await processor.process(
         None,
-        checkpoint=ProcessCheckpoint(source_id="article-1", chunk_ids=["c1"], generation_id="gen-1", chunk_version="cv-1", source_version="sv-1"),
+        checkpoint=ProcessCheckpoint(
+            source_id="article-1",
+            chunk_ids=["c1"],
+            generation_id="gen-1",
+            chunk_version="cv-1",
+            source_version="sv-1",
+        ),
         on_checkpoint=_noop_checkpoint,
         should_pause=_return_false,
     )
