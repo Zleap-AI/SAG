@@ -305,7 +305,15 @@ def _compatible_identity(dimensions: int) -> dict:
     )
 
 
-async def test_prepare_vector_reuse_rebuilds_role_when_dimensions_mismatch(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("configured_dimensions", "generated_vector"),
+    [(None, [0.4, 0.5, 0.6]), (2, [0.4, 0.5])],
+)
+async def test_prepare_vector_reuse_rebuilds_role_when_dimensions_are_unknown_or_mismatched(
+    tmp_path: Path,
+    configured_dimensions: int | None,
+    generated_vector: list[float],
+) -> None:
     from sag_api.sag.octx_importer import build_structured_plan
     from sag_api.sag.octx_vector_protocol import vector_profile_from_identity
 
@@ -321,20 +329,20 @@ async def test_prepare_vector_reuse_rebuilds_role_when_dimensions_mismatch(tmp_p
     plan_path = tmp_path / "dim-mismatch-plan.sqlite3"
     build_structured_plan(package, plan_path, str(uuid.uuid4()))
 
-    class TwoDimEmbedding:
+    class Embedding:
         model = "test/embedding"
         base_url = "https://embedding.invalid/v1"
-        dimensions = 2
+        dimensions = configured_dimensions
 
         def __init__(self) -> None:
             self.calls: list[list[str]] = []
 
         async def batch_generate(self, texts):
             self.calls.append(list(texts))
-            return [[0.4, 0.5] for _ in texts]
+            return [generated_vector for _ in texts]
 
-    embedding = TwoDimEmbedding()
-    # A dimension mismatch must disable reuse without crashing the import.
+    embedding = Embedding()
+    # An unknown or mismatched dimension must disable reuse without crashing the import.
     assert prepare_vector_reuse(package, plan_path, embedding) == set()
 
     from sag_api.sag.octx_vector_rebuilder import _vectors_for_role
@@ -346,7 +354,7 @@ async def test_prepare_vector_reuse_rebuilds_role_when_dimensions_mismatch(tmp_p
         embedding,
         plan_path=plan_path,
     )
-    assert regenerated == [[0.4, 0.5]]
+    assert regenerated == [generated_vector]
     assert embedding.calls == [["Head\n\nBody"]]
 
 
