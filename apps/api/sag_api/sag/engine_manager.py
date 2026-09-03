@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from zleap.sag import DataEngine
 from zleap.sag.pipeline import SearchOptions, SearchRequest, SearchScope
@@ -485,6 +486,23 @@ class EngineManager:
             overrides = source.config.get("engine")
         return build_engine_config(self._settings, overrides=overrides)
 
+    def _configure_embedding_request_dimensions(self, engine: DataEngine) -> None:
+        """Apply the narrow provider workaround after schema initialization.
+
+        zleap-sag 0.12.0 shares ``EmbeddingConfig.dimensions`` between vector
+        schema creation and the OpenAI-compatible request body. SiliconFlow's
+        BAAI/bge-m3 returns a fixed 1024-dimensional vector but rejects the
+        optional request parameter. Keep the configured 1024 for schema setup,
+        then omit it from only this verified incompatible request path.
+        """
+        if self._settings.embedding_dimensions is not None:
+            return
+        hostname = (urlparse(self._settings.effective_embedding_base_url or "").hostname or "").lower()
+        model = self._settings.embedding_model.strip().lower()
+        if hostname != "api.siliconflow.cn" or model != "baai/bge-m3":
+            return
+        engine.resources.embedding.dimensions = None
+
     async def _ensure_engine_schema(self, engine: DataEngine) -> None:
         if self._schema_ready:
             return
@@ -590,6 +608,7 @@ class EngineManager:
                         # init_schema() 显式创建关系表与向量模式对象,否则 start()
                         # 抛 StorageInitializationRequiredError。
                         await self._ensure_engine_schema(engine)
+                        self._configure_embedding_request_dimensions(engine)
                         await engine.start()
                         await self._configure_sqlite_document_store(engine)
                     try:

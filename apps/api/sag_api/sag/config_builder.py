@@ -104,8 +104,7 @@ def build_engine_config(settings: Settings, *, overrides: dict[str, Any] | None 
         model=settings.embedding_model,
         base_url=settings.effective_embedding_base_url,
         api_key=settings.effective_embedding_api_key or _PLACEHOLDER,
-        # 0.8.2:pgvector/oceanbase 建向量模式对象必须显式维度;SAG 默认模型
-        # bge-large-en-v1.5 为 1024 维,未配置 SAG_EMBEDDING_DIMENSIONS 时按此兜底。
+        # 当前引擎以该值预建向量 schema；未显式配置时保持既有 1024 维默认值。
         dimensions=settings.embedding_dimensions or 1024,
     )
 
