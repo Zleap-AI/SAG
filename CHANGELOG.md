@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+## v1.8.6 · 2026-09-03
+
+- 修复 SiliconFlow `BAAI/bge-m3` 在未配置向量维度时仍收到 `dimensions=1024` 而拒绝嵌入请求的问题：保留 1024 维向量模式初始化，仅对该已验证的服务商/模型组合省略请求参数，避免文档导入回滚（#159）。
+
 ## v1.8.5 · 2026-09-02
 
 - 修复缺少 `crypto.randomUUID()` 的浏览器/WebView 中，文件夹导入与 OCTX 导入、导出无法生成安全请求 ID 的问题；在支持 `getRandomValues()` 时安全降级，并在缺少 Web Crypto 时给出明确错误（#161）。
