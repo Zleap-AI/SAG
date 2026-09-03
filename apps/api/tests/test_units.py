@@ -57,7 +57,7 @@ def test_build_engine_config_zero_infra():
 
 @pytest.mark.parametrize(
     ("configured_dimensions", "expected_dimensions"),
-    [(None, None), (1024, 1024)],
+    [(None, 1024), (1024, 1024)],
 )
 def test_engine_config_preserves_embedding_dimensions(configured_dimensions, expected_dimensions):
     configured = Settings(_env_file=None, embedding_dimensions=configured_dimensions)
@@ -67,17 +67,31 @@ def test_engine_config_preserves_embedding_dimensions(configured_dimensions, exp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("configured_dimensions", "expected_request_dimensions"),
-    [(None, None), (1024, 1024)],
+    ("base_url", "model", "configured_dimensions", "expected_request_dimensions"),
+    [
+        ("https://api.siliconflow.cn/v1", "BAAI/bge-m3", None, None),
+        ("https://api.openai.com/v1", "text-embedding-3-large", None, 1024),
+        ("https://api.siliconflow.cn/v1", "BAAI/bge-m3", 1024, 1024),
+    ],
 )
 async def test_embedding_request_respects_configured_dimensions(
+    base_url,
+    model,
     configured_dimensions,
     expected_request_dimensions,
     monkeypatch,
 ):
     from zleap.sag.core.ai.embedding import EmbeddingClient
 
-    config = build_engine_config(Settings(_env_file=None, embedding_dimensions=configured_dimensions))
+    from sag_api.sag.engine_manager import EngineManager
+
+    settings = Settings(
+        _env_file=None,
+        embedding_base_url=base_url,
+        embedding_model=model,
+        embedding_dimensions=configured_dimensions,
+    )
+    config = build_engine_config(settings)
     embedding = EmbeddingClient(
         model=config.embedding.model,
         api_key=config.embedding.api_key,
@@ -85,6 +99,8 @@ async def test_embedding_request_respects_configured_dimensions(
         dimensions=config.embedding.dimensions,
         max_retries=0,
     )
+    engine = SimpleNamespace(resources=SimpleNamespace(embedding=embedding))
+    EngineManager(settings)._configure_embedding_request_dimensions(engine)
     requests: list[dict] = []
 
     async def create(**request):
@@ -106,22 +122,24 @@ async def test_embedding_request_respects_configured_dimensions(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["lancedb", "es", "pgvector", "oceanbase"])
-async def test_unconfigured_embedding_defers_vector_schema_creation_to_first_real_vector(provider):
+async def test_unconfigured_embedding_prebuilds_vector_schema_with_legacy_default(provider):
     from zleap.sag.core.storage.schema import prepare_vector_schema
 
     class VectorAdapter:
         def __init__(self) -> None:
             self.provider = provider
             self.created: list[tuple[str, int]] = []
+            self.names: set[str] = set()
 
         async def schema_object_names(self):
-            return frozenset()
+            return frozenset(self.names)
 
-        async def validate_schema_object(self, _name, _dimensions):
-            raise AssertionError("no schema object exists before the first vector")
+        async def validate_schema_object(self, _name, dimensions):
+            assert dimensions == 1024
 
         async def create_schema_object(self, name, dimensions):
             self.created.append((name, dimensions))
+            self.names.add(name)
 
     config = build_engine_config(Settings(_env_file=None, embedding_dimensions=None))
     adapter = VectorAdapter()
@@ -133,8 +151,9 @@ async def test_unconfigured_embedding_defers_vector_schema_creation_to_first_rea
         create_missing=True,
     )
 
-    assert adapter.created == []
-    assert scan.missing_objects
+    assert adapter.created
+    assert {dimensions for _, dimensions in adapter.created} == {1024}
+    assert not scan.missing_objects
 
 
 def test_engine_config_presets_structured_output_mode_by_model():

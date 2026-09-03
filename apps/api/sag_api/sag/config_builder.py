@@ -104,9 +104,8 @@ def build_engine_config(settings: Settings, *, overrides: dict[str, Any] | None 
         model=settings.embedding_model,
         base_url=settings.effective_embedding_base_url,
         api_key=settings.effective_embedding_api_key or _PLACEHOLDER,
-        # 未配置时保持 None：引擎会从首批真实向量推断存储 schema，
-        # 同时避免向不支持 dimensions 参数的 Embedding API 发送该字段。
-        dimensions=settings.embedding_dimensions,
+        # 当前引擎以该值预建向量 schema；未显式配置时保持既有 1024 维默认值。
+        dimensions=settings.embedding_dimensions or 1024,
     )
 
     return EngineConfig(
