@@ -633,7 +633,8 @@ def test_startup_warns_when_env_differs_from_persisted_config(monkeypatch, caplo
         settings_service._warn_persisted_beats_env({"llm_timeout_ms": 60_000})
 
     assert "llm_timeout_ms" in caplog.text
-    assert "60000" in caplog.text  # 打印的是真正生效的持久化值
+    assert "60000" not in caplog.text
+    assert "180000" not in caplog.text
 
 
 @pytest.mark.parametrize("env_value", [None, "", "   ", "60000"])
@@ -661,3 +662,36 @@ def test_startup_warns_for_secret_mismatch_without_printing_values(monkeypatch, 
     assert "llm_api_key" in caplog.text
     assert "env-key" not in caplog.text
     assert "persisted-key" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("field", "env_value", "persisted", "warns"),
+    [
+        ("llm_timeout_ms", "180000", 60_000, False),
+        ("llm_api_key", "env-key", "persisted-key", False),
+        ("embedding_model", "new-model", "old-model", True),
+    ],
+)
+def test_startup_warning_respects_llm_lock(field, env_value, persisted, warns, monkeypatch, caplog):
+    from sag_api.services import settings_service
+
+    monkeypatch.setattr(settings_service._settings, "lock_llm_config", True)
+    monkeypatch.setenv(f"SAG_{field.upper()}", env_value)
+    with caplog.at_level(logging.WARNING, logger="sag.settings"):
+        settings_service._warn_persisted_beats_env({field: persisted})
+
+    assert (field in caplog.text) is warns
+
+
+def test_startup_warning_does_not_print_endpoint_credentials(monkeypatch, caplog):
+    from sag_api.services import settings_service
+
+    monkeypatch.setenv("SAG_LLM_BASE_URL", "https://new.example.test/v1")
+    persisted = "https://user:test-password@example.test/v1?token=test-token"
+    with caplog.at_level(logging.WARNING, logger="sag.settings"):
+        settings_service._warn_persisted_beats_env({"llm_base_url": persisted})
+
+    assert "llm_base_url" in caplog.text
+    assert "test-password" not in caplog.text
+    assert "test-token" not in caplog.text
+    assert "https://" not in caplog.text

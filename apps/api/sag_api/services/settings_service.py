@@ -211,7 +211,7 @@ def apply_overrides(settings: Settings, overrides: dict) -> None:
 
 
 _ENV_VAR_PREFIX = "SAG_"
-# 值可以直接打印出来对比的字段；密钥只提示存在差异，不落任何值到日志。
+# 常规字段与密钥分别比较；告警均不打印配置值。
 _ENV_COMPARABLE_FIELDS = tuple(sorted(_FIELDS - _SECRET_FIELDS))
 
 
@@ -242,16 +242,16 @@ def _warn_persisted_beats_env(overrides: dict) -> None:
     此前这一优先级完全无声——运维改了 `.env` 重启后 `docker exec ... env` 看得到新值，
     引擎却仍在用旧值，排查成本极高（见 issue #169）。
     """
+    locked_fields = _LOCKABLE_LLM_FIELDS if _settings.lock_llm_config else frozenset()
     for field in _ENV_COMPARABLE_FIELDS:
-        if field not in overrides:
+        if field not in overrides or field in locked_fields:
             continue
         if _env_matches_persisted(field, overrides[field]) is False:
             log.warning(
-                "%s: env 与持久化 model_config 不一致，生效值以持久化配置为准（请在设置页修改）：%s",
+                "%s: env 与持久化 model_config 不一致，生效值以持久化配置为准（请在设置页修改）",
                 field,
-                overrides[field],
             )
-    for field in sorted(_SECRET_FIELDS):
+    for field in sorted(_SECRET_FIELDS - locked_fields):
         persisted = overrides.get(field)
         raw = os.environ.get(f"{_ENV_VAR_PREFIX}{field.upper()}")
         if not isinstance(persisted, str) or raw is None or not raw.strip():
