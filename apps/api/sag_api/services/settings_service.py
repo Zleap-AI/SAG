@@ -215,6 +215,17 @@ async def apply_startup_overrides(session_factory: async_sessionmaker) -> None:
         row = await _load_row(session)
         raw = dict(row.value) if row and isinstance(row.value, dict) else {}
         overrides = _normalize_overrides(raw)
+        # Read a fresh instance: the shared settings may already contain DB overrides.
+        environment = Settings()
+        locked_fields = _LOCKABLE_LLM_FIELDS if _settings.lock_llm_config else frozenset()
+        for field in sorted((_FIELDS & environment.model_fields_set & overrides.keys()) - locked_fields):
+            if getattr(environment, field) != overrides[field]:
+                # Values (including URLs) can contain credentials; only log field names.
+                log.warning(
+                    "%s: environment/.env differs from persisted model_config; "
+                    "persisted value wins (manage in Settings page)",
+                    field,
+                )
         if row is not None and overrides != raw:
             # JSON 列未使用 MutableDict，必须整体重新赋值才能可靠持久化。
             row.value = overrides

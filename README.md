@@ -205,6 +205,8 @@ The UI and services still start without model credentials. Embeddings are requir
 
 `SAG_LLM_*` values in Docker Compose or `.env` provide the initial model configuration. After an administrator saves model settings in the web UI, the persisted Settings value is used for subsequent extraction and generation jobs without a restart.
 
+At startup, SAG warns when an explicitly configured environment or `.env` field differs from the persisted model setting that takes precedence. Warnings identify fields without logging values; inspect **Settings → Models** or `/api/v1/system/model-config` for the effective configuration.
+
 To make the deployment configuration mandatory, set `SAG_LOCK_LLM_CONFIG=true`. SAG then shows the generation fields as locked in Settings and continues to use the `SAG_LLM_*` values. Change Docker Compose or `.env` and restart the API container to update a locked configuration. API keys remain deployment-managed and are never returned by the Settings API.
 
 ### Import knowledge

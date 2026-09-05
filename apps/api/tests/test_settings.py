@@ -300,6 +300,76 @@ async def _register(c, email):
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
+@pytest.mark.parametrize("source", ["environment", "dotenv"])
+@pytest.mark.parametrize(
+    ("env", "stored", "warned", "effective"),
+    [
+        ({"SAG_LLM_TIMEOUT_MS": "180000"}, {"llm_timeout_ms": 60000}, {"llm_timeout_ms"}, 60000),
+        ({"SAG_LLM_TIMEOUT_MS": "60000"}, {"llm_timeout_ms": 60000}, set(), 60000),
+        ({}, {"llm_timeout_ms": 180000}, set(), 180000),
+        ({"SAG_LLM_TIMEOUT_MS": "180000"}, {}, set(), 180000),
+        (
+            {"SAG_LLM_TIMEOUT_MS": "180000", "SAG_LOCK_LLM_CONFIG": "true"},
+            {"llm_timeout_ms": 60000}, set(), 180000,
+        ),
+        (
+            {"SAG_EMBEDDING_DIMENSIONS": "4096", "SAG_LOCK_LLM_CONFIG": "true"},
+            {"embedding_dimensions": 1024}, {"embedding_dimensions"}, 60000,
+        ),
+        (
+            {"SAG_LLM_API_KEY": "env-test-secret", "SAG_LLM_BASE_URL": "https://env-secret@example.com/v1"},
+            {"llm_api_key": "db-test-secret", "llm_base_url": "https://db-secret@example.com/v1"},
+            {"llm_api_key", "llm_base_url"}, 60000,
+        ),
+    ],
+)
+async def test_startup_warns_only_when_explicit_environment_is_overridden(
+    monkeypatch, tmp_path, caplog, env, stored, warned, effective, source,
+):
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from sag_api.db.models import Setting
+    from sag_api.services import settings_service
+
+    monkeypatch.chdir(tmp_path)
+    for key in {"SAG_LLM_TIMEOUT_MS", "SAG_LOCK_LLM_CONFIG", "SAG_EMBEDDING_DIMENSIONS"} | env.keys():
+        monkeypatch.delenv(key, raising=False)
+    if source == "environment":
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+    else:
+        (tmp_path / ".env").write_text("\n".join(f"{key}={value}" for key, value in env.items()), encoding="utf-8")
+    configured = Settings()
+    monkeypatch.setattr(settings_service, "_settings", configured)
+    monkeypatch.setattr(settings_service, "_MODEL_CONFIG_SOURCES", settings_service._MODEL_CONFIG_SOURCES.copy())
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Setting.__table__.create)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        async with sessions() as session:
+            if stored:
+                session.add(Setting(scope="global", key="model_config", value=stored))
+                await session.commit()
+        with caplog.at_level("WARNING", logger="sag.settings"):
+            await settings_service.apply_startup_overrides(sessions)
+        messages = [record.getMessage() for record in caplog.records if record.name == "sag.settings"]
+        assert {message.split(":", 1)[0] for message in messages} == warned
+        assert len(messages) == len(warned)
+        assert all("persisted value wins" in message and "Settings" in message for message in messages)
+        assert configured.llm_timeout_ms == effective
+        for key, value in stored.items():
+            if configured.lock_llm_config and key in settings_service._LOCKABLE_LLM_FIELDS:
+                continue
+            assert getattr(configured, key) == value
+        assert "env-test-secret" not in caplog.text
+        assert "db-test-secret" not in caplog.text
+        assert "env-secret" not in caplog.text
+        assert "db-secret" not in caplog.text
+    finally:
+        await engine.dispose()
+
+
 @pytest.mark.asyncio
 async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatch):
     from sqlalchemy import delete, select
