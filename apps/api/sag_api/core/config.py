@@ -237,6 +237,14 @@ class Settings(BaseSettings):
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
 
+    @field_validator("embedding_dimensions", mode="before")
+    @classmethod
+    def _blank_embedding_dimensions_as_none(cls, value: object) -> object:
+        """compose 以 ${SAG_EMBEDDING_DIMENSIONS} 透传、变量未设置时注入空串，等价于未配置。"""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("search_strategy", mode="before")
     @classmethod
     def _normalize_legacy_search_strategy(cls, value: object) -> object:

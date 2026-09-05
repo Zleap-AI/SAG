@@ -65,6 +65,20 @@ def test_engine_config_preserves_embedding_dimensions(configured_dimensions, exp
     assert build_engine_config(configured).embedding.dimensions == expected_dimensions
 
 
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_embedding_dimensions_env_means_unset(blank, monkeypatch):
+    """compose 用 ${SAG_EMBEDDING_DIMENSIONS} 透传，变量未设置时会注入空串。"""
+    monkeypatch.setenv("SAG_EMBEDDING_DIMENSIONS", blank)
+
+    assert Settings(_env_file=None).embedding_dimensions is None
+
+
+def test_embedding_dimensions_env_passes_through(monkeypatch):
+    monkeypatch.setenv("SAG_EMBEDDING_DIMENSIONS", "4096")
+
+    assert Settings(_env_file=None).embedding_dimensions == 4096
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("base_url", "model", "configured_dimensions", "expected_request_dimensions"),
