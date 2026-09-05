@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -209,6 +210,56 @@ def apply_overrides(settings: Settings, overrides: dict) -> None:
                 _MODEL_CONFIG_SOURCES[key] = "database"
 
 
+_ENV_VAR_PREFIX = "SAG_"
+# 值可以直接打印出来对比的字段；密钥只提示存在差异，不落任何值到日志。
+_ENV_COMPARABLE_FIELDS = tuple(sorted(_FIELDS - _SECRET_FIELDS))
+
+
+def _env_matches_persisted(field: str, persisted: object) -> bool | None:
+    """比对 `SAG_<FIELD>` 与持久化值：一致 True，不一致 False，未设置/无法解析返回 None。"""
+    raw = os.environ.get(f"{_ENV_VAR_PREFIX}{field.upper()}")
+    if raw is None or not raw.strip():
+        return None
+    raw = raw.strip()
+    try:
+        if isinstance(persisted, bool):
+            env_value: object = raw.lower() in {"1", "true", "yes", "on"}
+        elif isinstance(persisted, int):
+            env_value = int(raw)
+        elif isinstance(persisted, float):
+            env_value = float(raw)
+        else:
+            env_value = raw
+    except ValueError:
+        return None
+    return env_value == persisted
+
+
+def _warn_persisted_beats_env(overrides: dict) -> None:
+    """env 里显式配置、但与持久化 `model_config` 不一致时，在启动时告警。
+
+    `SAG_*` 只是**首次启动的默认值**：一旦设置页保存过，持久化配置优先并静默覆盖 env。
+    此前这一优先级完全无声——运维改了 `.env` 重启后 `docker exec ... env` 看得到新值，
+    引擎却仍在用旧值，排查成本极高（见 issue #169）。
+    """
+    for field in _ENV_COMPARABLE_FIELDS:
+        if field not in overrides:
+            continue
+        if _env_matches_persisted(field, overrides[field]) is False:
+            log.warning(
+                "%s: env 与持久化 model_config 不一致，生效值以持久化配置为准（请在设置页修改）：%s",
+                field,
+                overrides[field],
+            )
+    for field in sorted(_SECRET_FIELDS):
+        persisted = overrides.get(field)
+        raw = os.environ.get(f"{_ENV_VAR_PREFIX}{field.upper()}")
+        if not isinstance(persisted, str) or raw is None or not raw.strip():
+            continue
+        if raw.strip() != persisted:
+            log.warning("%s: env 已配置但与持久化的值不同，生效值以持久化配置为准（不打印密钥）", field)
+
+
 async def apply_startup_overrides(session_factory: async_sessionmaker) -> None:
     """启动时：把 DB 里的模型配置覆盖到 settings 单例（在构建 LLMClient 之前调用）。"""
     async with session_factory() as session:
@@ -219,6 +270,7 @@ async def apply_startup_overrides(session_factory: async_sessionmaker) -> None:
             # JSON 列未使用 MutableDict，必须整体重新赋值才能可靠持久化。
             row.value = overrides
             await session.commit()
+        _warn_persisted_beats_env(overrides)
         apply_overrides(_settings, overrides)
         preferences = await _load_row(session, _PREFERENCES_KEY)
         preference_values = dict(preferences.value) if preferences and isinstance(preferences.value, dict) else {}

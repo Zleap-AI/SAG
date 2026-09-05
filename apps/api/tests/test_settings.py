@@ -4,6 +4,8 @@
 避免跨测试泄漏（端点会就地覆盖进程级单例）。连接测试只验证「未配置」分支（无网络）。
 """
 
+import logging
+
 import httpx
 import pytest
 
@@ -620,3 +622,42 @@ async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatc
             await s.commit()
         for key, value in snapshot.items():
             setattr(settings, key, value)
+
+
+def test_startup_warns_when_env_differs_from_persisted_config(monkeypatch, caplog):
+    """env 改了、持久化 model_config 仍是旧值时必须告警（此前完全静默）。"""
+    from sag_api.services import settings_service
+
+    monkeypatch.setenv("SAG_LLM_TIMEOUT_MS", "180000")
+    with caplog.at_level(logging.WARNING, logger="sag.settings"):
+        settings_service._warn_persisted_beats_env({"llm_timeout_ms": 60_000})
+
+    assert "llm_timeout_ms" in caplog.text
+    assert "60000" in caplog.text  # 打印的是真正生效的持久化值
+
+
+@pytest.mark.parametrize("env_value", [None, "", "   ", "60000"])
+def test_startup_silent_when_env_matches_or_is_unset(env_value, monkeypatch, caplog):
+    """env 未设置或与持久化值一致时不应产生噪音。"""
+    from sag_api.services import settings_service
+
+    monkeypatch.delenv("SAG_LLM_TIMEOUT_MS", raising=False)
+    if env_value is not None:
+        monkeypatch.setenv("SAG_LLM_TIMEOUT_MS", env_value)
+    with caplog.at_level(logging.WARNING, logger="sag.settings"):
+        settings_service._warn_persisted_beats_env({"llm_timeout_ms": 60_000})
+
+    assert caplog.text == ""
+
+
+def test_startup_warns_for_secret_mismatch_without_printing_values(monkeypatch, caplog):
+    """密钥字段只提示存在差异，绝不把值写进日志。"""
+    from sag_api.services import settings_service
+
+    monkeypatch.setenv("SAG_LLM_API_KEY", "env-key")
+    with caplog.at_level(logging.WARNING, logger="sag.settings"):
+        settings_service._warn_persisted_beats_env({"llm_api_key": "persisted-key"})
+
+    assert "llm_api_key" in caplog.text
+    assert "env-key" not in caplog.text
+    assert "persisted-key" not in caplog.text
