@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import pytest
+from zleap.sag.exceptions import SagError
 
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
 from sag_api.core.errors import (
@@ -55,6 +56,34 @@ def test_map_sag_errors_catches_escaped_jsonschema_validation():
     assert err.code == "schema_validation_error"
     assert err.layer == ErrorLayer.LLM
     assert err.stage == ErrorStage.EXTRACT
+
+
+def test_map_sag_errors_honors_non_retryable_base_error():
+    from sag_api.jobs.inproc import _is_retryable
+
+    with pytest.raises(ValidationError) as exc:
+        with map_sag_errors(stage=ErrorStage.EXTRACT):
+            raise SagError("chunk validation retries exhausted", retryable=False)
+
+    err = exc.value
+    assert err.layer == ErrorLayer.ENGINE
+    assert err.stage == ErrorStage.EXTRACT
+    assert err.retryable is False
+    assert _is_retryable(err) is False
+
+
+def test_map_sag_errors_keeps_retryable_base_error_upstream():
+    from sag_api.jobs.inproc import _is_retryable
+
+    with pytest.raises(UpstreamError) as exc:
+        with map_sag_errors(stage=ErrorStage.EXTRACT):
+            raise SagError("engine temporarily unavailable", retryable=True)
+
+    err = exc.value
+    assert err.layer == ErrorLayer.ENGINE
+    assert err.stage == ErrorStage.EXTRACT
+    assert err.retryable is True
+    assert _is_retryable(err) is True
 
 
 def test_classify_llm_timeout_is_retryable():
