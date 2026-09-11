@@ -60,4 +60,16 @@ def map_sag_errors(*, stage: ErrorStage = ErrorStage.UNKNOWN):
             stage=stage,
         ) from e
     except SagError as e:
-        raise UpstreamError(str(e), layer=ErrorLayer.ENGINE, stage=stage) from e
+        if e.retryable is False:
+            raise ValidationError(
+                str(e),
+                layer=ErrorLayer.ENGINE,
+                stage=stage,
+                retryable=False,
+            ) from e
+        raise UpstreamError(
+            str(e),
+            layer=ErrorLayer.ENGINE,
+            stage=stage,
+            retryable=e.retryable,
+        ) from e
