@@ -10,7 +10,8 @@
 from __future__ import annotations
 
 import pytest
-from zleap.sag.exceptions import SagError
+from zleap.sag.exceptions import SagError, StorageError
+from zleap.sag.pipeline.errors import ExtractionError
 
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
 from sag_api.core.errors import (
@@ -58,16 +59,36 @@ def test_map_sag_errors_catches_escaped_jsonschema_validation():
     assert err.stage == ErrorStage.EXTRACT
 
 
-def test_map_sag_errors_honors_non_retryable_base_error():
+def test_map_sag_errors_keeps_non_retryable_extraction_upstream():
     from sag_api.jobs.inproc import _is_retryable
 
-    with pytest.raises(ValidationError) as exc:
+    with pytest.raises(UpstreamError) as exc:
         with map_sag_errors(stage=ErrorStage.EXTRACT):
-            raise SagError("chunk validation retries exhausted", retryable=False)
+            raise ExtractionError(
+                "chunk validation retries exhausted",
+                stage="extract",
+                code="chunk_retry_exhausted",
+            )
 
     err = exc.value
+    assert err.status_code == 502
     assert err.layer == ErrorLayer.ENGINE
     assert err.stage == ErrorStage.EXTRACT
+    assert err.retryable is False
+    assert _is_retryable(err) is False
+
+
+def test_map_sag_errors_keeps_non_retryable_storage_upstream():
+    from sag_api.jobs.inproc import _is_retryable
+
+    with pytest.raises(UpstreamError) as exc:
+        with map_sag_errors(stage=ErrorStage.PERSIST):
+            raise StorageError("database write failed")
+
+    err = exc.value
+    assert err.status_code == 502
+    assert err.layer == ErrorLayer.ENGINE
+    assert err.stage == ErrorStage.PERSIST
     assert err.retryable is False
     assert _is_retryable(err) is False
 
@@ -84,6 +105,12 @@ def test_map_sag_errors_keeps_retryable_base_error_upstream():
     assert err.stage == ErrorStage.EXTRACT
     assert err.retryable is True
     assert _is_retryable(err) is True
+
+
+def test_plain_upstream_error_keeps_legacy_retry_behavior():
+    from sag_api.jobs.inproc import _is_retryable
+
+    assert _is_retryable(UpstreamError("upstream failed")) is True
 
 
 def test_classify_llm_timeout_is_retryable():

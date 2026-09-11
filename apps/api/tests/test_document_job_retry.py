@@ -476,13 +476,16 @@ async def test_worker_commits_retryable_job_and_document_as_waiting(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_worker_keeps_non_retryable_document_failed(monkeypatch):
+async def test_worker_does_not_requeue_non_retryable_extraction(monkeypatch):
+    from zleap.sag.pipeline.errors import ExtractionError
+
     from sag_api.core.db import SessionLocal, init_db
-    from sag_api.core.errors import ValidationError
+    from sag_api.core.error_taxonomy import ErrorStage
     from sag_api.db.models import Document, Job, Source
     from sag_api.enums import JobStatus, JobType
     from sag_api.jobs.inproc import InProcessAsyncQueue
     from sag_api.jobs.tasks import TASK_HANDLERS
+    from sag_api.sag.errors import map_sag_errors
 
     await init_db()
     async with SessionLocal() as session:
@@ -515,15 +518,30 @@ async def test_worker_keeps_non_retryable_document_failed(monkeypatch):
         await session.commit()
         source_id, document_id, job_id = source.id, document.id, job.id
 
-    async def invalid_handler(session, job, **_kwargs):
+    async def non_retryable_handler(session, job, **_kwargs):
         document = await session.get(Document, job.document_id)
         document.status = DocumentStatus.FAILED
-        document.error = "invalid document"
+        document.error = "chunk validation retries exhausted"
         await session.commit()
-        raise ValidationError("invalid document")
+        with map_sag_errors(stage=ErrorStage.EXTRACT):
+            raise ExtractionError(
+                "chunk validation retries exhausted",
+                stage="extract",
+                code="chunk_retry_exhausted",
+            )
 
-    monkeypatch.setitem(TASK_HANDLERS, JobType.PROCESS_DOCUMENT, invalid_handler)
+    monkeypatch.setitem(
+        TASK_HANDLERS,
+        JobType.PROCESS_DOCUMENT,
+        non_retryable_handler,
+    )
+    scheduled: list[str] = []
     queue = InProcessAsyncQueue(SessionLocal, engine_manager=None, concurrency=1)
+    monkeypatch.setattr(
+        queue,
+        "_schedule_retry",
+        lambda queued_job_id, _delay: scheduled.append(queued_job_id),
+    )
 
     await queue._run_job(job_id)
 
@@ -531,9 +549,12 @@ async def test_worker_keeps_non_retryable_document_failed(monkeypatch):
         failed_job = await session.get(Job, job_id)
         failed_document = await session.get(Document, document_id)
         assert failed_job.status == JobStatus.FAILED
-        assert failed_job.error == "invalid document"
+        assert failed_job.error == (
+            "[chunk_retry_exhausted] chunk validation retries exhausted"
+        )
         assert failed_document.status == DocumentStatus.FAILED
-        assert failed_document.error == "invalid document"
+        assert failed_document.error == "chunk validation retries exhausted"
+        assert scheduled == []
         await session.delete(await session.get(Source, source_id))
         await session.commit()
 

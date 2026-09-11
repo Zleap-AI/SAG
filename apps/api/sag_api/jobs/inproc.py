@@ -52,6 +52,11 @@ def _now() -> datetime:
 
 def _is_retryable(exc: Exception) -> bool:
     """瞬时故障（限流/超时/上游暂不可用）可重试；输入/配置类错误不重试。"""
+    # 显式实例标记优先于异常类型兜底，避免 retryable=False 的
+    # UpstreamError 仍被 isinstance 分支误判为可重试。
+    explicit_retryable = getattr(exc, "__dict__", {}).get("retryable")
+    if isinstance(explicit_retryable, bool):
+        return explicit_retryable
     return bool(getattr(exc, "retryable", False)) or isinstance(
         exc,
         (ServiceUnavailableError, UpstreamError, OperationalError),
