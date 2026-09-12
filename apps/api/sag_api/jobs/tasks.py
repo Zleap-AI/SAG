@@ -362,6 +362,7 @@ async def _process_document_unlocked(
             should_pause=should_pause,
             max_concurrency=settings.document_extract_concurrency,
             document_title=Path(document.filename).stem.strip(),
+            original_path=document.storage_path if prepared is not None else None,
         )
         if outcome.paused:
             await _pause_or_yield()
