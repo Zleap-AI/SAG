@@ -443,7 +443,8 @@ async def test_concurrent_mineru_failure_creates_one_task_and_one_fallback(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
+@pytest.mark.parametrize("extension", ["pdf", "xls", "xlsx"])
+async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch, extension):
     from sag_api.db.models import Document, Source
     from sag_api.enums import DocumentStatus
     from sag_api.jobs import tasks
@@ -451,8 +452,8 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
     document = SimpleNamespace(
         id="doc-1",
         source_id="source-1",
-        filename="original.pdf",
-        storage_path="/uploads/original.pdf",
+        filename=f"original.{extension}",
+        storage_path=f"/uploads/original.{extension}",
         status=None,
         error="previous attempt failed",
         chunk_count=0,
@@ -496,7 +497,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
 
     async def fake_prepare(path, settings, *, state=None, on_state=None, should_pause=None):
         prepared_calls.append(path)
-        return PreparedDocument("/uploads/original.pdf.parsed.markitdown.md", "markitdown")
+        return PreparedDocument(f"/uploads/original.{extension}.parsed.markitdown.md", "markitdown")
 
     class FakeEngineManager:
         seen_path = ""
@@ -513,7 +514,9 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
             should_pause,
             max_concurrency,
             document_title,
+            original_path,
         ):
+            assert original_path == document.storage_path
             self.seen_path = path
             assert max_concurrency == tasks.settings.document_extract_concurrency
             assert document_title == "original"
@@ -544,7 +547,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
     engine = FakeEngineManager()
     await tasks._process_document_unlocked(FakeSession(), job, engine_manager=engine)
 
-    assert prepared_calls == ["/uploads/original.pdf"]
+    assert prepared_calls == [f"/uploads/original.{extension}"]
     assert stage_errors == [("loading", None), ("extracting", None)]
     assert engine.seen_path.endswith(".md")
     assert document.status.value == "ready"

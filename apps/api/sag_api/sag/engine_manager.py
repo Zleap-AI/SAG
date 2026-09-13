@@ -862,6 +862,7 @@ class EngineManager:
         should_pause: PauseCheck | None = None,
         max_concurrency: int | None = None,
         document_title: str | None = None,
+        original_path: str | None = None,
     ) -> ProcessOutcome:
         """独立处理一篇文档；同源文档可并行，chunk 完成即保存断点。"""
 
@@ -917,6 +918,7 @@ class EngineManager:
                                 on_checkpoint=on_checkpoint or ignore_checkpoint,
                                 should_pause=effective_should_pause,
                                 on_stage=on_stage,
+                                original_path=original_path,
                             )
                     return await processor.process(
                         path,
@@ -924,6 +926,7 @@ class EngineManager:
                         on_checkpoint=on_checkpoint or ignore_checkpoint,
                         should_pause=effective_should_pause,
                         on_stage=on_stage,
+                        original_path=original_path,
                     )
             except _DocumentAdmissionYielded:
                 return paused_outcome()

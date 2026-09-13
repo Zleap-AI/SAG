@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -38,9 +39,11 @@ from zleap.sag.pipeline import (
     CancellationToken,
     ChunkOptions,
     ChunkSetRef,
+    DocumentSource,
     ExtractionExecutionOptions,
     ExtractionLimits,
     ExtractionOptions,
+    FileSource,
     IndexOptions,
     SourceDescriptor,
     SourceType,
@@ -125,6 +128,7 @@ class IncrementalDocumentProcessor:
         on_checkpoint: CheckpointCallback,
         should_pause: PauseCheck,
         on_stage: StageCallback | None = None,
+        original_path: str | Path | None = None,
     ) -> ProcessOutcome:
         current = checkpoint.model_copy(deep=True)
 
@@ -134,7 +138,7 @@ class IncrementalDocumentProcessor:
                 raise RuntimeError("文档尚未切片，无法从断点继续")
             if on_stage:
                 await on_stage("loading")
-            await self._ingest(current, path, on_checkpoint)
+            await self._ingest(current, path, on_checkpoint, original_path=original_path)
 
         chunk_set = self._chunk_set_ref(current)
 
@@ -169,17 +173,33 @@ class IncrementalDocumentProcessor:
         current: ProcessCheckpoint,
         path: str | Path,
         on_checkpoint: CheckpointCallback,
+        *,
+        original_path: str | Path | None = None,
     ) -> None:
         """Parse → Chunk → Index;把 ChunkSetRef 的定位信息固化进断点。"""
         descriptor = SourceDescriptor(
             source_type=SourceType.ARTICLE,
             title=self._document_title or None,
         )
+        source: str | DocumentSource = str(path)
+        if original_path is not None and Path(original_path).suffix.lower() in {".xls", ".xlsx"}:
+            original = Path(original_path)
+            # Canonical Markdown alone cannot recover merged cells or record boundaries.
+            content = await asyncio.to_thread(Path(path).read_text, encoding="utf-8")
+            original_bytes = await asyncio.to_thread(original.read_bytes)
+            source = DocumentSource(
+                content=content,
+                original_file=FileSource(path=str(original), format_hint=original.suffix.lower().lstrip(".")),
+                original_sha256=sha256(original_bytes).hexdigest(),
+                descriptor=descriptor,
+                format_hint="markdown",
+            )
         chunk_set = await self._engine.ingest(
-            str(path),
+            source,
             descriptor=descriptor,
             chunk_options=ChunkOptions(
-                strategy=self._chunk_mode,  # type: ignore[arg-type]
+                # heading_strict in 0.12.0 drops record-group metadata.
+                strategy="standard" if isinstance(source, DocumentSource) else self._chunk_mode,  # type: ignore[arg-type]
                 max_tokens=self._chunk_max_tokens,
             ),
             index_options=IndexOptions(),
