@@ -164,6 +164,11 @@ class Settings(BaseSettings):
     embedding_base_url: str | None = "https://api.302ai.cn/v1"
     embedding_api_key: str | None = None
     embedding_dimensions: int | None = None
+    # Per-engine embedding HTTP concurrency. llama.cpp --parallel 1 cannot
+    # absorb the zleap default of 8; queued batches hit the client timeout
+    # and the indexer rolls the whole document back.
+    embedding_concurrency: int = Field(default=8, ge=1, le=64)
+    embedding_timeout: int = Field(default=60, ge=5, le=600)
 
     # ── 文档解析（进入 zleap-sag 前统一转为 Markdown）─────────────────
     # auto：PDF 优先 MinerU，未配置或 MinerU 失败时回退本地 MarkItDown。

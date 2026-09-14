@@ -65,6 +65,18 @@ def test_engine_config_preserves_embedding_dimensions(configured_dimensions, exp
     assert build_engine_config(configured).embedding.dimensions == expected_dimensions
 
 
+def test_engine_config_passes_embedding_runtime_limits():
+    configured = Settings(
+        _env_file=None,
+        embedding_concurrency=1,
+        embedding_timeout=180,
+    )
+    cfg = build_engine_config(configured)
+    assert cfg.embedding.timeout == 180
+    assert cfg.runtime_limits.embedding_concurrency == 1
+    assert cfg.runtime_limits.acquire_timeout_seconds == 180.0
+
+
 @pytest.mark.parametrize("blank", ["", "   "])
 def test_blank_embedding_dimensions_env_means_unset(blank, monkeypatch):
     """compose 用 ${SAG_EMBEDDING_DIMENSIONS} 透传，变量未设置时会注入空串。"""
