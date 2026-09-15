@@ -19,6 +19,7 @@ from zleap.sag.config import (
     PgVectorConfig,
     PostgresConnectionConfig,
     RelationalConfig,
+    RuntimeLimits,
 )
 from zleap.sag.core.ai.structured import StructuredOutputMode
 
@@ -106,6 +107,7 @@ def build_engine_config(settings: Settings, *, overrides: dict[str, Any] | None 
         api_key=settings.effective_embedding_api_key or _PLACEHOLDER,
         # 当前引擎以该值预建向量 schema；未显式配置时保持既有 1024 维默认值。
         dimensions=settings.embedding_dimensions or 1024,
+        timeout=settings.embedding_timeout,
     )
 
     return EngineConfig(
@@ -116,4 +118,8 @@ def build_engine_config(settings: Settings, *, overrides: dict[str, Any] | None 
         vector=_build_vector(settings),
         data_dir=str(overrides.get("data_dir") or settings.data_dir),
         language=overrides.get("language", settings.sag_language),
+        runtime_limits=RuntimeLimits(
+            embedding_concurrency=settings.embedding_concurrency,
+            acquire_timeout_seconds=float(max(30, settings.embedding_timeout)),
+        ),
     )
