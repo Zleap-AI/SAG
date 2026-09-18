@@ -72,6 +72,24 @@ def test_chinese_query_segmentation_can_be_disabled(monkeypatch):
     assert Settings(_env_file=None).search_chinese_segmentation_enabled is False
 
 
+def test_agent_tool_timeout_defaults_to_30s_and_accepts_env(monkeypatch):
+    monkeypatch.delenv("SAG_AGENT_TOOL_TIMEOUT_SECONDS", raising=False)
+    assert Settings(_env_file=None).agent_tool_timeout_seconds == 30.0
+    monkeypatch.setenv("SAG_AGENT_TOOL_TIMEOUT_SECONDS", "300")
+    assert Settings(_env_file=None).agent_tool_timeout_seconds == 300.0
+
+
+def test_runtime_factory_applies_agent_tool_timeout_seconds():
+    from sag_api.runtime import _RuntimeFactory
+
+    factory = _RuntimeFactory(
+        Settings(_env_file=None, agent_tool_timeout_seconds=300),
+        session_factory=None,
+    )
+    runtime = factory.create_agent_runtime()
+    assert runtime.config.tool_timeout_seconds == 300.0
+
+
 def test_timezone_defaults_to_beijing_and_rejects_invalid(monkeypatch):
     monkeypatch.delenv("SAG_TIMEZONE", raising=False)
     assert Settings(_env_file=None).timezone == "Asia/Shanghai"

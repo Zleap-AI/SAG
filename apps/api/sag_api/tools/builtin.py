@@ -229,8 +229,8 @@ class SearchContextTool(Tool):
                 ctx.engine_manager,
                 ctx.sources,
                 query,
-                # 问答工具有独立的 30 秒执行预算。默认采用与搜索页“快速”
-                # 一致的批量向量召回，并叠加并行词法与事项召回；人格可显式覆盖。
+                # 问答工具有独立的执行预算（SAG_AGENT_TOOL_TIMEOUT_SECONDS）。
+                # 默认采用与搜索页“快速”一致的批量向量召回，并叠加并行词法与事项召回；人格可显式覆盖。
                 strategy=persona.get("search_strategy") or _DEFAULT_KNOWLEDGE_SEARCH_STRATEGY,
                 top_k=limit,
             ),
