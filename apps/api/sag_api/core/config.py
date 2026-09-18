@@ -225,6 +225,8 @@ class Settings(BaseSettings):
 
     # ── Agent 循环 ──────────────────────────────────────────────────────
     agent_max_steps: int = 6  # 工具调用最大轮数（多轮检索的上界）
+    # 单个工具（含 search_context）执行上限；超时后 Agent 记 tool_timeout 并继续。
+    agent_tool_timeout_seconds: float = Field(default=30.0, ge=5, le=600)
     history_keep_recent: int = 8  # 历史压缩时原文保留的最近消息数
     # 只装载最近有界窗口；更旧对话应进入滚动摘要，不做全表回放。
     history_load_limit: int = Field(default=200, ge=1, le=1000)

@@ -7,7 +7,7 @@ from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from typing import Any
 
-from sag_agent import AgentRuntime
+from sag_agent import AgentRuntime, RuntimeConfig
 from sag_api.core.litellm_policy import install_litellm_policy, uninstall_litellm_policy
 from sag_api.core.logging import get_logger
 from sag_api.generation import LLMClient
@@ -48,7 +48,7 @@ class _RuntimeFactory:
         return LLMClient(settings)
 
     def create_agent_runtime(self) -> AgentRuntime:
-        return AgentRuntime()
+        return AgentRuntime(RuntimeConfig(tool_timeout_seconds=float(self.settings.agent_tool_timeout_seconds)))
 
     def create_job_queue(
         self,
