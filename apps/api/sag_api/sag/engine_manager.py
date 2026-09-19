@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from zleap.sag import DataEngine
-from zleap.sag.pipeline import SearchOptions, SearchRequest, SearchScope
+from zleap.sag.pipeline import SearchOptions, SearchOutputOptions, SearchRequest, SearchScope
 
 from sag_api.core.config import Settings
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
@@ -914,6 +914,7 @@ class EngineManager:
         source: Source | None,
         strategy: str,
         top_k: int,
+        include_ranked_candidates: bool = False,
     ) -> SearchOutcome:
         """单次检索（带每源时限）。超时抛 asyncio.TimeoutError。
 
@@ -935,6 +936,9 @@ class EngineManager:
                                 strategy=engine_strategy,
                                 top_k=top_k,
                                 return_type="chunk",
+                                output=SearchOutputOptions(
+                                    include_ranked_candidates=include_ranked_candidates,
+                                ),
                             ),
                         )
                     )
@@ -960,6 +964,7 @@ class EngineManager:
         source: Source | None = None,
         strategy: str | None = None,
         top_k: int | None = None,
+        include_ranked_candidates: bool = False,
     ) -> SearchOutcome:
         """检索（韧性版）：精确模式超时/失败/空结果时回退快速模式。
 
@@ -968,8 +973,19 @@ class EngineManager:
         """
         strategy = self._effective_search_strategy(strategy)
         top_k = top_k or self._settings.search_top_k
+        search_options: dict[str, Any] = {
+            "source": source,
+            "top_k": top_k,
+        }
+        if include_ranked_candidates:
+            search_options["include_ranked_candidates"] = True
         try:
-            outcome = await self._search_raw(source_config_id, query, source=source, strategy=strategy, top_k=top_k)
+            outcome = await self._search_raw(
+                source_config_id,
+                query,
+                strategy=strategy,
+                **search_options,
+            )
             if outcome.sections or strategy == "vector" or not self._settings.search_fallback_vector:
                 return SearchOutcome(
                     query=outcome.query,
@@ -1000,7 +1016,12 @@ class EngineManager:
                 strategy,
                 getattr(e, "message", None) or e,
             )
-        outcome = await self._search_raw(source_config_id, query, source=source, strategy="vector", top_k=top_k)
+        outcome = await self._search_raw(
+            source_config_id,
+            query,
+            strategy="vector",
+            **search_options,
+        )
         return SearchOutcome(
             query=outcome.query,
             sections=outcome.sections,
@@ -1020,6 +1041,7 @@ class EngineManager:
         strategy: str | None = None,
         top_k: int | None = None,
         exclude_source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
+        include_ranked_candidates: bool = False,
     ) -> SearchOutcome:
         """在统一候选与并发边界内检索；单源失败不影响整体结果。"""
         strategy = self._effective_search_strategy(strategy)
@@ -1029,7 +1051,18 @@ class EngineManager:
         targets = targets[: self._settings.search_source_candidate_limit]
         has_exclusions = any(source_ids for source_ids in (exclude_source_ids_by_config or {}).values())
 
-        if (strategy == "vector" or has_exclusions) and targets:
+        ranked_candidates_unavailable = include_ranked_candidates and has_exclusions
+
+        def with_ranked_candidates_diagnostic(stats: dict[str, Any]) -> dict[str, Any]:
+            if not ranked_candidates_unavailable:
+                return stats
+            return {
+                **stats,
+                "ranked_candidates": [],
+                "ranked_candidates_unavailable_reason": "document_source_exclusions",
+            }
+
+        if ((strategy == "vector" and not include_ranked_candidates) or has_exclusions) and targets:
             try:
                 outcome = await self._search_chunk_vectors(
                     targets,
@@ -1042,12 +1075,20 @@ class EngineManager:
                     return SearchOutcome(
                         query=outcome.query,
                         sections=outcome.sections,
-                        stats={
-                            **outcome.stats,
-                            "requested_strategy": strategy,
-                            "effective_strategy": "vector",
-                            "fallback_used": True,
-                        },
+                        stats=with_ranked_candidates_diagnostic(
+                            {
+                                **outcome.stats,
+                                "requested_strategy": strategy,
+                                "effective_strategy": "vector",
+                                "fallback_used": True,
+                            }
+                        ),
+                    )
+                if ranked_candidates_unavailable:
+                    return SearchOutcome(
+                        query=outcome.query,
+                        sections=outcome.sections,
+                        stats=with_ranked_candidates_diagnostic(dict(outcome.stats)),
                     )
                 return outcome
             except asyncio.CancelledError:
@@ -1060,15 +1101,19 @@ class EngineManager:
                 return SearchOutcome(
                     query=query,
                     sections=[],
-                    stats={
-                        "sources": len(targets),
-                        "sources_requested": requested_sources,
-                        "source_limit_applied": requested_sources > len(targets),
-                        "candidates": 0,
-                        "chunk_recall": (
-                            "batch-vector-prefilter-timeout" if has_exclusions else "batch-vector-timeout"
-                        ),
-                    },
+                    stats=with_ranked_candidates_diagnostic(
+                        {
+                            "sources": len(targets),
+                            "sources_requested": requested_sources,
+                            "source_limit_applied": requested_sources > len(targets),
+                            "candidates": 0,
+                            "chunk_recall": (
+                                "batch-vector-prefilter-timeout"
+                                if has_exclusions
+                                else "batch-vector-timeout"
+                            ),
+                        }
+                    ),
                 )
             except Exception as error:  # noqa: BLE001
                 if has_exclusions:
@@ -1079,16 +1124,18 @@ class EngineManager:
                     return SearchOutcome(
                         query=query,
                         sections=[],
-                        stats={
-                            "sources": len(targets),
-                            "sources_requested": requested_sources,
-                            "source_limit_applied": requested_sources > len(targets),
-                            "candidates": 0,
-                            "requested_strategy": strategy,
-                            "effective_strategy": "vector",
-                            "fallback_used": True,
-                            "chunk_recall": "batch-vector-prefilter-failed",
-                        },
+                        stats=with_ranked_candidates_diagnostic(
+                            {
+                                "sources": len(targets),
+                                "sources_requested": requested_sources,
+                                "source_limit_applied": requested_sources > len(targets),
+                                "candidates": 0,
+                                "requested_strategy": strategy,
+                                "effective_strategy": "vector",
+                                "fallback_used": True,
+                                "chunk_recall": "batch-vector-prefilter-failed",
+                            }
+                        ),
                     )
                 # Keep the established per-source engine path as a compatibility
                 # fallback for storage providers that cannot do a filtered batch kNN.
@@ -1099,7 +1146,14 @@ class EngineManager:
         async def _one(scid: str, source: Source | None):
             async with semaphore:
                 try:
-                    outcome = await self.search(scid, query, source=source, strategy=strategy, top_k=per_source_k)
+                    outcome = await self.search(
+                        scid,
+                        query,
+                        source=source,
+                        strategy=strategy,
+                        top_k=per_source_k,
+                        include_ranked_candidates=include_ranked_candidates,
+                    )
                     return scid, outcome
                 except Exception as e:  # noqa: BLE001
                     log.warning("fan-out 检索失败 %s：%s", scid, getattr(e, "message", None) or e)
@@ -1125,31 +1179,44 @@ class EngineManager:
                 else:
                     loose.append(sec)
         merged = sorted([*best.values(), *loose], key=lambda x: x.score, reverse=True)[:top_k]
-        return SearchOutcome(
-            query=query,
-            sections=merged,
-            stats={
-                "sources": len(targets),
-                "sources_requested": requested_sources,
-                "source_limit_applied": requested_sources > len(targets),
-                "candidates": len(best) + len(loose),
-                "requested_strategy": strategy,
-                "effective_strategy": next(
-                    (
-                        outcome.stats.get("effective_strategy", strategy)
-                        for result in results
-                        if result is not None
-                        for _, outcome in [result]
-                    ),
-                    strategy,
-                ),
-                "fallback_used": any(
-                    bool(outcome.stats.get("fallback_used"))
+        ranked_candidates: list[dict[str, Any]] = []
+        if include_ranked_candidates:
+            for result in results:
+                if result is None:
+                    continue
+                scid, outcome = result
+                for item in outcome.stats.get("ranked_candidates", []):
+                    candidate = dict(item)
+                    candidate.setdefault("source_config_id", scid)
+                    ranked_candidates.append(candidate)
+        stats: dict[str, Any] = {
+            "sources": len(targets),
+            "sources_requested": requested_sources,
+            "source_limit_applied": requested_sources > len(targets),
+            "candidates": len(best) + len(loose),
+            "requested_strategy": strategy,
+            "effective_strategy": next(
+                (
+                    outcome.stats.get("effective_strategy", strategy)
                     for result in results
                     if result is not None
                     for _, outcome in [result]
                 ),
-            },
+                strategy,
+            ),
+            "fallback_used": any(
+                bool(outcome.stats.get("fallback_used"))
+                for result in results
+                if result is not None
+                for _, outcome in [result]
+            ),
+        }
+        if include_ranked_candidates:
+            stats["ranked_candidates"] = ranked_candidates
+        return SearchOutcome(
+            query=query,
+            sections=merged,
+            stats=stats,
         )
 
     async def _search_chunk_vectors(
