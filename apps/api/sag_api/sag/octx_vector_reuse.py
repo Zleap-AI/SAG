@@ -15,6 +15,7 @@ from sag_api.sag.octx_vector_protocol import (
     input_sha256,
     render_recipe_input,
     vector_profile,
+    vector_profile_from_identity,
 )
 
 
@@ -152,7 +153,16 @@ def prepare_vector_reuse(
     embedding_client: Any,
     *,
     prevalidated_vector_valid: bool | None = None,
+    local_identity: dict[str, Any] | None = None,
 ) -> set[str]:
+    """决定包内哪些向量角色可以直接复用。
+
+    ``local_identity`` 是**当前配置**解析出的 embedding 身份（见
+    ``octx_vector_protocol.configured_embedding_identity``）。生产路径必须传入：
+    ``engine.resources.embedding`` 是 ``LimitedEmbeddingAdapter``，不代理
+    ``dimensions``，仅凭 ``embedding_client`` 取属性会静默拿到 0 / None，
+    从而永远禁用复用且不报错。省略时保留旧的运行时对象取值路径。
+    """
     if prevalidated_vector_valid is False:
         return set()
     if prevalidated_vector_valid is None:
@@ -179,20 +189,31 @@ def prepare_vector_reuse(
             # A malformed profiles document disables reuse entirely; the vector
             # rebuild stage regenerates every role from scratch.
             return set()
-        try:
-            # The reuse decision must compare against the *current* embedding
-            # configuration, never against dimensions declared by the package.
-            # A mismatched or undetectable local dimension simply disables reuse.
-            local_dimensions = int(getattr(embedding_client, "dimensions", 0) or 0)
-        except (TypeError, ValueError):
-            local_dimensions = 0
+        if local_identity is not None:
+            try:
+                local_dimensions = int(local_identity.get("dimensions") or 0)
+            except (TypeError, ValueError):
+                local_dimensions = 0
+        else:
+            try:
+                # 回退路径：仅当调用方传入的对象确实暴露 dimensions 时可用。
+                local_dimensions = int(getattr(embedding_client, "dimensions", 0) or 0)
+            except (TypeError, ValueError):
+                local_dimensions = 0
         for profile in profiles:
             if not isinstance(profile, dict) or profile.get("reuse_policy", "compatible") != "compatible":
                 continue
             try:
                 role = str(profile["role"])
                 dimensions = int(profile["dimensions"])
-                local_profile = vector_profile(role, embedding_client, local_dimensions)
+                # 复用判定必须对比*当前*配置，绝不采信包内声明的维度。
+                # 维度缺失或不一致就禁用复用，由重建阶段重算该角色。
+                if local_identity is not None:
+                    local_profile = vector_profile_from_identity(
+                        role, local_identity, local_dimensions
+                    )
+                else:
+                    local_profile = vector_profile(role, embedding_client, local_dimensions)
             except (KeyError, TypeError, ValueError):
                 # Malformed or incomplete profile identity: never reuse, let the
                 # vector rebuild stage regenerate this role from scratch.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from io import BytesIO
 
@@ -9,6 +10,25 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.datastructures import UploadFile
 from zleap.sag.db.schema import create_missing_relation_tables
+
+
+class DeterministicEmbedding:
+    base_url = "https://embedding.invalid/v1"
+    dimensions = 16
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+        self.calls: list[list[str]] = []
+
+    @classmethod
+    def vector_for(cls, model: str, text: str) -> list[float]:
+        digest = hashlib.sha256(f"{model}\0{text}".encode()).digest()
+        return [digest[index] / 255.0 for index in range(cls.dimensions)]
+
+    async def batch_generate(self, texts):
+        values = list(texts)
+        self.calls.append(values)
+        return [self.vector_for(self.model, text) for text in values]
 
 
 def test_vector_progress_gate_throttles_same_stage_but_flushes_transitions() -> None:
@@ -2464,3 +2484,448 @@ async def test_cancelled_export_cannot_be_overwritten_by_final_ready_commit(
         persisted = await verify.get(OctxTransfer, transfer_id)
         assert persisted.status is OctxTransferStatus.CANCELLED
         assert persisted.cancellation_requested is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("producer_model", "consumer_model", "expect_reuse"),
+    [
+        ("embedding/a", "embedding/a", True),
+        ("embedding/a", "embedding/b", False),
+    ],
+    ids=["compatible-reuse", "incompatible-regenerate"],
+)
+async def test_octx_export_import_reexport_records_the_active_vector_identity(
+    transfer_sessions,
+    tmp_path,
+    monkeypatch,
+    producer_model,
+    consumer_model,
+    expect_reuse,
+):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from octx import open_octx, validate_octx
+    from zleap.sag.config import LanceDBVectorConfig
+    from zleap.sag.core.adapters.defaults import LanceDBVectorStore
+    from zleap.sag.core.adapters.models import VectorQuery
+    from zleap.sag.core.storage.lancedb_store import LanceDBStore
+    from zleap.sag.db.models import (
+        Article,
+        ArticleParseStatus,
+        DataSource,
+        Entity,
+        EntityType,
+        EventEntity,
+        SourceChunk,
+        SourceEvent,
+    )
+
+    from sag_api.core.config import Settings, settings
+    from sag_api.db.models import (
+        Document,
+        OctxRelease,
+        OctxSourceBinding,
+        Source,
+    )
+    from sag_api.enums import (
+        DocumentStatus,
+        OctxImportAction,
+        OctxReleaseOrigin,
+        OctxTransferStatus,
+    )
+    from sag_api.octx.runner import OctxRunner
+    from sag_api.octx.storage import OctxStorage
+    from sag_api.sag.octx_vector_protocol import embedding_identity
+    from sag_api.sag.octx_vector_rebuilder import rebuild_vectors
+    from sag_api.services.octx_conflict_service import ImportDecision
+    from sag_api.services.octx_transfer_service import (
+        create_export_transfer,
+        create_import_transfer,
+        execute_export,
+        execute_import,
+        preflight_import,
+        submit_import_decision,
+    )
+
+    class Queue:
+        ids: list[str] = []
+
+        async def enqueue(self, job_id: str) -> None:
+            self.ids.append(job_id)
+
+    def vector_store(path):
+        store = LanceDBVectorStore(
+            LanceDBVectorConfig(path=str(path)),
+            storage_mode="normal",
+            embedding_dimensions=16,
+        )
+        assert isinstance(store._raw(), LanceDBStore)
+        return store
+
+    producer_engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'producer.db'}"
+    )
+    shadow_engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'shadow.db'}"
+    )
+    producer_sessions = async_sessionmaker(producer_engine, expire_on_commit=False)
+    shadow_sessions = async_sessionmaker(shadow_engine, expire_on_commit=False)
+    await create_missing_relation_tables(producer_engine, "normal")
+    await create_missing_relation_tables(shadow_engine, "normal")
+    producer_vectors = vector_store(tmp_path / "producer-lancedb")
+    shadow_vectors = vector_store(tmp_path / "shadow-lancedb")
+    producer_embedding = DeterministicEmbedding(producer_model)
+    consumer_embedding = DeterministicEmbedding(consumer_model)
+    producer_identity = embedding_identity(producer_embedding)
+    stale_identity = embedding_identity(DeterministicEmbedding("embedding/stale"))
+    assert producer_identity is not None and stale_identity is not None
+
+    producer_config_id = "producer-config"
+    article_id = str(uuid4())
+    chunk_id = str(uuid4())
+    event_id = str(uuid4())
+    entity_id = str(uuid4())
+    entity_type_id = str(uuid4())
+    relation_id = str(uuid4())
+    async with producer_sessions() as sag_session:
+        sag_session.add(DataSource(id=producer_config_id, name="Producer"))
+        sag_session.add(
+            Article(
+                id=article_id,
+                data_source_id=producer_config_id,
+                title="Vector reuse",
+                content="# Vector reuse\n\nRound trip body",
+                status="COMPLETED",
+                parse_status=ArticleParseStatus.COMPLETED,
+            )
+        )
+        sag_session.add(
+            EntityType(
+                id=entity_type_id,
+                scope="source",
+                data_source_id=producer_config_id,
+                type="topic",
+                name="Topic",
+                weight=1,
+                similarity_threshold=0.8,
+            )
+        )
+        await sag_session.flush()
+        sag_session.add_all(
+            [
+                SourceChunk(
+                    id=chunk_id,
+                    data_source_id=producer_config_id,
+                    source_type="ARTICLE",
+                    source_id=article_id,
+                    article_id=article_id,
+                    heading="Vector reuse",
+                    content="Round trip body",
+                    rank=0,
+                    chunk_length=15,
+                ),
+                Entity(
+                    id=entity_id,
+                    data_source_id=producer_config_id,
+                    entity_type_id=entity_type_id,
+                    type="topic",
+                    name="OCTX",
+                    normalized_name="octx",
+                ),
+                SourceEvent(
+                    id=event_id,
+                    data_source_id=producer_config_id,
+                    source_type="ARTICLE",
+                    source_id=article_id,
+                    article_id=article_id,
+                    chunk_id=chunk_id,
+                    title="Reusable event",
+                    summary="Summary",
+                    content="Round trip body",
+                    rank=0,
+                    level=0,
+                ),
+            ]
+        )
+        await sag_session.flush()
+        sag_session.add(
+            EventEntity(
+                id=relation_id,
+                event_id=event_id,
+                entity_id=entity_id,
+                description="mentions",
+                weight=1,
+            )
+        )
+        await sag_session.commit()
+
+    producer_counts = await rebuild_vectors(
+        producer_config_id,
+        {},
+        session_factory=producer_sessions,
+        embedding_client=producer_embedding,
+        vector_store=producer_vectors,
+        local_embedding_identity=producer_identity,
+    )
+    assert producer_counts == {
+        "chunks": 1,
+        "events": 1,
+        "entities": 1,
+        "event_entities": 1,
+    }
+
+    storage = OctxStorage(tmp_path / "octx", max_upload_bytes=10 * 1024 * 1024)
+    runner = OctxRunner(Settings(_env_file=None, octx_worker_timeout_seconds=30))
+    queue = Queue()
+    producer_file = tmp_path / "producer.md"
+    producer_file.write_text("# Vector reuse\n\nRound trip body", encoding="utf-8")
+
+    class ProducerEngine:
+        @asynccontextmanager
+        async def maintenance(self, source_config_id, source=None):
+            assert source_config_id == producer_config_id
+            yield object()
+
+    monkeypatch.setattr(settings, "embedding_model", consumer_model)
+    monkeypatch.setattr(settings, "embedding_base_url", consumer_embedding.base_url)
+    monkeypatch.setattr(settings, "embedding_schema_dimensions", 16)
+    monkeypatch.setattr(settings, "embedding_dimensions", None)
+    monkeypatch.setattr(
+        settings,
+        "secret_key",
+        "octx-roundtrip-secret-at-least-32-bytes",
+    )
+
+    try:
+        async with transfer_sessions() as session:
+            producer_source = Source(
+                name="Producer",
+                sag_source_config_id=producer_config_id,
+                config={
+                    "octx_vector_identity_state": "known",
+                    "octx_vector_identity": producer_identity,
+                },
+            )
+            session.add(producer_source)
+            await session.flush()
+            session.add(
+                Document(
+                    source_id=producer_source.id,
+                    filename="producer.md",
+                    storage_path=str(producer_file),
+                    status=DocumentStatus.READY,
+                    sag_source_id=article_id,
+                    is_active=True,
+                )
+            )
+            await session.commit()
+
+            export_transfer = await create_export_transfer(
+                session,
+                producer_source.id,
+                version="1.0.0",
+                job_queue=queue,
+            )
+            await execute_export(
+                session,
+                export_transfer,
+                storage=storage,
+                runner=runner,
+                engine_manager=ProducerEngine(),
+                sag_session_factory=producer_sessions,
+                embedding_client=producer_embedding,
+                vector_store=producer_vectors,
+                attempt=1,
+            )
+            exported_release = await session.get(OctxRelease, export_transfer.release_id)
+            exported_path = storage.resolve_key(exported_release.artifact_key)
+            exported_bytes = exported_path.read_bytes()
+            validation = validate_octx(exported_path)
+            assert validation.valid and validation.fully_validated
+            with open_octx(exported_path) as package:
+                profiles = json.loads(
+                    package.read_payload("vectors/profiles.json")
+                )["profiles"]
+            assert {profile.get("reuse_policy", "compatible") for profile in profiles} == {
+                "compatible"
+            }
+            assert {profile["model"] for profile in profiles} == {producer_model}
+
+            exported_asset_id = exported_release.asset_id
+            producer_binding = await session.get(OctxSourceBinding, producer_source.id)
+            await session.delete(producer_binding)
+            export_transfer.release_id = None
+            await session.flush()
+            await session.delete(exported_release)
+            await session.flush()
+            exported_path.unlink()
+            old_release = OctxRelease(
+                asset_id=exported_asset_id,
+                version="0.9.0",
+                package_digest="sha256:" + "0" * 64,
+                manifest={},
+                artifact_key="releases/old-target.octx",
+                created_by=OctxReleaseOrigin.IMPORT,
+            )
+            target_source = Source(
+                name="Existing target",
+                sag_source_config_id="stale-target-config",
+                config={
+                    "octx_vector_identity_state": "known",
+                    "octx_vector_identity": stale_identity,
+                },
+            )
+            session.add_all([old_release, target_source])
+            await session.flush()
+            old_document = Document(
+                source_id=target_source.id,
+                filename="stale.md",
+                storage_path=str(producer_file),
+                status=DocumentStatus.READY,
+                sag_source_id=str(uuid4()),
+                is_active=True,
+            )
+            session.add_all(
+                [
+                    old_document,
+                    OctxSourceBinding(
+                        source_id=target_source.id,
+                        asset_id=exported_asset_id,
+                        active_release_id=old_release.id,
+                        content_revision=1,
+                        released_revision=1,
+                    ),
+                ]
+            )
+            await session.commit()
+
+            import_transfer = await create_import_transfer(
+                session,
+                UploadFile(
+                    filename="producer.octx",
+                    file=BytesIO(exported_bytes),
+                ),
+                storage=storage,
+                job_queue=queue,
+            )
+            await preflight_import(
+                session,
+                import_transfer,
+                storage=storage,
+                runner=runner,
+                job_queue=queue,
+            )
+            assert import_transfer.status is OctxTransferStatus.DECISION_REQUIRED
+            import_transfer = await submit_import_decision(
+                session,
+                import_transfer.id,
+                ImportDecision(
+                    action=OctxImportAction.UPDATE,
+                    decision_token=import_transfer.checkpoint["decision_token"],
+                    target_source_id=target_source.id,
+                ),
+                job_queue=queue,
+            )
+            assert import_transfer.status is OctxTransferStatus.QUEUED
+
+            smoke_identity_models: list[str] = []
+
+            class ImportEngine:
+                async def get_sag_session_factory(self, source_config_id):
+                    return shadow_sessions
+
+                async def get_sag_embedding(self, source_config_id):
+                    return consumer_embedding
+
+                async def _vector_store(self, source_config_id):
+                    return shadow_vectors
+
+                async def provision(self, source_config_id):
+                    return None
+
+                async def release(self, source_config_id):
+                    return None
+
+                async def get_chunk(self, source_config_id, requested_chunk_id, **_kwargs):
+                    async with shadow_sessions() as shadow_session:
+                        chunk = await shadow_session.get(SourceChunk, requested_chunk_id)
+                    return chunk
+
+                async def search(self, source_config_id, query, **_kwargs):
+                    async with transfer_sessions() as check_session:
+                        persisted_target = await check_session.get(Source, target_source.id)
+                        smoke_identity_models.append(
+                            persisted_target.config["octx_vector_identity"]["model"]
+                        )
+                    hits = await shadow_vectors.query(
+                        "source_chunks",
+                        VectorQuery(
+                            vector=DeterministicEmbedding.vector_for(consumer_model, query),
+                            vector_field="content_vector",
+                            limit=1,
+                        ),
+                    )
+                    assert hits
+                    return SimpleNamespace(sections=[], stats={"hits": len(hits)})
+
+                @asynccontextmanager
+                async def maintenance(self, source_config_id, source=None):
+                    yield object()
+
+            import_engine = ImportEngine()
+            await execute_import(
+                session,
+                import_transfer,
+                storage=storage,
+                engine_manager=import_engine,
+                sag_session_factory=shadow_sessions,
+                vector_rebuilder=rebuild_vectors,
+                attempt=1,
+            )
+            assert smoke_identity_models == ["embedding/stale"]
+            assert (consumer_embedding.calls == []) is expect_reuse
+
+            await session.refresh(target_source)
+            assert target_source.config["octx_vector_identity_state"] == "known"
+            assert target_source.config["octx_vector_identity"]["model"] == consumer_model
+
+            reexport = await create_export_transfer(
+                session,
+                target_source.id,
+                version=None,
+                job_queue=queue,
+            )
+            await execute_export(
+                session,
+                reexport,
+                storage=storage,
+                runner=runner,
+                engine_manager=import_engine,
+                sag_session_factory=shadow_sessions,
+                embedding_client=consumer_embedding,
+                vector_store=shadow_vectors,
+                attempt=1,
+            )
+            reexport_release = await session.get(OctxRelease, reexport.release_id)
+            reexport_path = storage.resolve_key(reexport_release.artifact_key)
+            reexport_validation = validate_octx(reexport_path)
+            assert reexport_validation.valid and reexport_validation.fully_validated
+            with open_octx(reexport_path) as package:
+                reexport_profiles = json.loads(
+                    package.read_payload("vectors/profiles.json")
+                )["profiles"]
+            assert {
+                profile.get("reuse_policy", "compatible")
+                for profile in reexport_profiles
+            } == {"compatible"}
+            assert {profile["model"] for profile in reexport_profiles} == {
+                consumer_model
+            }
+    finally:
+        await producer_vectors.close()
+        await shadow_vectors.close()
+        await producer_engine.dispose()
+        await shadow_engine.dispose()
