@@ -27,9 +27,15 @@ zleap 职责(0.8.2 已内置,不再由 SAG 实现):实体数契约
   但采纳它需要换成调用方自有 id 与可重放的内联正文，是一次驱动层重写，已单独立项。
 - REQ-4/5（schema 强化与 SQLite int64 防护）：0.7.1 的
   ``_strengthen_event_entity_schema`` / ``_install_sqlite_integer_guard``
-  monkeypatch 目标在 0.8.2 已不可达。
+  monkeypatch 目标在 0.8.2 已不可达，shim 删除。
   **0.13.0 已内置**：越界整数降级为 ``text`` 并记 ``entity_int64_overflow`` 告警，
-  本项能力就此结清；SAG 侧既有兼容死代码另行清理。
+  本项就此结清（SAG 侧无需残留代码）。
+- REQ-6（provider 降级）：旧 ``compat.py`` 的安装函数自 0.8.2 起也只是空操作，
+  已随本次升级删除。该能力由 SAG 自己的 LiteLLM seam 提供
+  （``core/litellm_policy.py``）。
+- REQ-7（引擎耗时统计）：旧的检索链 monkey-patch 目标是并不存在的模块，从未生效，
+  已删除。要让耗时真正有值应改用 zleap 公开的
+  ``SearchOptions(include_stage_stats=True)``（单独事项）。
 """
 
 from __future__ import annotations
