@@ -19,6 +19,18 @@ async def _register(client: httpx.AsyncClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
+def test_ranked_candidates_are_opt_in_on_native_search_requests() -> None:
+    from sag_api.schemas.search import EvalCompareRequest, GlobalSearchRequest, SearchRequest
+
+    assert SearchRequest(query="q").include_ranked_candidates is False
+    assert GlobalSearchRequest(query="q").include_ranked_candidates is False
+    assert EvalCompareRequest(query="q", strategies=["vector", "multi"]).include_ranked_candidates is False
+    assert GlobalSearchRequest(
+        query="q",
+        include_ranked_candidates=True,
+    ).include_ranked_candidates is True
+
+
 @pytest.mark.asyncio
 async def test_global_search_forwards_validated_strategy():
     from sag_api.core.deps import get_engine_manager
@@ -36,6 +48,7 @@ async def test_global_search_forwards_validated_strategy():
         strategy: str | None = None
         top_k: int | None = None
         event_top_k: int | None = None
+        include_ranked_candidates = False
 
         def __init__(self):
             self.started: set[str] = set()
@@ -50,10 +63,19 @@ async def test_global_search_forwards_validated_strategy():
         async def provision(self, *_args):
             return None
 
-        async def search_many(self, targets, query, *, strategy=None, top_k=None):
+        async def search_many(
+            self,
+            targets,
+            query,
+            *,
+            strategy=None,
+            top_k=None,
+            include_ranked_candidates=False,
+        ):
             await self._meet_parallel_gate("chunks")
             self.strategy = strategy
             self.top_k = top_k
+            self.include_ranked_candidates = include_ranked_candidates
             source_config_id = targets[0][0]
             return SearchOutcome(
                 query=query,
@@ -66,7 +88,19 @@ async def test_global_search_forwards_validated_strategy():
                         source_config_id=source_config_id,
                     )
                 ],
-                stats={"strategy": strategy},
+                stats={
+                    "strategy": strategy,
+                    "ranked_candidates": [
+                        {
+                            "rank": 1,
+                            "chunk_id": "candidate-1",
+                            "title": "候选标题",
+                            "score": 0.91,
+                            "recall_channels": ["event_vector"],
+                            "source_config_id": source_config_id,
+                        }
+                    ],
+                },
             )
 
         async def search_event_scores(self, query, sources_by_config, *, limit=None):
@@ -129,6 +163,7 @@ async def test_global_search_forwards_validated_strategy():
                         "source_ids": [source.json()["id"]],
                         "strategy": "multi",
                         "top_k": 7,
+                        "include_ranked_candidates": True,
                     },
                 )
                 assert response.status_code == 200, response.text
@@ -136,6 +171,7 @@ async def test_global_search_forwards_validated_strategy():
                 # 对外仍返回 7 条；内部有界扩大候选池，之后统一重排与过滤。
                 assert engine.top_k == 21
                 assert engine.event_top_k == 7
+                assert engine.include_ranked_candidates is True
                 assert engine.started == {"chunks", "events"}
                 assert response.json()["stats"]["strategy"] == "multi"
                 result = response.json()
@@ -144,6 +180,7 @@ async def test_global_search_forwards_validated_strategy():
                 assert result["stats"]["event_candidates"] == 1
                 assert result["stats"]["event_hits"] == 1
                 assert result["stats"]["event_recall"] == "vector+chunk"
+                assert result["stats"]["ranked_candidates"][0]["chunk_id"] == "candidate-1"
                 assert "[1]" in result["summary"]
                 assert result["events"][0]["title"] == "外卖骑手收入变化"
                 assert result["events"][0]["chunk_id"] == "event-chunk-not-in-section-results"
@@ -390,6 +427,7 @@ async def test_multi_es_fast_uses_zleap_082_typed_search_contract(monkeypatch):
     monkeypatch.setattr(settings, "sag_vector_provider", "lancedb")
     manager = EngineManager(settings)
     captured_strategies: list[str] = []
+    captured_output_flags: list[bool] = []
 
     @asynccontextmanager
     async def fake_use(*_args, **_kwargs):
@@ -397,6 +435,7 @@ async def test_multi_es_fast_uses_zleap_082_typed_search_contract(monkeypatch):
             async def search(self, request):
                 assert isinstance(request, SearchRequest)
                 captured_strategies.append(request.options.strategy)
+                captured_output_flags.append(request.options.output.include_ranked_candidates)
                 assert request.scope.data_source_ids == ("cfg-1",)
                 assert request.options.top_k == 6
                 assert request.options.return_type == "chunk"
@@ -426,15 +465,56 @@ async def test_multi_es_fast_uses_zleap_082_typed_search_contract(monkeypatch):
         "外卖骑手收入",
         strategy="multi_es_fast",
         top_k=6,
+        include_ranked_candidates=True,
     )
 
     assert captured_strategies == ["pruned_expand_rff"]
+    assert captured_output_flags == [True]
     assert outcome.sections[0].chunk_id == "c1"
     assert outcome.sections[0].heading == "h"
     assert outcome.sections[0].source_config_id == "cfg-1"
     assert outcome.stats["requested_strategy"] == "multi_es_fast"
     assert outcome.stats["effective_strategy"] == "multi_es_fast"
     assert outcome.stats["fallback_used"] is False
+
+
+@pytest.mark.asyncio
+async def test_search_many_aggregates_ranked_candidates_with_source_provenance(monkeypatch):
+    from sag_api.core.config import settings
+    from sag_api.sag.dto import SearchOutcome
+    from sag_api.sag.engine_manager import EngineManager
+
+    manager = EngineManager(settings)
+
+    async def fake_search(source_config_id, query, **kwargs):
+        assert kwargs["include_ranked_candidates"] is True
+        return SearchOutcome(
+            query=query,
+            sections=[],
+            stats={
+                "ranked_candidates": [
+                    {
+                        "rank": 1,
+                        "chunk_id": f"chunk-{source_config_id}",
+                        "score": 0.8,
+                        "recall_channels": ["event_vector"],
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(manager, "search", fake_search)
+    outcome = await manager.search_many(
+        [("source-a", None), ("source-b", None)],
+        "归因",
+        strategy="multi",
+        include_ranked_candidates=True,
+    )
+
+    assert [item["source_config_id"] for item in outcome.stats["ranked_candidates"]] == [
+        "source-a",
+        "source-b",
+    ]
 
 
 @pytest.mark.asyncio
@@ -515,7 +595,16 @@ async def test_eval_compare_returns_two_strategies_and_skips_judge(monkeypatch):
         async def provision(self, *_args, **_kwargs):
             return None
 
-        async def search_many(self, targets, query, *, strategy=None, top_k=None):
+        async def search_many(
+            self,
+            targets,
+            query,
+            *,
+            strategy=None,
+            top_k=None,
+            include_ranked_candidates=False,
+        ):
+            assert include_ranked_candidates is False
             source_config_id = targets[0][0] if targets else "cfg-0"
             # Vector vs multi_es_fast: 用不同 heading 让两列可视化上真的不一样,
             # 从而证明翻译层能触达 zleap 引擎、而不是折成同一个 pipeline。
@@ -786,6 +875,7 @@ async def test_multi_search_uses_prefiltered_batch_recall_when_sources_are_hidde
         strategy="multi_es_fast",
         top_k=8,
         exclude_source_ids_by_config={"source-1": ("hidden-document",)},
+        include_ranked_candidates=True,
     )
 
     assert [section.chunk_id for section in outcome.sections] == ["visible-chunk"]
@@ -793,6 +883,8 @@ async def test_multi_search_uses_prefiltered_batch_recall_when_sources_are_hidde
     assert legacy_calls == 0
     assert outcome.stats["requested_strategy"] == "multi_es_fast"
     assert outcome.stats["effective_strategy"] == "vector"
+    assert outcome.stats["ranked_candidates"] == []
+    assert outcome.stats["ranked_candidates_unavailable_reason"] == "document_source_exclusions"
 
 
 @pytest.mark.asyncio

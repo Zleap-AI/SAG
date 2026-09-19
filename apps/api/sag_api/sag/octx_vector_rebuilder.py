@@ -149,6 +149,7 @@ async def rebuild_vectors(
     package_path: str | Path | None = None,
     plan_path: str | Path | None = None,
     prevalidated_vector_valid: bool | None = None,
+    local_embedding_identity: dict[str, Any] | None = None,
 ) -> dict[str, int]:
     """Rebuild all SAG vector kinds from one isolated relational partition."""
     if batch_size < 1:
@@ -176,6 +177,7 @@ async def rebuild_vectors(
                 plan_path,
                 embedding,
                 prevalidated_vector_valid=prevalidated_vector_valid,
+                local_identity=local_embedding_identity,
             )
         except Exception:
             # Vector reuse is an acceleration layer. Any failure while preparing
@@ -195,7 +197,17 @@ async def rebuild_vectors(
         checkpoint["counts"] = dict(counts)
         await on_checkpoint(checkpoint)
 
-    dimensions = int(getattr(embedding, "dimensions", 0) or 0)
+    # 复用批量只能基于**当前配置**的维度估算。引擎资源对象
+    # （LimitedEmbeddingAdapter）不暴露 dimensions，因此优先使用调用方注入的身份；
+    # 两者都拿不到时退化为 0（不复用批量优化），不报错。
+    dimensions = 0
+    if local_embedding_identity is not None:
+        try:
+            dimensions = int(local_embedding_identity.get("dimensions") or 0)
+        except (TypeError, ValueError):
+            dimensions = 0
+    if not dimensions:
+        dimensions = int(getattr(embedding, "dimensions", 0) or 0)
 
     def kind_batch_size(roles: tuple[str, ...]) -> int:
         if dimensions and all(role in reusable for role in roles):

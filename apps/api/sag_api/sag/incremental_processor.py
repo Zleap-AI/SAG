@@ -13,17 +13,29 @@ zleap 职责(0.8.2 已内置,不再由 SAG 实现):实体数契约
 (``ExtractionLimits.min_entities_per_event=1``)、修复重试(``max_retries``)、
 无效事项过滤(``is_valid``)、代际替换语义。
 
-临时行为差异(与 0.7.1 相比,带 REQ 标记,待 zleap 需求落地后消除):
+临时行为差异（与 0.7.1 相比，带 REQ 标记）：
 
-- REQ-1/2(事件粒度过滤与修复):0.8.2 的契约校验与修复重试是批次粒度,
-  SAG 不再做逐事件过滤(0.7.1 的 ``_require_event_entities`` /
-  ``guarded_save_events`` monkeypatch 已删除);一个 chunk 修复耗尽会拒绝整批。
-- REQ-3(逐块断点):0.8.2 一次 extract 覆盖全部 chunks(单代提交),
-  SAG 不再逐块持久化断点;暂停/取消后恢复会整批重跑(LLM 成本回归)。
-  zleap 提供代际 durable prepare/commit 公开入口后恢复逐块断点。
-- REQ-4/5(schema 强化与 SQLite int64 防护):0.7.1 的
+- REQ-1/2（事件粒度过滤与修复）：0.8.2 的契约校验与修复重试是批次粒度，SAG 不再
+  做逐事件过滤（0.7.1 的 ``_require_event_entities`` / ``guarded_save_events``
+  monkeypatch 已删除）；一个 chunk 修复耗尽会拒绝整批。
+  **0.13.0 已提供能力**（``ExtractionOptions.on_contract_violation="drop_event"``
+  与越界整数引用修复），但 SAG 保持默认 ``raise``：全丢事件会“成功”并可能用空快照
+  替换来源原有事项，属静默丢数据，应由用户显式选择而非升级时替其决定。
+- REQ-3（逐块断点）：0.8.2 一次 extract 覆盖全部 chunks（单代提交），SAG 不再逐块
+  持久化断点；暂停/取消后恢复会整批重跑（LLM 成本回归）。
+  **0.13.0 已提供**（``process_source()`` 逐 Chunk 检查点 + ``extraction_progress``），
+  但采纳它需要换成调用方自有 id 与可重放的内联正文，是一次驱动层重写，已单独立项。
+- REQ-4/5（schema 强化与 SQLite int64 防护）：0.7.1 的
   ``_strengthen_event_entity_schema`` / ``_install_sqlite_integer_guard``
-  monkeypatch 目标在 0.8.2 已不可达,shim 删除,待 zleap 内置。
+  monkeypatch 目标在 0.8.2 已不可达，shim 删除。
+  **0.13.0 已内置**：越界整数降级为 ``text`` 并记 ``entity_int64_overflow`` 告警，
+  本项就此结清（SAG 侧无需残留代码）。
+- REQ-6（provider 降级）：旧 ``compat.py`` 的安装函数自 0.8.2 起也只是空操作，
+  已随本次升级删除。该能力由 SAG 自己的 LiteLLM seam 提供
+  （``core/litellm_policy.py``）。
+- REQ-7（引擎耗时统计）：旧的检索链 monkey-patch 目标是并不存在的模块，从未生效，
+  已删除。要让耗时真正有值应改用 zleap 公开的
+  ``SearchOptions(include_stage_stats=True)``（单独事项）。
 """
 
 from __future__ import annotations

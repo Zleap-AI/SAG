@@ -411,6 +411,7 @@ async def retrieve_relevant_sections(
     *,
     strategy: str | None = None,
     top_k: int | None = None,
+    include_ranked_candidates: bool = False,
 ) -> SearchOutcome:
     """One retrieval contract for search UI and the Agent's search_context tool."""
 
@@ -429,6 +430,8 @@ async def retrieve_relevant_sections(
         "strategy": strategy,
         "top_k": candidate_limit,
     }
+    if include_ranked_candidates:
+        search_options["include_ranked_candidates"] = True
     if (
         getattr(
             engine_manager,
