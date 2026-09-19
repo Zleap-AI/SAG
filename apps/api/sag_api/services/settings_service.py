@@ -114,9 +114,16 @@ async def _load_row(session: AsyncSession, key: str = _KEY) -> Setting | None:
 
 
 def _embedding_identity(settings: Settings, patch: dict) -> tuple[str, int]:
+    """重索引守卫用的向量空间标识：模型 + 实际生效的 schema 维度。
+
+    UI/API 仍只暴露单一 `embedding_dimensions` 字段，它同时映射到 schema 与请求
+    两项。未随 patch 传入时取配置的生效 schema 维度（含新字段与旧别名）。
+    """
     model = str(patch.get("embedding_model", settings.embedding_model))
-    dimensions = patch.get("embedding_dimensions", settings.embedding_dimensions)
-    return model, int(dimensions or 1024)
+    if "embedding_dimensions" in patch:
+        dimensions = patch["embedding_dimensions"]
+        return model, int(dimensions or settings.effective_embedding_schema_dimensions)
+    return model, settings.effective_embedding_schema_dimensions
 
 
 async def _reject_incompatible_embedding_change(

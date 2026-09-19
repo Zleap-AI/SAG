@@ -194,6 +194,9 @@ async def build_octx_diagnostic_snapshot(
             "relational_provider": settings.sag_relational_provider or "sqlite",
             "embedding_model": settings.embedding_model,
             "embedding_dimensions": settings.embedding_dimensions,
+            # zleap-sag 0.13.0 起维度拆成两项；诊断快照同时给出实际生效值。
+            "effective_embedding_schema_dimensions": settings.effective_embedding_schema_dimensions,
+            "effective_embedding_request_dimensions": settings.effective_embedding_request_dimensions,
             "job_concurrency": settings.job_concurrency,
             "octx_worker_memory_mb": settings.octx_worker_memory_mb,
             "octx_worker_timeout_seconds": settings.octx_worker_timeout_seconds,

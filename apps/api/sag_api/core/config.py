@@ -27,6 +27,21 @@ from sag_api.enums import SearchStrategy, normalize_search_strategy
 
 _DEFAULT_LLM_PROVIDER = get_model_provider("openai")
 
+# zleap-sag 0.13.0 之前的默认向量维度：未显式配置时用它预建向量 schema，
+# 保持既有知识库的向量空间不变（存量 LanceDB 向量与该维度绑定）。
+_DEFAULT_EMBEDDING_DIMENSIONS = 1024
+
+# 已知拒绝 OpenAI `dimensions` 请求参数的服务商/模型组合。zleap-sag 0.12.0 把
+# schema 维度与请求参数混为同一字段，SAG 曾用「引擎初始化后改写私有属性」绕过；
+# 0.13.0 拆分后可在此直接表达为 request_dimensions 省略。
+_EMBEDDING_REQUEST_DIMENSIONS_UNSUPPORTED = ("api.siliconflow.cn", "baai/bge-m3")
+
+
+def _embedding_request_dimensions_unsupported(base_url: str | None, model: str) -> bool:
+    """该服务商/模型组合是否拒绝请求体里的 `dimensions` 参数。"""
+    hostname = (urlsplit(base_url or "").hostname or "").lower()
+    return (hostname, model.strip().lower()) == _EMBEDDING_REQUEST_DIMENSIONS_UNSUPPORTED
+
 
 class Settings(BaseSettings):
     _active_data_dir: str | None = PrivateAttr(default=None)
@@ -163,7 +178,13 @@ class Settings(BaseSettings):
     embedding_model: str = "bge-large-en-v1.5"
     embedding_base_url: str | None = "https://api.302ai.cn/v1"
     embedding_api_key: str | None = None
+    # zleap-sag 0.13.0 起维度拆成两项独立语义（旧版共用一个 `dimensions` 字段）：
+    #   schema_dimensions  —— 向量库 schema 与返回向量校验（决定向量空间）
+    #   request_dimensions —— 请求体的 OpenAI `dimensions` 参数；None = 不发送
+    # `embedding_dimensions` 保留为兼容别名，同时喂给上面两项（见 effective_* 属性）。
     embedding_dimensions: int | None = None
+    embedding_schema_dimensions: int | None = None
+    embedding_request_dimensions: int | None = None
     # Per-engine embedding HTTP concurrency. llama.cpp --parallel 1 cannot
     # absorb the zleap default of 8; queued batches hit the client timeout
     # and the indexer rolls the whole document back.
@@ -242,10 +263,15 @@ class Settings(BaseSettings):
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
 
-    @field_validator("embedding_dimensions", mode="before")
+    @field_validator(
+        "embedding_dimensions",
+        "embedding_schema_dimensions",
+        "embedding_request_dimensions",
+        mode="before",
+    )
     @classmethod
     def _blank_embedding_dimensions_as_none(cls, value: object) -> object:
-        """compose 以 ${SAG_EMBEDDING_DIMENSIONS} 透传、变量未设置时注入空串，等价于未配置。"""
+        """compose 以 ${SAG_*_DIMENSIONS} 透传、变量未设置时注入空串，等价于未配置。"""
         if isinstance(value, str) and not value.strip():
             return None
         return value
@@ -323,6 +349,33 @@ class Settings(BaseSettings):
     def effective_embedding_base_url(self) -> str | None:
         provider = get_model_provider(self.llm_provider)
         return self.embedding_base_url or (self.llm_base_url if provider.can_reuse_embedding_credentials else None)
+
+    @property
+    def effective_embedding_schema_dimensions(self) -> int:
+        """向量库 schema 与返回向量校验使用的维度。
+
+        未显式配置时沿用 1024：存量知识库的向量维度与之绑定，改默认会让旧向量对不上。
+        """
+        for value in (self.embedding_schema_dimensions, self.embedding_dimensions):
+            if value is not None:
+                return value
+        return _DEFAULT_EMBEDDING_DIMENSIONS
+
+    @property
+    def effective_embedding_request_dimensions(self) -> int | None:
+        """发往 OpenAI-compatible 请求体的 `dimensions` 参数；None 表示不发送。
+
+        未显式配置时跟随 schema 维度，逐字保留 0.12.0 的行为；只有已知拒绝该参数的
+        服务商/模型组合才省略（旧版由 engine_manager 在引擎初始化后绕过）。
+        """
+        for value in (self.embedding_request_dimensions, self.embedding_dimensions):
+            if value is not None:
+                return value
+        if _embedding_request_dimensions_unsupported(
+            self.effective_embedding_base_url, self.embedding_model
+        ):
+            return None
+        return self.effective_embedding_schema_dimensions
 
     @property
     def mineru_configured(self) -> bool:

@@ -45,7 +45,12 @@ services:
       SAG_EMBEDDING_MODEL: ${SAG_EMBEDDING_MODEL:-bge-large-en-v1.5}
       SAG_EMBEDDING_BASE_URL: ${SAG_EMBEDDING_BASE_URL:-https://api.302ai.cn/v1}
       SAG_EMBEDDING_API_KEY: ${SAG_EMBEDDING_API_KEY:-}
-      # 向量维度需与 Embedding 模型一致（如 Qwen3-Embedding-8B = 4096）；留空回落到 1024。
+      # 向量维度。schema 维度决定向量库 schema 与返回向量校验，留空回落到 1024；
+      # 存量知识库请勿改动（向量与该维度绑定）。请求维度是发往接口的可选参数，
+      # 留空则跟随 schema 维度。两者须与 Embedding 模型一致（如 Qwen3-Embedding-8B = 4096）。
+      SAG_EMBEDDING_SCHEMA_DIMENSIONS: ${SAG_EMBEDDING_SCHEMA_DIMENSIONS:-}
+      SAG_EMBEDDING_REQUEST_DIMENSIONS: ${SAG_EMBEDDING_REQUEST_DIMENSIONS:-}
+      # 0.13.0 兼容别名：同时设置上面两项。新部署请优先用上面两项。
       SAG_EMBEDDING_DIMENSIONS: ${SAG_EMBEDDING_DIMENSIONS:-}
       SAG_EMBEDDING_CONCURRENCY: ${SAG_EMBEDDING_CONCURRENCY:-8}
       SAG_EMBEDDING_TIMEOUT: ${SAG_EMBEDDING_TIMEOUT:-60}

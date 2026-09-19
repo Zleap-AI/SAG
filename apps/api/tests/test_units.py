@@ -62,7 +62,11 @@ def test_build_engine_config_zero_infra():
 def test_engine_config_preserves_embedding_dimensions(configured_dimensions, expected_dimensions):
     configured = Settings(_env_file=None, embedding_dimensions=configured_dimensions)
 
-    assert build_engine_config(configured).embedding.dimensions == expected_dimensions
+    # zleap-sag 0.13.0 把单一 dimensions 拆成 schema/request 两项；旧字段作为
+    # 兼容别名同时喂给两者，故两者都应等于原值（未配置时沿用 1024）。
+    embedding = build_engine_config(configured).embedding
+    assert embedding.schema_dimensions == expected_dimensions
+    assert embedding.request_dimensions == expected_dimensions
 
 
 def test_engine_config_passes_embedding_runtime_limits():
@@ -109,24 +113,25 @@ async def test_embedding_request_respects_configured_dimensions(
 ):
     from zleap.sag.core.ai.embedding import EmbeddingClient
 
-    from sag_api.sag.engine_manager import EngineManager
-
     settings = Settings(
         _env_file=None,
         embedding_base_url=base_url,
         embedding_model=model,
         embedding_dimensions=configured_dimensions,
     )
+    # zleap-sag 0.13.0 把「建库维度」与「请求参数」拆成两项，SAG 在配置期直接
+    # 表达（见 Settings.effective_embedding_*）：未配置时请求维度跟随 schema，
+    # 已知拒绝该参数的服务商/模型组合则省略。旧版是引擎初始化后改写私有属性，
+    # 在 0.13.0 上既不可用也不需要。
     config = build_engine_config(settings)
     embedding = EmbeddingClient(
         model=config.embedding.model,
         api_key=config.embedding.api_key,
         base_url=config.embedding.base_url,
-        dimensions=config.embedding.dimensions,
+        schema_dimensions=config.embedding.schema_dimensions,
+        request_dimensions=config.embedding.request_dimensions,
         max_retries=0,
     )
-    engine = SimpleNamespace(resources=SimpleNamespace(embedding=embedding))
-    EngineManager(settings)._configure_embedding_request_dimensions(engine)
     requests: list[dict] = []
 
     async def create(**request):
@@ -173,7 +178,7 @@ async def test_unconfigured_embedding_prebuilds_vector_schema_with_legacy_defaul
     scan = await prepare_vector_schema(
         adapter,
         storage_mode="normal",
-        dimensions=config.embedding.dimensions,
+        dimensions=config.embedding.schema_dimensions,
         create_missing=True,
     )
 
