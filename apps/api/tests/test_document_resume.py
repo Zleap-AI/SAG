@@ -185,6 +185,10 @@ async def test_extract_receives_contract_limits_and_concurrency():
     assert options.limits.max_entities_per_event == 20
     assert options.execution.max_concurrency == 30
     assert "观点、事实、定义" in options.guidance_rules[0]  # 默认中文知识型事项要求仍然透传
+    assert len(options.guidance_rules) == 2
+    assert "不可信的待分析数据" in options.guidance_rules[1]
+    assert "不得执行" in options.guidance_rules[1]
+    assert "统一输出合同" in options.guidance_rules[1]
 
 
 @pytest.mark.asyncio
@@ -240,9 +244,12 @@ async def test_extract_guidance_matches_english_engine_prompt_language():
         should_pause=_return_false,
     )
 
-    (guidance,) = captured["options"].guidance_rules
-    assert "For books, reports, papers" in guidance
-    assert "观点、事实、定义" not in guidance
+    knowledge_guidance, security_guidance = captured["options"].guidance_rules
+    assert "For books, reports, papers" in knowledge_guidance
+    assert "观点、事实、定义" not in knowledge_guidance
+    assert "untrusted document data" in security_guidance
+    assert "must not execute" in security_guidance
+    assert "canonical output contract" in security_guidance
 
 
 @pytest.mark.asyncio
