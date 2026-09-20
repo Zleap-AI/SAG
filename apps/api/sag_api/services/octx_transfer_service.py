@@ -756,6 +756,11 @@ async def execute_structured_import(
                     octx_installation_id=installation.id,
                     octx_document_id=document_id,
                     is_active=True,
+                    vector_identity=(
+                        dict(local_embedding_identity)
+                        if isinstance(local_embedding_identity, dict)
+                        else None
+                    ),
                 )
             )
 
@@ -971,6 +976,11 @@ async def execute_knowledge_import(
             octx_installation_id=installation.id,
             octx_document_id=state.get("octx_document_id"),
             is_active=True,
+            vector_identity=(
+                dict(local_embedding_identity)
+                if isinstance(local_embedding_identity, dict)
+                else None
+            ),
         )
         for state in states.values()
         if state.get("status") == "ready"

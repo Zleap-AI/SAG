@@ -249,7 +249,12 @@ async def test_octx_metadata_registers_identity_and_idempotency_constraints():
     assert ("asset_id", "version") in schema["release_unique"]
     assert ("asset_id", "package_digest") in schema["release_unique"]
     assert ("source_id", "release_id") in schema["installation_unique"]
-    assert {"octx_installation_id", "octx_document_id", "is_active"} <= schema["document_columns"]
+    assert {
+        "octx_installation_id",
+        "octx_document_id",
+        "is_active",
+        "vector_identity_json",
+    } <= schema["document_columns"]
     assert "ix_documents_source_active_created" in schema["document_indexes"]
 
 
@@ -317,7 +322,12 @@ async def test_existing_sqlite_documents_gain_octx_columns_and_active_index(monk
     finally:
         await old_engine.dispose()
 
-    assert {"octx_installation_id", "octx_document_id", "is_active"} <= columns
+    assert {
+        "octx_installation_id",
+        "octx_document_id",
+        "is_active",
+        "vector_identity_json",
+    } <= columns
     assert "ix_documents_source_active_created" in indexes
 
 

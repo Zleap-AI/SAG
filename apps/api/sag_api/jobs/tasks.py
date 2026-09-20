@@ -33,11 +33,12 @@ from sag_api.jobs.octx_tasks import (
 from sag_api.jobs.scheduling import SOURCE_MAINTENANCE
 from sag_api.parsing import ParsePaused, prepare_document
 from sag_api.sag import EngineManager
-from sag_api.sag.dto import ProcessCheckpoint
-from sag_api.sag.octx_vector_protocol import (
-    apply_vector_identity_record,
-    configured_embedding_identity,
+from sag_api.sag.document_vector_identity import (
+    record_document_vector_identity,
+    refresh_source_vector_identity,
 )
+from sag_api.sag.dto import ProcessCheckpoint
+from sag_api.sag.octx_vector_protocol import configured_embedding_identity
 from sag_api.services.source_operation_service import (
     acquire_operation_lease,
     acquire_source_exclusive_lease,
@@ -461,11 +462,16 @@ async def _process_document_unlocked(
             event_count=Source.event_count + outcome.event_count,
         )
     )
-    # The source counter update serializes concurrent completions. Refresh the
-    # JSON under the same transaction so no document can overwrite another
-    # identity transition with a stale in-memory config.
-    await session.refresh(source, attribute_names=["config"])
-    apply_vector_identity_record(source, configured_embedding_identity(settings))
+    # Persist the identity only after vectors were written successfully.  The
+    # source profile is derived from every active READY document, so a legacy
+    # or changed-configuration source becomes reusable only after all of its
+    # exported documents agree on the same identity.
+    await record_document_vector_identity(
+        session,
+        source,
+        document,
+        configured_embedding_identity(settings),
+    )
     await touch_source_revision(session, source.id)
     await session.commit()
     log.info(
@@ -534,6 +540,7 @@ async def _delete_document_task_unlocked(
     from sag_api.services.document_service import _refresh_source_counts
 
     await _refresh_source_counts(session, source)
+    await refresh_source_vector_identity(session, source)
     await session.commit()
     if path:
         from sag_api.parsing.service import parsed_sidecar_paths

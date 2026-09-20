@@ -64,6 +64,26 @@ _KNOWN = "known"
 _MIXED = "mixed"
 
 
+def _vector_backend(vector_store: Any) -> Any:
+    """Return the provider behind runtime limit and compatibility wrappers."""
+    backend = vector_store
+    seen: set[int] = set()
+    while id(backend) not in seen:
+        seen.add(id(backend))
+        inner = getattr(backend, "inner", None)
+        if inner is not None:
+            backend = inner
+            continue
+        raw = getattr(backend, "_raw", None)
+        if callable(raw):
+            unwrapped = raw()
+            if unwrapped is not backend:
+                backend = unwrapped
+                continue
+        break
+    return backend
+
+
 def _canonical_text(value: object) -> str:
     text = "" if value is None else str(value)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -228,6 +248,37 @@ def apply_vector_identity_record(source: Any, identity: dict[str, Any] | None) -
     return _assign_vector_identity_config(source, current)
 
 
+def reconcile_vector_identity_records(
+    source: Any,
+    identities: list[dict[str, Any] | None],
+) -> bool:
+    """Derive a source-wide identity from every active READY document.
+
+    Legacy documents have ``None`` until they are reprocessed.  A source can
+    therefore recover from ``mixed`` only after every exported document has a
+    complete, identical identity; one unknown or different document keeps
+    reuse disabled.
+    """
+    current = dict(getattr(source, "config", None) or {})
+    if not identities:
+        current[_VECTOR_IDENTITY_STATE_KEY] = _EMPTY
+        current.pop(_VECTOR_IDENTITY_KEY, None)
+        return _assign_vector_identity_config(source, current)
+
+    first = identities[0]
+    compatible = _complete_vector_identity(first) and all(
+        _complete_vector_identity(identity) and identity == first
+        for identity in identities
+    )
+    if compatible:
+        current[_VECTOR_IDENTITY_STATE_KEY] = _KNOWN
+        current[_VECTOR_IDENTITY_KEY] = dict(first or {})
+    else:
+        current[_VECTOR_IDENTITY_STATE_KEY] = _MIXED
+        current.pop(_VECTOR_IDENTITY_KEY, None)
+    return _assign_vector_identity_config(source, current)
+
+
 def replace_vector_identity_record(source: Any, identity: dict[str, Any] | None) -> bool:
     """Record the identity after a complete active partition replacement."""
     current = dict(getattr(source, "config", None) or {})
@@ -383,7 +434,7 @@ async def _iter_lancedb_vector_batches(
         return
     if routing:
         escaped_routing = routing.replace("'", "''")
-        predicate = f"source_config_id = '{escaped_routing}'"
+        predicate = f"data_source_id = '{escaped_routing}'"
     else:
         if records_by_local_id is None:
             raise ValueError("LanceDB manifest export requires source routing")
@@ -440,10 +491,10 @@ async def _fetch_vector_fields(
     custom = getattr(vector_store, "fetch_vector_fields", None)
     if callable(custom):
         return dict(await custom(index, record_ids, fields))
-    backend = vector_store
-    raw = getattr(vector_store, "_raw", None)
-    if callable(raw):
-        backend = raw()
+    backend = _vector_backend(vector_store)
+    custom = getattr(backend, "fetch_vector_fields", None)
+    if callable(custom):
+        return dict(await custom(index, record_ids, fields))
     module = type(backend).__module__
     if module.endswith("lancedb_store"):
         table = await backend._open_table(index)
@@ -508,7 +559,12 @@ async def write_existing_vector_payload(
     vectors_dir.mkdir(exist_ok=False)
     profiles: list[dict[str, Any]] = []
     written_roles: set[str] = set()
-    lance_arrow_native = type(vector_store).__module__.endswith("lancedb_store")
+    try:
+        vector_backend = _vector_backend(vector_store)
+    except Exception as error:
+        logger.warning("OCTX vector backend inspection failed error=%s", error)
+        vector_backend = vector_store
+    lance_arrow_native = type(vector_backend).__module__.endswith("lancedb_store")
     manifest = VectorExportManifest(manifest_path) if manifest_path is not None else None
     role_rows = _role_records(root) if manifest is None else {role: [] for role in ROLE_TARGETS}
     try:
@@ -533,7 +589,7 @@ async def write_existing_vector_payload(
                     }
                     completed = 0
                     vector_batches = _iter_lancedb_vector_batches(
-                        vector_store,
+                        vector_backend,
                         index,
                         vector_field,
                         role=role,
@@ -684,6 +740,12 @@ async def write_existing_vector_payload(
                     writer.close()
                 sink.close()
             if not complete or dimension is None:
+                logger.warning(
+                    "OCTX vector role export incomplete role=%s exported=%s expected=%s",
+                    role,
+                    completed,
+                    total,
+                )
                 output_path.unlink(missing_ok=True)
                 continue
             profiles.append(vector_profile_from_identity(role, export_identity, dimension))

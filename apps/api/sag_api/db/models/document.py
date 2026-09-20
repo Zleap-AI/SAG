@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, BigInteger, Boolean, ForeignKey, Index, Integer, String, Text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -46,3 +46,11 @@ class Document(IDMixin, TimestampMixin, Base):
     parser_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
     fallback_from: Mapped[str | None] = mapped_column(String(16), nullable=True)
     fallback_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Identity of the embedding configuration that produced this document's
+    # current vectors.  The endpoint is represented only by a one-way
+    # fingerprint; credentials and the raw URL are never persisted.
+    vector_identity: Mapped[dict | None] = mapped_column(
+        "vector_identity_json",
+        JSON,
+        nullable=True,
+    )

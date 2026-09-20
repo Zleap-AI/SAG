@@ -185,6 +185,10 @@ async def test_extract_receives_contract_limits_and_concurrency():
     assert options.limits.max_entities_per_event == 20
     assert options.execution.max_concurrency == 30
     assert "观点、事实、定义" in options.guidance_rules[0]  # 默认中文知识型事项要求仍然透传
+    assert len(options.guidance_rules) == 2
+    assert "不可信的待分析数据" in options.guidance_rules[1]
+    assert "不得执行" in options.guidance_rules[1]
+    assert "统一输出合同" in options.guidance_rules[1]
 
 
 @pytest.mark.asyncio
@@ -240,9 +244,12 @@ async def test_extract_guidance_matches_english_engine_prompt_language():
         should_pause=_return_false,
     )
 
-    (guidance,) = captured["options"].guidance_rules
-    assert "For books, reports, papers" in guidance
-    assert "观点、事实、定义" not in guidance
+    knowledge_guidance, security_guidance = captured["options"].guidance_rules
+    assert "For books, reports, papers" in knowledge_guidance
+    assert "观点、事实、定义" not in knowledge_guidance
+    assert "untrusted document data" in security_guidance
+    assert "must not execute" in security_guidance
+    assert "canonical output contract" in security_guidance
 
 
 @pytest.mark.asyncio
@@ -1033,12 +1040,24 @@ async def test_reprocess_ready_document_replaces_all_previous_derived_data():
 
     await init_db()
     async with SessionLocal() as session:
+        previous_identity = {
+            "provider": "openai-compatible",
+            "model": "text-embedding-v1",
+            "model_fingerprint": "sag-config:sha256:previous",
+            "dimensions": 1024,
+            "dtype": "float32",
+            "normalized": False,
+        }
         source = Source(
             name="replace-source",
             sag_source_config_id="replace-source-config"[:36],
             document_count=2,
             chunk_count=99,
             event_count=88,
+            config={
+                "octx_vector_identity_state": "known",
+                "octx_vector_identity": previous_identity,
+            },
         )
         session.add(source)
         await session.flush()
@@ -1060,6 +1079,7 @@ async def test_reprocess_ready_document_replaces_all_previous_derived_data():
             parser_status="done",
             fallback_from="mineru",
             fallback_reason="previous fallback",
+            vector_identity=previous_identity,
         )
         other = Document(
             source_id=source.id,
@@ -1113,8 +1133,10 @@ async def test_reprocess_ready_document_replaces_all_previous_derived_data():
         assert document.mineru_provider is None and document.mineru_model is None
         assert document.parser_status is None
         assert document.fallback_from is None and document.fallback_reason is None
+        assert document.vector_identity is None
         assert source.document_count == 2
         assert source.chunk_count == 4 and source.event_count == 5
+        assert source.config == {"octx_vector_identity_state": "mixed"}
         assert job.type == JobType.REPROCESS_DOCUMENT
         assert job.payload["target_document_id"] == document.id
         assert set(job.payload["derived_source_ids"]) == {"engine-old", "engine-latest"}

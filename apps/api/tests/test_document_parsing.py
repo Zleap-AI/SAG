@@ -461,12 +461,14 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch, extensi
         progress=0,
         token_usage=0,
         sag_source_id=None,
+        vector_identity=None,
     )
     source = SimpleNamespace(
         id="source-1",
         sag_source_config_id="sag-source-1"[:36],
         chunk_count=0,
         event_count=0,
+        config={"octx_vector_identity_state": "mixed"},
     )
     job = SimpleNamespace(id="job-1", document_id="doc-1", progress=0.0, payload={})
 
@@ -485,6 +487,12 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch, extensi
             document.progress = 100
             document.token_usage = 2468
             return SimpleNamespace(rowcount=1)
+
+        async def flush(self):
+            pass
+
+        async def scalars(self, _statement):
+            return SimpleNamespace(all=lambda: [document.vector_identity])
 
         async def scalar(self, _statement):
             return None
@@ -555,6 +563,10 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch, extensi
     assert document.progress == 100 and document.token_usage == 2468
     assert document.parser_provider == "markitdown"
     assert document.parser_status == "done"
+    expected_identity = tasks.configured_embedding_identity(tasks.settings)
+    assert document.vector_identity == expected_identity
+    assert source.config["octx_vector_identity_state"] == "known"
+    assert source.config["octx_vector_identity"] == expected_identity
 
 
 @pytest.mark.asyncio
@@ -623,6 +635,12 @@ async def test_document_job_persists_successful_mineru_outcome(
 
         async def commit(self):
             pass
+
+        async def flush(self):
+            pass
+
+        async def scalars(self, _statement):
+            return SimpleNamespace(all=lambda: [document.vector_identity])
 
         async def execute(self, _statement):
             return SimpleNamespace(rowcount=1)
@@ -698,6 +716,12 @@ async def test_document_job_persists_mineru_markitdown_fallback(monkeypatch, cap
 
         async def commit(self):
             pass
+
+        async def flush(self):
+            pass
+
+        async def scalars(self, _statement):
+            return SimpleNamespace(all=lambda: [document.vector_identity])
 
         async def execute(self, _statement):
             return SimpleNamespace(rowcount=1)

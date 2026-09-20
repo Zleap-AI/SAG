@@ -173,6 +173,95 @@ def test_legacy_unknown_source_never_promotes_from_document_observations() -> No
     assert source.config == {"octx_vector_identity_state": "mixed"}
 
 
+def test_document_identities_recover_mixed_source_after_full_reprocess() -> None:
+    """A legacy source becomes reusable only after every active document is known."""
+    from sag_api.core.config import Settings
+    from sag_api.sag.octx_vector_protocol import (
+        reconcile_vector_identity_records,
+        vector_profile_from_identity,
+    )
+
+    identity = configured_embedding_identity(Settings(_env_file=None))
+    assert identity is not None
+    source = SimpleNamespace(
+        config={
+            "engine": {"language": "zh"},
+            "octx_vector_identity_state": "mixed",
+        }
+    )
+
+    assert reconcile_vector_identity_records(source, [identity, None]) is False
+    assert source.config["octx_vector_identity_state"] == "mixed"
+    assert "octx_vector_identity" not in source.config
+
+    assert reconcile_vector_identity_records(source, [identity, identity]) is True
+    assert source.config["octx_vector_identity_state"] == "known"
+    assert source.config["octx_vector_identity"] == identity
+    assert source.config["engine"] == {"language": "zh"}
+
+    profile = vector_profile_from_identity(
+        "chunk.content",
+        source.config["octx_vector_identity"],
+        int(identity["dimensions"]),
+    )
+    assert profile.get("reuse_policy", "compatible") == "compatible"
+    assert profile["model"] == identity["model"]
+    assert profile["model_fingerprint"] == identity["model_fingerprint"]
+    assert profile["fingerprint"]
+
+
+@pytest.mark.asyncio
+async def test_persisted_document_identities_recover_legacy_source_after_all_documents_reprocess() -> None:
+    """Persisting only one refreshed document must not make legacy siblings reusable."""
+    from sag_api.core.config import Settings
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
+    from sag_api.sag.document_vector_identity import record_document_vector_identity
+
+    await init_db()
+    identity = configured_embedding_identity(Settings(_env_file=None))
+    assert identity is not None
+    async with SessionLocal() as session:
+        source = Source(
+            name=f"legacy-vector-source-{uuid.uuid4().hex}",
+            sag_source_config_id=f"legacy-vector-config-{uuid.uuid4().hex}"[:64],
+            config={"octx_vector_identity_state": "mixed"},
+        )
+        session.add(source)
+        await session.flush()
+        first = Document(
+            source_id=source.id,
+            filename="first.md",
+            content_type="text/markdown",
+            size_bytes=1,
+            storage_path="/tmp/first.md",
+            status=DocumentStatus.READY,
+        )
+        second = Document(
+            source_id=source.id,
+            filename="second.md",
+            content_type="text/markdown",
+            size_bytes=1,
+            storage_path="/tmp/second.md",
+            status=DocumentStatus.READY,
+        )
+        session.add_all([first, second])
+        await session.flush()
+
+        await record_document_vector_identity(session, source, first, identity)
+        assert first.vector_identity == identity
+        assert source.config == {"octx_vector_identity_state": "mixed"}
+
+        await record_document_vector_identity(session, source, second, identity)
+        assert second.vector_identity == identity
+        assert source.config["octx_vector_identity_state"] == "known"
+        assert source.config["octx_vector_identity"] == identity
+
+        await session.delete(source)
+        await session.commit()
+
+
 def test_vector_identity_record_survives_an_unchanged_configuration() -> None:
     from sag_api.core.config import Settings
     from sag_api.sag.octx_vector_protocol import apply_vector_identity_record
@@ -885,6 +974,7 @@ async def test_lancedb_arrow_stream_exports_large_role_without_python_vector_mat
 
     import pyarrow as pa
     import pyarrow.ipc as ipc
+    from zleap.sag.core.adapters.limited import LimitedVectorStore
 
     row_count = 5001
     workspace = tmp_path / "workspace"
@@ -906,13 +996,15 @@ async def test_lancedb_arrow_stream_exports_large_role_without_python_vector_mat
     vectors = {f"local-{index:05d}": [float(index), float(index + 1)] for index in range(row_count)}
     streamed_ids = [*vectors, "local-00000", "local-extra"]
     vectors["local-extra"] = [-1.0, -1.0]
+    predicates: list[str] = []
 
     class Query:
         def __init__(self) -> None:
             self.ids: list[str] = []
 
         def where(self, predicate: str):
-            self.ids = list(streamed_ids) if "source_config_id" in predicate else re.findall(r"'([^']+)'", predicate)
+            predicates.append(predicate)
+            self.ids = list(streamed_ids) if "data_source_id" in predicate else re.findall(r"'([^']+)'", predicate)
             return self
 
         def select(self, _fields: list[str]):
@@ -966,6 +1058,13 @@ async def test_lancedb_arrow_stream_exports_large_role_without_python_vector_mat
 
     LanceStore.__module__ = "zleap.sag.core.storage.lancedb_store"
 
+    class LanceAdapter:
+        provider = "lancedb"
+        capabilities = frozenset()
+
+        def _raw(self):
+            return LanceStore()
+
     class Embedding:
         model = "test/embedding"
         base_url = "https://embedding.invalid/v1"
@@ -985,7 +1084,7 @@ async def test_lancedb_arrow_stream_exports_large_role_without_python_vector_mat
 
     roles = await write_existing_vector_payload(
         workspace,
-        LanceStore(),
+        LimitedVectorStore(LanceAdapter(), SimpleNamespace()),
         Embedding(),
         manifest_path=manifest_path,
         routing="source-config-1",
@@ -994,6 +1093,7 @@ async def test_lancedb_arrow_stream_exports_large_role_without_python_vector_mat
 
     assert roles == {"chunk.heading"}
     assert table.query_count == 1
+    assert predicates == ["data_source_id = 'source-config-1'"]
     with pa.memory_map(str(workspace / "vectors/chunk_heading.arrow"), "r") as source:
         table = ipc.open_file(source).read_all()
     assert table.num_rows == row_count
@@ -1294,13 +1394,18 @@ async def test_write_vector_payload_creates_valid_vectors_v01_package(tmp_path: 
     shutil.copytree(workspace, unavailable_workspace)
     shutil.rmtree(unavailable_workspace / "vectors")
 
-    class UnavailableVectors:
-        async def fetch_vector_fields(self, index, ids, fields):
+    from zleap.sag.core.adapters.limited import LimitedVectorStore
+
+    class UnavailableAdapter:
+        provider = "lancedb"
+        capabilities = frozenset()
+
+        def _raw(self):
             raise ConnectionError("vector store unavailable")
 
     unavailable_roles = await write_existing_vector_payload(
         unavailable_workspace,
-        UnavailableVectors(),
+        LimitedVectorStore(UnavailableAdapter(), SimpleNamespace()),
         Embedding(),
         source_ids=source_ids,
     )
