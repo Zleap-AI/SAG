@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v1.8.8 · 2026-09-20
+
 - 将 `zleap-sag` 知识数据处理引擎升级至 0.13.0，并适配其 Embedding 维度配置拆分。
 - 新增 `SAG_EMBEDDING_SCHEMA_DIMENSIONS` 与 `SAG_EMBEDDING_REQUEST_DIMENSIONS`：前者决定向量库 schema 与返回向量校验（留空沿用 1024，存量知识库请勿改动），后者是发往接口的可选参数（留空跟随 schema）。原 `SAG_EMBEDDING_DIMENSIONS` 保留为兼容别名，同时设置两项。
 - 修复 SiliconFlow `BAAI/bge-m3` 省略请求维度的绕过始终未生效的问题：此前依赖引擎初始化后改写内部属性，而该对象并不持有维度；0.13.0 起在配置期直接表达（补充并落实 #159 的意图）。
