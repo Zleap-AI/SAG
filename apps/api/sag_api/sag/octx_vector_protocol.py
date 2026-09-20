@@ -248,6 +248,37 @@ def apply_vector_identity_record(source: Any, identity: dict[str, Any] | None) -
     return _assign_vector_identity_config(source, current)
 
 
+def reconcile_vector_identity_records(
+    source: Any,
+    identities: list[dict[str, Any] | None],
+) -> bool:
+    """Derive a source-wide identity from every active READY document.
+
+    Legacy documents have ``None`` until they are reprocessed.  A source can
+    therefore recover from ``mixed`` only after every exported document has a
+    complete, identical identity; one unknown or different document keeps
+    reuse disabled.
+    """
+    current = dict(getattr(source, "config", None) or {})
+    if not identities:
+        current[_VECTOR_IDENTITY_STATE_KEY] = _EMPTY
+        current.pop(_VECTOR_IDENTITY_KEY, None)
+        return _assign_vector_identity_config(source, current)
+
+    first = identities[0]
+    compatible = _complete_vector_identity(first) and all(
+        _complete_vector_identity(identity) and identity == first
+        for identity in identities
+    )
+    if compatible:
+        current[_VECTOR_IDENTITY_STATE_KEY] = _KNOWN
+        current[_VECTOR_IDENTITY_KEY] = dict(first or {})
+    else:
+        current[_VECTOR_IDENTITY_STATE_KEY] = _MIXED
+        current.pop(_VECTOR_IDENTITY_KEY, None)
+    return _assign_vector_identity_config(source, current)
+
+
 def replace_vector_identity_record(source: Any, identity: dict[str, Any] | None) -> bool:
     """Record the identity after a complete active partition replacement."""
     current = dict(getattr(source, "config", None) or {})

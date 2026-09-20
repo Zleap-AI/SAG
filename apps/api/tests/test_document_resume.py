@@ -1040,12 +1040,24 @@ async def test_reprocess_ready_document_replaces_all_previous_derived_data():
 
     await init_db()
     async with SessionLocal() as session:
+        previous_identity = {
+            "provider": "openai-compatible",
+            "model": "text-embedding-v1",
+            "model_fingerprint": "sag-config:sha256:previous",
+            "dimensions": 1024,
+            "dtype": "float32",
+            "normalized": False,
+        }
         source = Source(
             name="replace-source",
             sag_source_config_id="replace-source-config"[:36],
             document_count=2,
             chunk_count=99,
             event_count=88,
+            config={
+                "octx_vector_identity_state": "known",
+                "octx_vector_identity": previous_identity,
+            },
         )
         session.add(source)
         await session.flush()
@@ -1067,6 +1079,7 @@ async def test_reprocess_ready_document_replaces_all_previous_derived_data():
             parser_status="done",
             fallback_from="mineru",
             fallback_reason="previous fallback",
+            vector_identity=previous_identity,
         )
         other = Document(
             source_id=source.id,
@@ -1120,8 +1133,10 @@ async def test_reprocess_ready_document_replaces_all_previous_derived_data():
         assert document.mineru_provider is None and document.mineru_model is None
         assert document.parser_status is None
         assert document.fallback_from is None and document.fallback_reason is None
+        assert document.vector_identity is None
         assert source.document_count == 2
         assert source.chunk_count == 4 and source.event_count == 5
+        assert source.config == {"octx_vector_identity_state": "mixed"}
         assert job.type == JobType.REPROCESS_DOCUMENT
         assert job.payload["target_document_id"] == document.id
         assert set(job.payload["derived_source_ids"]) == {"engine-old", "engine-latest"}

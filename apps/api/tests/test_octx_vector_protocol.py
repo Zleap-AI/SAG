@@ -173,6 +173,95 @@ def test_legacy_unknown_source_never_promotes_from_document_observations() -> No
     assert source.config == {"octx_vector_identity_state": "mixed"}
 
 
+def test_document_identities_recover_mixed_source_after_full_reprocess() -> None:
+    """A legacy source becomes reusable only after every active document is known."""
+    from sag_api.core.config import Settings
+    from sag_api.sag.octx_vector_protocol import (
+        reconcile_vector_identity_records,
+        vector_profile_from_identity,
+    )
+
+    identity = configured_embedding_identity(Settings(_env_file=None))
+    assert identity is not None
+    source = SimpleNamespace(
+        config={
+            "engine": {"language": "zh"},
+            "octx_vector_identity_state": "mixed",
+        }
+    )
+
+    assert reconcile_vector_identity_records(source, [identity, None]) is False
+    assert source.config["octx_vector_identity_state"] == "mixed"
+    assert "octx_vector_identity" not in source.config
+
+    assert reconcile_vector_identity_records(source, [identity, identity]) is True
+    assert source.config["octx_vector_identity_state"] == "known"
+    assert source.config["octx_vector_identity"] == identity
+    assert source.config["engine"] == {"language": "zh"}
+
+    profile = vector_profile_from_identity(
+        "chunk.content",
+        source.config["octx_vector_identity"],
+        int(identity["dimensions"]),
+    )
+    assert profile.get("reuse_policy", "compatible") == "compatible"
+    assert profile["model"] == identity["model"]
+    assert profile["model_fingerprint"] == identity["model_fingerprint"]
+    assert profile["fingerprint"]
+
+
+@pytest.mark.asyncio
+async def test_persisted_document_identities_recover_legacy_source_after_all_documents_reprocess() -> None:
+    """Persisting only one refreshed document must not make legacy siblings reusable."""
+    from sag_api.core.config import Settings
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
+    from sag_api.sag.document_vector_identity import record_document_vector_identity
+
+    await init_db()
+    identity = configured_embedding_identity(Settings(_env_file=None))
+    assert identity is not None
+    async with SessionLocal() as session:
+        source = Source(
+            name=f"legacy-vector-source-{uuid.uuid4().hex}",
+            sag_source_config_id=f"legacy-vector-config-{uuid.uuid4().hex}"[:64],
+            config={"octx_vector_identity_state": "mixed"},
+        )
+        session.add(source)
+        await session.flush()
+        first = Document(
+            source_id=source.id,
+            filename="first.md",
+            content_type="text/markdown",
+            size_bytes=1,
+            storage_path="/tmp/first.md",
+            status=DocumentStatus.READY,
+        )
+        second = Document(
+            source_id=source.id,
+            filename="second.md",
+            content_type="text/markdown",
+            size_bytes=1,
+            storage_path="/tmp/second.md",
+            status=DocumentStatus.READY,
+        )
+        session.add_all([first, second])
+        await session.flush()
+
+        await record_document_vector_identity(session, source, first, identity)
+        assert first.vector_identity == identity
+        assert source.config == {"octx_vector_identity_state": "mixed"}
+
+        await record_document_vector_identity(session, source, second, identity)
+        assert second.vector_identity == identity
+        assert source.config["octx_vector_identity_state"] == "known"
+        assert source.config["octx_vector_identity"] == identity
+
+        await session.delete(source)
+        await session.commit()
+
+
 def test_vector_identity_record_survives_an_unchanged_configuration() -> None:
     from sag_api.core.config import Settings
     from sag_api.sag.octx_vector_protocol import apply_vector_identity_record

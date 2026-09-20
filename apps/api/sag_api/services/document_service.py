@@ -14,6 +14,7 @@ from sag_api.db.models import Document, Job, Source
 from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs import JobQueue
 from sag_api.jobs.scheduling import DELETE_PRIORITY, RESUME_PRIORITY, set_scheduler
+from sag_api.sag.document_vector_identity import refresh_source_vector_identity
 from sag_api.services.source_operation_service import touch_source_revision
 
 
@@ -203,6 +204,7 @@ async def reprocess_document(
             parser_status=None,
             fallback_from=None,
             fallback_reason=None,
+            vector_identity=None,
         )
     claimed = await session.execute(
         update(Document)
@@ -228,6 +230,7 @@ async def reprocess_document(
     await session.refresh(document)
     if restart_from_scratch:
         await _refresh_source_counts(session, source)
+        await refresh_source_vector_identity(session, source)
     payload = dict(latest.payload or {}) if latest is not None and not restart_from_scratch else {}
     payload.pop("pause_requested", None)
     payload.pop("resume_requested", None)

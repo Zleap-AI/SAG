@@ -74,6 +74,7 @@ _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
         "parser_status": "VARCHAR(16)",
         "fallback_from": "VARCHAR(16)",
         "fallback_reason": "TEXT",
+        "vector_identity_json": "JSON",
     },
     "threads": {"archived": "BOOLEAN NOT NULL DEFAULT FALSE"},
     "messages": {
