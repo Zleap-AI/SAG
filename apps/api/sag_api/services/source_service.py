@@ -18,6 +18,7 @@ from sag_api.db.models import AgentBinding, Job, Source
 from sag_api.enums import CONNECTOR_SOURCE_TYPE, BindingTargetType, JobStatus, JobType, SourceType
 from sag_api.jobs import JobQueue
 from sag_api.sag import EngineManager
+from sag_api.sag.octx_vector_protocol import initialize_vector_identity_state
 from sag_api.schemas.source import SourceCreate, SourceUpdate
 
 log = get_logger("services.source")
@@ -83,7 +84,7 @@ async def create_source(
         source_type=source_type,
         connector_kind=data.connector_kind,
         sag_source_config_id=f"src_{new_id()[:16]}",
-        config=data.config or {},
+        config=initialize_vector_identity_state(data.config or {}),
     )
     session.add(source)
     await session.commit()

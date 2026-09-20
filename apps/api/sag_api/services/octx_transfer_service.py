@@ -71,6 +71,10 @@ from sag_api.sag.octx_importer import (
 from sag_api.sag.octx_plan_store import OctxPlanError, OctxPlanStore
 from sag_api.sag.octx_smoke_test import smoke_test_installation
 from sag_api.sag.octx_snapshot import export_snapshot
+from sag_api.sag.octx_vector_protocol import (
+    configured_embedding_identity,
+    replace_vector_identity_record,
+)
 from sag_api.services.octx_conflict_service import (
     ImportDecision,
     confirm_import_decision,
@@ -587,6 +591,11 @@ async def execute_structured_import(
         await engine_manager.provision(source_config_id)
         vector_rebuilder = rebuild_vectors
 
+    # 复用判定必须对比*当前配置*的 embedding 身份。引擎资源对象
+    # （LimitedEmbeddingAdapter）不代理 model/base_url/维度，从它取值只会静默
+    # 拿到默认值并永久禁用复用，所以身份在这里由配置解析后显式注入。
+    local_embedding_identity = configured_embedding_identity(settings)
+
     vector_checkpoint = dict((transfer.checkpoint or {}).get("vector_progress") or {})
     report_capabilities = (
         (transfer.validation_report or {}).get("capabilities") if isinstance(transfer.validation_report, dict) else None
@@ -652,6 +661,7 @@ async def execute_structured_import(
             package_path=package_path,
             plan_path=plan_path,
             prevalidated_vector_valid=prevalidated_vector_valid,
+            local_embedding_identity=local_embedding_identity,
         )
     except TypeError:
         try:
@@ -783,6 +793,7 @@ async def execute_structured_import(
     source.document_count = imported.counts["documents"]
     source.chunk_count = imported.counts["chunks"]
     source.event_count = imported.counts["events"]
+    replace_vector_identity_record(source, local_embedding_identity)
     session.add(installation)
     await session.flush()
     session.add_all(document_models)
@@ -844,6 +855,7 @@ async def execute_knowledge_import(
     if release is None or not transfer.asset_id:
         raise ValidationError("OCTX import release is missing")
     id_namespace, source_config_id = _ensure_shadow_identity(transfer)
+    local_embedding_identity = configured_embedding_identity(settings)
     started_at = _import_started_at(transfer)
     if sag_session_factory is None:
         sag_session_factory = await engine_manager.get_sag_session_factory(source_config_id)
@@ -996,6 +1008,7 @@ async def execute_knowledge_import(
     source.document_count = imported.counts["documents"]
     source.chunk_count = imported.counts["chunks"]
     source.event_count = imported.counts["events"]
+    replace_vector_identity_record(source, local_embedding_identity)
     session.add(installation)
     await session.flush()
     session.add_all(document_models)

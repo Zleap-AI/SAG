@@ -13,6 +13,7 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     strategy: SearchStrategy | None = None
     top_k: int | None = Field(default=None, ge=1, le=50)
+    include_ranked_candidates: bool = False
 
 
 class GlobalSearchRequest(BaseModel):
@@ -23,6 +24,7 @@ class GlobalSearchRequest(BaseModel):
     top_k: int | None = Field(default=None, ge=1, le=50)
     strategy: SearchStrategy | None = None
     save_exploration: bool = False
+    include_ranked_candidates: bool = False
 
 
 class SectionOut(BaseModel):
@@ -78,6 +80,7 @@ class EvalCompareRequest(BaseModel):
     source_ids: list[str] | None = Field(default=None, max_length=256)
     top_k: int | None = Field(default=None, ge=1, le=50)
     judge: bool = True  # 前端可临时关掉;是否真的调 LLM 还看后台 settings 开关
+    include_ranked_candidates: bool = False
 
 
 class EvalStrategyResultOut(BaseModel):

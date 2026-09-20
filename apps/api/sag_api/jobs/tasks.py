@@ -34,6 +34,10 @@ from sag_api.jobs.scheduling import SOURCE_MAINTENANCE
 from sag_api.parsing import ParsePaused, prepare_document
 from sag_api.sag import EngineManager
 from sag_api.sag.dto import ProcessCheckpoint
+from sag_api.sag.octx_vector_protocol import (
+    apply_vector_identity_record,
+    configured_embedding_identity,
+)
 from sag_api.services.source_operation_service import (
     acquire_operation_lease,
     acquire_source_exclusive_lease,
@@ -457,6 +461,11 @@ async def _process_document_unlocked(
             event_count=Source.event_count + outcome.event_count,
         )
     )
+    # The source counter update serializes concurrent completions. Refresh the
+    # JSON under the same transaction so no document can overwrite another
+    # identity transition with a stale in-memory config.
+    await session.refresh(source, attribute_names=["config"])
+    apply_vector_identity_record(source, configured_embedding_identity(settings))
     await touch_source_revision(session, source.id)
     await session.commit()
     log.info(

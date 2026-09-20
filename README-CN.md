@@ -441,7 +441,7 @@ Electron 客户端将同一套 Next.js 应用与本地 FastAPI 后端一起打�
 
 ### 直接使用 `zleap-sag`
 
-[`zleap-sag`](https://pypi.org/project/zleap-sag/) 是 SAG 应用底层持续维护的 Python 引擎。发行包名为 `zleap-sag`，导入路径为 `zleap.sag`，要求 Python 3.11+，采用 MIT 许可。当前应用要求 `zleap-sag>=0.7.1`。
+[`zleap-sag`](https://pypi.org/project/zleap-sag/) 是 SAG 应用底层持续维护的 Python 引擎。发行包名为 `zleap-sag`，导入路径为 `zleap.sag`，要求 Python 3.11+，采用 MIT 许可。当前应用要求 `zleap-sag==0.13.0`。
 
 安装默认的零基础设施版本：
 

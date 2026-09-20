@@ -185,6 +185,7 @@ async def _prepare_global_search(
             body.query,
             strategy=body.strategy,
             top_k=body.top_k,
+            include_ranked_candidates=body.include_ranked_candidates,
         ),
         recall_event_scores(
             engine_manager,
@@ -293,6 +294,7 @@ async def search(
             body.query,
             strategy=body.strategy,
             top_k=body.top_k,
+            include_ranked_candidates=body.include_ranked_candidates,
         ),
         recall_event_scores(
             engine_manager,
@@ -423,6 +425,7 @@ async def _run_one_strategy(
     strategy: str,
     top_k: int | None,
     source_refs: dict[str, Source],
+    include_ranked_candidates: bool = False,
 ) -> EvalStrategyResultOut:
     """一次跑一个策略,任何失败都吸掉转成 error 字段,不让 gather 把整个对比搞崩。"""
     try:
@@ -432,6 +435,7 @@ async def _run_one_strategy(
             query,
             strategy=strategy,
             top_k=top_k,
+            include_ranked_candidates=include_ranked_candidates,
         )
     except Exception as error:  # noqa: BLE001
         log.warning("eval-compare 策略 %s 失败:%s", strategy, error)
@@ -513,6 +517,7 @@ async def eval_compare(
                 strategy,
                 body.top_k,
                 source_refs,
+                body.include_ranked_candidates,
             )
             for strategy in ordered_strategies
         )

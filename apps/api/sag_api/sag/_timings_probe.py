@@ -1,25 +1,28 @@
-"""捕获 zleap 检索链底层的 `_timings` 字典,不动 zleap 源码。
+"""引擎检索耗时的采集桶（ContextVar）。
 
-zleap 的 `searcher.search()` 会调用 `MultiSearcherES.search_for_rerank` /
-`VectorSearcher.search_chunks_for_rerank`,这两处底层返回 dict 里带 `_timings`
-—— 每一个 step 的耗时都在里面。但外层 `searcher.search()` 只保留 sections 和
-自己算的 `stats.timing.total`,把内部 `_timings` 丢了。
+历史上这里还会 monkey-patch zleap 检索链的私有方法，把每步 `_timings` 复制进
+ContextVar。该补丁的目标（`MultiSearcherES.search_for_sections` /
+`VectorSearcher.search_chunks_for_rerank` / `modules.search.multi_vector`）在
+zleap-sag 0.12.0 与 0.13.0 上**都不存在**——导入即 ImportError，被静默跳过，
+`_installed` 永不置位，因此它从未生效过。0.13.0 升级时删除，避免继续误导。
 
-这里通过一次性替换两个类方法,把 `_timings` 复制到 ContextVar,让上层
-`_search_raw` 能读到、拼进 `SearchOutcome.stats["engine_timings"]`。
+保留的 `capture_scope` / `release_scope` 是活代码：`engine_manager` 用它把
+`engine_timings` 键写进 `SearchOutcome.stats`。
+
+注意该键在本探针失效的前提下**不会出现**（而非等于空 dict）：写入点由
+`if bucket:` 守卫，而桶里从未有人写过值。所以调用方读不到 `engine_timings`
+是既有行为，本次升级不做改变。要让耗时真正有值，应改用 zleap 公开的
+`SearchOptions(include_stage_stats=True)`（产出 `stats["stages"]`），属单独事项。
 """
 
 from __future__ import annotations
 
 import contextvars
-from typing import Any
 
 _engine_timings_var: contextvars.ContextVar[dict[str, float] | None] = contextvars.ContextVar(
     "engine_timings_bucket",
     default=None,
 )
-
-_installed = False
 
 
 def capture_scope() -> tuple[dict[str, float], contextvars.Token[dict[str, float] | None]]:
@@ -33,57 +36,7 @@ def release_scope(token: contextvars.Token[dict[str, float] | None]) -> None:
     _engine_timings_var.reset(token)
 
 
-def _record(prefix: str, result: Any) -> None:
-    bucket = _engine_timings_var.get()
-    if bucket is None or not isinstance(result, dict):
-        return
-    timings = result.get("_timings") or {}
-    if not isinstance(timings, dict):
-        return
-    for key, value in timings.items():
-        try:
-            bucket[f"{prefix}.{key}"] = float(value)
-        except (TypeError, ValueError):
-            continue
-
-
-def install_engine_timings_probe() -> None:
-    """一次性替换 zleap 底层 search 方法,把 `_timings` 复制到 ContextVar。"""
-    global _installed
-    if _installed:
-        return
-    try:
-        from zleap.sag.modules.search import multi_vector as _mv
-        from zleap.sag.modules.search import vector as _vec
-    except ImportError:
-        # zleap 布局变了就静默跳过;上层只是多不到 engine_timings。
-        return
-
-    orig_mv = _mv.MultiSearcherES.search_for_sections
-
-    async def wrapped_mv(self: Any, *args: Any, **kwargs: Any) -> Any:
-        result = await orig_mv(self, *args, **kwargs)
-        _record("multi_es", result)
-        return result
-
-    _mv.MultiSearcherES.search_for_sections = wrapped_mv
-    # zleap 里 `search_for_rerank = search_for_sections`(类定义期赋值),需要显式同步。
-    _mv.MultiSearcherES.search_for_rerank = wrapped_mv
-
-    orig_vec = _vec.VectorSearcher.search_chunks_for_rerank
-
-    async def wrapped_vec(self: Any, *args: Any, **kwargs: Any) -> Any:
-        result = await orig_vec(self, *args, **kwargs)
-        _record("vector", result)
-        return result
-
-    _vec.VectorSearcher.search_chunks_for_rerank = wrapped_vec
-
-    _installed = True
-
-
 __all__ = [
     "capture_scope",
-    "install_engine_timings_probe",
     "release_scope",
 ]

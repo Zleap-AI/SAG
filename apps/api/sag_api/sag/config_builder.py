@@ -105,8 +105,11 @@ def build_engine_config(settings: Settings, *, overrides: dict[str, Any] | None 
         model=settings.embedding_model,
         base_url=settings.effective_embedding_base_url,
         api_key=settings.effective_embedding_api_key or _PLACEHOLDER,
-        # 当前引擎以该值预建向量 schema；未显式配置时保持既有 1024 维默认值。
-        dimensions=settings.embedding_dimensions or 1024,
+        # zleap-sag 0.13.0 起维度拆成两项：schema 维度决定向量空间与返回向量校验，
+        # 请求维度是发往 OpenAI-compatible 接口的可选参数（None = 不发送）。
+        # 旧 SAG_EMBEDDING_DIMENSIONS 同时喂给两者，见 Settings 的 effective_* 属性。
+        schema_dimensions=settings.effective_embedding_schema_dimensions,
+        request_dimensions=settings.effective_embedding_request_dimensions,
         timeout=settings.embedding_timeout,
     )
 
