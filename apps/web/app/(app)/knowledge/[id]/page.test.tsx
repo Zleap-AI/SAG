@@ -16,7 +16,13 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/components/ui/dialog", () => ({
   Dialog: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  DialogContent: ({ children }: { children: React.ReactNode }) => <section>{children}</section>,
+  DialogContent: ({
+    children,
+    className,
+  }: {
+    children: React.ReactNode;
+    className?: string;
+  }) => <section className={className}>{children}</section>,
   DialogDescription: ({ children }: { children: React.ReactNode }) => <p>{children}</p>,
   DialogHeader: ({ children }: { children: React.ReactNode }) => <header>{children}</header>,
   DialogTitle: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
@@ -97,5 +103,24 @@ describe("source detail page", () => {
     expect(html).toContain("扫描结果");
     expect(html).toContain("检查冲突");
     expect(html).toContain("最终确认");
+  });
+
+  it("constrains the document upload dialog to the viewport", () => {
+    const html = renderToStaticMarkup(
+      <NextIntlClientProvider
+        locale="zh-CN"
+        timeZone="Asia/Shanghai"
+        messages={messages}
+      >
+        <TooltipProvider>
+          <OctxExportProvider>
+            <SourceDetailPage />
+          </OctxExportProvider>
+        </TooltipProvider>
+      </NextIntlClientProvider>,
+    );
+
+    expect(html).toContain("max-h-[calc(100dvh-2rem)]");
+    expect(html).toContain("overflow-hidden");
   });
 });

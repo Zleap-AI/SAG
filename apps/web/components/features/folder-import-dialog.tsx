@@ -87,7 +87,7 @@ export function FolderImportSelectionList({
   const selectedCount = selectedFolderImportItems(plan).length;
 
   return (
-    <div className="flex min-w-0 flex-col gap-3">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden">
       <label className="flex items-center gap-2 text-sm font-medium">
         <input
           type="checkbox"
@@ -101,7 +101,7 @@ export function FolderImportSelectionList({
         {t("selectedCount", { count: selectedCount })}
       </p>
       <ul
-        className="max-h-64 min-w-0 space-y-2 overflow-auto"
+        className="min-h-0 min-w-0 flex-1 space-y-2 overflow-y-auto pr-1"
         aria-label={t("selectedFiles", { count: selectedCount })}
       >
         {plan.items.map((item) => (
@@ -381,10 +381,10 @@ export const FolderImportDialog = React.forwardRef<
 
   return (
     <section
-      className="flex min-w-0 flex-col gap-4 border-t pt-4"
+      className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden border-t pt-4"
       aria-labelledby="folder-import-title"
     >
-      <div>
+      <div className="shrink-0">
         <h3
           id="folder-import-title"
           className="text-sm font-semibold text-foreground"
@@ -397,7 +397,7 @@ export const FolderImportDialog = React.forwardRef<
       </div>
 
       <ol
-        className="grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-4"
+        className="grid shrink-0 grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-4"
         aria-label={t("steps")}
       >
         <li className="rounded-md bg-muted px-2 py-1.5">
@@ -437,7 +437,7 @@ export const FolderImportDialog = React.forwardRef<
       />
 
       {step === "choose" ? (
-        <div className="flex min-w-0 flex-col gap-3">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
           <div className="grid gap-2 sm:grid-cols-2">
             <Button
               type="button"
@@ -465,7 +465,7 @@ export const FolderImportDialog = React.forwardRef<
             type="button"
             variant="ghost"
             onClick={onClose}
-            className="self-end"
+            className="mt-auto self-end"
           >
             {t("close")}
           </Button>
@@ -473,7 +473,7 @@ export const FolderImportDialog = React.forwardRef<
       ) : null}
 
       {step === "summary" && plan ? (
-        <div className="flex flex-col gap-3">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
           <h4 className="text-sm font-medium">{t("scanResult")}</h4>
           <div className="grid grid-cols-3 gap-2 text-center text-xs">
             <div className="rounded-md border p-2">
@@ -490,7 +490,7 @@ export const FolderImportDialog = React.forwardRef<
             </div>
           </div>
           {rejected.length > 0 ? (
-            <ul className="max-h-32 space-y-1 overflow-auto text-xs text-muted-foreground">
+            <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1 text-xs text-muted-foreground">
               {rejected.map((item) => (
                 <li
                   key={item.id}
@@ -506,7 +506,7 @@ export const FolderImportDialog = React.forwardRef<
               ))}
             </ul>
           ) : null}
-          <div className="flex justify-between gap-2">
+          <div className="mt-auto flex shrink-0 justify-between gap-2 border-t border-border/60 bg-card pt-3">
             <Button type="button" variant="outline" onClick={resetBatch}>
               {t("chooseAgain")}
             </Button>
@@ -518,8 +518,8 @@ export const FolderImportDialog = React.forwardRef<
       ) : null}
 
       {step === "selection" && plan ? (
-        <div className="flex min-w-0 flex-col gap-3">
-          <div>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden">
+          <div className="shrink-0">
             <h4 className="text-sm font-medium">{t("selectFiles")}</h4>
             <p className="mt-1 text-xs text-muted-foreground">
               {t("selectionDescription")}
@@ -542,7 +542,7 @@ export const FolderImportDialog = React.forwardRef<
               }));
             }}
           />
-          <div className="flex justify-between gap-2">
+          <div className="flex shrink-0 justify-between gap-2 border-t border-border/60 bg-card pt-3">
             <Button type="button" variant="outline" onClick={() => setStep("summary")}>
               {t("back")}
             </Button>
@@ -558,10 +558,10 @@ export const FolderImportDialog = React.forwardRef<
       ) : null}
 
       {step === "conflicts" && plan ? (
-        <div className="flex flex-col gap-3">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
           <h4 className="text-sm font-medium">{t("inspectConflicts")}</h4>
           <p className="text-xs text-muted-foreground">{t("undecided")}</p>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex shrink-0 flex-wrap gap-2">
             <Button
               type="button"
               size="sm"
@@ -579,7 +579,7 @@ export const FolderImportDialog = React.forwardRef<
               {t("addAllAnyway")}
             </Button>
           </div>
-          <div className="max-h-64 space-y-3 overflow-auto">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
             {conflicts.map((item) => (
               <fieldset key={item.id} className="min-w-0 rounded-md border p-3">
                 <legend className="flex max-w-full px-1 text-xs font-medium">
@@ -610,7 +610,7 @@ export const FolderImportDialog = React.forwardRef<
               </fieldset>
             ))}
           </div>
-          <div className="flex justify-between gap-2">
+          <div className="flex shrink-0 justify-between gap-2 border-t border-border/60 bg-card pt-3">
             <Button
               type="button"
               variant="outline"
@@ -633,20 +633,23 @@ export const FolderImportDialog = React.forwardRef<
       ) : null}
 
       {step === "confirm" && plan ? (
-        <div className="flex flex-col gap-3">
-          <div className="flex items-start gap-2 rounded-md border p-3">
-            <ShieldCheck className="mt-0.5 size-4 shrink-0 text-emerald-600" />
-            <div>
-              <h4 className="text-sm font-medium">{t("finalConfirmation")}</h4>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {t("confirmDescription", { count: uploadable.length })}
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {t("selectedFiles", { count: selectedItems.length })} · {t("skippedCount", { count: skippedCount })}
-              </p>
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="flex items-start gap-2 rounded-md border p-3">
+              <ShieldCheck className="mt-0.5 size-4 shrink-0 text-emerald-600" />
+              <div>
+                <h4 className="text-sm font-medium">{t("finalConfirmation")}</h4>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t("confirmDescription", { count: uploadable.length })}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t("selectedFiles", { count: selectedItems.length })} ·{" "}
+                  {t("skippedCount", { count: skippedCount })}
+                </p>
+              </div>
             </div>
           </div>
-          <div className="flex justify-between gap-2">
+          <div className="flex shrink-0 justify-between gap-2 border-t border-border/60 bg-card pt-3">
             <Button
               type="button"
               variant="outline"
@@ -668,7 +671,7 @@ export const FolderImportDialog = React.forwardRef<
       ) : null}
 
       {step === "uploading" && progress ? (
-        <div className="flex flex-col gap-3">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
           <h4 className="text-sm font-medium">
             {t("uploadProgress", {
               current: progress.current,
@@ -685,6 +688,7 @@ export const FolderImportDialog = React.forwardRef<
           <Button
             type="button"
             variant="outline"
+            className="mt-auto"
             onClick={() => {
               cancelRef.current = true;
               sessionRef.current?.cancel();
@@ -697,7 +701,7 @@ export const FolderImportDialog = React.forwardRef<
       ) : null}
 
       {step === "complete" ? (
-        <div className="flex flex-col gap-3">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
           <h4 className="text-sm font-medium">{t("completeTitle")}</h4>
           <p className="text-xs text-muted-foreground">
             {t("uploadComplete", {
@@ -707,7 +711,7 @@ export const FolderImportDialog = React.forwardRef<
             })}
           </p>
           {failures.length > 0 ? (
-            <ul className="max-h-32 space-y-1 overflow-auto text-xs">
+            <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1 text-xs">
               {failures.map(({ item, message }) => (
                 <li
                   key={item.id}
@@ -721,7 +725,7 @@ export const FolderImportDialog = React.forwardRef<
               ))}
             </ul>
           ) : null}
-          <div className="flex justify-end gap-2">
+          <div className="mt-auto flex shrink-0 justify-end gap-2 border-t border-border/60 bg-card pt-3">
             {failures.length > 0 ? (
               <Button
                 type="button"
