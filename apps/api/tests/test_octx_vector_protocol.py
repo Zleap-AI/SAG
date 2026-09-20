@@ -885,6 +885,7 @@ async def test_lancedb_arrow_stream_exports_large_role_without_python_vector_mat
 
     import pyarrow as pa
     import pyarrow.ipc as ipc
+    from zleap.sag.core.adapters.limited import LimitedVectorStore
 
     row_count = 5001
     workspace = tmp_path / "workspace"
@@ -906,13 +907,15 @@ async def test_lancedb_arrow_stream_exports_large_role_without_python_vector_mat
     vectors = {f"local-{index:05d}": [float(index), float(index + 1)] for index in range(row_count)}
     streamed_ids = [*vectors, "local-00000", "local-extra"]
     vectors["local-extra"] = [-1.0, -1.0]
+    predicates: list[str] = []
 
     class Query:
         def __init__(self) -> None:
             self.ids: list[str] = []
 
         def where(self, predicate: str):
-            self.ids = list(streamed_ids) if "source_config_id" in predicate else re.findall(r"'([^']+)'", predicate)
+            predicates.append(predicate)
+            self.ids = list(streamed_ids) if "data_source_id" in predicate else re.findall(r"'([^']+)'", predicate)
             return self
 
         def select(self, _fields: list[str]):
@@ -966,6 +969,13 @@ async def test_lancedb_arrow_stream_exports_large_role_without_python_vector_mat
 
     LanceStore.__module__ = "zleap.sag.core.storage.lancedb_store"
 
+    class LanceAdapter:
+        provider = "lancedb"
+        capabilities = frozenset()
+
+        def _raw(self):
+            return LanceStore()
+
     class Embedding:
         model = "test/embedding"
         base_url = "https://embedding.invalid/v1"
@@ -985,7 +995,7 @@ async def test_lancedb_arrow_stream_exports_large_role_without_python_vector_mat
 
     roles = await write_existing_vector_payload(
         workspace,
-        LanceStore(),
+        LimitedVectorStore(LanceAdapter(), SimpleNamespace()),
         Embedding(),
         manifest_path=manifest_path,
         routing="source-config-1",
@@ -994,6 +1004,7 @@ async def test_lancedb_arrow_stream_exports_large_role_without_python_vector_mat
 
     assert roles == {"chunk.heading"}
     assert table.query_count == 1
+    assert predicates == ["data_source_id = 'source-config-1'"]
     with pa.memory_map(str(workspace / "vectors/chunk_heading.arrow"), "r") as source:
         table = ipc.open_file(source).read_all()
     assert table.num_rows == row_count
@@ -1294,13 +1305,18 @@ async def test_write_vector_payload_creates_valid_vectors_v01_package(tmp_path: 
     shutil.copytree(workspace, unavailable_workspace)
     shutil.rmtree(unavailable_workspace / "vectors")
 
-    class UnavailableVectors:
-        async def fetch_vector_fields(self, index, ids, fields):
+    from zleap.sag.core.adapters.limited import LimitedVectorStore
+
+    class UnavailableAdapter:
+        provider = "lancedb"
+        capabilities = frozenset()
+
+        def _raw(self):
             raise ConnectionError("vector store unavailable")
 
     unavailable_roles = await write_existing_vector_payload(
         unavailable_workspace,
-        UnavailableVectors(),
+        LimitedVectorStore(UnavailableAdapter(), SimpleNamespace()),
         Embedding(),
         source_ids=source_ids,
     )
