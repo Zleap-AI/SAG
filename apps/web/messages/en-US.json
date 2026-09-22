@@ -216,11 +216,15 @@
     "collapse": "Collapse"
   },
   "DesktopUpdate": {
-    "available": "Update {version} available",
+    "available": "Download update {version}",
     "downloading": "Downloading update {percent, number}%",
     "restart": "Restart to update to {version}",
     "installUnavailable": "The update has not finished downloading",
-    "installFailed": "Unable to start the update. Try again later."
+    "installFailed": "Unable to start the update. Try again later.",
+    "retryDownload": "Retry download {version}",
+    "retryInstall": "Retry installation {version}",
+    "downloadUnavailable": "Unable to start the download. Please retry.",
+    "downloadFailed": "Update download failed. Please try again."
   },
   "ArchivedThreads": {
     "title": "Archived conversations",

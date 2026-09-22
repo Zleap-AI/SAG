@@ -39,13 +39,13 @@ npm run dev
 
 ## 用户下载与更新
 
-正式安装包统一发布在 [`Zleap-AI/SAG` Releases](https://github.com/Zleap-AI/SAG/releases/latest)：
+正式安装包统一发布在 [`Zleap-AI/SAG` Releases](https://github.com/Zleap-AI/SAG/releases)：
 
-- macOS Apple Silicon：DMG 用于安装，ZIP 与 `latest-mac.yml` 用于自动更新；
-- Windows x64：暂不签名的 NSIS EXE 用于安装，`latest.yml` 与 blockmap 用于自动更新；Windows 可能显示“未知发布者”提示；
+- macOS Apple Silicon：DMG 用于安装，ZIP 与 `latest-mac.yml` 用于应用内更新；
+- Windows x64：暂不签名的 NSIS EXE 用于安装，`latest.yml` 与 blockmap 用于应用内更新；Windows 可能显示“未知发布者”提示；
 - `SHA256SUMS.txt` 用于校验下载完整性。
 
-已安装客户端默认跟随 GitHub Releases 的 `latest` 稳定通道。Release 必须是非草稿正式版本；草稿和失败的流水线不会被客户端发现。
+客户端后台检查更新；用户选择“下载更新”后才下载，完成后再次选择“重启并安装”才安装。普通退出、稍后处理或重启应用都不会自动安装。旧客户端通过兼容过渡版获得此能力。
 
 ## 一条命令发布到 public
 
@@ -132,7 +132,7 @@ npm run dist:win
 
 产物位于 `apps/desktop/release/`：
 
-- macOS：DMG 用于安装，ZIP 用于自动更新；
+- macOS：DMG 用于安装，ZIP 用于应用内更新；
 - Windows：NSIS 安装器及其更新元数据。
 
 只验证应用目录、不生成安装器时，可运行：
@@ -176,7 +176,21 @@ macOS 签名凭据只注入 electron-builder 的最终签名与公证步骤，�
 
 桌面版采用整包版本和整包更新：Electron、Next.js、Python API 及其原生依赖使用同一个 `apps/desktop/package.json` 版本发布。不要分别更新 Web 或 Python sidecar，否则无法保证接口和数据迁移兼容。
 
-public 正式构建使用 GitHub provider，并把安装包、ZIP/EXE 更新载荷、blockmap、`latest-mac.yml` 与 `latest.yml` 发布在同一个非草稿 Release。electron-builder 在安装包内生成 `app-update.yml`，客户端据此发现后续稳定版本；不要把更新地址固定到某个版本标签的下载目录。
+public 正式构建将 `SAG_UPDATE_GITHUB_REPOSITORY` 转换为 generic provider，地址为 `https://github.com/<owner>/<repo>/releases/download/desktop-manual-updates`。electron-builder 将此配置写入安装包的 `app-update.yml`。独立通道的 `latest-mac.yml` 和 `latest.yml` 只存版本、安装包的绝对下载地址、大小和 SHA512；实际安装包、blockmap 和校验文件仍在不可覆盖的 `vX.Y.Z` Release 中。
+
+`desktop-manual-updates` 是专用的可更新元数据预发布，不是安装包版本，也不能设置为 GitHub latest。旧版 GitHub provider 继续读取最后的兼容过渡版；新客户端读取独立通道。这样离线用户跳过中间发布，也不会自动安装移除迁移能力的版本。
+
+### 两阶段发布
+
+1. 先发布仅包含手动更新和通道隔离的兼容过渡版本，`apps/desktop/release-policy.json` 的 `legacyBridge` 为 `true`。发布脚本将其标记为旧通道 latest，并创建独立元数据通道与 `legacy-bridge.json` 标记。旧客户端可能自动安装此过渡版。
+2. 过渡版在 Windows/macOS 验收后，再合入移除旧数据迁移的后续改动，将 `legacyBridge` 设为 `false`。后续所有正式版本均使用 `--latest=false`，只更新独立通道元数据，不移动旧通道 latest。
+3. 发布脚本在缺少过渡标记、重复发布过渡版或发现旧 latest 被移动时停止。不要人工将后续版本设为 latest，也不要把两阶段改动合并成一个过渡发行包。
+
+独立通道是唯一允许覆盖的元数据 Release，版本安装包不覆盖。元数据替换不是原子的：脚本在覆盖前备份旧元数据，失败时重试并尝试恢复，仍然失败则令流水线报错。中断期间检查更新可能暂时不可用，已安装应用不受影响。若版本发布成功但元数据上传失败，使用原构建资产重试发布脚本；它会比对已发布的 SHA256SUMS，一致才恢复元数据发布，差异则停止。不能删除或重建版本标签。如果 GitHub 留下了未完成的草稿，先检查并补齐该草稿资产与校验文件，再恢复发布；脚本不会擅自覆盖草稿。GitHub Releases 列表用于人工下载安装，`/releases/latest` 有意停留在兼容过渡版。
+
+### 更新验收
+
+在两个平台验证：拒绝下载时无包下载；下载完成后退出和重新启动不安装；仅点击“重启并安装”才升级；反复点击和定时检查不覆盖当前下载；旧客户端仅发现过渡版；新客户端能从独立通道发现后续版本。单元测试和类型检查不能代替安装包验收。
 
 备用自托管场景可以设置 `SAG_UPDATE_BASE_URL` 使用 generic provider，但必须自行保证同一稳定 URL 始终提供最新元数据和对应载荷。未配置 provider 的开发/本地产物不会生成更新配置，也不会检查更新。
 
@@ -196,4 +210,4 @@ npm run prepare:release
 - 文档导入、搜索、对话、探索模式和 MCP；
 - 应用退出后两个本地服务均结束；
 - 覆盖升级保留用户数据；
-- macOS 签名与 notarization、Windows “未知发布者”安装流程，以及两个平台的自动更新。
+- macOS 签名与 notarization、Windows “未知发布者”安装流程，以及两个平台分别确认下载、安装的更新流程。

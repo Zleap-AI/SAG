@@ -28,9 +28,9 @@ export type SagDesktopUpdateState =
   | { status: "checking" }
   | { status: "available"; version: string }
   | { status: "not-available" }
-  | { status: "downloading"; percent: number }
+  | { status: "downloading"; version: string; percent: number }
   | { status: "downloaded"; version: string }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string; operation: "check" | "download" | "install"; version?: string };
 
 export interface SagDesktopBridge {
   readonly isDesktop: true;
@@ -38,7 +38,8 @@ export interface SagDesktopBridge {
   appInfo(): Promise<{ version: string; platform: string; arch: string }>;
   checkForUpdates(): Promise<{ supported: boolean }>;
   getUpdateState(): Promise<SagDesktopUpdateState>;
-  installUpdate(): Promise<{ started: boolean }>;
+  downloadUpdate(version: string): Promise<{ started: boolean }>;
+  installUpdate(version: string): Promise<{ started: boolean }>;
   getDiagnosticsInfo(): Promise<SagDesktopDiagnosticsInfo>;
   onUpdateState(
     listener: (state: SagDesktopUpdateState) => void,

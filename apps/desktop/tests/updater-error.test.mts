@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   describeUpdaterError,
-  shouldPresentUpdaterError,
 } from "../src/updater-error.ts";
 
 test("guides signature-mismatched test builds to the official download", () => {
@@ -19,7 +18,7 @@ test("guides signature-mismatched test builds to the official download", () => {
   assert.match(presentation.detail, /覆盖安装一次/);
   assert.equal(
     presentation.actionUrl,
-    "https://github.com/Zleap-AI/SAG/releases/latest",
+    "https://github.com/Zleap-AI/SAG/releases",
   );
 });
 
@@ -29,10 +28,4 @@ test("keeps an unexpected updater error visible for diagnosis", () => {
   assert.equal(presentation.kind, "generic");
   assert.match(presentation.detail, /network connection reset/);
   assert.equal(presentation.actionUrl, undefined);
-});
-
-test("presents errors after an update download without interrupting background checks", () => {
-  assert.equal(shouldPresentUpdaterError({ status: "downloaded" }), true);
-  assert.equal(shouldPresentUpdaterError({ status: "checking" }), false);
-  assert.equal(shouldPresentUpdaterError({ status: "downloading" }), false);
 });

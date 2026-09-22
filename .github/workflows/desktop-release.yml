@@ -288,7 +288,7 @@ jobs:
             '## Downloads' \
             '- **macOS Apple Silicon:** download the `.dmg` installer.' \
             '- **Windows x64:** download the `Setup.exe` installer. It is currently unsigned, so Windows may show an unknown-publisher warning.' \
-            '- Existing desktop installations receive this release through the stable automatic-update channel.' \
+            '- Desktop updates require choosing Download, then Restart and install. Older clients first receive the compatible bridge release.' \
             '' \
             '## Changes' > release-notes.md
           node scripts/release-public.mjs --notes "$GITHUB_REF_NAME" >> release-notes.md
@@ -298,9 +298,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          gh release create "$GITHUB_REF_NAME" release-assets/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --latest \
-            --title "SAG $GITHUB_REF_NAME" \
-            --notes-file release-notes.md
+          node scripts/desktop-update-feed.mjs "$GITHUB_REF_NAME" release-assets release-notes.md

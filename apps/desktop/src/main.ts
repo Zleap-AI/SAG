@@ -130,6 +130,7 @@ function registerIpc(): void {
   ipcMain.removeHandler(DESKTOP_CHANNELS.appInfo);
   ipcMain.removeHandler(DESKTOP_CHANNELS.checkForUpdates);
   ipcMain.removeHandler(DESKTOP_CHANNELS.getUpdateState);
+  ipcMain.removeHandler(DESKTOP_CHANNELS.downloadUpdate);
   ipcMain.removeHandler(DESKTOP_CHANNELS.installUpdate);
   ipcMain.removeHandler(DESKTOP_CHANNELS.diagnosticsInfo);
   ipcMain.handle(DESKTOP_CHANNELS.appInfo, (event) => {
@@ -144,9 +145,15 @@ function registerIpc(): void {
     if (!isTrustedSender(event)) throw new Error("Untrusted IPC sender");
     return updater?.getState() ?? { status: "idle" };
   });
-  ipcMain.handle(DESKTOP_CHANNELS.installUpdate, (event) => {
+  ipcMain.handle(DESKTOP_CHANNELS.downloadUpdate, (event, version: unknown) => {
     if (!isTrustedSender(event)) throw new Error("Untrusted IPC sender");
-    return updater?.install() ?? { started: false };
+    if (typeof version !== "string" || !version) return { started: false };
+    return updater?.download(version) ?? { started: false };
+  });
+  ipcMain.handle(DESKTOP_CHANNELS.installUpdate, (event, version: unknown) => {
+    if (!isTrustedSender(event)) throw new Error("Untrusted IPC sender");
+    if (typeof version !== "string" || !version) return { started: false };
+    return updater?.install(version) ?? { started: false };
   });
   ipcMain.handle(DESKTOP_CHANNELS.diagnosticsInfo, (event) => {
     if (!isTrustedSender(event)) throw new Error("Untrusted IPC sender");

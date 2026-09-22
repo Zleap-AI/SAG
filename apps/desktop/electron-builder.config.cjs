@@ -11,15 +11,13 @@ if (updateBaseUrl && updateGitHubRepository) {
 function githubPublishConfig(repository) {
   if (!repository) return null;
   const parts = repository.split("/");
-  if (parts.length !== 2 || parts.some((part) => !part)) {
+  if (!/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(repository) || parts[1] === "..") {
     throw new Error("SAG_UPDATE_GITHUB_REPOSITORY must use the owner/repository format.");
   }
   return {
-    provider: "github",
-    owner: parts[0],
-    repo: parts[1],
-    channel: "latest",
-    releaseType: "release",
+    provider: "generic",
+    url: `https://github.com/${repository}/releases/download/desktop-manual-updates`,
+    useMultipleRangeRequest: false,
   };
 }
 

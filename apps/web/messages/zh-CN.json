@@ -216,11 +216,15 @@
     "collapse": "收起"
   },
   "DesktopUpdate": {
-    "available": "发现新版本 {version}",
+    "available": "下载更新 {version}",
     "downloading": "正在下载更新 {percent, number}%",
     "restart": "重启以更新 {version}",
     "installUnavailable": "更新尚未下载完成",
-    "installFailed": "无法启动更新，请稍后重试"
+    "installFailed": "无法启动更新，请稍后重试",
+    "retryDownload": "重试下载 {version}",
+    "retryInstall": "重试安装 {version}",
+    "downloadUnavailable": "无法开始下载，请重试",
+    "downloadFailed": "下载更新失败，请稍后重试"
   },
   "ArchivedThreads": {
     "title": "归档会话",

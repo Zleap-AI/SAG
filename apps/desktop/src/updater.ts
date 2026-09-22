@@ -1,21 +1,19 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-import { app, type BrowserWindow, dialog, shell } from "electron";
+import { app, autoUpdater as nativeUpdater, type BrowserWindow, dialog, shell } from "electron";
 import log from "electron-log/main";
 import { autoUpdater, type ProgressInfo, type UpdateInfo } from "electron-updater";
 
 import { DESKTOP_CHANNELS, type UpdateState } from "./channels";
 import { desktopConfig } from "./config";
-import {
-  describeUpdaterError,
-  shouldPresentUpdaterError,
-} from "./updater-error";
+import { describeUpdaterError } from "./updater-error";
 
 export interface UpdaterController {
   check(): Promise<{ supported: boolean }>;
   getState(): UpdateState;
-  install(): { started: boolean };
+  download(version: string): Promise<{ started: boolean }>;
+  install(version: string): { started: boolean };
   dispose(): void;
 }
 
@@ -25,6 +23,17 @@ export function createUpdaterController(
   let delayTimer: NodeJS.Timeout | null = null;
   let intervalTimer: NodeJS.Timeout | null = null;
   let currentState: UpdateState = { status: "idle" };
+  let checkPending = false;
+  let downloadPending = false;
+  let installPending = false;
+  let consentVersion: string | undefined;
+  let nativeInstallListeners: ReturnType<typeof nativeUpdater.listeners> = [];
+  const clearNativeInstallListeners = () => {
+    for (const listener of nativeInstallListeners) {
+      nativeUpdater.removeListener("update-downloaded", listener);
+    }
+    nativeInstallListeners = [];
+  };
   const supported =
     app.isPackaged
     && existsSync(path.join(process.resourcesPath, "app-update.yml"));
@@ -62,63 +71,65 @@ export function createUpdaterController(
     }
   };
 
+  const pendingUpdate = () => downloadPending || installPending
+    || currentState.status === "downloading" || currentState.status === "downloaded"
+    || (currentState.status === "error" && currentState.operation !== "check");
+
+  const fail = (error: unknown, operation: "check" | "download" | "install") => {
+    const message = error instanceof Error ? error.message : String(error);
+    log.error(`Update ${operation} failed`, error);
+    publish({ status: "error", message, operation, version: consentVersion });
+    if (operation === "install") {
+      installPending = false;
+      clearNativeInstallListeners();
+      void showUpdaterError(error);
+    }
+  };
+
   const check = async (): Promise<{ supported: boolean }> => {
     if (!supported) return { supported: false };
+    if (checkPending || pendingUpdate()) return { supported: true };
+    checkPending = true;
     publish({ status: "checking" });
     try {
       await autoUpdater.checkForUpdates();
-      return { supported: true };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      log.error("Update check failed", error);
-      publish({ status: "error", message });
-      return { supported: true };
+      if (!pendingUpdate()) fail(error, "check");
+    } finally {
+      checkPending = false;
     }
+    return { supported: true };
   };
 
   if (supported) {
     autoUpdater.logger = log;
-    autoUpdater.autoDownload = true;
-    autoUpdater.autoInstallOnAppQuit = true;
+    // Consent is deliberately session-local: cached packages never authorize install.
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = false;
 
-    autoUpdater.on("checking-for-update", () => publish({ status: "checking" }));
+    autoUpdater.on("checking-for-update", () => {
+      if (!pendingUpdate()) publish({ status: "checking" });
+    });
     autoUpdater.on("update-available", (info: UpdateInfo) => {
-      publish({ status: "available", version: info.version });
+      if (!pendingUpdate()) publish({ status: "available", version: info.version });
     });
     autoUpdater.on("update-not-available", () => {
-      publish({ status: "not-available" });
+      if (!pendingUpdate()) publish({ status: "not-available" });
     });
     autoUpdater.on("download-progress", (progress: ProgressInfo) => {
-      publish({ status: "downloading", percent: progress.percent });
+      if (downloadPending && currentState.status === "downloading" && consentVersion) {
+        publish({ status: "downloading", version: consentVersion, percent: progress.percent });
+      }
     });
     autoUpdater.on("error", (error) => {
-      log.error("Updater error", error);
-      const presentError = shouldPresentUpdaterError(currentState);
-      publish({ status: "error", message: error.message });
-      if (presentError) void showUpdaterError(error);
+      // downloadUpdate also rejects; its catch owns that operation's failure.
+      if (downloadPending) return;
+      if (installPending) fail(error, "install");
+      else if (!pendingUpdate()) fail(error, "check");
     });
-    autoUpdater.on("update-downloaded", async (info: UpdateInfo) => {
-      publish({ status: "downloaded", version: info.version });
-      const window = getWindow();
-      if (!window || window.isDestroyed()) return;
-
-      const result = await dialog.showMessageBox(window, {
-        type: "info",
-        title: "SAG 更新已就绪",
-        message: `SAG ${info.version} 已下载完成`,
-        detail: "可以立即重启安装，也可以在退出应用时自动安装。",
-        buttons: ["稍后", "立即重启"],
-        defaultId: 1,
-        cancelId: 0,
-      });
-      if (result.response === 1) {
-        try {
-          log.info("Applying update via quitAndInstall(false, true)");
-          autoUpdater.quitAndInstall(false, true);
-        } catch (error) {
-          log.error("quitAndInstall failed", error);
-          await showUpdaterError(error);
-        }
+    autoUpdater.on("update-downloaded", (info: UpdateInfo) => {
+      if (currentState.status === "downloading" && info.version === consentVersion) {
+        publish({ status: "downloaded", version: info.version });
       }
     });
 
@@ -133,18 +144,49 @@ export function createUpdaterController(
   return {
     check,
     getState: () => currentState,
-    install: () => {
-      if (!supported || currentState.status !== "downloaded") {
+    download: async (version) => {
+      const canDownload = currentState.status === "available"
+        || (currentState.status === "error" && currentState.operation === "download");
+      if (!supported || checkPending || downloadPending || installPending
+        || !canDownload || !("version" in currentState) || currentState.version !== version) {
         return { started: false };
       }
+      consentVersion = version;
+      downloadPending = true;
+      publish({ status: "downloading", version, percent: 0 });
       try {
-        log.info("Applying update via quitAndInstall(false, true)");
-        autoUpdater.quitAndInstall(false, true);
+        await autoUpdater.downloadUpdate();
         return { started: true };
       } catch (error) {
-        log.error("quitAndInstall failed", error);
-        void showUpdaterError(error);
+        fail(error, "download");
         return { started: false };
+      } finally {
+        downloadPending = false;
+      }
+    },
+    install: (version) => {
+      const canInstall = currentState.status === "downloaded"
+        || (currentState.status === "error" && currentState.operation === "install");
+      if (!supported || downloadPending || installPending || !canInstall
+        || !("version" in currentState) || version !== currentState.version || version !== consentVersion) {
+        return { started: false };
+      }
+      installPending = true;
+      const previousListeners = new Set(nativeUpdater.listeners("update-downloaded"));
+      try {
+        log.info("Applying explicitly requested update via quitAndInstall(false, true)");
+        autoUpdater.quitAndInstall(false, true);
+        return { started: installPending };
+      } catch (error) {
+        fail(error, "install");
+        return { started: false };
+      } finally {
+        // MacUpdater leaves its Squirrel install callback registered after a
+        // signature/network error. Remove only listeners added by this attempt
+        // on failure, so an explicit retry cannot install twice.
+        nativeInstallListeners = nativeUpdater.listeners("update-downloaded")
+          .filter((listener) => !previousListeners.has(listener));
+        if (!installPending) clearNativeInstallListeners();
       }
     },
     dispose: () => {
