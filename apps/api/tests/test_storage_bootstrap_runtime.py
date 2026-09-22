@@ -18,7 +18,7 @@ from sag_api.upgrades.contracts import (
     StorageChoice,
 )
 from sag_api.upgrades.coordinator import StorageBootstrapCoordinator
-from sag_api.upgrades.state import BootstrapState
+from sag_api.upgrades.state import BootstrapState, BootstrapStateStore
 from sag_api.upgrades.types import StorageLayout
 
 
@@ -502,9 +502,11 @@ async def test_lifespan_disposes_database_after_runtime_stop_failure(monkeypatch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("verified_migration", [False, True])
 async def test_real_ready_coordinator_installs_resolved_runtime_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    verified_migration: bool,
 ) -> None:
     from sag_api import main as main_module
 
@@ -531,6 +533,17 @@ async def test_real_ready_coordinator_installs_resolved_runtime_once(
         configured_path,
         active_path,
     )
+    if verified_migration:
+        BootstrapStateStore(layout.upgrades / "bootstrap.json").save(
+            BootstrapState(
+                phase=StorageBootstrapPhase.FAILED,
+                source_version="legacy_0_7",
+                target_version="0.8.2",
+                choice=StorageChoice.MIGRATE,
+                stage="verified",
+                error="temporary runtime startup failure",
+            )
+        )
     runtime = SimpleNamespace(ready=False, starts=0, stops=0, active_path=None)
 
     class Runtime:

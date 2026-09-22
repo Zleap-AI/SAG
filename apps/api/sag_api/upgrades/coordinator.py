@@ -68,6 +68,19 @@ class StorageBootstrapCoordinator:
 
         if state is not None and state.choice is not None:
             state.preserved_path = state.preserved_path or str(active)
+            if (
+                state.choice is StorageChoice.MIGRATE
+                and state.phase in (StorageBootstrapPhase.FAILED, StorageBootstrapPhase.PROCESSING)
+                and state.stage == "verified"
+                and probe.version is StorageVersion.CURRENT
+            ):
+                # Conversion and checkpoint updates already finished. Rejoin the
+                # ordinary startup path; the controller installs the runtime
+                # before the app serves requests, without rebuilding any data.
+                state.phase = StorageBootstrapPhase.READY
+                state.stage = "ready"
+                state.error = None
+                self.store.save(state)
             if state.phase is StorageBootstrapPhase.READY:
                 if probe.version is StorageVersion.CURRENT:
                     self._status = self._status_from_state(state)

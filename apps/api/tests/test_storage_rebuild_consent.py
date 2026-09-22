@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -202,6 +203,82 @@ async def test_invalid_active_pointer_fails_closed_and_preserves_legacy(
     try:
         assert (await coordinator.inspect()).phase is StorageBootstrapPhase.FAILED
         assert (await coordinator.choose(StorageChoice.FRESH, "owner")).phase is StorageBootstrapPhase.FAILED
+        assert coordinator.started_tasks == 0
+        assert _fingerprint(engine) == before
+    finally:
+        await coordinator.wait()
+        await db.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", [StorageBootstrapPhase.PROCESSING, StorageBootstrapPhase.FAILED])
+@pytest.mark.parametrize("current_pointer", [False, True])
+async def test_verified_migration_resumes_current_workspace_without_rebuild(
+    tmp_path: Path,
+    phase: StorageBootstrapPhase,
+    current_pointer: bool,
+) -> None:
+    engine, db, sessions, settings = await _fixture(tmp_path)
+    target = tmp_path / "engine-current" if current_pointer else engine
+    if not current_pointer:
+        shutil.rmtree(engine)
+    runtime = DataEngine(build_engine_config(settings, overrides={"data_dir": str(target)}), health_check=False)
+    try:
+        await runtime.start()
+    finally:
+        await runtime.aclose()
+    coordinator = StorageBootstrapCoordinator(settings, sessions)
+    if current_pointer:
+        coordinator.pointer.activate(engine, target)
+    coordinator.store.save(
+        BootstrapState(
+            phase=phase,
+            source_version="legacy_0_7",
+            target_version="0.8.2",
+            choice=StorageChoice.MIGRATE,
+            actor_user_id="existing-owner",
+            stage="verified",
+            error="temporary runtime startup failure" if phase is StorageBootstrapPhase.FAILED else None,
+        )
+    )
+    before = _fingerprint(target)
+    metadata_before = (tmp_path / "app.db").read_bytes()
+    try:
+        assert (await coordinator.inspect()).runtime_ready
+        assert coordinator.public_status()["phase"] == "ready"
+        assert coordinator.public_status()["choices"] == []
+        # Even a stale rebuild request must not discard the recovered workspace.
+        assert (await coordinator.choose(StorageChoice.FRESH, "existing-owner")).runtime_ready
+        assert coordinator.started_tasks == 0
+        assert coordinator.pointer.resolve(engine) == target
+        assert _fingerprint(target) == before
+        assert (tmp_path / "app.db").read_bytes() == metadata_before
+        restarted = StorageBootstrapCoordinator(settings, sessions)
+        assert (await restarted.inspect()).runtime_ready
+        assert restarted.store.load().error is None
+    finally:
+        await coordinator.wait()
+        await db.dispose()
+
+
+@pytest.mark.asyncio
+async def test_verified_marker_cannot_resume_legacy_storage(tmp_path: Path) -> None:
+    engine, db, sessions, settings = await _fixture(tmp_path)
+    coordinator = StorageBootstrapCoordinator(settings, sessions)
+    coordinator.store.save(
+        BootstrapState(
+            phase=StorageBootstrapPhase.FAILED,
+            source_version="legacy_0_7",
+            target_version="0.8.2",
+            choice=StorageChoice.MIGRATE,
+            stage="verified",
+        )
+    )
+    before = _fingerprint(engine)
+    try:
+        status = await coordinator.inspect()
+        assert status.phase is StorageBootstrapPhase.CHOICE_REQUIRED
+        assert status.choices == (StorageChoice.FRESH,)
         assert coordinator.started_tasks == 0
         assert _fingerprint(engine) == before
     finally:
