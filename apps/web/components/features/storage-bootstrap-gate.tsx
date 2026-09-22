@@ -203,7 +203,8 @@ export function StorageBootstrapGateView({
         ) : null}
 
         {status.phase === "choice_required" && authenticated && !selectedChoice ? (
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className={`grid gap-3 ${status.choices.length > 1 ? "sm:grid-cols-2" : ""}`}>
+            {status.choices.includes("migrate") ? (
             <button
               type="button"
               onClick={() => onSelectChoice("migrate")}
@@ -215,6 +216,7 @@ export function StorageBootstrapGateView({
                 {t("migrateSummary")}
               </span>
             </button>
+            ) : null}
             <button
               type="button"
               onClick={() => onSelectChoice("fresh")}

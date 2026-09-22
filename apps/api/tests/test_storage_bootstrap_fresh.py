@@ -252,7 +252,7 @@ async def test_fresh_workspace_preserves_user_settings_and_legacy_engine_then_is
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failed_migration_active_is_current", (False, True))
-async def test_windows_desktop_policy_starts_fresh_without_migrating_legacy_engine(
+async def test_windows_desktop_policy_waits_for_confirmation_then_preserves_legacy_engine(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     failed_migration_active_is_current: bool,
@@ -310,7 +310,7 @@ async def test_windows_desktop_policy_starts_fresh_without_migrating_legacy_engi
             phase=StorageBootstrapPhase.FAILED,
             source_version="legacy_0_7",
             target_version="0.8.2",
-            choice=StorageChoice.MIGRATE,
+            choice=StorageChoice.FRESH,
             adapter_id="zleap-sag-0.7.1-to-0.8.2",
             stage="swap",
             error="WinError 5",
@@ -333,6 +333,10 @@ async def test_windows_desktop_policy_starts_fresh_without_migrating_legacy_engi
         )
 
         status = await coordinator.inspect()
+        assert status.phase is StorageBootstrapPhase.CHOICE_REQUIRED
+        assert coordinator.started_tasks == 0
+        assert await _count(session_factory, "documents") == 1
+        status = await coordinator.choose(StorageChoice.FRESH, "authenticated-owner")
         await coordinator.wait()
 
         completed = state_store.load()

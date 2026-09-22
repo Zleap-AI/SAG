@@ -49,33 +49,6 @@ class StorageBootstrapCoordinator:
         except StorageUpgradeError as error:
             return self._publish_probe_failure(error)
 
-        if (
-            self.settings.storage_bootstrap_policy == "windows_fresh"
-            and (
-                probe.version is StorageVersion.LEGACY_0_7
-                or (
-                    state is not None
-                    and state.choice is StorageChoice.MIGRATE
-                    and state.phase
-                    in (StorageBootstrapPhase.PROCESSING, StorageBootstrapPhase.FAILED)
-                )
-            )
-        ):
-            state = BootstrapState(
-                phase=StorageBootstrapPhase.PROCESSING,
-                source_version=probe.version.value,
-                target_version="0.8.2",
-                choice=StorageChoice.FRESH,
-                actor_user_id=state.actor_user_id if state is not None else "desktop-windows",
-                adapter_id="fresh-knowledge-workspace",
-                stage="queued",
-                preserved_path=str(active),
-                diagnostic_path=str(self.store.path),
-            )
-            self.store.save(state)
-            self._schedule(state)
-            return self._status_from_state(state)
-
         if state is not None and state.choice is not None:
             state.preserved_path = state.preserved_path or str(active)
             if state.phase is StorageBootstrapPhase.READY:
@@ -89,16 +62,32 @@ class StorageBootstrapCoordinator:
                 self._status = self._status_from_state(state)
                 return self._status
 
+            if state.choice is StorageChoice.FRESH:
+                if probe.version is StorageVersion.UNKNOWN:
+                    return self._publish_probe_failure(StorageUpgradeError(
+                        probe.reason, stage="inspect", recoverable=True,
+                    ))
+                if not state.rebuild_confirmed:
+                    self._status = StorageBootstrapStatus(
+                        StorageBootstrapPhase.CHOICE_REQUIRED,
+                        probe.version.value,
+                        "0.8.2",
+                        (StorageChoice.FRESH,),
+                        preserved_path=active,
+                    )
+                    return self._status
+
             if state.phase is StorageBootstrapPhase.FAILED:
                 state.phase = StorageBootstrapPhase.PROCESSING
-                state.stage = "verified" if probe.version is StorageVersion.CURRENT else "queued"
+                if state.choice is StorageChoice.MIGRATE:
+                    state.stage = "verified" if probe.version is StorageVersion.CURRENT else "queued"
                 state.error = None
                 self.store.save(state)
                 self._schedule(state)
                 return self._status_from_state(state)
 
             if state.phase is StorageBootstrapPhase.PROCESSING:
-                if probe.version is StorageVersion.CURRENT:
+                if state.choice is StorageChoice.MIGRATE and probe.version is StorageVersion.CURRENT:
                     state.stage = "verified"
                     self.store.save(state)
                 self._schedule(state)
@@ -135,6 +124,13 @@ class StorageBootstrapCoordinator:
     async def choose(self, choice: StorageChoice, actor_user_id: str) -> StorageBootstrapStatus:
         with UpgradeLock(self.layout.upgrades / "bootstrap.lock", timeout=0):
             state = self.store.load()
+            if choice is StorageChoice.FRESH:
+                # Re-probe direct calls too: old automatic resets are not consent,
+                # and a corrupt engine must never be cleared by a fresh retry.
+                status = await self.inspect()
+                if status.phase is not StorageBootstrapPhase.CHOICE_REQUIRED:
+                    return status
+                state = None
             if state is not None and state.choice is not None:
                 if state.choice is not choice:
                     raise StorageUpgradeError(
@@ -161,6 +157,7 @@ class StorageBootstrapCoordinator:
                 source_version=status.detected_version,
                 target_version=status.target_version,
                 choice=choice,
+                rebuild_confirmed=choice is StorageChoice.FRESH,
                 actor_user_id=actor_user_id,
                 adapter_id=(
                     "fresh-knowledge-workspace"
@@ -187,6 +184,11 @@ class StorageBootstrapCoordinator:
 
     async def _run(self, state: BootstrapState) -> None:
         try:
+            if state.choice is StorageChoice.FRESH and not state.rebuild_confirmed:
+                raise StorageUpgradeError(
+                    "fresh workspace rebuild requires explicit confirmation",
+                    stage="choice", recoverable=True,
+                )
             if state.stage != "verified":
                 state.stage = "processing"
                 self.store.save(state)

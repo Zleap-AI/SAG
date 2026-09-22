@@ -182,7 +182,7 @@ public 正式构建将 `SAG_UPDATE_GITHUB_REPOSITORY` 转换为 generic provider
 
 ### 两阶段发布
 
-1. 先发布仅包含手动更新和通道隔离的兼容过渡版本，`apps/desktop/release-policy.json` 的 `legacyBridge` 为 `true`。发布脚本将其标记为旧通道 latest，并创建独立元数据通道与 `legacy-bridge.json` 标记。旧客户端可能自动安装此过渡版。
+1. 先发布包含手动更新、通道隔离和旧数据重建确认保护的兼容过渡版本，`apps/desktop/release-policy.json` 的 `legacyBridge` 为 `true`。发布脚本将其标记为旧通道 latest，并创建独立元数据通道与 `legacy-bridge.json` 标记。旧客户端可能自动安装此过渡版。过渡版保留既有迁移兼容能力，但 Windows 隐式重建及历史未确认重建均须重新获得用户确认，不能在启动时清理知识记录。
 2. 过渡版在 Windows/macOS 验收后，再合入移除旧数据迁移的后续改动，将 `legacyBridge` 设为 `false`。后续所有正式版本均使用 `--latest=false`，只更新独立通道元数据，不移动旧通道 latest。
 3. 发布脚本在缺少过渡标记、重复发布过渡版或发现旧 latest 被移动时停止。不要人工将后续版本设为 latest，也不要把两阶段改动合并成一个过渡发行包。
 
