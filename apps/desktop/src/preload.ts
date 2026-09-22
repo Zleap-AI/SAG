@@ -9,6 +9,7 @@ const DESKTOP_CHANNELS = {
   appInfo: "desktop:app-info",
   checkForUpdates: "desktop:check-for-updates",
   getUpdateState: "desktop:get-update-state",
+  downloadUpdate: "desktop:download-update",
   installUpdate: "desktop:install-update",
   diagnosticsInfo: "desktop:diagnostics-info",
   updateState: "desktop:update-state",
@@ -20,7 +21,8 @@ export interface SagDesktopBridge {
   appInfo(): Promise<{ version: string; platform: NodeJS.Platform; arch: string }>;
   checkForUpdates(): Promise<{ supported: boolean }>;
   getUpdateState(): Promise<UpdateState>;
-  installUpdate(): Promise<{ started: boolean }>;
+  downloadUpdate(version: string): Promise<{ started: boolean }>;
+  installUpdate(version: string): Promise<{ started: boolean }>;
   getDiagnosticsInfo(): Promise<DesktopDiagnosticsInfo>;
   onUpdateState(listener: (state: UpdateState) => void): () => void;
 }
@@ -31,7 +33,8 @@ const bridge: SagDesktopBridge = Object.freeze({
   appInfo: () => ipcRenderer.invoke(DESKTOP_CHANNELS.appInfo),
   checkForUpdates: () => ipcRenderer.invoke(DESKTOP_CHANNELS.checkForUpdates),
   getUpdateState: () => ipcRenderer.invoke(DESKTOP_CHANNELS.getUpdateState),
-  installUpdate: () => ipcRenderer.invoke(DESKTOP_CHANNELS.installUpdate),
+  downloadUpdate: (version: string) => ipcRenderer.invoke(DESKTOP_CHANNELS.downloadUpdate, version),
+  installUpdate: (version: string) => ipcRenderer.invoke(DESKTOP_CHANNELS.installUpdate, version),
   getDiagnosticsInfo: () =>
     ipcRenderer.invoke(DESKTOP_CHANNELS.diagnosticsInfo),
   onUpdateState: (listener: (state: UpdateState) => void) => {

@@ -196,6 +196,12 @@ describe("StorageBootstrapGateView", () => {
     expect(html).not.toContain("/Users/owner/legacy-engine");
   });
 
+  it("shows only choices allowed by the backend for historical rebuilds", () => {
+    const html = renderView(status("choice_required", { choices: ["fresh"] }), { authenticated: true });
+    expect(html).toContain("创建全新知识库");
+    expect(html).not.toContain("迁移旧知识库");
+  });
+
   it("requires a second confirmation and explains the fresh-workspace effects", () => {
     const html = renderView(
       status("choice_required", { preserved_path: "/Users/owner/legacy-engine" }),
@@ -203,7 +209,8 @@ describe("StorageBootstrapGateView", () => {
     );
     expect(html).toContain("再次确认");
     expect(html).toContain("保留账号和模型配置");
-    expect(html).toContain("旧知识库不会删除");
+    expect(html).toContain("备份");
+    expect(html).toContain("智能体、会话");
     expect(html).toContain("不会出现在新的 SAG 中");
     expect(html).toContain("需要重新上传文档");
     expect(html).toContain("不支持自动合并");

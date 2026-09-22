@@ -1,6 +1,4 @@
-import type { UpdateState } from "./channels";
-
-const OFFICIAL_RELEASE_URL = "https://github.com/Zleap-AI/SAG/releases/latest";
+const OFFICIAL_RELEASE_URL = "https://github.com/Zleap-AI/SAG/releases";
 
 export interface UpdaterErrorPresentation {
   kind: "signature-mismatch" | "generic";
@@ -9,10 +7,6 @@ export interface UpdaterErrorPresentation {
   detail: string;
   actionLabel?: string;
   actionUrl?: string;
-}
-
-export function shouldPresentUpdaterError(previousState: UpdateState): boolean {
-  return previousState.status === "downloaded";
 }
 
 export function describeUpdaterError(error: unknown): UpdaterErrorPresentation {

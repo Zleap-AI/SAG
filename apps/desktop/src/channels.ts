@@ -2,6 +2,7 @@ export const DESKTOP_CHANNELS = {
   appInfo: "desktop:app-info",
   checkForUpdates: "desktop:check-for-updates",
   getUpdateState: "desktop:get-update-state",
+  downloadUpdate: "desktop:download-update",
   installUpdate: "desktop:install-update",
   updateState: "desktop:update-state",
   diagnosticsInfo: "desktop:diagnostics-info",
@@ -12,9 +13,9 @@ export type UpdateState =
   | { status: "checking" }
   | { status: "available"; version: string }
   | { status: "not-available" }
-  | { status: "downloading"; percent: number }
+  | { status: "downloading"; version: string; percent: number }
   | { status: "downloaded"; version: string }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string; operation: "check" | "download" | "install"; version?: string };
 
 export interface DesktopDiagnosticsInfo {
   version: string;
