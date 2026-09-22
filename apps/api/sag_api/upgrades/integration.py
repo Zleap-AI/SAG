@@ -1,16 +1,8 @@
-"""App-level integration seam for the storage bootstrap.
+"""Application seam for explicit knowledge rebuilds and active-engine startup.
 
-This is the ONLY module of the `sag_api.upgrades` package that the application
-outside the package may import. To remove the whole "引导用户迁移存量数据"
-feature, delete this package (`sag_api/upgrades/`) and revert every hunk
-marked with `# [storage-bootstrap]` in:
-  - sag_api/main.py            (the single import line, the middleware call,
-                                and the lifespan bootstrap block)
-  - sag_api/api/v1/__init__.py (storage_bootstrap router entries)
-  - sag_api/api/v1/auth.py     (maintenance_login block)
-  - sag_api/api/v1/system.py   (storage_bootstrap read in /ready)
-Restoring those hunks and deleting this package restores the pre-upgrade
-startup behavior.
+Active-engine pointer resolution remains necessary for workspaces created by
+past migrations or rebuilds. Keep this integration when removing old migration
+adapters; it installs the selected runtime and enforces maintenance gating.
 """
 
 from __future__ import annotations

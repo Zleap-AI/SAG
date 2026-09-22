@@ -28,7 +28,7 @@ function status(
     phase,
     detected_version: "0.7",
     target_version: "0.8.2",
-    choices: phase === "choice_required" ? ["migrate", "fresh"] : [],
+    choices: phase === "choice_required" ? ["fresh"] : [],
     stage: null,
     error: null,
     recoverable: false,
@@ -53,7 +53,7 @@ function renderView(
   bootstrapStatus: StorageBootstrapStatus,
   options: {
     authenticated?: boolean;
-    selectedChoice?: "migrate" | "fresh" | null;
+    selectedChoice?: "fresh" | null;
   } = {},
 ) {
   return renderToStaticMarkup(
@@ -187,8 +187,9 @@ describe("StorageBootstrapGateView", () => {
 
   it("shows existing-account login without registration when a choice is required", () => {
     const html = renderView(status("choice_required"));
-    expect(html).toContain("本次版本升级包含底层知识存储引擎更新");
-    expect(html).toContain("迁移现有知识库，或保留旧数据并创建全新知识库");
+    expect(html).toContain("检测到不兼容的旧知识数据");
+    expect(html).toContain("重新上传文档");
+    expect(html).not.toContain("迁移旧知识库");
     expect(html).not.toContain("0.7");
     expect(html).not.toContain("0.8.2");
     expect(html).toContain("使用现有账户登录");
@@ -210,25 +211,23 @@ describe("StorageBootstrapGateView", () => {
     expect(html).toContain("再次确认");
     expect(html).toContain("保留账号和模型配置");
     expect(html).toContain("备份");
-    expect(html).toContain("智能体、会话");
+    expect(html).toContain("会话");
+    expect(html).toContain("智能体");
     expect(html).toContain("不会出现在新的 SAG 中");
     expect(html).toContain("需要重新上传文档");
     expect(html).toContain("不支持自动合并");
     expect(html).toContain("/Users/owner/legacy-engine");
   });
 
-  it("shows migration warning, processing stage, and recoverable failure action", () => {
-    const migration = renderView(status("choice_required"), {
-      authenticated: true,
-      selectedChoice: "migrate",
-    });
+  it("offers only a confirmed rebuild, processing stage, and recoverable failure action", () => {
+    const choice = renderView(status("choice_required"), { authenticated: true });
     const processing = renderView(status("processing", { stage: "copying" }));
     const failed = renderView(
       status("failed", { error: "磁盘空间不足", recoverable: true }),
       { authenticated: true },
     );
-    expect(migration).toContain("需要额外磁盘空间");
-    expect(migration).toContain("可能需要较长时间");
+    expect(choice).not.toContain("迁移旧知识库");
+    expect(choice).toContain("创建全新知识库");
     expect(processing).toContain("正在复制旧知识库");
     expect(failed).toContain("磁盘空间不足");
     expect(failed).toContain("重试");
@@ -236,6 +235,27 @@ describe("StorageBootstrapGateView", () => {
 });
 
 describe("StorageBootstrapGate interactions", () => {
+  it("mounts a ready workspace without requiring the maintenance login endpoint", async () => {
+    vi.spyOn(api, "storageBootstrap").mockResolvedValue(status("ready"));
+    vi.mocked(api.authStatus).mockRejectedValue(new Error("unavailable"));
+    const mounted = await mountGate();
+    expect(mounted.container.textContent).toContain("应用已挂载");
+    expect(api.authStatus).not.toHaveBeenCalled();
+    await unmount(mounted.root, mounted.container);
+  });
+
+  it("cancelling the rebuild confirmation does not submit or clear data", async () => {
+    setToken("owner-token");
+    vi.spyOn(api, "storageBootstrap").mockResolvedValue(status("choice_required"));
+    const choose = vi.spyOn(api, "chooseStorageBootstrap");
+    const mounted = await mountGate();
+    await click(button(mounted.container, "创建全新知识库"));
+    await click(button(mounted.container, "返回"));
+    expect(choose).not.toHaveBeenCalled();
+    expect(mounted.container.textContent).toContain("创建全新知识库");
+    await unmount(mounted.root, mounted.container);
+  });
+
   it("uses email and password in the maintenance gate when password authentication is enabled", async () => {
     vi.mocked(api.authStatus).mockResolvedValue({
       mode: "password",
@@ -259,7 +279,8 @@ describe("StorageBootstrapGate interactions", () => {
 
     expect(getToken()).toBe("existing-token");
     expect(load).toHaveBeenCalledTimes(1);
-    expect(mounted.container.textContent).toContain("迁移旧知识库");
+    expect(mounted.container.textContent).toContain("创建全新知识库");
+    expect(mounted.container.textContent).not.toContain("迁移旧知识库");
     expect(mounted.container.textContent).not.toContain("使用现有账户登录");
     await unmount(mounted.root, mounted.container);
   });
@@ -302,11 +323,12 @@ describe("StorageBootstrapGate interactions", () => {
     await click(button(mounted.container, "登录"));
     expect(login).toHaveBeenLastCalledWith({ name: "Owner" });
     expect(getToken()).toBe("owner-token");
-    expect(mounted.container.textContent).toContain("迁移旧知识库");
+    expect(mounted.container.textContent).toContain("创建全新知识库");
+    expect(mounted.container.textContent).not.toContain("迁移旧知识库");
     await unmount(mounted.root, mounted.container);
   });
 
-  it.each(["migrate", "fresh"] as const)(
+  it.each(["fresh"] as const)(
     "requires confirmation and locks duplicate %s submissions",
     async (choice) => {
       setToken("owner-token");
@@ -317,7 +339,7 @@ describe("StorageBootstrapGate interactions", () => {
       );
       const mounted = await mountGate();
 
-      await click(button(mounted.container, choice === "migrate" ? "迁移旧知识库" : "创建全新知识库"));
+      await click(button(mounted.container, "创建全新知识库"));
       expect(choose).not.toHaveBeenCalled();
       const confirm = button(mounted.container, "确认并开始");
       await act(async () => {
@@ -342,7 +364,7 @@ describe("StorageBootstrapGate interactions", () => {
     );
     const mounted = await mountGate();
 
-    await click(button(mounted.container, "迁移旧知识库"));
+    await click(button(mounted.container, "创建全新知识库"));
     await click(button(mounted.container, "确认并开始"));
 
     expect(mounted.container.textContent).toContain("正在准备新的知识库存储");
@@ -358,14 +380,14 @@ describe("StorageBootstrapGate interactions", () => {
       .mockResolvedValueOnce(status("choice_required"))
       .mockResolvedValueOnce(status("processing", {
         stage: "backup",
-        accepted_choice: "migrate",
+        accepted_choice: "fresh",
       }));
     vi.spyOn(api, "chooseStorageBootstrap").mockRejectedValue(
       new ApiError(504, "gateway_timeout", "Gateway Timeout"),
     );
     const mounted = await mountGate();
 
-    await click(button(mounted.container, "迁移旧知识库"));
+    await click(button(mounted.container, "创建全新知识库"));
     await click(button(mounted.container, "确认并开始"));
 
     expect(load).toHaveBeenCalledTimes(2);
@@ -383,7 +405,7 @@ describe("StorageBootstrapGate interactions", () => {
     );
     const mounted = await mountGate();
 
-    await click(button(mounted.container, "迁移旧知识库"));
+    await click(button(mounted.container, "创建全新知识库"));
     await click(button(mounted.container, "确认并开始"));
     expect(getToken()).toBeNull();
     expect(mounted.container.textContent).toContain("使用现有账户登录");
@@ -393,16 +415,16 @@ describe("StorageBootstrapGate interactions", () => {
   it("reposts the authenticated accepted choice when retrying a recoverable failure", async () => {
     setToken("owner-token");
     vi.spyOn(api, "storageBootstrap").mockResolvedValue(
-      status("failed", { recoverable: true, accepted_choice: "migrate" }),
+      status("failed", { recoverable: true, accepted_choice: "fresh" }),
     );
     const choose = vi.spyOn(api, "chooseStorageBootstrap").mockResolvedValue(
-      status("processing", { stage: "queued", accepted_choice: "migrate" }),
+      status("processing", { stage: "queued", accepted_choice: "fresh" }),
     );
     const mounted = await mountGate();
 
     await click(button(mounted.container, "重试"));
     expect(choose).toHaveBeenCalledTimes(1);
-    expect(choose).toHaveBeenCalledWith("migrate");
+    expect(choose).toHaveBeenCalledWith("fresh");
     expect(mounted.container.textContent).toContain("正在准备新的知识库存储");
     await unmount(mounted.root, mounted.container);
   });

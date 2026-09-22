@@ -6,9 +6,11 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from zleap.sag import DataEngine
 
 from sag_api.core.config import settings
 from sag_api.runtime import KnowledgeRuntime
+from sag_api.sag.config_builder import build_engine_config
 from sag_api.upgrades.active_engine import ActiveEngineStore
 from sag_api.upgrades.contracts import (
     StorageBootstrapPhase,
@@ -17,7 +19,7 @@ from sag_api.upgrades.contracts import (
 )
 from sag_api.upgrades.coordinator import StorageBootstrapCoordinator
 from sag_api.upgrades.state import BootstrapState
-from sag_api.upgrades.types import StorageLayout, StorageVersion
+from sag_api.upgrades.types import StorageLayout
 
 
 class _LifecycleDependency:
@@ -233,7 +235,8 @@ async def test_coordinator_retry_drains_retained_runtime_before_replacement(
             phase=StorageBootstrapPhase.PROCESSING,
             source_version="current",
             target_version="0.8.2",
-            choice=StorageChoice.MIGRATE,
+            choice=StorageChoice.FRESH,
+            rebuild_confirmed=True,
             stage="verified",
         )
     )
@@ -246,12 +249,8 @@ async def test_coordinator_retry_drains_retained_runtime_before_replacement(
         "knowledge runtime startup failed (2 sub-exceptions)"
     )
 
-    async def current_probe():
-        return SimpleNamespace(version=StorageVersion.CURRENT)
-
-    coordinator._probe = current_probe
     retry_start = len(factory.calls)
-    await coordinator.choose(StorageChoice.MIGRATE, "owner")
+    await coordinator.choose(StorageChoice.FRESH, "owner")
     await coordinator.wait()
 
     assert factory.calls[retry_start] == "agent_runtime.stop"
@@ -519,6 +518,14 @@ async def test_real_ready_coordinator_installs_resolved_runtime_once(
             "upload_dir": str(tmp_path / "uploads"),
         }
     )
+    engine = DataEngine(
+        build_engine_config(test_settings, overrides={"data_dir": str(active_path)}),
+        health_check=False,
+    )
+    try:
+        await engine.start()
+    finally:
+        await engine.aclose()
     layout = StorageLayout.from_settings(test_settings)
     ActiveEngineStore(layout.upgrades / "active-engine.json").activate(
         configured_path,

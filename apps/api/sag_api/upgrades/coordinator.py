@@ -15,8 +15,7 @@ from sag_api.upgrades.contracts import (
 )
 from sag_api.upgrades.detector import detect_storage
 from sag_api.upgrades.fresh_workspace import FreshKnowledgeWorkspaceAdapter
-from sag_api.upgrades.journal import UpgradeLock
-from sag_api.upgrades.registry import select_adapter
+from sag_api.upgrades.lock import UpgradeLock
 from sag_api.upgrades.state import BootstrapState, BootstrapStateStore
 from sag_api.upgrades.types import StorageLayout, StorageUpgradeError, StorageVersion
 
@@ -49,106 +48,85 @@ class StorageBootstrapCoordinator:
         except StorageUpgradeError as error:
             return self._publish_probe_failure(error)
 
+        if active != self.layout.engine and probe.version is StorageVersion.EMPTY:
+            return self._publish_probe_failure(
+                StorageUpgradeError(
+                    "active engine target is missing or empty",
+                    stage="active_engine",
+                    recoverable=True,
+                )
+            )
+
+        if probe.version is StorageVersion.UNKNOWN:
+            return self._publish_probe_failure(
+                StorageUpgradeError(
+                    probe.reason,
+                    stage="inspect",
+                    recoverable=True,
+                )
+            )
+
         if state is not None and state.choice is not None:
             state.preserved_path = state.preserved_path or str(active)
             if state.phase is StorageBootstrapPhase.READY:
                 if probe.version is StorageVersion.CURRENT:
                     self._status = self._status_from_state(state)
                     return self._status
-                state.phase = StorageBootstrapPhase.FAILED
-                state.stage = "verify"
-                state.error = probe.reason
-                self.store.save(state)
-                self._status = self._status_from_state(state)
-                return self._status
-
-            if state.choice is StorageChoice.FRESH:
-                if probe.version is StorageVersion.UNKNOWN:
-                    return self._publish_probe_failure(StorageUpgradeError(
-                        probe.reason, stage="inspect", recoverable=True,
-                    ))
-                if not state.rebuild_confirmed:
-                    self._status = StorageBootstrapStatus(
-                        StorageBootstrapPhase.CHOICE_REQUIRED,
-                        probe.version.value,
-                        "0.8.2",
-                        (StorageChoice.FRESH,),
-                        preserved_path=active,
+                return self._publish_probe_failure(
+                    StorageUpgradeError(
+                        probe.reason,
+                        stage="verify",
+                        recoverable=True,
                     )
-                    return self._status
+                )
 
-            if state.phase is StorageBootstrapPhase.FAILED:
-                state.phase = StorageBootstrapPhase.PROCESSING
-                if state.choice is StorageChoice.MIGRATE:
-                    state.stage = "verified" if probe.version is StorageVersion.CURRENT else "queued"
-                state.error = None
-                self.store.save(state)
-                self._schedule(state)
-                return self._status_from_state(state)
-
-            if state.phase is StorageBootstrapPhase.PROCESSING:
-                if state.choice is StorageChoice.MIGRATE and probe.version is StorageVersion.CURRENT:
-                    state.stage = "verified"
+            if state.choice is StorageChoice.FRESH and state.rebuild_confirmed:
+                if state.phase in (StorageBootstrapPhase.FAILED, StorageBootstrapPhase.PROCESSING):
+                    state.phase = StorageBootstrapPhase.PROCESSING
+                    state.error = None
                     self.store.save(state)
-                self._schedule(state)
-                return self._status_from_state(state)
+                    self._schedule(state)
+                    return self._status_from_state(state)
 
-        adapter = select_adapter(probe, target_version="0.8.2")
-        if adapter is not None:
-            status = StorageBootstrapStatus(
-                StorageBootstrapPhase.CHOICE_REQUIRED,
-                probe.version.value,
-                "0.8.2",
-                (StorageChoice.MIGRATE, StorageChoice.FRESH),
-                preserved_path=active,
-            )
+            # Historical migration choices and implicit Windows resets do not
+            # grant consent to discard knowledge. Retain the history until a
+            # newly authenticated choice explicitly confirms the rebuild.
+            return self._require_choice(probe.version.value, active)
+
+        if probe.version is StorageVersion.LEGACY_0_7:
+            status = self._require_choice(probe.version.value, active)
         else:
-            ready = probe.version in (
-                StorageVersion.EMPTY,
-                StorageVersion.CURRENT,
-                StorageVersion.UNSUPPORTED,
-            )
             status = StorageBootstrapStatus(
-                StorageBootstrapPhase.READY if ready else StorageBootstrapPhase.FAILED,
+                StorageBootstrapPhase.READY,
                 probe.version.value,
                 "0.8.2",
-                error=None if ready else probe.reason,
-                recoverable=not ready,
-                runtime_ready=ready,
+                runtime_ready=True,
                 preserved_path=active,
             )
-        self._status = status
+            self._status = status
         self.store.save(self._state_from_status(status))
         return status
 
-    async def choose(self, choice: StorageChoice, actor_user_id: str) -> StorageBootstrapStatus:
-        with UpgradeLock(self.layout.upgrades / "bootstrap.lock", timeout=0):
-            state = self.store.load()
-            if choice is StorageChoice.FRESH:
-                # Re-probe direct calls too: old automatic resets are not consent,
-                # and a corrupt engine must never be cleared by a fresh retry.
-                status = await self.inspect()
-                if status.phase is not StorageBootstrapPhase.CHOICE_REQUIRED:
-                    return status
-                state = None
-            if state is not None and state.choice is not None:
-                if state.choice is not choice:
-                    raise StorageUpgradeError(
-                        "a different storage choice is already in progress",
-                        stage="choice",
-                        recoverable=True,
-                        diagnostic_path=self.store.path,
-                    )
-                if state.phase is StorageBootstrapPhase.FAILED:
-                    state.phase = StorageBootstrapPhase.PROCESSING
-                    state.error = None
-                    state.stage = "queued"
-                    self.store.save(state)
-                    self._schedule(state)
-                elif state.phase is StorageBootstrapPhase.PROCESSING:
-                    self._schedule(state)
-                return self._status_from_state(state)
+    def _require_choice(self, detected_version: str, active: Path) -> StorageBootstrapStatus:
+        self._status = StorageBootstrapStatus(
+            StorageBootstrapPhase.CHOICE_REQUIRED,
+            detected_version,
+            "0.8.2",
+            (StorageChoice.FRESH,),
+            preserved_path=active,
+        )
+        return self._status
 
+    async def choose(self, choice: StorageChoice, actor_user_id: str) -> StorageBootstrapStatus:
+        if choice is not StorageChoice.FRESH:
+            raise StorageUpgradeError(
+                "only an explicitly confirmed fresh workspace is supported",
+                stage="choice",
+                recoverable=True,
+            )
+        with UpgradeLock(self.layout.upgrades / "bootstrap.lock", timeout=0):
+            # Always inspect before acting, including direct API calls and
+            # retries, so old histories and corrupt storage cannot bypass gates.
             status = await self.inspect()
             if status.phase is not StorageBootstrapPhase.CHOICE_REQUIRED:
                 return status
@@ -156,14 +134,10 @@ class StorageBootstrapCoordinator:
                 phase=StorageBootstrapPhase.PROCESSING,
                 source_version=status.detected_version,
                 target_version=status.target_version,
-                choice=choice,
-                rebuild_confirmed=choice is StorageChoice.FRESH,
+                choice=StorageChoice.FRESH,
+                rebuild_confirmed=True,
                 actor_user_id=actor_user_id,
-                adapter_id=(
-                    "fresh-knowledge-workspace"
-                    if choice is StorageChoice.FRESH
-                    else "zleap-sag-0.7.1-to-0.8.2"
-                ),
+                adapter_id="fresh-knowledge-workspace",
                 stage="queued",
                 preserved_path=str(status.preserved_path) if status.preserved_path else None,
                 diagnostic_path=str(self.store.path),
@@ -184,40 +158,24 @@ class StorageBootstrapCoordinator:
 
     async def _run(self, state: BootstrapState) -> None:
         try:
-            if state.choice is StorageChoice.FRESH and not state.rebuild_confirmed:
+            if state.choice is not StorageChoice.FRESH or not state.rebuild_confirmed:
                 raise StorageUpgradeError(
                     "fresh workspace rebuild requires explicit confirmation",
-                    stage="choice", recoverable=True,
+                    stage="choice",
+                    recoverable=True,
                 )
             if state.stage != "verified":
                 state.stage = "processing"
                 self.store.save(state)
                 context = StorageUpgradeContext(self.settings, self.session_factory)
-                if state.choice is StorageChoice.FRESH:
-                    report = await FreshKnowledgeWorkspaceAdapter().create(
-                        context,
-                        preserve_legacy_in_place=(
-                            self.settings.storage_bootstrap_policy == "windows_fresh"
-                        ),
-                    )
-                else:
-                    probe = await self._probe()
-                    adapter = select_adapter(probe, target_version="0.8.2")
-                    if adapter is None:
-                        if probe.version is not StorageVersion.CURRENT:
-                            raise StorageUpgradeError(
-                                "registered storage adapter is missing",
-                                stage="select",
-                                recoverable=True,
-                            )
-                        report = None
-                    else:
-                        report = await adapter.migrate(context)
+                report = await FreshKnowledgeWorkspaceAdapter().create(
+                    context,
+                    preserve_legacy_in_place=(self.settings.storage_bootstrap_policy == "windows_fresh"),
+                )
                 state.stage = "verified"
                 if report is not None:
                     state.report = {
-                        key: str(value) if isinstance(value, Path) else value
-                        for key, value in asdict(report).items()
+                        key: str(value) if isinstance(value, Path) else value for key, value in asdict(report).items()
                     }
                 self.store.save(state)
 
@@ -239,10 +197,6 @@ class StorageBootstrapCoordinator:
             self.store.save(state)
             self._status = self._status_from_state(state)
 
-    async def _probe(self):
-        active = self.pointer.resolve(self.layout.engine)
-        return detect_storage(self._layout_for(active), self.settings)
-
     def _publish_probe_failure(self, error: StorageUpgradeError) -> StorageBootstrapStatus:
         status = StorageBootstrapStatus(
             StorageBootstrapPhase.FAILED,
@@ -257,9 +211,7 @@ class StorageBootstrapCoordinator:
         return status
 
     def public_status(self, *, authenticated: bool = False) -> dict[str, Any]:
-        status = self._status or StorageBootstrapStatus(
-            StorageBootstrapPhase.READY, None, "0.8.2", runtime_ready=True
-        )
+        status = self._status or StorageBootstrapStatus(StorageBootstrapPhase.READY, None, "0.8.2", runtime_ready=True)
         result: dict[str, Any] = {
             "phase": status.phase.value,
             "detected_version": status.detected_version,

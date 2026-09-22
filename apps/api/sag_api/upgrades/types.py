@@ -16,20 +16,6 @@ class StorageVersion(StrEnum):
     UNKNOWN = "unknown"
 
 
-class MigrationPhase(StrEnum):
-    DETECTED = "detected"
-    BACKED_UP = "backed_up"
-    RELATIONAL_MIGRATED = "relational_migrated"
-    VECTORS_MIGRATED = "vectors_migrated"
-    CHECKPOINTS_MIGRATED = "checkpoints_migrated"
-    VERIFIED = "verified"
-    SWAPPED = "swapped"
-    COMPLETED = "completed"
-
-
-MIGRATION_PHASES = tuple(MigrationPhase)
-
-
 class StorageUpgradeError(RuntimeError):
     def __init__(
         self,
