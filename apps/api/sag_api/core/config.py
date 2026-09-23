@@ -141,9 +141,8 @@ class Settings(BaseSettings):
     sag_vector_provider: Literal["lancedb", "es", "pgvector", "oceanbase"] = "lancedb"
     sag_relational_provider: Literal["sqlite", "postgres", "mysql", "oceanbase"] | None = None
     sag_language: Literal["zh", "en"] = "zh"
-    # 仅对默认 SQLite + LanceDB 的 0.7.1 存量库执行旁路、可回滚升级。
-    storage_upgrade_enabled: bool = True
-    # windows_fresh 仅选择原地保留引擎并备份业务库的策略；重建始终须显式确认。
+    # 所有平台均须显式确认重建。保留 windows_fresh 旧配置值，仅选择原地保留
+    # 引擎目录并备份业务数据库的策略，不表示自动重建或迁移。
     storage_bootstrap_policy: Literal["prompt", "windows_fresh"] = "prompt"
 
     # 生产单库（pgvector）时复用同一 Postgres —— 由这些字段拼装

@@ -177,6 +177,8 @@ Download the latest desktop installer from [GitHub Releases](https://github.com/
 
 The desktop app bundles the Web workspace and local knowledge backend, so users do not need to install Python, Node.js, or a database. Application updates preserve the knowledge base and uploads in the operating system's application-data directory. Release checksums are published as `SHA256SUMS.txt`.
 
+When incompatible legacy knowledge data is detected, SAG asks you to confirm a backup and fresh workspace, then upload your documents again. Migration and reconstruction never start without confirmation. Reconstruction preserves accounts and model settings, but previous knowledge bases, documents, agents, conversations and related tasks no longer appear in the new workspace; backups remain available for manual recovery. Current-format and previously rebuilt workspaces continue using their existing data directories.
+
 ### Quick start (Docker, self-hosted)
 
 Requirements: Docker Desktop, or Docker Engine with Compose v2.

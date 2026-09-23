@@ -3,14 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from sag_api.core.config import Settings
-from sag_api.upgrades.types import StorageProbe
 
 
 class StorageChoice(StrEnum):
-    MIGRATE = "migrate"
+    MIGRATE = "migrate"  # Read historical bootstrap states; never an executable choice.
     FRESH = "fresh"
 
 
@@ -53,13 +52,3 @@ class UpgradeReport:
     status: str
     report_path: Path | None = None
     backup_path: Path | None = None
-
-
-class StorageUpgradeAdapter(Protocol):
-    migration_id: str
-    source_version: str
-    target_version: str
-
-    def matches(self, probe: StorageProbe) -> bool: ...
-
-    async def migrate(self, context: StorageUpgradeContext) -> UpgradeReport: ...
