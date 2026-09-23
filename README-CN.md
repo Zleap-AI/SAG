@@ -11,8 +11,7 @@
 <p align="center">
   <a href="https://arxiv.org/abs/2606.15971"><img alt="论文" src="https://img.shields.io/badge/paper-arXiv%3A2606.15971-18181b" /></a>
   <a href="https://pypi.org/project/zleap-sag/"><img alt="PyPI" src="https://img.shields.io/pypi/v/zleap-sag?label=zleap--sag&color=18181b" /></a>
-  <img alt="SAG 版本" src="https://img.shields.io/badge/SAG-v1.8.10-18181b" />
-  <a href="https://github.com/Zleap-AI/SAG/releases"><img alt="桌面版发布" src="https://img.shields.io/github/v/release/Zleap-AI/SAG?label=desktop&color=18181b" /></a>
+  <img alt="SAG 版本" src="https://img.shields.io/badge/SAG-v1.8.11-18181b" />
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776ab" />
   <img alt="Node" src="https://img.shields.io/badge/Node-20%2B-339933" />
   <a href="LICENSE"><img alt="许可" src="https://img.shields.io/badge/license-MIT-18181b" /></a>
@@ -44,21 +43,7 @@ https://github.com/user-attachments/assets/a080ad1a-5c08-4213-acfa-a226e3c0f68a
 
 ### 更新日志
 
-**2026 年 8 月 30 日**
-
-SAG 现已支持 [`@zleap-ai/dsh-sag`](https://github.com/Zleap-AI/dsh-sag)：通过内置的本地 DeepSeek Harness 连接器，可以把 SAG 知识库接入 DSH，在 Agent 中搜索知识、读取原文，并管理信源和文档。
-
-**2026 年 8 月 13 日**
-
-新增 OCTX 信源导入与导出，支持完整性校验、冲突处理、失败恢复和兼容向量复用，可用于知识库跨实例迁移与备份。同时优化中文连续词检索和文档生命周期控制，提升快速检索召回与后台任务稳定性。
-
-**2026 年 7 月 31 日**
-
-发布 SAG 官方命令行客户端 [`@zleap-ai/sag-cli`](docs/sag-cli.md)。一条命令（`sag agent connect codex | claude-code`）即可把 SAG 知识库 MCP 挂载进 Codex 或 Claude Code，不再需要复制 JWT 或手改配置文件。下方「MCP 指南」已改以 CLI 为主要接入路径。
-
-**2026 年 7 月 14 日**
-
-发布了基于 `zleap-sag` 包的全新版本，并采用全新 UI。原版本已归档至 `v1` 分支，不再维护。
+版本发布记录与各版本变更请查看 [CHANGELOG.md](CHANGELOG.md)。
 
 ### 一分钟了解 SAG
 
@@ -176,6 +161,8 @@ SAG 内部的语义路径和结构路径都是 SAG 自己检索管线的组成�
 | Windows 10/11，x64 | `SAG-Setup-*-win-x64.exe` | 暂不签名，Windows 可能提示“未知发布者”；应用内更新由用户分别确认下载和安装 |
 
 桌面客户端已经包含 Web 工作台和本地知识后端，用户无需安装 Python、Node.js 或数据库。整包更新不会覆盖系统应用数据目录中的知识库与上传文件；每个 Release 同时提供 `SHA256SUMS.txt` 完整性校验。
+
+检测到不兼容的旧知识数据时，SAG 会先保持旧数据不变，直到你确认备份并创建全新知识库。SAG 不会自动迁移或合并旧知识库；完成设置后需要重新上传文档。备份可供人工恢复。账号和模型配置会保留，但旧知识库、文档、智能体、会话及关联任务记录不会出现在新工作区中。当前格式的工作区继续使用原数据目录。
 
 ### 快速开始（Docker，自托管）
 

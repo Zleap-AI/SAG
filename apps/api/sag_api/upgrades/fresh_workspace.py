@@ -18,7 +18,7 @@ from sag_api.upgrades.active_engine import ActiveEngineStore
 from sag_api.upgrades.backup import create_backup, create_sqlite_backup
 from sag_api.upgrades.contracts import FreshWorkspacePhase, StorageUpgradeContext, UpgradeReport
 from sag_api.upgrades.detector import detect_storage
-from sag_api.upgrades.journal import UpgradeLock
+from sag_api.upgrades.lock import UpgradeLock
 from sag_api.upgrades.types import StorageLayout, StorageUpgradeError, StorageVersion
 
 FRESH_WORKSPACE_ID = "fresh-knowledge-workspace"

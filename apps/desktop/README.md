@@ -47,26 +47,34 @@ npm run dev
 
 客户端后台检查更新；用户选择“下载更新”后才下载，完成后再次选择“重启并安装”才安装。普通退出、稍后处理或重启应用都不会自动安装。旧客户端通过兼容过渡版获得此能力。
 
-## 一条命令发布到 public
+## 正式发布流程
 
-正式发布只能从 `Zleap-AI/SAG` 的独立公开 clone 根目录、干净且已合并完成的 `main` 分支执行。该 clone 不得添加内部仓库 remote，也不得包含内部 Git 历史：
+桌面版正式发布分为两个阶段：先在 PR 中准备并审核版本元数据，PR 合入 `main` 后，再从 `Zleap-AI/SAG` 的干净 `main` 分支创建并推送发布标签。请仅使用官方公开仓库，不要包含内部 Git 历史。
+
+在版本 PR 分支上输入计划发布的下一个稳定版本号：
 
 ```bash
-make release-dry-run VERSION=1.4.0
-make release VERSION=1.4.0
+printf "请输入下一个稳定版本号: "
+read -r VERSION
+node scripts/release-public.mjs --prepare "$VERSION"
 ```
 
-`scripts/release-public.mjs` 会：
+脚本会更新 Desktop/Web/API 版本、lockfile、README 版本徽章和 `CHANGELOG.md` 发布记录。它不会暂存或提交文件，也不会推送变更或创建标签；请按常规 PR 流程审核并合入这些元数据变更。
 
-1. 校验当前分支、干净工作区、严格递增的稳定 SemVer，以及 fetch/push remote 是否都指向 `Zleap-AI/SAG`；
-2. 拉取并确认本地 `main` 包含 `origin/main`，且两者根提交完全一致，阻止内部或其他无关历史进入公开仓库；
-3. 同步 Desktop/Web/API 运行时版本及 lockfile，更新 README 徽章，将 `Unreleased` 归档为本次版本；
-4. 创建 `release: vX.Y.Z` 提交和不可变注解标签；
-5. 原子推送 `main + vX.Y.Z` 到公开仓库的 `origin`。任一引用推送失败时，两者都不会在远端生效。
+PR 合入后，使用已同步到最新状态的干净克隆，并输入与 PR 中准备的版本号相同的版本：
 
-标签随后触发 `.github/workflows/desktop-release.yml`。流水线复用完整 CI 门禁，在 `macos-15` ARM64 与 `windows-2025` x64 原生 runner 并行构建；macOS 必须签名并公证成功，Windows 明确生成无签名安装包，且两个平台更新元数据和校验文件齐全时，才创建公开 GitHub Release。
+```bash
+git checkout main
+git pull --ff-only
+printf "请输入已合入的版本号: "
+read -r VERSION
+make release-dry-run VERSION="$VERSION"
+make release VERSION="$VERSION"
+```
 
-发布脚本不会在本地构建或上传二进制。推送失败时，本地发布提交与标签会保留，排查后可重试；不要移动或复用已经公开的标签。
+仅创建标签的发布脚本会检查干净的 `main` 工作区和已准备的版本元数据，然后创建注解版本标签，并将标签指向公开仓库 `origin/main` 当前提交。标签会触发 `.github/workflows/desktop-release.yml`。流水线在原生 `macos-15` ARM64 和 `windows-2025` x64 runner 上构建；只有 macOS 签名与公证成功，并且两个平台的更新元数据和校验文件齐全后，才会创建公开 GitHub Release。
+
+脚本不会在本地构建或上传二进制。推送标签失败时，请先排查原因再重试；已经公开的标签不可移动或复用。
 
 ## GitHub 发布环境
 
