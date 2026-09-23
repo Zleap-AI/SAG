@@ -51,21 +51,25 @@ npm run dev
 
 桌面版正式发布分为两个阶段：先在 PR 中准备并审核版本元数据，PR 合入 `main` 后，再从 `Zleap-AI/SAG` 的干净 `main` 分支创建并推送发布标签。请仅使用官方公开仓库，不要包含内部 Git 历史。
 
-在版本 PR 分支上准备下一个稳定版本（将 `1.8.12` 替换为计划发布的版本）：
+在版本 PR 分支上输入计划发布的下一个稳定版本号：
 
 ```bash
-node scripts/release-public.mjs --prepare 1.8.12
+printf "请输入下一个稳定版本号: "
+read -r VERSION
+node scripts/release-public.mjs --prepare "$VERSION"
 ```
 
 脚本会更新 Desktop/Web/API 版本、lockfile、README 版本徽章和 `CHANGELOG.md` 发布记录。它不会暂存或提交文件，也不会推送变更或创建标签；请按常规 PR 流程审核并合入这些元数据变更。
 
-PR 合入后，使用已同步到最新状态的干净克隆：
+PR 合入后，使用已同步到最新状态的干净克隆，并输入与 PR 中准备的版本号相同的版本：
 
 ```bash
 git checkout main
 git pull --ff-only
-make release-dry-run VERSION=1.8.12
-make release VERSION=1.8.12
+printf "请输入已合入的版本号: "
+read -r VERSION
+make release-dry-run VERSION="$VERSION"
+make release VERSION="$VERSION"
 ```
 
 仅创建标签的发布脚本会检查干净的 `main` 工作区和已准备的版本元数据，然后创建注解版本标签，并将标签指向公开仓库 `origin/main` 当前提交。标签会触发 `.github/workflows/desktop-release.yml`。流水线在原生 `macos-15` ARM64 和 `windows-2025` x64 runner 上构建；只有 macOS 签名与公证成功，并且两个平台的更新元数据和校验文件齐全后，才会创建公开 GitHub Release。
