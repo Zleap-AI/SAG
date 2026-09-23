@@ -11,8 +11,7 @@
 <p align="center">
   <a href="https://arxiv.org/abs/2606.15971"><img alt="Paper" src="https://img.shields.io/badge/paper-arXiv%3A2606.15971-18181b" /></a>
   <a href="https://pypi.org/project/zleap-sag/"><img alt="PyPI" src="https://img.shields.io/pypi/v/zleap-sag?label=zleap--sag&color=18181b" /></a>
-  <img alt="SAG version" src="https://img.shields.io/badge/SAG-v1.8.10-18181b" />
-  <a href="https://github.com/Zleap-AI/SAG/releases"><img alt="Desktop release" src="https://img.shields.io/github/v/release/Zleap-AI/SAG?label=desktop&color=18181b" /></a>
+  <img alt="SAG version" src="https://img.shields.io/badge/SAG-v1.8.11-18181b" />
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776ab" />
   <img alt="Node" src="https://img.shields.io/badge/Node-20%2B-339933" />
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-18181b" /></a>
@@ -44,21 +43,7 @@ https://github.com/user-attachments/assets/ac805e3c-ab52-4857-bef6-2865f3831b2f
 
 ### Changelog
 
-**August 30, 2026**
-
-SAG now supports [`@zleap-ai/dsh-sag`](https://github.com/Zleap-AI/dsh-sag). The built-in local DeepSeek Harness connector makes SAG knowledge available to DSH Agents for search, source reading, and source and document management.
-
-**August 13, 2026**
-
-Added OCTX source import and export with integrity validation, conflict handling, failure recovery, and compatible vector reuse for cross-instance knowledge base migration and backup. This release also improves continuous Chinese-term retrieval and document lifecycle controls for more reliable fast search and background processing.
-
-**July 31, 2026**
-
-Published the official command-line client [`@zleap-ai/sag-cli`](docs/sag-cli.en.md). One command (`sag agent connect codex | claude-code`) mounts the SAG Knowledge MCP into Codex or Claude Code — no JWT copy-paste, no hand-edited config files. The MCP guide below now leads with the CLI.
-
-**July 14, 2026**
-
-Released a completely new version built on the `zleap-sag` package, featuring an entirely redesigned UI. The previous version has been archived in the `v1` branch and is no longer maintained.
+See [CHANGELOG.md](CHANGELOG.md) for release history and version-specific changes.
 
 ### SAG in one minute
 
@@ -176,6 +161,8 @@ Download the latest desktop installer from [GitHub Releases](https://github.com/
 | Windows 10/11, x64 | `SAG-Setup-*-win-x64.exe` | Unsigned for now; Windows may show an unknown-publisher warning; in-app updates require separate download and install confirmation |
 
 The desktop app bundles the Web workspace and local knowledge backend, so users do not need to install Python, Node.js, or a database. Application updates preserve the knowledge base and uploads in the operating system's application-data directory. Release checksums are published as `SHA256SUMS.txt`.
+
+If SAG detects incompatible legacy knowledge data, it leaves that data unchanged until you confirm a backup and a fresh workspace. SAG does not automatically migrate or merge the old knowledge base; upload your documents again after setup. The backup remains available for manual recovery. Accounts and model settings are preserved, while previous knowledge bases, documents, agents, conversations and related tasks do not appear in the new workspace. Current-format workspaces continue using their existing data directories.
 
 ### Quick start (Docker, self-hosted)
 

@@ -21,6 +21,8 @@ class ActiveEngineStore:
 
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("expected an object")
             if payload.get("schema_version") != 1:
                 raise ValueError("unsupported schema version")
             stored_configured = Path(payload["configured_engine"]).expanduser().resolve()

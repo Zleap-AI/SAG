@@ -24,7 +24,7 @@ export interface AuthStatus {
   registration_open: boolean;
 }
 
-export type StorageChoice = "migrate" | "fresh";
+export type StorageChoice = "fresh";
 export type StorageBootstrapPhase =
   | "ready"
   | "choice_required"

@@ -72,7 +72,7 @@ describe("unauthorized request ownership", () => {
     setToken("expired-token");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(unauthorizedResponse()));
 
-    await expect(api.chooseStorageBootstrap("migrate")).rejects.toMatchObject({
+    await expect(api.chooseStorageBootstrap("fresh")).rejects.toMatchObject({
       status: 401,
     } satisfies Partial<ApiError>);
 

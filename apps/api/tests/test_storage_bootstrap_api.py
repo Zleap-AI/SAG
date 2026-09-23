@@ -15,7 +15,7 @@ from sag_api.core.config import Settings
 from sag_api.db.base import Base
 from sag_api.db.models import User
 from sag_api.main import create_app
-from sag_api.upgrades.contracts import StorageBootstrapPhase, StorageChoice, UpgradeReport
+from sag_api.upgrades.contracts import StorageBootstrapPhase, StorageChoice
 from sag_api.upgrades.coordinator import StorageBootstrapCoordinator
 from sag_api.upgrades.state import BootstrapState, BootstrapStateStore
 
@@ -53,7 +53,7 @@ async def _fixture(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("payload", ["{", '{"schema_version": 999}'])
+@pytest.mark.parametrize("payload", ["{", '{"schema_version": 999}', "[]", "null"])
 async def test_malformed_bootstrap_journal_keeps_liveness_and_is_preserved(
     tmp_path: Path, payload: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -179,11 +179,12 @@ async def test_choice_is_authenticated_gated_and_idempotent(tmp_path: Path, monk
             )
             assert "accepted_choice" not in public_processing.json()
             assert public_processing.json()["choices"] == []
+            assert public_processing.json()["phase"] == "processing"
             assert authenticated_processing.json()["choices"] == []
             assert authenticated_processing.json()["accepted_choice"] == "fresh"
             assert coordinator.started_tasks == 1
             conflict = await client.post(choice_url, headers=headers, json={"choice": "migrate"})
-            assert conflict.status_code == 409
+            assert conflict.status_code == 422
     finally:
         await coordinator.wait()
         await db_engine.dispose()
@@ -227,8 +228,8 @@ async def test_maintenance_login_requires_exact_existing_name_without_side_effec
 
 
 @pytest.mark.asyncio
-async def test_processing_restart_resumes_and_callback_failure_is_retryable(
-    tmp_path: Path, monkeypatch
+async def test_confirmed_fresh_restart_resumes_and_callback_failure_is_retryable(
+    tmp_path: Path,
 ) -> None:
     _engine_dir, db_engine, sessions, settings = await _fixture(tmp_path)
     calls: list[str] = []
@@ -237,33 +238,25 @@ async def test_processing_restart_resumes_and_callback_failure_is_retryable(
             phase=StorageBootstrapPhase.PROCESSING,
             source_version="legacy_0_7",
             target_version="0.8.2",
-            choice=StorageChoice.MIGRATE,
+            choice=StorageChoice.FRESH,
+            rebuild_confirmed=True,
             actor_user_id="owner",
             adapter_id="fixture",
             stage="processing",
         )
     )
 
-    class Adapter:
-        migration_id = "fixture"
-
-        async def migrate(self, _context):
-            return UpgradeReport("migrated")
-
     async def on_ready():
         calls.append("ready")
         raise RuntimeError("runtime not installed")
 
-    monkeypatch.setattr(
-        "sag_api.upgrades.coordinator.select_adapter", lambda *_args, **_kwargs: Adapter()
-    )
     coordinator = StorageBootstrapCoordinator(settings, sessions, on_ready=on_ready)
     assert (await coordinator.inspect()).phase is StorageBootstrapPhase.PROCESSING
     await coordinator.wait()
     assert coordinator.store.load().phase is StorageBootstrapPhase.FAILED
 
     assert (
-        await coordinator.choose(StorageChoice.MIGRATE, "owner")
+        await coordinator.choose(StorageChoice.FRESH, "owner")
     ).phase is StorageBootstrapPhase.PROCESSING
     await coordinator.wait()
     assert calls == ["ready", "ready"]

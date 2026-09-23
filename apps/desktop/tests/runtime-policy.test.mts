@@ -7,7 +7,7 @@ import {
   storageBootstrapPolicy,
 } from "../src/runtime-policy.ts";
 
-test("uses a fresh non-migrating workspace only for packaged Windows", () => {
+test("uses in-place legacy backup preservation only for packaged Windows", () => {
   assert.equal(storageBootstrapPolicy("win32"), "windows_fresh");
   assert.equal(storageBootstrapPolicy("darwin"), "prompt");
   assert.equal(storageBootstrapPolicy("linux"), "prompt");

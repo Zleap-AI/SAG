@@ -23,6 +23,7 @@ export function desktopApiEnvironment(
   };
 }
 
+// The legacy value selects Windows backup preservation only; rebuilds require confirmation.
 export function storageBootstrapPolicy(
   platform: NodeJS.Platform,
 ): StorageBootstrapPolicy {
