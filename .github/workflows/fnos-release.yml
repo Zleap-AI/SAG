@@ -175,7 +175,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.verify-release-request.outputs.revision }}
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v3.6.0
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v3.3.0
         with:
