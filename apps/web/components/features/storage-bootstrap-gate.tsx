@@ -7,7 +7,6 @@ import {
   ArrowRight,
   CheckCircle2,
   Database,
-  HardDrive,
   RotateCw,
 } from "lucide-react";
 
@@ -45,14 +44,8 @@ function stageKey(stage: string | null): string {
   const knownStages = new Set([
     "queued",
     "detect",
-    "select",
     "backup",
-    "relational",
-    "checkpoints",
-    "vectors",
     "verify",
-    "swap",
-    "rollback",
     "fresh_journal",
     "fresh_target",
     "fresh_backup",
@@ -203,20 +196,7 @@ export function StorageBootstrapGateView({
         ) : null}
 
         {status.phase === "choice_required" && authenticated && !selectedChoice ? (
-          <div className={`grid gap-3 ${status.choices.length > 1 ? "sm:grid-cols-2" : ""}`}>
-            {status.choices.includes("migrate") ? (
-            <button
-              type="button"
-              onClick={() => onSelectChoice("migrate")}
-              className="rounded-lg border bg-card p-5 text-left shadow-soft transition-colors hover:border-foreground/30 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <HardDrive className="mb-4 size-5" />
-              <strong className="block text-sm">{t("migrateTitle")}</strong>
-              <span className="mt-2 block text-sm leading-6 text-muted-foreground">
-                {t("migrateSummary")}
-              </span>
-            </button>
-            ) : null}
+          <div className="grid gap-3">
             <button
               type="button"
               onClick={() => onSelectChoice("fresh")}
@@ -238,9 +218,7 @@ export function StorageBootstrapGateView({
               <div>
                 <h2 className="text-base font-semibold">{t("confirmTitle")}</h2>
                 <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                  {selectedChoice === "migrate"
-                    ? t("migrateConfirmation")
-                    : t("freshConfirmation")}
+                  {t("freshConfirmation")}
                 </p>
               </div>
             </div>
@@ -353,6 +331,11 @@ export function StorageBootstrapGate({ children }: { children: React.ReactNode }
     setErrorMessage(null);
     try {
       const nextStatus = await loadStatus(loadInitialStatus);
+      if (!mountedRef.current) return;
+      if (nextStatus.phase === "ready") {
+        setStatus(nextStatus);
+        return;
+      }
       const nextAuthStatus = await api.authStatus();
       if (!mountedRef.current) return;
       setStatus(nextStatus);

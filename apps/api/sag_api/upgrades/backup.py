@@ -187,9 +187,3 @@ def create_backup(layout: StorageLayout, migration_id: str, *, source_version: s
         if temporary.exists():
             shutil.rmtree(temporary)
         raise
-
-
-def prepare_staging(layout: StorageLayout, migration_id: str) -> Path:
-    engine = layout.staging / migration_id / "engine"
-    engine.mkdir(parents=True, exist_ok=True)
-    return engine

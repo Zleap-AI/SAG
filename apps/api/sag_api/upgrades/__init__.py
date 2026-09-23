@@ -4,7 +4,6 @@ from sag_api.upgrades.contracts import (
     StorageBootstrapPhase,
     StorageBootstrapStatus,
     StorageChoice,
-    StorageUpgradeAdapter,
     StorageUpgradeContext,
     UpgradeReport,
 )
@@ -14,7 +13,6 @@ __all__ = [
     "StorageBootstrapPhase",
     "StorageBootstrapStatus",
     "StorageChoice",
-    "StorageUpgradeAdapter",
     "StorageUpgradeContext",
     "StorageUpgradeError",
     "UpgradeReport",

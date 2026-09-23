@@ -41,7 +41,7 @@ def detect_storage(layout: StorageLayout, settings: Settings) -> StorageProbe:
     ):
         return StorageProbe(
             StorageVersion.UNSUPPORTED,
-            "automatic storage upgrades support only SQLite plus LanceDB",
+            "legacy storage detection supports only SQLite plus LanceDB",
         )
 
     if not layout.engine.exists():

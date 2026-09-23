@@ -53,6 +53,8 @@ class BootstrapStateStore:
             return None
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("expected an object")
             if payload.get("schema_version") != BOOTSTRAP_SCHEMA_VERSION:
                 raise ValueError("unsupported schema version")
             if not isinstance(payload.get("rebuild_confirmed", False), bool):
