@@ -58,7 +58,8 @@ jobs:
   macos:
     name: macOS 15 · Apple Silicon · signed + notarized
     if: github.repository == 'Zleap-AI/SAG'
-    needs: [quality, metadata]
+    # Build in parallel with quality checks; publish still requires every gate.
+    needs: [metadata]
     runs-on: macos-15
     timeout-minutes: 120
     environment: desktop-release
@@ -82,20 +83,7 @@ jobs:
               exit 1
             }
           done
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: |
-            apps/web/package-lock.json
-            apps/desktop/package-lock.json
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.11"
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
-          cache-dependency-glob: apps/api/uv.lock
+      - uses: ./.github/actions/setup-desktop-build
       - name: Verify native Apple Silicon toolchain
         shell: bash
         run: |
@@ -108,18 +96,20 @@ jobs:
             exit 1
           }
           python -c 'import platform; raise SystemExit(0 if platform.machine() == "arm64" else "Python must be arm64")'
-      - name: Install Web dependencies
-        working-directory: apps/web
-        run: npm ci
-      - name: Install desktop dependencies
+      # Keep phases separate so Actions reports each duration. Signing secrets
+      # remain scoped to the final package step, never the preparation steps.
+      - name: Compile Electron
         working-directory: apps/desktop
-        run: npm ci
-      - name: Install frozen backend dependencies
-        working-directory: apps/api
-        run: uv sync --frozen --extra desktop
-      - name: Prepare macOS release payload without signing credentials
+        run: npm run build
+      - name: Build desktop Web
         working-directory: apps/desktop
-        run: npm run prepare:release
+        run: npm run build:web
+      - name: Freeze Python backend
+        working-directory: apps/desktop
+        run: npm run build:backend
+      - name: Assemble release resources
+        working-directory: apps/desktop
+        run: npm run prepare:resources
       - name: Build signed and notarized macOS release
         working-directory: apps/desktop
         env:
@@ -164,7 +154,7 @@ jobs:
   windows:
     name: Windows 2025 · x64 · unsigned
     if: github.repository == 'Zleap-AI/SAG'
-    needs: [quality, metadata]
+    needs: [metadata]
     runs-on: windows-2025
     timeout-minutes: 120
     env:
@@ -172,32 +162,19 @@ jobs:
       SAG_UPDATE_GITHUB_REPOSITORY: ${{ github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: |
-            apps/web/package-lock.json
-            apps/desktop/package-lock.json
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.11"
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
-          cache-dependency-glob: apps/api/uv.lock
-      - name: Install Web dependencies
-        working-directory: apps/web
-        run: npm ci
-      - name: Install desktop dependencies
+      - uses: ./.github/actions/setup-desktop-build
+      - name: Compile Electron
         working-directory: apps/desktop
-        run: npm ci
-      - name: Install frozen backend dependencies
-        working-directory: apps/api
-        run: uv sync --frozen --extra desktop
-      - name: Prepare Windows release payload
+        run: npm run build
+      - name: Build desktop Web
         working-directory: apps/desktop
-        run: npm run prepare:release
+        run: npm run build:web
+      - name: Freeze Python backend
+        working-directory: apps/desktop
+        run: npm run build:backend
+      - name: Assemble release resources
+        working-directory: apps/desktop
+        run: npm run prepare:resources
       - name: Build unsigned Windows release
         working-directory: apps/desktop
         run: npm run package:win
@@ -236,7 +213,7 @@ jobs:
   publish:
     name: Publish immutable GitHub Release
     if: github.repository == 'Zleap-AI/SAG' && github.event_name == 'push'
-    needs: [metadata, macos, windows]
+    needs: [quality, metadata, macos, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
