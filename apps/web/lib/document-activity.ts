@@ -26,6 +26,7 @@ export interface DocumentActivity {
   phase: DocumentActivityPhase;
   progress: number;
   busy: boolean;
+  canPause: boolean;
   canDelete: boolean;
   poll: boolean;
   error: string | null;
@@ -45,6 +46,14 @@ const PROCESSING_STATES = new Set<DocumentStatus>([
   "extracting",
   "pausing",
   "deleting",
+]);
+// The worker accepts a pause while the document is still pending, loading or
+// extracting. A freshly requeued document keeps its previous (failed) status
+// until the worker picks it up, and in that window there is no job to stop yet.
+const PAUSABLE_STATES = new Set<DocumentStatus>([
+  "pending",
+  "loading",
+  "extracting",
 ]);
 const FAILED_POLLING_WINDOW_MS = 15_000;
 
@@ -185,20 +194,23 @@ export function deriveDocumentActivity(
       && mutationActive
       && (mutation.action === "delete" || !mutation.job)
     );
+  const canPause =
+    PAUSABLE_STATES.has(document.status)
+    && !(mutation && mutationActive && mutation.action === "pause");
 
   if (mutation && mutationActive) {
     if (mutation.action === "delete") {
-      return { phase: "deleting", progress, busy: true, canDelete, poll, error: null };
+      return { phase: "deleting", progress, busy: true, canPause, canDelete, poll, error: null };
     }
     if (mutation.action === "pause" && document.status !== "paused") {
-      return { phase: "pausing", progress, busy: true, canDelete, poll, error: null };
+      return { phase: "pausing", progress, busy: true, canPause, canDelete, poll, error: null };
     }
     if (mutation.action === "resume" && (!mutation.job || mutation.job.status === "queued")) {
-      return { phase: "resuming", progress, busy: true, canDelete, poll, error: null };
+      return { phase: "resuming", progress, busy: true, canPause, canDelete, poll, error: null };
     }
     if (mutation.action === "reprocess") {
       if (!mutation.job) {
-        return { phase: "requeueing", progress, busy: true, canDelete, poll, error: null };
+        return { phase: "requeueing", progress, busy: true, canPause, canDelete, poll, error: null };
       }
       if (mutation.job.status === "queued") {
         const waitingRetry = Boolean(mutation.job.error);
@@ -206,6 +218,7 @@ export function deriveDocumentActivity(
           phase: waitingRetry ? "waiting-retry" : "pending",
           progress,
           busy: true,
+          canPause,
           canDelete,
           poll,
           error: mutation.job.error,
@@ -221,6 +234,7 @@ export function deriveDocumentActivity(
       document.status === "pausing"
       || document.status === "deleting"
       || Boolean(mutationActive && poll),
+    canPause,
     canDelete,
     poll,
     error:

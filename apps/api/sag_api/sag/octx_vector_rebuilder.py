@@ -124,7 +124,7 @@ async def _write(
 
     result = await vector_store.upsert(collection, records)
     if result.failure_count:
-        failed = ", ".join(item.id for item in result.failed_items[:5])
+        failed = "; ".join(f"{item.id}: {item.error}" for item in result.failed_items[:5])
         raise RuntimeError(f"OCTX vector batch failed for {collection}: {failed}")
     written = result.success_count
     if written != len(documents):
