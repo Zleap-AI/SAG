@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 import httpx
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
 
 def test_universe_cursor_protocol_rejects_v1_tokens():
@@ -754,7 +754,8 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
 
 
 @pytest.mark.asyncio
-async def test_universe_timeline_orders_same_instant_book_by_narrative_rank():
+@pytest.mark.parametrize("timestamp_storage", ["orm", "sqlite_start_time", "sqlite_created_time"])
+async def test_universe_timeline_orders_same_instant_book_by_narrative_rank(timestamp_storage):
     """An imported book stamps every event with one instant; the canonical
     exploration order must fall back to the extractor's narrative rank, and the
     ordinals must stay contiguous so the client's counting axis can carry it."""
@@ -847,6 +848,24 @@ async def test_universe_timeline_orders_same_instant_book_by_narrative_rank():
                         )
                     )
                 await session.commit()
+                if timestamp_storage != "orm":
+                    # SQLite CURRENT_TIMESTAMP stores seconds without .000000.
+                    # Exercise both explicit event times and the creation-time fallback.
+                    await session.execute(
+                        text(
+                            "UPDATE source_event SET created_time = :instant, "
+                            "start_time = :start WHERE data_source_id = :source_id"
+                        ),
+                        {
+                            "instant": imported_at.strftime("%Y-%m-%d %H:%M:%S"),
+                            "start": (
+                                imported_at.strftime("%Y-%m-%d %H:%M:%S")
+                                if timestamp_storage == "sqlite_start_time" else None
+                            ),
+                            "source_id": source_config_id,
+                        },
+                    )
+                    await session.commit()
 
             async def timeline(
                 cursor: str | None = None,

@@ -416,6 +416,17 @@ class UniverseReader:
             event_time <= as_of_db,
             SourceEvent.created_time <= as_of_db,
         ]
+        def stored_event_time(event_id: str):
+            # Compare the same value used by ORDER BY. SQLite server defaults
+            # omit microseconds; rebinding a Python datetime adds .000000 and
+            # makes equal instants compare unequal, repeating a page boundary.
+            return (
+                select(event_time)
+                .where(SourceEvent.data_source_id == source_config_id, SourceEvent.id == event_id)
+                .correlate(None)
+                .scalar_subquery()
+            )
+
         # Canonical exploration order: newest first, then the extractor's
         # source-wide narrative rank, then id. Rank is what makes a source whose
         # events all share one instant (an imported book) explorable in reading
@@ -426,6 +437,7 @@ class UniverseReader:
             boundary_id = str(cursor_payload.get("id") or "")
             if boundary_time is None or not boundary_id:
                 raise ValueError("invalid universe cursor")
+            boundary_time = stored_event_time(boundary_id)
             if direction == "older":
                 filters.append(
                     or_(
@@ -495,7 +507,7 @@ class UniverseReader:
             first_ordinal = 0
             head = page[0] if page else None
             if head is not None:
-                head_time = head.event_time
+                head_time = stored_event_time(str(head.id))
                 head_rank = int(head.rank or 0)
                 head_id = str(head.id)
                 first_ordinal = int(
