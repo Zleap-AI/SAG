@@ -51,14 +51,14 @@ test('discovery and cached events never authorize download or installation', asy
 test('download and install require separate version-specific user actions', async () => {
   const h = harness(); h.updater.emit('update-available', { version: '2.0.0' });
   assert.equal((await h.controller.download('1.9.0')).started, false);
-  assert.equal(h.controller.install('2.0.0').started, false);
+  assert.equal((await h.controller.install('2.0.0')).started, false);
   assert.equal((await h.controller.download('2.0.0')).started, true);
   h.updater.emit('update-downloaded', { version: '2.0.0' });
   assert.equal(h.controller.getState().status, 'downloaded');
   assert.equal(h.counts().installs, 0); assert.equal(h.counts().dialogs, 0);
-  assert.equal(h.controller.install('1.9.0').started, false);
-  assert.equal(h.controller.install('2.0.0').started, true);
-  assert.equal(h.controller.install('2.0.0').started, false);
+  assert.equal((await h.controller.install('1.9.0')).started, false);
+  assert.equal((await h.controller.install('2.0.0')).started, true);
+  assert.equal((await h.controller.install('2.0.0')).started, false);
   assert.equal(h.counts().installs, 1);
 });
 
@@ -90,15 +90,15 @@ test('installation failures allow explicit retry without authorizing ordinary qu
   const h = harness(); h.updater.emit('update-available', { version: '2.0.0' });
   await h.controller.download('2.0.0'); h.updater.emit('update-downloaded', { version: '2.0.0' });
   h.updater.quitAndInstall = () => { throw new Error('installer failed'); };
-  assert.equal(h.controller.install('2.0.0').started, false); assert.equal(h.controller.getState().operation, 'install');
+  assert.equal((await h.controller.install('2.0.0')).started, false); assert.equal(h.controller.getState().operation, 'install');
   h.updater.quitAndInstall = () => {};
-  assert.equal(h.controller.install('2.0.0').started, true); assert.equal(h.updater.autoInstallOnAppQuit, false);
+  assert.equal((await h.controller.install('2.0.0')).started, true); assert.equal(h.updater.autoInstallOnAppQuit, false);
 });
 
 test('unpackaged runs never check, download, install, or schedule work', async () => {
   const h = harness(false);
   assert.equal((await h.controller.check()).supported, false); assert.equal((await h.controller.download('2.0.0')).started, false);
-  assert.equal(h.controller.install('2.0.0').started, false); assert.equal(h.timers.length, 0);
+  assert.equal((await h.controller.install('2.0.0')).started, false); assert.equal(h.timers.length, 0);
   assert.deepEqual(h.counts(), { checks: 0, downloads: 0, installs: 0, dialogs: 0 });
 });
 
@@ -112,9 +112,9 @@ test('a failed macOS install does not leave a second installation callback on re
   };
   h.updater.emit('update-available', { version: '2.0.0' });
   await h.controller.download('2.0.0'); h.updater.emit('update-downloaded', { version: '2.0.0' });
-  assert.equal(h.controller.install('2.0.0').started, true);
+  assert.equal((await h.controller.install('2.0.0')).started, true);
   h.updater.emit('error', new Error('Squirrel validation failed'));
-  assert.equal(h.controller.install('2.0.0').started, true);
+  assert.equal((await h.controller.install('2.0.0')).started, true);
   h.nativeUpdater.emit('update-downloaded');
   assert.equal(nativeInstalls, 1);
 });

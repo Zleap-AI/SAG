@@ -72,9 +72,17 @@ make release-dry-run VERSION="$VERSION"
 make release VERSION="$VERSION"
 ```
 
-仅创建标签的发布脚本会检查干净的 `main` 工作区和已准备的版本元数据，然后创建注解版本标签，并将标签指向公开仓库 `origin/main` 当前提交。标签会触发 `.github/workflows/desktop-release.yml`。流水线在原生 `macos-15` ARM64 和 `windows-2025` x64 runner 上构建；只有 macOS 签名与公证成功，并且两个平台的更新元数据和校验文件齐全后，才会创建公开 GitHub Release。
+仅创建标签的发布脚本会检查干净的 `main` 工作区和已准备的版本元数据，然后创建注解版本标签，并将标签指向公开仓库 `origin/main` 当前提交。标签会触发 `.github/workflows/desktop-release.yml`。流水线在原生 `macos-15` ARM64 和 `windows-2025` x64 runner 上构建。版本校验通过后，两个平台构建与质量检查并行；只有完整质量检查通过、macOS 签名与公证成功，并且两个平台的更新元数据和校验文件齐全后，才会创建公开 GitHub Release。质量检查失败仍会阻止发布，但此时已经启动的构建可能继续消耗 runner 时间。
 
 脚本不会在本地构建或上传二进制。推送标签失败时，请先排查原因再重试；已经公开的标签不可移动或复用。
+
+### 发布耗时与缓存
+
+`.github/workflows/desktop-dependency-cache.yml` 在 `main` 上的依赖或发布配置变化后，使用与正式构建相同的 macOS/Windows runner 预热 npm 与 uv 下载缓存。两条流水线共用 `.github/actions/setup-desktop-build/action.yml`，保持工具链和缓存键一致。预热不构建安装包、不使用签名凭据，也不发布版本。
+
+GitHub 不允许不同标签相互读取缓存，但标签可以读取默认分支的缓存；因此只在版本标签中保存缓存，不能让下一次版本发布命中它。版本 PR 合入后，让对应的 Desktop Dependency Cache 完成再推标签，可提高命中率；缓存过期时也可在 `main` 手动运行预热。预热失败、尚未完成或缓存缺失都不阻止发布，正式构建仍执行 `npm ci` 和 `uv sync --frozen --extra desktop`，只会回到下载依赖的路径。预热会额外使用两台 runner，目标是缩短发布等待，不保证减少总 runner 用量。
+
+Actions 将 Electron 编译、Next.js 构建、Python 冻结、资源组装分别列为步骤，便于比较耗时。macOS 的签名和公证仍由 electron-builder 管理，不跳过签名、公证、更新元数据或安装包校验。首轮优化的测量基线与验收方法见 [桌面发布性能记录](../../docs/desktop-release-performance.md)。
 
 ## GitHub 发布环境
 
@@ -179,6 +187,16 @@ macOS 签名凭据只注入 electron-builder 的最终签名与公证步骤，�
 - Windows：`%APPDATA%\SAG\`
 
 应用更新不会覆盖此目录；Windows 卸载器也配置为默认保留用户数据。
+
+### 本地服务生命周期
+
+桌面主进程管理一组 Web/API 服务，启动、停止和重试互斥。启动中退出会取消健康探测并等待清理；任一服务异常退出时，先清理同组服务，再显示“退出 / 重试”。重试沿用已保存的 Web 端口，保留同一浏览器 origin 下的登录和本地设置；不会自动反复重启服务或替用户重跑任务。
+
+退出或“重启并安装”前，会检查在途请求、排队/执行中的文档任务、OCTX 导入导出及存储重建。有未完成任务或暂时无法确认状态时，默认取消，用户可以明确选择中断。Windows 关闭主窗口也经过此检查；macOS 关闭窗口仍按原行为保留后台运行。开发模式的 Web/API 由开发启动脚本管理。
+
+打包 API 在原监听端口额外挂载私有控制入口，仅接受 loopback 与每次启动随机令牌；普通 Web 部署不挂载该入口，令牌不发送给渲染页面或继承给 worker。退出先请求 Uvicorn 执行现有 lifespan 清理，最多等待 20 秒，再强制结束进程树；Web 最多等待 5 秒。macOS 使用独立 API 进程组清理残留 worker，Windows 使用不继承句柄的 Job Object 将 worker 绑定到 API 生命周期。清理失败时阻止启动替代服务；更新安装器仅在清理完成后启动，安装失败会恢复本地服务。
+
+完整安装包需在两平台验证启动中退出、带任务退出、崩溃重试、后台进程回收、手动安装更新和用户数据保留。
 
 ## 更新约束
 

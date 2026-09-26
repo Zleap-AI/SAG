@@ -4,8 +4,10 @@ import path from "node:path";
 
 import {
   app,
+  autoUpdater as nativeUpdater,
   BrowserWindow,
   ipcMain,
+  dialog,
   shell,
   type IpcMainInvokeEvent,
 } from "electron";
@@ -18,13 +20,45 @@ import {
   type ManagedRuntime,
 } from "./runtime";
 import { createUpdaterController, type UpdaterController } from "./updater";
+import { RuntimeController } from "./runtime-controller";
+import { ExitController } from "./exit-controller";
 
 let mainWindow: BrowserWindow | null = null;
 let splashWindow: BrowserWindow | null = null;
-let runtime: ManagedRuntime | null = null;
 let updater: UpdaterController | null = null;
 let trustedOrigin = "";
 let quitting = false;
+let quitAllowed = false;
+let updateQuitRequested = false;
+let booting: Promise<void> | undefined;
+let failureDialog: Promise<void> | undefined;
+
+const runtime = new RuntimeController<ManagedRuntime>(
+  (signal) => app.isPackaged
+    ? startPackagedRuntime(signal)
+    : waitForDevelopmentRuntime(process.env.SAG_DESKTOP_DEV_WEB_URL || "http://127.0.0.1:3000", signal),
+  (state) => {
+    log.info("Desktop runtime", state);
+    if (state.phase === "error" && !quitting) void presentRuntimeFailure(state.message);
+  },
+);
+const exitController = new ExitController(
+  async () => runtime.session ? runtime.session.inspectActivity() : false,
+  async (reason, active) => {
+    const action = reason === "update" ? "重启并安装" : "退出";
+    const result = await dialog.showMessageBox({
+      type: "warning", title: "SAG", message: active === null
+        ? "暂时无法确认后台任务状态" : "仍有正在处理或排队的任务",
+      detail: `${action}会中断未完成的处理。你可以取消并等待任务完成后再试。`,
+      buttons: ["取消", `仍然${action}`], defaultId: 0, cancelId: 0,
+    });
+    return result.response === 1;
+  },
+  async () => {
+    quitting = true;
+    try { await runtime.stop(); } catch (error) { quitting = false; throw error; }
+  },
+);
 
 if (!app.isPackaged) {
   app.setPath("userData", path.join(app.getPath("appData"), "SAG Development"));
@@ -251,6 +285,12 @@ function createMainWindow(webUrl: string): BrowserWindow {
     splashWindow = null;
     window.show();
   });
+  window.on("close", (event) => {
+    if (process.platform !== "darwin" && !quitAllowed) {
+      event.preventDefault();
+      app.quit();
+    }
+  });
   window.on("closed", () => {
     mainWindow = null;
   });
@@ -258,20 +298,59 @@ function createMainWindow(webUrl: string): BrowserWindow {
   return window;
 }
 
-async function bootstrap(): Promise<void> {
-  splashWindow = createSplashWindow();
-  const devWebUrl =
-    process.env.SAG_DESKTOP_DEV_WEB_URL || "http://127.0.0.1:3000";
-  try {
-    runtime = app.isPackaged
-      ? await startPackagedRuntime()
-      : await waitForDevelopmentRuntime(devWebUrl);
-    mainWindow = createMainWindow(runtime.webUrl);
-    updater = createUpdaterController(() => mainWindow);
-    registerIpc();
-  } catch (error) {
-    showStartupError(error);
-  }
+function bootstrap(): Promise<void> {
+  if (booting) return booting;
+  if (quitting) return Promise.resolve();
+  if (!splashWindow || splashWindow.isDestroyed()) splashWindow = createSplashWindow();
+  booting = (async () => {
+    try {
+      const session = await runtime.start();
+      if (quitting || runtime.state.phase !== "ready") return;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        trustedOrigin = new URL(session.webUrl).origin;
+        await mainWindow.loadURL(session.webUrl);
+        splashWindow?.close(); splashWindow = null;
+        mainWindow.show();
+      } else mainWindow = createMainWindow(session.webUrl);
+      if (!updater) updater = createUpdaterController(() => mainWindow, {
+        beforeInstall: async () => {
+          const prepared = await exitController.prepare("update");
+          if (prepared) quitAllowed = true;
+          return prepared;
+        },
+        onInstallError: () => {
+          if (!quitAllowed && !quitting) return;
+          quitAllowed = false; quitting = false;
+          void bootstrap();
+        },
+      });
+      registerIpc();
+    } catch (error) {
+      if (!quitting) {
+        showStartupError(error);
+        void presentRuntimeFailure(error instanceof Error ? error.message : String(error));
+      }
+    }
+  })().finally(() => { booting = undefined; });
+  return booting;
+}
+
+function presentRuntimeFailure(message: string): Promise<void> {
+  if (failureDialog) return failureDialog;
+  failureDialog = (async () => {
+    await booting;
+    if (quitting) { failureDialog = undefined; return; }
+    const result = await dialog.showMessageBox({
+      type: "error", title: "SAG 本地服务不可用", message: "本地服务启动失败或意外停止",
+      detail: `${message}\n请检查日志；重试会重新启动本地服务，未完成的任务需在恢复后确认。`,
+      buttons: ["退出", "重试"], defaultId: 1, cancelId: 0,
+    });
+    failureDialog = undefined;
+    if (quitting) return;
+    if (result.response === 1) void bootstrap();
+    else app.quit();
+  })().catch((error) => { failureDialog = undefined; log.error("Failed to present runtime failure", error); });
+  return failureDialog;
 }
 
 if (gotSingleInstanceLock) {
@@ -289,18 +368,31 @@ if (gotSingleInstanceLock) {
       mainWindow.show();
       return;
     }
-    if (runtime) {
-      mainWindow = createMainWindow(runtime.webUrl);
+    if (runtime.session && runtime.state.phase === "ready") {
+      mainWindow = createMainWindow(runtime.session.webUrl);
       return;
     }
-    if (!quitting) void bootstrap();
+    if (!quitting && !failureDialog) void bootstrap();
   });
 
-  app.on("before-quit", () => {
-    quitting = true;
-    updater?.dispose();
-    runtime?.stop();
-    runtime = null;
+  nativeUpdater.on("before-quit-for-update", () => { updateQuitRequested = true; });
+  app.on("before-quit", (event) => {
+    if (updateQuitRequested) {
+      updateQuitRequested = false;
+      // NSIS may already have queued this quit before its launch error arrived.
+      if (!quitAllowed) { event.preventDefault(); return; }
+    }
+    if (quitAllowed) { updater?.dispose(); return; }
+    event.preventDefault();
+    void exitController.prepare("quit").then((prepared) => {
+      if (!prepared) return;
+      quitAllowed = true;
+      updater?.dispose();
+      app.quit();
+    }).catch((error) => {
+      log.error("Desktop shutdown failed", error);
+      dialog.showErrorBox("SAG 退出失败", "本地服务未能完成清理。请关闭 SAG 后重试；详情见日志。");
+    });
   });
 
   app.on("window-all-closed", () => {

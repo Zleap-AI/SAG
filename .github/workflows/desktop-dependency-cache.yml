@@ -1,0 +1,39 @@
+name: Desktop Dependency Cache
+
+# Tag caches cannot be restored by the next release tag. Populate the default
+# branch scope on the same native runners, with the same setup as the release.
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/web/package.json
+      - apps/web/package-lock.json
+      - apps/desktop/package.json
+      - apps/desktop/package-lock.json
+      - apps/api/pyproject.toml
+      - apps/api/uv.lock
+      - .github/actions/setup-desktop-build/**
+      - .github/workflows/desktop-dependency-cache.yml
+      - .github/workflows/desktop-release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-dependency-cache-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  warm:
+    name: Warm ${{ matrix.os }} dependencies
+    if: github.repository == 'Zleap-AI/SAG' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-desktop-build
