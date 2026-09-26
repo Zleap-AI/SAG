@@ -16,6 +16,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sag_api.branding import DEFAULT_AGENT_AVATAR, DEFAULT_AGENT_NAME
+from sag_api.core.attachments import attachment_path, media_type_for_attachment
 from sag_api.core.config import settings
 from sag_api.core.error_taxonomy import ErrorCode
 from sag_api.core.errors import ConflictError, NotFoundError, ValidationError
@@ -503,21 +504,12 @@ async def prepare_ask(
     llm=None,
 ) -> AskPlan:
     """落库用户消息（含图片附件 meta）、解析历史（超上下文阈值时主动压缩），组装计划。"""
-    from sag_api.api.v1.attachments import attachment_path
-
     resolved: list[dict] = []
     for aid in attachments or []:
         path = attachment_path(aid)
         if path is None:
             raise ValidationError(f"附件不存在或已过期：{aid}")
-        ext = aid.rsplit(".", 1)[-1].lower()
-        media_type = {
-            "png": "image/png",
-            "jpg": "image/jpeg",
-            "jpeg": "image/jpeg",
-            "webp": "image/webp",
-            "gif": "image/gif",
-        }.get(ext, "image/png")
+        media_type = media_type_for_attachment(aid)
         resolved.append({"id": aid, "media_type": media_type, "path": path})
 
     user_msg = Message(
