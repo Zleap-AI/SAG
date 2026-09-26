@@ -300,6 +300,54 @@ describe("document activity", () => {
     expect(shouldKeepDocumentMutation(document({ status: "paused" }), pausing)).toBe(false);
   });
 
+  it("keeps pause available while a reprocess retry is extracting", () => {
+    const retrying = document({ status: "failed", progress: 52 });
+    const mutation = beginDocumentMutation(retrying, "reprocess", 1_000);
+    const extracting = document({ status: "extracting", progress: 68, error: null });
+
+    // The reprocess overlay stays active for the whole extraction, so pause must
+    // not be gated on it; the worker still accepts a cooperative pause here.
+    expect(deriveDocumentActivity(extracting, mutation, 2_000)).toMatchObject({
+      busy: true,
+      canPause: true,
+    });
+  });
+
+  it("withholds pause until a requeued retry actually starts extracting", () => {
+    const retrying = document({ status: "failed", progress: 52 });
+    const mutation = beginDocumentMutation(retrying, "reprocess", 1_000);
+
+    expect(deriveDocumentActivity(retrying, mutation, 1_001)).toMatchObject({
+      phase: "requeueing",
+      canPause: false,
+    });
+    expect(
+      deriveDocumentActivity(document({ status: "pending", progress: 0 }), mutation, 1_200),
+    ).toMatchObject({ phase: "requeueing", canPause: true });
+  });
+
+  it("locks pause for the duration of a pause request and unlocks on the next state", () => {
+    const extracting = document({ status: "extracting", progress: 68 });
+    const pausing = beginDocumentMutation(extracting, "pause", 1_000);
+    const paused = document({ status: "paused", progress: 68, error: null });
+
+    expect(deriveDocumentActivity(extracting, pausing, 1_001)).toMatchObject({
+      phase: "pausing",
+      canPause: false,
+    });
+    expect(deriveDocumentActivity(paused, pausing, 2_000)).toMatchObject({
+      phase: "paused",
+      canPause: false,
+    });
+    expect(deriveDocumentActivity(paused, undefined, 2_000)).toMatchObject({
+      phase: "paused",
+      canPause: false,
+    });
+    expect(deriveDocumentActivity(document({ status: "ready" }), undefined, 2_000)).toMatchObject({
+      canPause: false,
+    });
+  });
+
   it("clears a pause overlay when the job completes or fails before pausing", () => {
     const started = beginDocumentMutation(
       document({ status: "extracting", progress: 80 }),

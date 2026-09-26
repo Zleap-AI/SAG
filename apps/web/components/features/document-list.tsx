@@ -118,7 +118,7 @@ export function DocumentList({
             size="icon"
             className={buttonClass}
             title={t("pause")}
-            disabled={activity.busy}
+            disabled={!activity.canPause}
             onClick={() => void perform(document, "pause")}
           >
             <Pause className="size-4" />
