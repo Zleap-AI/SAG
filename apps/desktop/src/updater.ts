@@ -13,12 +13,13 @@ export interface UpdaterController {
   check(): Promise<{ supported: boolean }>;
   getState(): UpdateState;
   download(version: string): Promise<{ started: boolean }>;
-  install(version: string): { started: boolean };
+  install(version: string): Promise<{ started: boolean }>;
   dispose(): void;
 }
 
 export function createUpdaterController(
   getWindow: () => BrowserWindow | null,
+  lifecycle: { beforeInstall?: () => Promise<boolean>; onInstallError?: () => void } = {},
 ): UpdaterController {
   let delayTimer: NodeJS.Timeout | null = null;
   let intervalTimer: NodeJS.Timeout | null = null;
@@ -26,6 +27,7 @@ export function createUpdaterController(
   let checkPending = false;
   let downloadPending = false;
   let installPending = false;
+  let preparingInstall = false;
   let consentVersion: string | undefined;
   let nativeInstallListeners: ReturnType<typeof nativeUpdater.listeners> = [];
   const clearNativeInstallListeners = () => {
@@ -82,6 +84,10 @@ export function createUpdaterController(
     if (operation === "install") {
       installPending = false;
       clearNativeInstallListeners();
+      // NSIS does not reset this latch when launching the installer fails asynchronously.
+      // Clear it so an explicit retry can launch instead of stopping the runtime for a no-op.
+      if (process.platform === "win32") Reflect.set(autoUpdater, "quitAndInstallCalled", false);
+      if (!preparingInstall) lifecycle.onInstallError?.();
       void showUpdaterError(error);
     }
   };
@@ -164,20 +170,34 @@ export function createUpdaterController(
         downloadPending = false;
       }
     },
-    install: (version) => {
+    install: async (version) => {
       const canInstall = currentState.status === "downloaded"
         || (currentState.status === "error" && currentState.operation === "install");
-      if (!supported || downloadPending || installPending || !canInstall
+      if (!supported || downloadPending || installPending || preparingInstall || !canInstall
         || !("version" in currentState) || version !== currentState.version || version !== consentVersion) {
         return { started: false };
       }
       installPending = true;
       const previousListeners = new Set(nativeUpdater.listeners("update-downloaded"));
       try {
+        preparingInstall = true;
+        const prepared = lifecycle.beforeInstall ? await lifecycle.beforeInstall() : true;
+        preparingInstall = false;
+        // An updater error may arrive while the services are being stopped.
+        // Recover only after that cleanup finishes, and never invoke the installer.
+        if (!installPending) {
+          lifecycle.onInstallError?.();
+          return { started: false };
+        }
+        if (!prepared) {
+          installPending = false;
+          return { started: false };
+        }
         log.info("Applying explicitly requested update via quitAndInstall(false, true)");
         autoUpdater.quitAndInstall(false, true);
         return { started: installPending };
       } catch (error) {
+        preparingInstall = false;
         fail(error, "install");
         return { started: false };
       } finally {

@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import path from "node:path";
 import {
@@ -11,6 +12,8 @@ import { app, utilityProcess, type UtilityProcess } from "electron";
 import log from "electron-log/main";
 
 import { desktopConfig } from "./config";
+import { manageProcess, terminateProcessTree, waitForHttp } from "./managed-process";
+import { RuntimeStartError } from "./runtime-controller";
 import {
   loadOrCreateRuntimeSecret,
   resolveStableWebPort,
@@ -24,11 +27,14 @@ import {
 export interface ManagedRuntime {
   readonly webUrl: string;
   readonly apiUrl: string;
-  stop(): void;
+  readonly failure: Promise<Error>;
+  inspectActivity(): Promise<boolean>;
+  stop(): Promise<void>;
 }
 
 interface StartedProcess {
-  stop(): void;
+  readonly failure: Promise<Error>;
+  stop(): Promise<void>;
 }
 
 async function isPortAvailable(host: string, port: number): Promise<boolean> {
@@ -40,26 +46,6 @@ async function isPortAvailable(host: string, port: number): Promise<boolean> {
       server.close(() => resolve(true));
     });
   });
-}
-
-async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
-  const startedAt = Date.now();
-  let lastError: unknown;
-  while (Date.now() - startedAt < timeoutMs) {
-    try {
-      const response = await fetch(url, { cache: "no-store" });
-      if (response.ok) return;
-      lastError = new Error(`${url} returned ${response.status}`);
-    } catch (error) {
-      lastError = error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  }
-  throw new Error(
-    `Timed out waiting for ${url}: ${
-      lastError instanceof Error ? lastError.message : String(lastError)
-    }`,
-  );
 }
 
 function pipeUtilityLogs(child: UtilityProcess, name: string): void {
@@ -88,11 +74,14 @@ function startNextRuntime(webRoot: string, port: number): StartedProcess {
     serviceName: "SAG Web Runtime",
   });
   pipeUtilityLogs(child, "web");
-  return {
-    stop: () => {
-      child.kill();
+  return manageProcess(child, {
+    name: "Web", hasPid: () => child.pid !== undefined,
+    requestStop: () => { child.kill(); },
+    forceStop: async () => {
+      if (child.pid) await terminateProcessTree(child.pid, false);
     },
-  };
+    graceMs: 5_000,
+  });
 }
 
 function pipeChildLogs(
@@ -115,6 +104,7 @@ function startPythonRuntime(
   resourcesPath: string,
   userDataDir: string,
   webOrigin: string,
+  controlToken: string,
 ): StartedProcess {
   const executable = backendExecutable(resourcesPath);
   if (!existsSync(executable)) {
@@ -130,22 +120,41 @@ function startPythonRuntime(
       SAG_ENVIRONMENT: "prod",
       SAG_DEBUG: "false",
       SAG_SECRET_KEY: secretKey,
+      SAG_DESKTOP_CONTROL_TOKEN: controlToken,
       SAG_CORS_ORIGINS: webOrigin,
       ...desktopApiEnvironment(desktopConfig.apiHost, desktopConfig.apiPort),
       SAG_STORAGE_BOOTSTRAP_POLICY: storageBootstrapPolicy(process.platform),
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    detached: process.platform !== "win32",
   });
   pipeChildLogs(child, "api");
-  return {
-    stop: () => {
-      child.kill();
+  return manageProcess(child, {
+    name: "API", hasPid: () => child.pid !== undefined,
+    requestStop: async () => {
+      await controlRequest(localHttpOrigin(desktopConfig.apiHost, desktopConfig.apiPort), controlToken, "shutdown");
     },
-  };
+    forceStop: async () => {
+      if (child.pid) await terminateProcessTree(child.pid, true);
+    },
+    // An exited API can still leave OCTX workers in its POSIX process group.
+    // Windows workers are tied to the API lifetime by desktop_process.py.
+    afterExit: async () => {
+      if (child.pid && process.platform !== "win32") await terminateProcessTree(child.pid, true);
+    },
+  });
 }
 
-export async function startPackagedRuntime(): Promise<ManagedRuntime> {
+async function controlRequest(apiUrl: string, token: string, action: "activity" | "shutdown"): Promise<{ active?: boolean }> {
+  const response = await fetch(`${apiUrl}/_desktop/${action}`, {
+    method: "POST", headers: { "x-sag-desktop-token": token }, signal: AbortSignal.timeout(2_000),
+  });
+  if (!response.ok) { await response.body?.cancel(); throw new Error(`Desktop ${action} unavailable`); }
+  return await response.json() as { active?: boolean };
+}
+
+export async function startPackagedRuntime(signal: AbortSignal): Promise<ManagedRuntime> {
   const host = desktopConfig.apiHost;
   if (!(await isPortAvailable(host, desktopConfig.apiPort))) {
     throw new Error(
@@ -167,36 +176,57 @@ export async function startPackagedRuntime(): Promise<ManagedRuntime> {
   const apiUrl = localHttpOrigin(host, desktopConfig.apiPort);
   const webRoot = path.join(process.resourcesPath, "web");
 
+  signal.throwIfAborted();
+  const controlToken = randomBytes(32).toString("hex");
   const processes: StartedProcess[] = [];
+  let stopping: Promise<void> | undefined;
+  const stop = (): Promise<void> => stopping ??= (async () => {
+    const results = await Promise.allSettled([...processes].reverse().map((child) => child.stop()));
+    const errors = results.filter((result) => result.status === "rejected").map((result) => result.reason);
+    if (errors.length) throw new AggregateError(errors, "本地服务清理失败，请退出 SAG 后重试");
+  })().catch((error: unknown) => { stopping = undefined; throw error; });
   try {
     processes.push(startNextRuntime(webRoot, webPort));
-    processes.push(startPythonRuntime(process.resourcesPath, userDataDir, webUrl));
-    await Promise.all([
-      waitForHttp(webHealthUrl, desktopConfig.startupTimeoutMs),
-      waitForHttp(
-        `${apiUrl}/api/v1/system/health`,
-        desktopConfig.startupTimeoutMs,
-      ),
-    ]);
+    processes.push(startPythonRuntime(process.resourcesPath, userDataDir, webUrl, controlToken));
+    const failure = Promise.race(processes.map((child) => child.failure));
+    const probing = new AbortController();
+    try {
+      await Promise.race([
+        failure.then((error) => { throw error; }),
+        Promise.all([
+          waitForHttp(webHealthUrl, desktopConfig.startupTimeoutMs, AbortSignal.any([signal, probing.signal])),
+          waitForHttp(
+            `${apiUrl}/api/v1/system/health`,
+            desktopConfig.startupTimeoutMs,
+            AbortSignal.any([signal, probing.signal]),
+          ),
+        ]),
+      ]);
+      signal.throwIfAborted();
+    } finally { probing.abort(); }
+    return {
+      webUrl, apiUrl, failure, stop,
+      inspectActivity: async () => {
+        const result = await controlRequest(apiUrl, controlToken, "activity");
+        if (typeof result.active !== "boolean") throw new Error("Invalid activity response");
+        return result.active;
+      },
+    };
   } catch (error) {
-    for (const processHandle of [...processes].reverse()) processHandle.stop();
+    try { await stop(); } catch (cleanupError) {
+      throw new RuntimeStartError([error, cleanupError], stop);
+    }
     throw error;
   }
-
-  return {
-    webUrl,
-    apiUrl,
-    stop: () => {
-      for (const processHandle of [...processes].reverse()) processHandle.stop();
-    },
-  };
 }
 
-export async function waitForDevelopmentRuntime(webUrl: string): Promise<ManagedRuntime> {
-  await waitForHttp(webUrl, desktopConfig.startupTimeoutMs);
+export async function waitForDevelopmentRuntime(webUrl: string, signal: AbortSignal): Promise<ManagedRuntime> {
+  await waitForHttp(webUrl, desktopConfig.startupTimeoutMs, signal);
   return {
     webUrl,
     apiUrl: localHttpOrigin(desktopConfig.apiHost, desktopConfig.apiPort),
-    stop: () => {},
+    failure: new Promise<Error>(() => {}),
+    inspectActivity: async () => false,
+    stop: async () => {},
   };
 }
