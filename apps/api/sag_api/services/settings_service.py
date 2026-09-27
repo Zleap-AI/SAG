@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -158,6 +159,34 @@ def apply_overrides(settings: Settings, overrides: dict) -> None:
             setattr(settings, key, value)
 
 
+def _env_matches_persisted(field: str, persisted: object) -> bool | None:
+    raw = os.environ.get(f"SAG_{field.upper()}")
+    if raw is None or not raw.strip():
+        return None
+    raw = raw.strip()
+    try:
+        if isinstance(persisted, bool):
+            if raw.lower() not in {"1", "true", "yes", "on", "0", "false", "no", "off"}:
+                return None
+            value: object = raw.lower() in {"1", "true", "yes", "on"}
+        elif isinstance(persisted, int):
+            value = int(raw)
+        elif isinstance(persisted, float):
+            value = float(raw)
+        else:
+            value = raw
+    except ValueError:
+        return None
+    return value == persisted
+
+
+def _warn_persisted_beats_env(overrides: dict) -> None:
+    """Report conflicting first-boot defaults without logging credentials or URLs."""
+    for field in sorted(_FIELDS & overrides.keys()):
+        if _env_matches_persisted(field, overrides[field]) is False:
+            log.warning("%s: env 与持久化 model_config 不一致；以设置页保存的配置为准", field)
+
+
 async def apply_startup_overrides(session_factory: async_sessionmaker) -> None:
     """启动时：把 DB 里的模型配置覆盖到 settings 单例（在构建 LLMClient 之前调用）。"""
     async with session_factory() as session:
@@ -168,6 +197,7 @@ async def apply_startup_overrides(session_factory: async_sessionmaker) -> None:
             # JSON 列未使用 MutableDict，必须整体重新赋值才能可靠持久化。
             row.value = overrides
             await session.commit()
+        _warn_persisted_beats_env(overrides)
         apply_overrides(_settings, overrides)
         preferences = await _load_row(session, _PREFERENCES_KEY)
         preference_values = dict(preferences.value) if preferences and isinstance(preferences.value, dict) else {}

@@ -86,6 +86,15 @@ LAST_STEP="env-check"
 [ -n "$TRIM_APPDEST" ] || die "TRIM_APPDEST is empty; fnpack did not inject the appdest directory"
 [ -n "$TRIM_PKGVAR" ]  || die "TRIM_PKGVAR is empty; fnpack did not inject the package var directory"
 
+# Existing Native knowledge was built with zleap-sag 0.7.1. The package
+# upgrade is a user-visible breaking change and must not even stop the old
+# service until its administrator has accepted reingestion and model cost.
+LAST_STEP="migration-consent"
+if [ -d "$users" ] && [ -n "$(ls -A "$users" 2>/dev/null)" ]; then
+  [ "${SAG_ACCEPT_REINGEST_UPGRADE:-false}" = true ] ||
+    die "reingest upgrade consent is required: existing knowledge must be reingested after upgrading the engine"
+fi
+
 # ---- Delegate identity-secret provisioning to install_callback -----------
 # Since install_init no longer touches $TRIM_PKGVAR (fnpack does not
 # guarantee it exists at that stage), the secret / perm work lives in

@@ -97,7 +97,7 @@ def test_workspace_layout_is_tenant_key_scoped_when_enabled(
     assert paths.root == tmp_path / f"data/users/{KEY_ALICE}"
     assert paths.meta_dir == tmp_path / f"data/users/{KEY_ALICE}/meta"
     assert paths.database_file == tmp_path / f"data/users/{KEY_ALICE}/meta/sag.db"
-    assert paths.engine_dir == tmp_path / f"data/users/{KEY_ALICE}/engine"
+    assert paths.engine_dir == tmp_path / f"data/users/{KEY_ALICE}/engine-v0.13"
     assert paths.uploads_dir == tmp_path / f"data/users/{KEY_ALICE}/uploads"
     assert paths.logs_dir == tmp_path / f"data/users/{KEY_ALICE}/logs"
     assert paths.socket_file == tmp_path / f"tmp/workers/{KEY_ALICE}.sock"
@@ -122,6 +122,19 @@ def test_prepare_creates_private_workspace_directories(tmp_path: Path) -> None:
     ):
         assert directory.is_dir()
         assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+
+def test_new_engine_preparation_preserves_legacy_engine(tmp_path: Path) -> None:
+    paths = _paths(tmp_path / "data", tmp_path / "tmp")
+    legacy = paths.root / "engine" / "legacy.marker"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("0.7.1", encoding="utf-8")
+
+    paths.prepare()
+
+    assert legacy.read_text(encoding="utf-8") == "0.7.1"
+    assert paths.engine_dir != legacy.parent
+    assert paths.engine_dir.is_dir()
 
 
 def test_workspace_uses_path_only_descriptors_for_intermediate_directories() -> None:

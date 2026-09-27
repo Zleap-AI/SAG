@@ -20,6 +20,7 @@ import {
 import { useApp } from "@/components/features/app-shell";
 import { DocumentAddPanel } from "@/components/features/document-add-panel";
 import { DocumentList } from "@/components/features/document-list";
+import { FnOSKnowledgeUpgradePanel } from "@/components/features/fnos-knowledge-upgrade-panel";
 import { EmptyState } from "@/components/features/empty-state";
 import { RetrievalTestDialog } from "@/components/features/retrieval-test-dialog";
 import { ResponsiveDocumentAdd } from "@/components/features/responsive-document-add";
@@ -252,6 +253,9 @@ export default function SourceDetailPage() {
               </ToggleGroupItem>
             </ToggleGroup>
           </div>
+          {capabilities?.auth_mode === "fnos" && (
+            <FnOSKnowledgeUpgradePanel sourceId={id} onChanged={() => void refresh()} />
+          )}
           {documents === null || !source ? (
             <div className="flex flex-col gap-2">
               {Array.from({ length: 2 }).map((_, i) => (

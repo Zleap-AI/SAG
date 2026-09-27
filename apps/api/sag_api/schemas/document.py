@@ -32,6 +32,7 @@ class DocumentOut(BaseModel):
     content_type: str
     size_bytes: int
     status: DocumentStatus
+    knowledge_state: str | None = None
     chunk_count: int
     event_count: int
     progress: int

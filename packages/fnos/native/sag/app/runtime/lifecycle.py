@@ -11,7 +11,9 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-_UID = re.compile(r"[1-9][0-9]*\Z")
+# workspace.tenant_key also supports the opt-in UID + sanitized username +
+# eight-character digest layout. Both layouts must remain restorable.
+_TENANT_KEY = re.compile(r"[1-9][0-9]*(?:-[a-zA-Z0-9_-]{0,16}-[0-9a-f]{8})?\Z")
 
 
 def valid_secret(value: str) -> bool:
@@ -30,7 +32,7 @@ def _users_root(root: Path) -> Path:
 
 def _validate_tree(root: Path) -> None:
     for user in root.iterdir():
-        if not _UID.fullmatch(user.name) or user.is_symlink() or not user.is_dir():
+        if not _TENANT_KEY.fullmatch(user.name) or user.is_symlink() or not user.is_dir():
             raise ValueError("users root contains an invalid user directory")
         for path in user.rglob("*"):
             if path.is_symlink():
@@ -65,14 +67,14 @@ def validate(archive: Path) -> None:
                 raise ValueError("archive contains an unsafe path")
             if member.issym() or member.islnk() or member.isdev():
                 raise ValueError("archive contains unsupported links or devices")
-            if len(name.parts) > 1 and not _UID.fullmatch(name.parts[1]):
+            if len(name.parts) > 1 and not _TENANT_KEY.fullmatch(name.parts[1]):
                 raise ValueError("archive contains an invalid user directory")
         # NOTE: extractall(filter="data") was added in Python 3.12. upgrade_init
         # falls back to the system python3, which on many fnOS images is
         # 3.10/3.11 and rejects that kwarg with TypeError. The membership loop
         # above already enforces the same safety envelope (no absolute paths,
         # no ..-escapes, no symlinks/hardlinks/devices, first path component
-        # must be "users", UID directories match _UID) — so we can omit the
+        # must be "users", tenant directories match _TENANT_KEY) — so we can omit the
         # filter and stay compatible with the older interpreters fnOS ships.
         source.extractall(target)
         users = target / "users"

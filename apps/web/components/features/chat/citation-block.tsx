@@ -121,6 +121,7 @@ function CitationCard({
             <h4 className="min-w-0 flex-1 line-clamp-2 text-xs font-semibold leading-5 text-foreground">
               {copy.title}
             </h4>
+            {citation.stale && <span className="text-[10px] text-amber-700">{t("stale")}</span>}
             {url ? (
               <a
                 href={url}
@@ -199,6 +200,7 @@ export const CitationBlock = React.memo(function CitationBlock({
   if (!referenceCount) return null;
 
   const openInternal = (citation: Citation) => {
+    if (citation.stale) return;
     if (!citation.chunk_id || !citation.source_id) return;
     if (onCitationClick) {
       onCitationClick(citation);
@@ -269,7 +271,7 @@ export const CitationBlock = React.memo(function CitationBlock({
               </div>
               <div className="divide-y divide-border/50">
                 {internal.map((citation, index) => {
-                  const traceable = Boolean(citation.chunk_id && citation.source_id);
+                  const traceable = Boolean(!citation.stale && citation.chunk_id && citation.source_id);
                   return (
                     <CitationCard
                       key={`internal:${citation.n}:${citation.source_id ?? ""}:${citation.chunk_id ?? ""}`}

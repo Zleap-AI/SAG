@@ -270,7 +270,11 @@ class SearchContextTool(Tool):
         for c in citations:
             c["n"] = c["n"] + offset
         return ToolResult(
-            content=_format_sections(
+            content=(
+                "（部分知识尚未重新入库，当前结果可能不完整；请在知识库页面处理。）\n"
+                if outcome.stats.get("knowledge_pending")
+                else ""
+            ) + _format_sections(
                 sections,
                 offset,
                 list(graph.events) if graph is not None else None,
@@ -284,6 +288,7 @@ class SearchContextTool(Tool):
                 "candidate_count": int(outcome.stats.get("candidates") or len(sections)),
                 "event_count": len(graph.events) if graph is not None else 0,
                 "event_candidates": len(event_scores),
+                "knowledge_pending": int(outcome.stats.get("knowledge_pending") or 0),
                 "_graph": graph,
             },
         )

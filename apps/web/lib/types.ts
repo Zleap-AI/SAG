@@ -55,6 +55,7 @@ export interface Connector {
 }
 
 export type DocumentStatus =
+  | "stale"
   | "pending"
   | "loading"
   | "extracting"
@@ -72,6 +73,7 @@ export interface Doc {
   content_type: string;
   size_bytes: number;
   status: DocumentStatus;
+  knowledge_state?: "pending" | "needs_file" | "queued" | "running" | "ready" | "failed" | null;
   chunk_count: number;
   event_count: number;
   progress: number;
@@ -91,6 +93,13 @@ export interface Doc {
   original_file_available?: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface FnOSKnowledgeUpgradeStatus {
+  required: boolean;
+  total: number;
+  states: Record<"pending" | "needs_file" | "queued" | "running" | "ready" | "failed", number>;
+  missing: Array<{ source_id: string; document_id: string; filename: string }>;
 }
 
 export type FnOSNasMode = "automatic" | "legacy_manual" | "unavailable";
@@ -209,6 +218,8 @@ export interface CitationEventRef {
 
 export interface Citation {
   n: number;
+  /** Previous engine chunk IDs cannot be opened after a Native knowledge rebuild. */
+  stale?: boolean;
   /** Missing on legacy messages; legacy citations are internal knowledge references. */
   kind?: "internal" | "external";
   chunk_id: string | null;

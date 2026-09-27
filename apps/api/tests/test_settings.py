@@ -4,10 +4,27 @@
 避免跨测试泄漏（端点会就地覆盖进程级单例）。连接测试只验证「未配置」分支（无网络）。
 """
 
+import logging
+
 import httpx
 import pytest
 
 from sag_api.core.config import Settings, settings
+
+
+def test_startup_reports_persisted_model_conflicts_without_values(monkeypatch, caplog):
+    from sag_api.services import settings_service
+
+    monkeypatch.setenv("SAG_LLM_TIMEOUT_MS", "180000")
+    monkeypatch.setenv("SAG_LLM_API_KEY", "env-secret")
+    with caplog.at_level(logging.WARNING, logger="sag.settings"):
+        settings_service._warn_persisted_beats_env(
+            {"llm_timeout_ms": 60_000, "llm_api_key": "stored-secret"}
+        )
+    assert "llm_timeout_ms" in caplog.text
+    assert "llm_api_key" in caplog.text
+    for value in ("180000", "60000", "env-secret", "stored-secret"):
+        assert value not in caplog.text
 
 _RESTORE = (
     "llm_provider",

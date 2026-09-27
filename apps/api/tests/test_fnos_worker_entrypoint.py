@@ -75,7 +75,7 @@ def test_worker_sets_uid_scoped_settings_before_importing_application(
     )
 
     assert captured_environment["SAG_DATABASE_URL"] == f"sqlite+aiosqlite:////{tmp_path}/data/users/1000/meta/sag.db"
-    assert captured_environment["SAG_DATA_DIR"] == str(tmp_path / "data/users/1000/engine")
+    assert captured_environment["SAG_DATA_DIR"] == str(tmp_path / "data/users/1000/engine-v0.13")
     assert captured_environment["SAG_UPLOAD_DIR"] == str(tmp_path / "data/users/1000/uploads")
     assert captured_environment["SAG_AUTH_MODE"] == "fnos"
     assert captured_environment["SAG_FNOS_UID"] == "1000"
@@ -140,7 +140,7 @@ def test_worker_uses_tenant_key_paths_when_isolation_enabled(
         captured_environment["SAG_DATABASE_URL"]
         == f"sqlite+aiosqlite:////{tmp_path}/data/users/{KEY_ADA}/meta/sag.db"
     )
-    assert captured_environment["SAG_DATA_DIR"] == str(tmp_path / f"data/users/{KEY_ADA}/engine")
+    assert captured_environment["SAG_DATA_DIR"] == str(tmp_path / f"data/users/{KEY_ADA}/engine-v0.13")
     assert captured_environment["SAG_UPLOAD_DIR"] == str(tmp_path / f"data/users/{KEY_ADA}/uploads")
     assert captured_environment["SAG_FNOS_USERNAME"] == "Ada"
     assert captured["uds"] == str(tmp_path / f"tmp/workers/{KEY_ADA}.sock")
@@ -208,7 +208,7 @@ def test_worker_normalizes_its_username_before_deriving_the_tenant_key(
         captured_environment["SAG_DATABASE_URL"]
         == f"sqlite+aiosqlite:////{tmp_path}/data/users/{KEY_EMPTY}/meta/sag.db"
     )
-    assert captured_environment["SAG_DATA_DIR"] == str(tmp_path / f"data/users/{KEY_EMPTY}/engine")
+    assert captured_environment["SAG_DATA_DIR"] == str(tmp_path / f"data/users/{KEY_EMPTY}/engine-v0.13")
     assert captured_environment["SAG_UPLOAD_DIR"] == str(tmp_path / f"data/users/{KEY_EMPTY}/uploads")
     assert captured["uds"] == str(tmp_path / f"tmp/workers/{KEY_EMPTY}.sock")
 

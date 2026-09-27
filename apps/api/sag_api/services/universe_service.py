@@ -255,6 +255,10 @@ async def rebuild_universe_overview(
         semaphore = asyncio.Semaphore(max(1, min(4, settings.job_concurrency * 2)))
 
         async def load_stats(source: Source) -> tuple[str, Any]:
+            # Engine 0.13 rejects identifiers longer than 36 characters. Keep
+            # an overview available even for a legacy/unindexed source row.
+            if len(source.sag_source_config_id) > 36:
+                return source.id, {"event_count": 0, "entity_count": 0, "relation_count": 0}
             async with semaphore:
                 stats = await engine_manager.universe_overview_stats(
                     source.sag_source_config_id,

@@ -17,9 +17,11 @@ async def test_entity_read_path():
     transport = httpx.ASGITransport(app=app)
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
-            tok = (
-                await c.post("/api/v1/auth/register", json={"email": "book@x.com", "password": "password123"})
-            ).json()["access_token"]
+            _reg = await c.post(
+                "/api/v1/auth/register", json={"email": "book@x.com", "password": "password123"}
+            )
+            assert _reg.status_code == 201, _reg.text
+            tok = _reg.json()["access_token"]
             H = {"Authorization": f"Bearer {tok}"}
 
             src = (await c.post("/api/v1/sources", headers=H, json={"name": "三国演义"})).json()
@@ -50,26 +52,25 @@ async def test_entity_read_path():
                 await s.commit()
 
             # 注入事件—实体图谱（模拟 extract 产物）
-            from zleap.sag.db import get_session_factory
             from zleap.sag.db.models import (
                 Article,
                 ArticleParseStatus,
+                DataSource,
                 Entity,
                 EntityType,
                 EventEntity,
                 SourceChunk,
-                SourceConfig,
                 SourceEvent,
             )
 
-            sf = get_session_factory()
+            sf = await app.state.engine_manager.get_sag_session_factory(scid)
             async with sf() as s:
-                await s.merge(SourceConfig(id=scid, name="三国演义"))
+                await s.merge(DataSource(id=scid, name="三国演义"))
                 s.add(
                     Article(
                         id="d1",
-                        source_config_id=scid,
-                        source_id="d1",
+                        data_source_id=scid,
+                        document_id="d1",
                         title="三国演义",
                         content="# 三国演义\n\n关羽过五关斩六将。\n",
                         status="COMPLETED",
@@ -81,7 +82,7 @@ async def test_entity_read_path():
                 await s.flush()
                 ent = Entity(
                     id=uuid.uuid4().hex,
-                    source_config_id=scid,
+                    data_source_id=scid,
                     entity_type_id=et.id,
                     type="person",
                     name="关羽",
@@ -92,7 +93,7 @@ async def test_entity_read_path():
                 await s.flush()
                 ev = SourceEvent(
                     id=uuid.uuid4().hex,
-                    source_config_id=scid,
+                    data_source_id=scid,
                     source_type="doc",
                     source_id="d1",
                     title="过五关斩六将",
@@ -105,7 +106,7 @@ async def test_entity_read_path():
                 event_id = ev.id
                 hidden_event = SourceEvent(
                     id=uuid.uuid4().hex,
-                    source_config_id=scid,
+                    data_source_id=scid,
                     source_type="doc",
                     source_id="d1",
                     title="桃园结义",
@@ -122,7 +123,7 @@ async def test_entity_read_path():
                 s.add(
                     SourceChunk(
                         id="chunk-1",
-                        source_config_id=scid,
+                        data_source_id=scid,
                         source_type="ARTICLE",
                         source_id="d1",
                         article_id="d1",
@@ -133,7 +134,7 @@ async def test_entity_read_path():
                 s.add(
                     SourceChunk(
                         id="chunk-2",
-                        source_config_id=scid,
+                        data_source_id=scid,
                         source_type="ARTICLE",
                         source_id="d1",
                         article_id="d1",

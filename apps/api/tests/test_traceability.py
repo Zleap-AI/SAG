@@ -32,18 +32,17 @@ async def test_chunk_endpoint_and_citation_refs():
 
             # 注入一个分块（模拟 ingest 产物）
             await app.state.engine_manager.provision(scid)
-            from zleap.sag.db import get_session_factory
-            from zleap.sag.db.models import SourceChunk, SourceConfig
+            from zleap.sag.db.models import DataSource, SourceChunk
 
             chunk_id = uuid.uuid4().hex
             full_text = "导出支持 Markdown / PDF / JSON。" * 30  # 远超引用预览上限
-            sf = get_session_factory()
+            sf = await app.state.engine_manager.get_sag_session_factory(scid)
             async with sf() as s:
-                await s.merge(SourceConfig(id=scid, name="手册"))
+                await s.merge(DataSource(id=scid, name="手册"))
                 s.add(
                     SourceChunk(
                         id=chunk_id,
-                        source_config_id=scid,
+                        data_source_id=scid,
                         source_type="doc",
                         source_id="d1",
                         heading="导出与备份",

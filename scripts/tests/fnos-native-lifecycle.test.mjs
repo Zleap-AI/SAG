@@ -229,6 +229,31 @@ test("upgrade_callback stops a prior service before the upgraded package is star
   assert.deepEqual((await readFile(trace, "utf8")).trim().split("\n"), ["main:stop", "install_callback"]);
 });
 
+test("upgrade_callback also refuses existing Native users without migration consent", async (t) => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "sag-native-upgrade-callback-"));
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const commandDir = path.join(fixture, "cmd");
+  const pkgvar = path.join(fixture, "pkgvar");
+  const trace = path.join(fixture, "trace");
+  const logFile = path.join(fixture, "upgrade.log");
+  await mkdir(commandDir);
+  await mkdir(path.join(pkgvar, "users", "1000"), { recursive: true });
+  await writeFile(path.join(pkgvar, "users", "1000", "marker"), "legacy");
+  await writeFile(logFile, "");
+  await cp(path.join(cmd, "upgrade_callback"), path.join(commandDir, "upgrade_callback"));
+  await writeFile(path.join(commandDir, "main"), "#!/bin/sh\nprintf 'main:%s\\n' \"$1\" >> \"$TRACE\"\n");
+  await writeFile(path.join(commandDir, "install_callback"), "#!/bin/sh\nprintf 'install_callback\\n' >> \"$TRACE\"\n");
+  await chmod(path.join(commandDir, "main"), 0o755);
+  await chmod(path.join(commandDir, "install_callback"), 0o755);
+  const result = spawnSync("/bin/sh", [path.join(commandDir, "upgrade_callback")], {
+    encoding: "utf8",
+    env: { ...process.env, TRIM_PKGVAR: pkgvar, TRIM_TEMP_LOGFILE: logFile, TRACE: trace },
+  });
+  assert.notEqual(result.status, 0);
+  assert.equal(existsSync(trace), false);
+  assert.match(await readFile(logFile, "utf8"), /consent|reingest/i);
+});
+
 test("upgrade_callback under strict /bin/sh (dash on fnOS)", () => {
   assert.equal(spawnSync("/bin/sh", ["-n", path.join(cmd, "upgrade_callback")]).status, 0);
 });
@@ -441,6 +466,20 @@ test("upgrade_init redirects TRIM_TEMP_LOGFILE while probing main status", async
   assert.match(source, /TRIM_TEMP_LOGFILE=\/dev\/null[^\n]*"\$main" status/);
 });
 
+test("upgrade_init requires explicit engine migration consent before touching installed users", async (t) => {
+  const { cmdDir, pkgvar, logFile, env } = await stageUpgradeFixture(t);
+  await writeStubInstallCallback(cmdDir);
+  await writeStubMain(cmdDir, { statusExit: 0 });
+  const retained = path.join(pkgvar, "users", "1000", "meta", "marker");
+  await mkdir(path.dirname(retained), { recursive: true });
+  await writeFile(retained, "legacy");
+
+  const result = spawnSync("bash", [path.join(cmdDir, "upgrade_init")], { encoding: "utf8", env });
+  assert.notEqual(result.status, 0);
+  assert.match(await readFile(logFile, "utf8"), /reingest|consent/i);
+  assert.equal(await readFile(retained, "utf8"), "legacy");
+});
+
 test("upgrade_init tolerates a missing users directory (first install)", async (t) => {
   const { cmdDir, logFile, env } = await stageUpgradeFixture(t);
   await writeStubInstallCallback(cmdDir);
@@ -489,7 +528,9 @@ test("upgrade_init tolerates a TRIM_APPDEST without lifecycle.py yet", async (t)
   await writeStubMain(cmdDir, { statusExit: 3 });
   await mkdir(path.join(pkgvar, "users", "user-x"), { recursive: true });
 
-  const result = spawnSync("bash", [path.join(cmdDir, "upgrade_init")], { encoding: "utf8", env });
+  const result = spawnSync("bash", [path.join(cmdDir, "upgrade_init")], {
+    encoding: "utf8", env: { ...env, SAG_ACCEPT_REINGEST_UPGRADE: "true" },
+  });
   assert.equal(result.status, 0, `stderr=${result.stderr} log=${await readFile(logFile, "utf8")}`);
   assert.match(await readFile(logFile, "utf8"), /lifecycle\.py not present/i);
 });

@@ -592,6 +592,11 @@ export function SearchPanel({
               </div>
             </div>
           </div>
+          {Number(search.result.stats.knowledge_pending || 0) > 0 && (
+            <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-foreground">
+              {t("knowledgePendingDescription")}
+            </div>
+          )}
           {(search.summaryStreaming || search.result.summary) && (
             <SearchSummaryCard
               summary={search.result.summary}

@@ -1,6 +1,8 @@
-"""由 sag 配置装配 zleap-sag 的 `EngineConfig`。
+"""由 sag 配置装配 zleap-sag 0.13.0 的 `EngineConfig`。
 
 支持信源级覆盖（`overrides`）——目前支持 `language`，未来可扩展 `entity_types` 等。
+0.13.0 要求 `storage_mode`，向量库使用显式 VectorConfig 家族
+(LanceDB / Elasticsearch / PgVector / OceanBase),不再使用 vector_provider 字符串。
 """
 
 from __future__ import annotations
@@ -8,13 +10,82 @@ from __future__ import annotations
 from typing import Any
 
 from zleap.sag import EngineConfig
-from zleap.sag.config import EmbeddingConfig, LLMConfig, RelationalConfig
+from zleap.sag.config import (
+    ElasticsearchVectorConfig,
+    EmbeddingConfig,
+    LLMConfig,
+    OceanBaseConnectionConfig,
+    OceanBaseVectorConfig,
+    PgVectorConfig,
+    PostgresConnectionConfig,
+    RelationalConfig,
+    RuntimeLimits,
+)
+from zleap.sag.core.ai.structured import StructuredOutputMode
 
 from sag_api.core.config import Settings
 
 # LLM 未配置时的占位符：允许 EngineConfig 构造 / start() 建 schema（离线路径），
 # 真正的 ingest / extract / search 会在运行时因缺少凭证而报错（服务层已前置守卫）。
 _PLACEHOLDER = "not-configured"
+
+# SAG 的向量后端取值 → 0.13.0 的 VectorConfig 构造。lancedb 由 EngineConfig 从
+# data_dir 自动派生（vector=None），其余需显式连接配置。
+_VECTOR_PROVIDERS = frozenset({"lancedb", "es", "pgvector", "oceanbase"})
+
+
+def _build_vector(settings: Settings) -> Any:
+    provider = settings.sag_vector_provider
+    if provider == "lancedb":
+        return None  # EngineConfig 派生 data_dir/lancedb
+    if provider == "es":
+        hosts = [host.strip() for host in settings.sag_es_hosts.split(",") if host.strip()]
+        if not hosts:
+            raise ValueError("ES 向量后端需要显式设置 SAG_ES_HOSTS")
+        return ElasticsearchVectorConfig(hosts=hosts)
+    if provider == "pgvector":
+        return PgVectorConfig(
+            connection=PostgresConnectionConfig(
+                host=settings.sag_pg_host,
+                port=settings.sag_pg_port,
+                user=settings.sag_pg_user,
+                password=settings.sag_pg_password,
+                database=settings.sag_pg_database,
+            )
+        )
+    if provider == "oceanbase":
+        return OceanBaseVectorConfig(
+            connection=OceanBaseConnectionConfig(
+                host=settings.sag_pg_host,
+                port=2881,
+                user=settings.sag_pg_user,
+                password=settings.sag_pg_password,
+                database=settings.sag_pg_database,
+            )
+        )
+    raise ValueError(f"不支持的向量后端: {provider}")
+
+
+def _build_relational(settings: Settings) -> RelationalConfig | None:
+    provider = settings.sag_relational_provider
+    if not provider or provider == "sqlite":
+        return None  # EngineConfig 从 data_dir 派生 SQLite
+    return RelationalConfig(
+        provider=provider,  # postgres / mysql / oceanbase
+        host=settings.sag_pg_host,
+        port=settings.sag_pg_port,
+        user=settings.sag_pg_user,
+        password=settings.sag_pg_password,
+        database=settings.sag_pg_database,
+    )
+
+
+def _structured_output_mode(settings: Settings) -> StructuredOutputMode:
+    """映射显式模式；auto 由 SAG LiteLLM seam 首选 schema 并按能力降级。"""
+    mode = settings.llm_structured_output_mode
+    if mode == "auto":
+        return StructuredOutputMode.JSON_SCHEMA
+    return StructuredOutputMode(mode)
 
 
 def build_engine_config(settings: Settings, *, overrides: dict[str, Any] | None = None) -> EngineConfig:
@@ -29,31 +100,30 @@ def build_engine_config(settings: Settings, *, overrides: dict[str, Any] | None 
         max_tokens=settings.llm_max_tokens,
         timeout=max(1, (settings.llm_timeout_ms + 999) // 1000),
         max_retries=settings.llm_max_retries,
+        structured_output_mode=_structured_output_mode(settings),
     )
     embedding = EmbeddingConfig(
         model=settings.embedding_model,
         base_url=settings.effective_embedding_base_url,
         api_key=settings.effective_embedding_api_key or _PLACEHOLDER,
-        dimensions=settings.embedding_dimensions,
+        # zleap-sag 0.13.0 起维度拆成两项：schema 维度决定向量空间与返回向量校验，
+        # 请求维度是发往 OpenAI-compatible 接口的可选参数（None = 不发送）。
+        # 旧 SAG_EMBEDDING_DIMENSIONS 同时喂给两者，见 Settings 的 effective_* 属性。
+        schema_dimensions=settings.effective_embedding_schema_dimensions,
+        request_dimensions=settings.effective_embedding_request_dimensions,
+        timeout=settings.embedding_timeout,
     )
 
-    kwargs: dict[str, Any] = {
-        "llm": llm,
-        "embedding": embedding,
-        "data_dir": settings.data_dir,
-        "language": overrides.get("language", settings.sag_language),
-        "vector_provider": settings.sag_vector_provider,
-    }
-
-    # 生产：切到关系型后端（如 Postgres），与 pgvector 单库统一
-    if settings.sag_relational_provider:
-        kwargs["relational"] = RelationalConfig(
-            provider=settings.sag_relational_provider,
-            host=settings.sag_pg_host,
-            port=settings.sag_pg_port,
-            user=settings.sag_pg_user,
-            password=settings.sag_pg_password,
-            database=settings.sag_pg_database,
-        )
-
-    return EngineConfig(**kwargs)
+    return EngineConfig(
+        storage_mode="normal",
+        llm=llm,
+        embedding=embedding,
+        relational=_build_relational(settings),
+        vector=_build_vector(settings),
+        data_dir=str(overrides.get("data_dir") or settings.data_dir),
+        language=overrides.get("language", settings.sag_language),
+        runtime_limits=RuntimeLimits(
+            embedding_concurrency=settings.embedding_concurrency,
+            acquire_timeout_seconds=float(max(30, settings.embedding_timeout)),
+        ),
+    )

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, SecretStr, field_validator
@@ -24,6 +25,7 @@ from sag_api.core.model_providers import ModelProviderId, get_model_provider
 from sag_api.enums import SearchStrategy, normalize_search_strategy
 
 _DEFAULT_LLM_PROVIDER = get_model_provider("openai")
+_DEFAULT_EMBEDDING_DIMENSIONS = 1024
 
 
 class Settings(BaseSettings):
@@ -99,6 +101,7 @@ class Settings(BaseSettings):
     # ── zleap-sag 后端选择 ─────────────────────────────────────────────
     # None → 零基础设施（LanceDB + 内置 SQLite，落在 data_dir）
     sag_vector_provider: Literal["lancedb", "es", "pgvector", "oceanbase"] = "lancedb"
+    sag_es_hosts: str = ""
     sag_relational_provider: Literal["sqlite", "postgres", "mysql", "oceanbase"] | None = None
     sag_language: Literal["zh", "en"] = "zh"
 
@@ -120,6 +123,7 @@ class Settings(BaseSettings):
     llm_context_window: int = _DEFAULT_LLM_PROVIDER.default_context_window
     llm_timeout_ms: int = Field(default=60_000, ge=1_000, le=600_000)
     llm_max_retries: int = Field(default=2, ge=0, le=10)
+    llm_structured_output_mode: Literal["auto", "json_schema", "json_object", "prompt_only"] = "auto"
     # 透传给 chat/completions 的额外请求体（JSON），如 {"enable_thinking": false}；
     # 未配置时对 qwen 系模型通过 LiteLLM reasoning_effort=none 统一关闭思考。
     llm_extra_body: dict | None = None
@@ -129,6 +133,10 @@ class Settings(BaseSettings):
     embedding_base_url: str | None = "https://api.302ai.cn/v1"
     embedding_api_key: str | None = None
     embedding_dimensions: int | None = None
+    embedding_schema_dimensions: int | None = None
+    embedding_request_dimensions: int | None = None
+    embedding_concurrency: int = Field(default=8, ge=1, le=64)
+    embedding_timeout: int = Field(default=60, ge=5, le=600)
 
     # ── 文档解析（进入 zleap-sag 前统一转为 Markdown）─────────────────
     # auto：PDF 优先 MinerU，未配置或 MinerU 失败时回退本地 MarkItDown。
@@ -150,9 +158,11 @@ class Settings(BaseSettings):
     # 全库检索先选有界信源候选；@ 显式范围同样受此硬上限保护。
     search_source_candidate_limit: int = Field(default=16, ge=1, le=256)
     search_source_concurrency: int = Field(default=4, ge=1, le=32)
+    search_chinese_segmentation_enabled: bool = True
     # 精确模式（multi）含查询侧 LLM 往返；超时/失败/空结果自动回退快速模式（vector）。
     search_source_timeout: float = 12.0
     search_fallback_vector: bool = True
+    eval_llm_judge_enabled: bool = True
 
     # ── 知识宇宙 ──────────────────────────────────────────────────────────
     # 服务端统一下发景深门与场景预算，前端不再散落硬编码阈值。
@@ -194,6 +204,14 @@ class Settings(BaseSettings):
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
 
+    @field_validator(
+        "embedding_dimensions", "embedding_schema_dimensions", "embedding_request_dimensions",
+        mode="before",
+    )
+    @classmethod
+    def _blank_embedding_dimensions_as_none(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
+
     @field_validator("search_strategy", mode="before")
     @classmethod
     def _normalize_legacy_search_strategy(cls, value: object) -> object:
@@ -234,6 +252,20 @@ class Settings(BaseSettings):
     def effective_embedding_base_url(self) -> str | None:
         provider = get_model_provider(self.llm_provider)
         return self.embedding_base_url or (self.llm_base_url if provider.can_reuse_embedding_credentials else None)
+
+    @property
+    def effective_embedding_schema_dimensions(self) -> int:
+        return self.embedding_schema_dimensions or self.embedding_dimensions or _DEFAULT_EMBEDDING_DIMENSIONS
+
+    @property
+    def effective_embedding_request_dimensions(self) -> int | None:
+        for value in (self.embedding_request_dimensions, self.embedding_dimensions):
+            if value is not None:
+                return value
+        host = (urlsplit(self.effective_embedding_base_url or "").hostname or "").lower()
+        if host == "api.siliconflow.cn" and self.embedding_model.strip().lower() == "baai/bge-m3":
+            return None
+        return self.effective_embedding_schema_dimensions
 
     @property
     def mineru_configured(self) -> bool:

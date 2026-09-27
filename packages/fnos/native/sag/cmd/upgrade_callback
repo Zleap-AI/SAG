@@ -10,6 +10,20 @@
 set -u
 
 command_dir="$(dirname "$0")"
+users="${TRIM_PKGVAR:-}/users"
+
+# fnpack may run the old payload's upgrade_init before swapping files. Check
+# consent again here, while no new process or metadata migration has started.
+if [ -n "${TRIM_PKGVAR:-}" ] && [ -d "$users" ] && [ -n "$(ls -A "$users" 2>/dev/null)" ]; then
+  if [ "${SAG_ACCEPT_REINGEST_UPGRADE:-false}" != true ]; then
+    message='upgrade_callback: reingest upgrade consent is required for existing Native knowledge'
+    if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+      printf '%s\n' "$message" >>"$TRIM_TEMP_LOGFILE" 2>/dev/null || :
+    fi
+    printf '%s\n' "$message" >&2
+    exit 1
+  fi
+fi
 
 if ! "$command_dir/main" stop; then
   log_file="${TRIM_TEMP_LOGFILE:-}"

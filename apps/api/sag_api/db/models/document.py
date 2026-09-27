@@ -28,6 +28,7 @@ class Document(IDMixin, TimestampMixin, Base):
     status: Mapped[DocumentStatus] = mapped_column(
         SAEnum(DocumentStatus, native_enum=False, length=16), default=DocumentStatus.PENDING
     )
+    knowledge_state: Mapped[str | None] = mapped_column(String(24), nullable=True)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     event_count: Mapped[int] = mapped_column(Integer, default=0)
     progress: Mapped[int] = mapped_column(Integer, default=0)

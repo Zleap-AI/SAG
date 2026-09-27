@@ -19,6 +19,18 @@ async def _register(client: httpx.AsyncClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
+def test_ranked_candidates_are_opt_in_on_native_search_requests() -> None:
+    from sag_api.schemas.search import EvalCompareRequest, GlobalSearchRequest, SearchRequest
+
+    assert SearchRequest(query="q").include_ranked_candidates is False
+    assert GlobalSearchRequest(query="q").include_ranked_candidates is False
+    assert EvalCompareRequest(query="q", strategies=["vector", "multi"]).include_ranked_candidates is False
+    assert GlobalSearchRequest(
+        query="q",
+        include_ranked_candidates=True,
+    ).include_ranked_candidates is True
+
+
 @pytest.mark.asyncio
 async def test_global_search_forwards_validated_strategy():
     from sag_api.core.deps import get_engine_manager
@@ -36,6 +48,7 @@ async def test_global_search_forwards_validated_strategy():
         strategy: str | None = None
         top_k: int | None = None
         event_top_k: int | None = None
+        include_ranked_candidates = False
 
         def __init__(self):
             self.started: set[str] = set()
@@ -50,10 +63,19 @@ async def test_global_search_forwards_validated_strategy():
         async def provision(self, *_args):
             return None
 
-        async def search_many(self, targets, query, *, strategy=None, top_k=None):
+        async def search_many(
+            self,
+            targets,
+            query,
+            *,
+            strategy=None,
+            top_k=None,
+            include_ranked_candidates=False,
+        ):
             await self._meet_parallel_gate("chunks")
             self.strategy = strategy
             self.top_k = top_k
+            self.include_ranked_candidates = include_ranked_candidates
             source_config_id = targets[0][0]
             return SearchOutcome(
                 query=query,
@@ -66,7 +88,19 @@ async def test_global_search_forwards_validated_strategy():
                         source_config_id=source_config_id,
                     )
                 ],
-                stats={"strategy": strategy},
+                stats={
+                    "strategy": strategy,
+                    "ranked_candidates": [
+                        {
+                            "rank": 1,
+                            "chunk_id": "candidate-1",
+                            "title": "候选标题",
+                            "score": 0.91,
+                            "recall_channels": ["event_vector"],
+                            "source_config_id": source_config_id,
+                        }
+                    ],
+                },
             )
 
         async def search_event_scores(self, query, sources_by_config, *, limit=None):
@@ -129,6 +163,7 @@ async def test_global_search_forwards_validated_strategy():
                         "source_ids": [source.json()["id"]],
                         "strategy": "multi",
                         "top_k": 7,
+                        "include_ranked_candidates": True,
                     },
                 )
                 assert response.status_code == 200, response.text
@@ -136,6 +171,7 @@ async def test_global_search_forwards_validated_strategy():
                 # 对外仍返回 7 条；内部有界扩大候选池，之后统一重排与过滤。
                 assert engine.top_k == 21
                 assert engine.event_top_k == 7
+                assert engine.include_ranked_candidates is True
                 assert engine.started == {"chunks", "events"}
                 assert response.json()["stats"]["strategy"] == "multi"
                 result = response.json()
@@ -144,6 +180,7 @@ async def test_global_search_forwards_validated_strategy():
                 assert result["stats"]["event_candidates"] == 1
                 assert result["stats"]["event_hits"] == 1
                 assert result["stats"]["event_recall"] == "vector+chunk"
+                assert result["stats"]["ranked_candidates"][0]["chunk_id"] == "candidate-1"
                 assert "[1]" in result["summary"]
                 assert result["events"][0]["title"] == "外卖骑手收入变化"
                 assert result["events"][0]["chunk_id"] == "event-chunk-not-in-section-results"
@@ -205,57 +242,63 @@ async def test_search_many_caps_candidates_and_concurrency(monkeypatch):
         "sources_requested": 5,
         "source_limit_applied": True,
         "candidates": 0,
+        "requested_strategy": "multi",
+        "effective_strategy": "multi",
+        "fallback_used": False,
     }
 
 
 @pytest.mark.asyncio
 async def test_vector_search_many_uses_one_cross_source_embedding(monkeypatch):
-    from zleap.sag.core.storage import client as storage_client
-    from zleap.sag.core.storage.repositories.source_chunk_repository import (
-        SourceChunkRepository,
-    )
-    from zleap.sag.modules.load.processor import DocumentProcessor
+    from types import SimpleNamespace
 
     from sag_api.core.config import settings
     from sag_api.sag.engine_manager import EngineManager
 
     manager = EngineManager(settings)
     embedding_queries: list[str] = []
-    repository_calls: list[tuple[int, list[str]]] = []
+    store_calls: list[tuple[str, object]] = []
+
+    class _Embedding:
+        async def generate(self, query):
+            embedding_queries.append(query)
+            return [0.1, 0.2]
+
+    class _VectorStore:
+        async def query(self, collection, request):
+            store_calls.append((collection, request))
+            return [
+                SimpleNamespace(
+                    id="chunk-2",
+                    score=0.88,
+                    payload={
+                        "chunk_id": "chunk-2",
+                        "source_id": "document-2",
+                        "data_source_id": "source-2",
+                        "heading": "跨源命中",
+                        "content": "只生成一次查询向量。",
+                        "rank": 3,
+                    },
+                )
+            ]
+
+    slot = SimpleNamespace(
+        engine=SimpleNamespace(
+            resources=SimpleNamespace(
+                embedding=_Embedding(),
+                vector=_VectorStore(),
+            )
+        )
+    )
 
     async def runtime_ready(_sources):
         return None
 
-    async def generate_embedding(_processor, query):
-        embedding_queries.append(query)
-        return [0.1, 0.2]
-
-    async def search_chunks(
-        _repository,
-        *,
-        query_vector,
-        k,
-        source_config_ids,
-        **_kwargs,
-    ):
-        assert query_vector == [0.1, 0.2]
-        repository_calls.append((k, source_config_ids))
-        return [
-            {
-                "chunk_id": "chunk-2",
-                "source_id": "document-2",
-                "source_config_id": "source-2",
-                "heading": "跨源命中",
-                "content": "只生成一次查询向量。",
-                "rank": 3,
-                "_score": 0.88,
-            }
-        ]
+    async def fake_slot(*_args, **_kwargs):
+        return slot
 
     monkeypatch.setattr(manager, "_ensure_read_runtime", runtime_ready)
-    monkeypatch.setattr(DocumentProcessor, "generate_embedding", generate_embedding)
-    monkeypatch.setattr(SourceChunkRepository, "search_similar_by_content", search_chunks)
-    monkeypatch.setattr(storage_client, "get_es_client", lambda: object())
+    monkeypatch.setattr(manager, "_slot", fake_slot)
 
     outcome = await manager.search_many(
         [("source-1", None), ("source-2", None)],
@@ -265,7 +308,12 @@ async def test_vector_search_many_uses_one_cross_source_embedding(monkeypatch):
     )
 
     assert embedding_queries == ["跨源查询"]
-    assert repository_calls == [(9, ["source-1", "source-2"])]
+    assert len(store_calls) == 1
+    collection, request = store_calls[0]
+    assert collection == "source_chunks"
+    assert request.vector_field == "content_vector"
+    assert request.limit == 9
+    assert request.filters.children[0].field == "data_source_id"
     assert outcome.sections[0].chunk_id == "chunk-2"
     assert outcome.stats["chunk_recall"] == "batch-vector"
 
@@ -342,7 +390,7 @@ async def test_search_source_candidates_use_database_limit_and_explicit_order(mo
                     Source(
                         id=source_id,
                         name=f"候选源 {index}",
-                        sag_source_config_id=f"candidate-{source_id}",
+                        sag_source_config_id=(f"candidate-{source_id}")[:36],
                         chunk_count=10_000 + index,
                         event_count=index,
                     )
@@ -362,3 +410,525 @@ async def test_search_source_candidates_use_database_limit_and_explicit_order(mo
 
             await session.execute(delete(Source).where(Source.id.in_(ids)))
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_multi_es_fast_uses_zleap_082_typed_search_contract(monkeypatch):
+    """门面 multi_es_fast → 0.8.2 pruned_expand_rff typed SearchRequest。
+
+    这是 vector vs multi_es_fast 评测能真的分出差异的前提:如果翻译层错把 multi_es_fast
+    折成 vector,eval-compare 会给出两列相同结果。
+    """
+    from zleap.sag.pipeline import SearchHit, SearchRequest, SearchResult
+
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager
+
+    monkeypatch.setattr(settings, "sag_vector_provider", "lancedb")
+    manager = EngineManager(settings)
+    captured_strategies: list[str] = []
+    captured_output_flags: list[bool] = []
+
+    @asynccontextmanager
+    async def fake_use(*_args, **_kwargs):
+        class _Engine:
+            async def search(self, request):
+                assert isinstance(request, SearchRequest)
+                captured_strategies.append(request.options.strategy)
+                captured_output_flags.append(request.options.output.include_ranked_candidates)
+                assert request.scope.data_source_ids == ("cfg-1",)
+                assert request.options.top_k == 6
+                assert request.options.return_type == "chunk"
+                return SearchResult(
+                    query=request.query,
+                    original_query=request.query,
+                    chunks=(
+                        SearchHit(
+                            id="c1",
+                            chunk_id="c1",
+                            title="h",
+                            content="body",
+                            score=0.5,
+                            data_source_id="cfg-1",
+                            metadata={"rank": 1},
+                        ),
+                    ),
+                    stats={"chunk_recall": "pruned_expand_rff"},
+                )
+
+        yield _Engine()
+
+    monkeypatch.setattr(manager, "use", fake_use)
+
+    outcome = await manager.search(
+        "cfg-1",
+        "外卖骑手收入",
+        strategy="multi_es_fast",
+        top_k=6,
+        include_ranked_candidates=True,
+    )
+
+    assert captured_strategies == ["pruned_expand_rff"]
+    assert captured_output_flags == [True]
+    assert outcome.sections[0].chunk_id == "c1"
+    assert outcome.sections[0].heading == "h"
+    assert outcome.sections[0].source_config_id == "cfg-1"
+    assert outcome.stats["requested_strategy"] == "multi_es_fast"
+    assert outcome.stats["effective_strategy"] == "multi_es_fast"
+    assert outcome.stats["fallback_used"] is False
+
+
+@pytest.mark.asyncio
+async def test_search_many_aggregates_ranked_candidates_with_source_provenance(monkeypatch):
+    from sag_api.core.config import settings
+    from sag_api.sag.dto import SearchOutcome
+    from sag_api.sag.engine_manager import EngineManager
+
+    manager = EngineManager(settings)
+
+    async def fake_search(source_config_id, query, **kwargs):
+        assert kwargs["include_ranked_candidates"] is True
+        return SearchOutcome(
+            query=query,
+            sections=[],
+            stats={
+                "ranked_candidates": [
+                    {
+                        "rank": 1,
+                        "chunk_id": f"chunk-{source_config_id}",
+                        "score": 0.8,
+                        "recall_channels": ["event_vector"],
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(manager, "search", fake_search)
+    outcome = await manager.search_many(
+        [("source-a", None), ("source-b", None)],
+        "归因",
+        strategy="multi",
+        include_ranked_candidates=True,
+    )
+
+    assert [item["source_config_id"] for item in outcome.stats["ranked_candidates"]] == [
+        "source-a",
+        "source-b",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_multi_es_fast_gated_by_lexical_capability(monkeypatch):
+    """provider 不支持 lexical_search 时,门面策略必须回退到 settings.search_strategy(通常是 vector)。
+
+    Web 端灰置只是提示,后端必须自己拦住,否则会打到不支持 BM25 的向量库。
+    """
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager
+
+    monkeypatch.setattr(settings, "sag_vector_provider", "pgvector")
+    monkeypatch.setattr(settings, "search_strategy", "vector")
+    manager = EngineManager(settings)
+
+    effective = manager._effective_search_strategy("multi_es_fast")
+    assert effective == "vector"
+
+
+def test_strategies_capability_report_marks_multi_es_disabled_on_pgvector(monkeypatch):
+    """capabilities API 直接透传的形状。UI 灰置 + tooltip 靠这里返回的 disabled map。"""
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager
+
+    monkeypatch.setattr(settings, "sag_vector_provider", "pgvector")
+    report = EngineManager.strategies_capability_report(settings)
+
+    assert set(report["enabled"]) == {"vector", "multi"}
+    assert "multi_es_fast" in report["disabled"]
+    disabled_entry = report["disabled"]["multi_es_fast"]
+    assert disabled_entry["reason"] == "vector_provider_lacks_lexical"
+    assert "pgvector" in disabled_entry["message"]
+
+    monkeypatch.setattr(settings, "sag_vector_provider", "lancedb")
+    ok_report = EngineManager.strategies_capability_report(settings)
+    assert set(ok_report["enabled"]) == {"vector", "multi", "multi_es_fast"}
+    assert ok_report["disabled"] == {}
+
+
+@pytest.mark.asyncio
+async def test_capabilities_endpoint_exposes_disabled_strategies(monkeypatch):
+    """Web 端读的 /system/capabilities 必须把 disabled map 透传给前端灰置逻辑。"""
+    from sag_api.core.config import settings
+    from sag_api.main import app
+
+    monkeypatch.setattr(settings, "sag_vector_provider", "pgvector")
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            response = await client.get("/api/v1/system/capabilities")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "multi_es_fast" not in payload["search_strategies"]
+    assert "multi_es_fast" in payload["search_strategies_disabled"]
+    assert (
+        payload["search_strategies_disabled"]["multi_es_fast"]["reason"]
+        == "vector_provider_lacks_lexical"
+    )
+
+
+@pytest.mark.asyncio
+async def test_eval_compare_returns_two_strategies_and_skips_judge(monkeypatch):
+    """/search/eval-compare 的端到端形状:两列结果 + judge 因 LLM 未配置被跳过。
+
+    模拟 curl POST。真跑要求本地 LLM 已配置,这里只覆盖形状 + 关键字段(strategy 命名、
+    stats 保留 requested_strategy、judge_reason 说明未运行原因)。
+    """
+    from sag_api.core.config import settings
+    from sag_api.core.deps import get_engine_manager, get_llm
+    from sag_api.main import app
+    from sag_api.sag.dto import RetrievedSection, SearchOutcome
+
+    monkeypatch.setattr(settings, "sag_vector_provider", "lancedb")
+
+    class StubEngine:
+        async def provision(self, *_args, **_kwargs):
+            return None
+
+        async def search_many(
+            self,
+            targets,
+            query,
+            *,
+            strategy=None,
+            top_k=None,
+            include_ranked_candidates=False,
+        ):
+            assert include_ranked_candidates is False
+            source_config_id = targets[0][0] if targets else "cfg-0"
+            # Vector vs multi_es_fast: 用不同 heading 让两列可视化上真的不一样,
+            # 从而证明翻译层能触达 zleap 引擎、而不是折成同一个 pipeline。
+            heading = (
+                "vector-hit" if strategy == "vector" else "multi_es-hit"
+            )
+            return SearchOutcome(
+                query=query,
+                sections=[
+                    RetrievedSection(
+                        chunk_id=f"chunk-{strategy}",
+                        heading=heading,
+                        content="片段正文",
+                        score=0.8,
+                        source_config_id=source_config_id,
+                    )
+                ],
+                stats={
+                    "requested_strategy": strategy,
+                    "effective_strategy": strategy,
+                    "fallback_used": False,
+                    "candidates": 1,
+                    "relevant": 1,
+                },
+            )
+
+    class NoLLM:
+        configured = False
+
+    app.dependency_overrides[get_engine_manager] = lambda: StubEngine()
+    app.dependency_overrides[get_llm] = lambda: NoLLM()
+
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+                headers = await _register_eval(client)
+                source = await client.post(
+                    "/api/v1/sources",
+                    headers=headers,
+                    json={"name": "eval-compare 测试源"},
+                )
+                assert source.status_code == 201, source.text
+
+                response = await client.post(
+                    "/api/v1/search/eval-compare",
+                    headers=headers,
+                    json={
+                        "query": "外卖骑手收入",
+                        "strategies": ["vector", "multi_es_fast"],
+                        "source_ids": [source.json()["id"]],
+                        "top_k": 5,
+                        "judge": True,
+                    },
+                )
+    finally:
+        app.dependency_overrides.pop(get_engine_manager, None)
+        app.dependency_overrides.pop(get_llm, None)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["query"] == "外卖骑手收入"
+    assert [row["strategy"] for row in payload["results"]] == ["vector", "multi_es_fast"]
+    # 两列各自透传了本策略名,方便 UI 打标签。
+    assert payload["results"][0]["stats"]["requested_strategy"] == "vector"
+    assert payload["results"][1]["stats"]["requested_strategy"] == "multi_es_fast"
+    # 两列结果确实不同(证明翻译层没把 multi_es_fast 折成 vector)。
+    assert (
+        payload["results"][0]["sections"][0]["heading"]
+        != payload["results"][1]["sections"][0]["heading"]
+    )
+    # LLM 未配置时 judge 被显式禁用,且给出人可读的原因。
+    assert payload["judge_enabled"] is False
+    assert payload["judges"] == []
+    assert payload["judge_reason"] is not None
+
+
+async def _register_eval(client: httpx.AsyncClient) -> dict[str, str]:
+    """独立的注册辅助,避免和主 register 复用同一个邮箱触发唯一约束。"""
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "eval-compare@t.com", "password": "password123"},
+    )
+    assert response.status_code == 201, response.text
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+@pytest.mark.asyncio
+async def test_vector_search_excludes_hidden_document_sources_before_top_k(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager
+
+    captured: dict[str, object] = {}
+
+    class _Embedding:
+        async def generate(self, _query):
+            return [0.1, 0.2]
+
+    class _VectorStore:
+        async def query(self, collection, request):
+            captured["collection"] = collection
+            captured["request"] = request
+            return [
+                SimpleNamespace(
+                    id="visible-chunk",
+                    score=0.9,
+                    payload={
+                        "chunk_id": "visible-chunk",
+                        "source_id": "visible-document",
+                        "data_source_id": "source-1",
+                        "heading": "健康文档",
+                        "content": "删除失败的文档不能占满候选。",
+                        "rank": 0,
+                    },
+                )
+            ]
+
+    manager = EngineManager(settings)
+
+    slot = SimpleNamespace(
+        engine=SimpleNamespace(
+            resources=SimpleNamespace(
+                embedding=_Embedding(),
+                vector=_VectorStore(),
+            )
+        )
+    )
+
+    async def runtime_ready(_sources):
+        return None
+
+    async def fake_slot(*_args, **_kwargs):
+        return slot
+
+    monkeypatch.setattr(manager, "_ensure_read_runtime", runtime_ready)
+    monkeypatch.setattr(manager, "_slot", fake_slot)
+
+    outcome = await manager.search_many(
+        [("source-1", None), ("source-2", None)],
+        "目标主题",
+        strategy="vector",
+        top_k=8,
+        exclude_source_ids_by_config={
+            "source-1": ("hidden-a", "hidden-b"),
+            "source-2": ("hidden-c",),
+        },
+    )
+
+    assert [section.chunk_id for section in outcome.sections] == ["visible-chunk"]
+    request = captured["request"]
+    filters = request.filters
+    # filters = all(one_of(data_source_id, [s1, s2]), negate(any(pair...)))
+    assert filters.operator == "and"
+    assert filters.children[0].operator == "in"
+    assert filters.children[0].field == "data_source_id"
+    exclusion = filters.children[1]
+    assert exclusion.operator == "not"
+    pairs = exclusion.children[0]
+    assert pairs.operator == "or"
+    assert len(pairs.children) == 2
+    assert pairs.children[0].children[0].value == "source-1"
+    assert pairs.children[0].children[1].value == ("hidden-a", "hidden-b")
+    assert pairs.children[1].children[1].value == ("hidden-c",)
+
+
+@pytest.mark.asyncio
+async def test_grep_excludes_hidden_document_source_before_limit():
+    from zleap.sag.db.models import SourceChunk
+
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager
+
+    source_config_id = f"grep-{uuid.uuid4().hex}"[:36]
+    manager = EngineManager(settings)
+    try:
+        await manager.provision(source_config_id)
+        session_factory = await manager.get_sag_session_factory(source_config_id)
+        async with session_factory() as session:
+            session.add_all(
+                [
+                    SourceChunk(
+                        id=uuid.uuid4().hex,
+                        data_source_id=source_config_id,
+                        source_type="ARTICLE",
+                        source_id="hidden-document",
+                        heading="隐藏文档",
+                        content="唯一关键词",
+                        rank=0,
+                    ),
+                    SourceChunk(
+                        id=uuid.uuid4().hex,
+                        data_source_id=source_config_id,
+                        source_type="ARTICLE",
+                        source_id="visible-document",
+                        heading="健康文档",
+                        content="唯一关键词",
+                        rank=1,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        rows = await manager.grep_chunks(
+            source_config_id,
+            "唯一关键词",
+            limit=1,
+            exclude_source_ids=("hidden-document",),
+        )
+    finally:
+        await manager.aclose_all()
+
+    assert [row["source_id"] for row in rows] == ["visible-document"]
+
+
+@pytest.mark.asyncio
+async def test_multi_search_uses_prefiltered_batch_recall_when_sources_are_hidden(
+    monkeypatch,
+):
+    from sag_api.core.config import settings
+    from sag_api.sag import RetrievedSection, SearchOutcome
+    from sag_api.sag.engine_manager import EngineManager
+
+    manager = EngineManager(settings)
+    batch_calls = 0
+    legacy_calls = 0
+
+    async def batch_recall(
+        _targets,
+        query,
+        *,
+        top_k,
+        requested_sources,
+        exclude_source_ids_by_config,
+    ):
+        nonlocal batch_calls
+        batch_calls += 1
+        assert exclude_source_ids_by_config == {"source-1": ("hidden-document",)}
+        return SearchOutcome(
+            query=query,
+            sections=[
+                RetrievedSection(
+                    chunk_id="visible-chunk",
+                    heading="健康文档",
+                    content="精确模式在删除屏障期间安全降级。",
+                    score=0.9,
+                    source_id="visible-document",
+                    source_config_id="source-1",
+                )
+            ],
+            stats={"chunk_recall": "batch-vector"},
+        )
+
+    async def legacy_search(*_args, **_kwargs):
+        nonlocal legacy_calls
+        legacy_calls += 1
+        return SearchOutcome(query="目标主题", sections=[])
+
+    monkeypatch.setattr(manager, "_search_chunk_vectors", batch_recall)
+    monkeypatch.setattr(manager, "search", legacy_search)
+
+    outcome = await manager.search_many(
+        [("source-1", None)],
+        "目标主题",
+        strategy="multi_es_fast",
+        top_k=8,
+        exclude_source_ids_by_config={"source-1": ("hidden-document",)},
+        include_ranked_candidates=True,
+    )
+
+    assert [section.chunk_id for section in outcome.sections] == ["visible-chunk"]
+    assert batch_calls == 1
+    assert legacy_calls == 0
+    assert outcome.stats["requested_strategy"] == "multi_es_fast"
+    assert outcome.stats["effective_strategy"] == "vector"
+    assert outcome.stats["ranked_candidates"] == []
+    assert outcome.stats["ranked_candidates_unavailable_reason"] == "document_source_exclusions"
+
+
+@pytest.mark.asyncio
+async def test_visibility_prefilter_failure_never_falls_back_to_unfiltered_legacy(
+    monkeypatch,
+):
+    from sag_api.core.config import settings
+    from sag_api.sag import RetrievedSection, SearchOutcome
+    from sag_api.sag.engine_manager import EngineManager
+
+    manager = EngineManager(settings)
+    legacy_calls = 0
+
+    async def broken_prefilter(*_args, **_kwargs):
+        raise RuntimeError("vector backend unavailable")
+
+    async def unfiltered_legacy(*_args, **_kwargs):
+        nonlocal legacy_calls
+        legacy_calls += 1
+        return SearchOutcome(
+            query="目标主题",
+            sections=[
+                RetrievedSection(
+                    chunk_id="hidden-chunk",
+                    heading="隐藏文档",
+                    content="不能回退到未过滤候选。",
+                    score=0.99,
+                    source_id="hidden-document",
+                    source_config_id="source-1",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(manager, "_search_chunk_vectors", broken_prefilter)
+    monkeypatch.setattr(manager, "search", unfiltered_legacy)
+
+    outcome = await manager.search_many(
+        [("source-1", None)],
+        "目标主题",
+        strategy="multi_es_fast",
+        top_k=8,
+        exclude_source_ids_by_config={"source-1": ("hidden-document",)},
+    )
+
+    assert outcome.sections == []
+    assert legacy_calls == 0
+    assert outcome.stats["chunk_recall"] == "batch-vector-prefilter-failed"
