@@ -65,6 +65,7 @@ _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
     },
     "agents": {"is_default": "BOOLEAN NOT NULL DEFAULT 0"},
     "documents": {
+        "knowledge_state": "VARCHAR(24)",
         "progress": "INTEGER NOT NULL DEFAULT 0",
         "token_usage": "BIGINT NOT NULL DEFAULT 0",
         "error_layer": "VARCHAR(16)",

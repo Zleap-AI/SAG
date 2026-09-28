@@ -230,7 +230,10 @@ def build_source_mcp(
             normalized,
             top_k=max(1, min(top_k, 50)),
         )
-        return _sections_to_text(outcome.sections, selected)
+        result = _sections_to_text(outcome.sections, selected)
+        if outcome.stats.get("knowledge_pending"):
+            return "（部分知识尚未重新入库，当前结果可能不完整。）\n" + result
+        return result
 
     @mcp.tool(
         title=MCP_TOOL_LABELS["get_entity"],

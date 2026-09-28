@@ -76,6 +76,25 @@ async function assertNoDockerOrTokens(root) {
   }
 }
 
+async function assertUpgradeConsentWizard(root) {
+  const wizard = await readJson(root, "wizard/upgrade_uifile");
+  if (!Array.isArray(wizard) || wizard.length !== 1 || !wizard[0]?.step_title
+      || !Array.isArray(wizard[0]?.items) || wizard[0].items.length !== 1) {
+    fail("upgrade consent wizard must contain one titled step and one choice");
+  }
+  const item = wizard[0].items[0];
+  if (item.type !== "singleselect" || typeof item.desc !== "string" || !item.desc.trim()
+      || !Array.isArray(item.subitems) || item.subitems.length !== 2) {
+    fail("upgrade consent wizard must contain a warning and a singleselect choice");
+  }
+  const [decline, accept] = item.subitems;
+  if (decline?.key !== "SAG_DECLINE_REINGEST_UPGRADE" || decline.defaultValue !== true
+      || accept?.key !== "SAG_ACCEPT_REINGEST_UPGRADE" || accept.defaultValue !== false
+      || !decline.desc || !accept.desc) {
+    fail("upgrade consent wizard must default to decline and use the required consent keys");
+  }
+}
+
 export async function validateNativeTemplate(root, platform) {
   if (platform !== "x86" && platform !== "arm") fail("platform must be x86 or arm");
   await assertNoDockerOrTokens(root);
@@ -138,6 +157,17 @@ export async function validateNativeTemplate(root, platform) {
   if (entry.allUsers !== true) fail("UI allUsers must be true");
   if (Object.hasOwn(entry, "port")) fail("UI must not expose a direct service port");
 
+  await assertUpgradeConsentWizard(root);
+  for (const callback of ["upgrade_init", "upgrade_callback"]) {
+    const source = await readFile(path.join(root, "cmd", callback), "utf8");
+    if (!source.includes("migration-ready --root") || !source.includes("SAG_ACCEPT_REINGEST_UPGRADE")) {
+      fail(`${callback} must enforce legacy consent and recognize committed engine updates`);
+    }
+  }
+  const lifecycle = await readFile(path.join(root, "app/runtime/lifecycle.py"), "utf8");
+  if (!lifecycle.includes("def migration_ready") || !lifecycle.includes("fnos_knowledge_engine_0_13")) {
+    fail("lifecycle must verify committed tenant engine markers");
+  }
   await assertFiles(root, requiredIcons);
 }
 

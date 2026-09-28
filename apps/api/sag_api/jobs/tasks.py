@@ -211,6 +211,9 @@ async def process_document(
         raise NotFoundError("信源不存在")
     checkpoint = ProcessCheckpoint.from_payload(job.payload)
     scheduler_yield_reason: str | None = None
+    if getattr(document, "knowledge_state", None) == "queued":
+        document.knowledge_state = "running"
+        await session.commit()
 
     # A worker retry reuses the document row. Clear the previous attempt's
     # failure before parsing can block for a long time, so active processing
@@ -350,6 +353,7 @@ async def process_document(
             should_pause=should_pause,
             max_concurrency=settings.document_extract_concurrency,
             document_title=Path(document.filename).stem.strip(),
+            original_path=document.storage_path if prepared is not None else None,
         )
         if outcome.paused:
             await _pause_or_yield()
@@ -387,6 +391,7 @@ async def process_document(
             )
             .values(
                 status=DocumentStatus.FAILED,
+                knowledge_state=("failed" if getattr(document, "knowledge_state", None) is not None else None),
                 error=public_message,
                 error_layer=layer.value,
                 error_stage=stage.value,
@@ -427,6 +432,7 @@ async def process_document(
         )
         .values(
             status=DocumentStatus.READY,
+            knowledge_state=("ready" if getattr(document, "knowledge_state", None) is not None else None),
             chunk_count=outcome.chunk_count,
             event_count=outcome.event_count,
             sag_source_id=outcome.source_id,

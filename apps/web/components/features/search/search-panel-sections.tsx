@@ -396,11 +396,12 @@ export function ResultList({
     [result.events, sort],
   );
   if (result.events.length === 0 && result.sections.length === 0) {
+    const awaitingReingest = Number(result.stats.knowledge_pending || 0) > 0;
     return (
       <EmptyState
         icon={SearchIcon}
-        title={t("noEvidence")}
-        description={t("noEvidenceDescription")}
+        title={t(awaitingReingest ? "knowledgePending" : "noEvidence")}
+        description={t(awaitingReingest ? "knowledgePendingDescription" : "noEvidenceDescription")}
       />
     );
   }

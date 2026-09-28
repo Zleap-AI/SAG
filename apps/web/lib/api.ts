@@ -43,6 +43,7 @@ import type {
   FnOSNasScanResult,
   FnOSNasStatus,
   FnOSMcpGrantIssued,
+  FnOSKnowledgeUpgradeStatus,
 } from "./types";
 
 /** 浏览器通过局域网 IP 打开前端时，自动将 API 指向同主机 8000 端口。 */
@@ -652,6 +653,20 @@ export const api = {
     ),
 
   // 文档
+  fnosKnowledgeUpgradeStatus: () =>
+    request<FnOSKnowledgeUpgradeStatus>("/api/v1/fnos/knowledge-upgrade"),
+  fnosReingestKnowledge: () =>
+    request<{ queued: number; needs_file: number }>("/api/v1/fnos/knowledge-upgrade/reingest", {
+      method: "POST",
+    }),
+  fnosReplaceMissingOriginal: (documentId: string, file: File) => {
+    const body = new FormData();
+    body.append("file", file);
+    return request<{ uploaded: boolean }>(
+      `/api/v1/fnos/knowledge-upgrade/documents/${encodeURIComponent(documentId)}/original`,
+      { method: "POST", body },
+    );
+  },
   listDocuments: (sid: string) =>
     request<Doc[]>(`/api/v1/sources/${sid}/documents`),
   uploadDocumentWithProgress: (

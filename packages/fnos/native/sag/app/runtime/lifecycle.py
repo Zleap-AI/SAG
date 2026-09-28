@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -11,7 +12,9 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-_UID = re.compile(r"[1-9][0-9]*\Z")
+# workspace.tenant_key also supports the opt-in UID + sanitized username +
+# eight-character digest layout. Both layouts must remain restorable.
+_TENANT_KEY = re.compile(r"[1-9][0-9]*(?:-[a-zA-Z0-9_-]{0,16}-[0-9a-f]{8})?\Z")
 
 
 def valid_secret(value: str) -> bool:
@@ -30,7 +33,7 @@ def _users_root(root: Path) -> Path:
 
 def _validate_tree(root: Path) -> None:
     for user in root.iterdir():
-        if not _UID.fullmatch(user.name) or user.is_symlink() or not user.is_dir():
+        if not _TENANT_KEY.fullmatch(user.name) or user.is_symlink() or not user.is_dir():
             raise ValueError("users root contains an invalid user directory")
         for path in user.rglob("*"):
             if path.is_symlink():
@@ -65,14 +68,14 @@ def validate(archive: Path) -> None:
                 raise ValueError("archive contains an unsafe path")
             if member.issym() or member.islnk() or member.isdev():
                 raise ValueError("archive contains unsupported links or devices")
-            if len(name.parts) > 1 and not _UID.fullmatch(name.parts[1]):
+            if len(name.parts) > 1 and not _TENANT_KEY.fullmatch(name.parts[1]):
                 raise ValueError("archive contains an invalid user directory")
         # NOTE: extractall(filter="data") was added in Python 3.12. upgrade_init
         # falls back to the system python3, which on many fnOS images is
         # 3.10/3.11 and rejects that kwarg with TypeError. The membership loop
         # above already enforces the same safety envelope (no absolute paths,
         # no ..-escapes, no symlinks/hardlinks/devices, first path component
-        # must be "users", UID directories match _UID) — so we can omit the
+        # must be "users", tenant directories match _TENANT_KEY) — so we can omit the
         # filter and stay compatible with the older interpreters fnOS ships.
         source.extractall(target)
         users = target / "users"
@@ -87,6 +90,30 @@ def validate(archive: Path) -> None:
                 connection.close()
 
 
+def migration_ready(root: Path) -> None:
+    """Permit a routine update only when every tenant committed the 0.13 marker.
+
+    Read live SQLite including WAL without mutating metadata. Missing, unreadable,
+    corrupt or mixed legacy tenants require explicit administrator consent.
+    """
+    root = _users_root(root)
+    _validate_tree(root)
+    for user in root.iterdir():
+        database = user / "meta" / "sag.db"
+        if not database.is_file():
+            raise ValueError("tenant engine migration marker is missing")
+        connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
+        try:
+            row = connection.execute(
+                "SELECT value_json FROM settings WHERE scope=? AND key=?",
+                ("global", "fnos_knowledge_engine_0_13"),
+            ).fetchone()
+            if row is None or json.loads(row[0]).get("engine") != "0.13.0":
+                raise ValueError("tenant engine migration is not committed")
+        finally:
+            connection.close()
+
+
 def delete(root: Path) -> None:
     if os.environ.get("SAG_DELETE_DATA") != "true":
         raise ValueError("SAG_DELETE_DATA=true is required")
@@ -98,7 +125,7 @@ def delete(root: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("size", "backup", "validate", "delete"))
+    parser.add_argument("action", choices=("size", "backup", "validate", "delete", "migration-ready"))
     parser.add_argument("--root", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--archive", type=Path)
@@ -109,6 +136,8 @@ def main() -> None:
         backup(args.root, args.output)
     elif args.action == "validate":
         validate(args.archive)
+    elif args.action == "migration-ready":
+        migration_ready(args.root)
     else:
         delete(args.root)
 

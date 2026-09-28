@@ -26,7 +26,6 @@ from sag_api.core.logging import RequestContextMiddleware, configure_logging, ge
 from sag_api.generation import LLMClient
 from sag_api.jobs import InProcessAsyncQueue
 from sag_api.sag import EngineManager
-from sag_api.sag.compat import install_zleap_sag_extract_compat
 
 log = get_logger("app")
 
@@ -67,6 +66,21 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
+    if settings.auth_mode == "fnos":
+        from pathlib import Path
+
+        from sag_api.fnos.knowledge_upgrade import mark_legacy_knowledge_pending
+
+        active_engine_dir = Path(settings.data_dir)
+        if active_engine_dir.name != "engine-v0.13":
+            raise RuntimeError("fnOS 0.13 engine must use the isolated engine-v0.13 directory")
+        async with SessionLocal() as migration_session:
+            await mark_legacy_knowledge_pending(
+                migration_session,
+                active_engine_dir.parent / "engine",
+                Path(settings.upload_dir),
+            )
+
     # 把 DB 里保存的模型配置覆盖到 settings 单例（在构建 LLM/引擎之前）
     from sag_api.services.settings_service import apply_startup_overrides
 
@@ -80,7 +94,6 @@ async def lifespan(app: FastAPI):
 
     # zleap-sag 内部也调用 LiteLLM；全局 pre-call policy 让它与 Muse 生成链
     # 共享相同的 provider 参数，而不修改依赖包。
-    install_zleap_sag_extract_compat()
     litellm_policy = install_litellm_policy(settings)
     app.state.engine_manager = EngineManager(settings)
     app.state.llm = LLMClient(settings)

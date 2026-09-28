@@ -18,6 +18,7 @@ from sag_api.db.models import FnOSMcpGrant, Source, User
 from sag_api.fnos.identity import GatewayIdentity, derive_fnos_internal_key
 from sag_api.generation import LLMClient
 from sag_api.mcp.server import MCP_TOOL_DETAILS, MCP_TOOL_NAMES
+from sag_api.sag import EngineManager
 from sag_api.schemas.system import (
     FnOSMcpGrantCreate,
     ModelConfigUpdate,
@@ -32,6 +33,7 @@ log = get_logger("system")
 
 
 def _capabilities() -> dict:
+    strategy_report = EngineManager.strategies_capability_report(settings)
     return {
         "auth_mode": settings.auth_mode,
         "llm_configured": settings.llm_configured,
@@ -46,6 +48,8 @@ def _capabilities() -> dict:
         "vector_provider": settings.sag_vector_provider,
         "language": settings.sag_language,
         "search_strategy": settings.search_strategy,
+        "search_strategies": strategy_report["enabled"],
+        "search_strategies_disabled": strategy_report["disabled"],
         "timezone": settings.timezone,
         "max_upload_mb": settings.max_upload_mb,
         "allowed_upload_exts": sorted(settings.allowed_upload_exts),

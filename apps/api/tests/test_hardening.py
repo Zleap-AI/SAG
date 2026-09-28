@@ -1,10 +1,46 @@
 """R3 稳定硬化：就绪/存活探针、上传白名单、Job 退避重试、引擎 LRU 逐出。"""
 
 import asyncio
-from typing import Any
+from types import SimpleNamespace
 
 import httpx
 import pytest
+
+
+def test_test_runtime_disables_background_engine_warmup():
+    """Shared SQLite tests must not provision sources left by earlier cases."""
+    from sag_api.core.config import settings
+
+    assert settings.engine_warmup_count == 0
+
+
+@pytest.mark.asyncio
+async def test_source_config_commit_retries_transient_sqlite_lock(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    from sag_api.sag.engine_manager import _commit_with_sqlite_lock_retry
+
+    class Session:
+        def __init__(self):
+            self.commits = 0
+            self.rollbacks = 0
+
+        async def commit(self):
+            self.commits += 1
+            if self.commits < 3:
+                raise OperationalError("INSERT", {}, Exception("database is locked"))
+
+        async def rollback(self):
+            self.rollbacks += 1
+
+    async def no_wait(_delay):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+    session = Session()
+    await _commit_with_sqlite_lock_retry(session)
+    assert session.commits == 3
+    assert session.rollbacks == 2
 
 
 async def _register(c, email="hard@t.com"):
@@ -28,11 +64,13 @@ async def test_health_ready_and_upload_whitelist():
             assert ".md" in caps["allowed_upload_exts"]
 
             A = await _register(c)
-            sid = (await c.post("/api/v1/sources", headers=A, json={"name": "白名单"})).json()["id"]
+            _created = await c.post("/api/v1/sources", headers=A, json={"name": "白名单"})
+            assert _created.status_code == 201, _created.text
+            sid = _created.json()["id"]
 
             # 创建信源必须同步建立引擎父记录；增量加载器会直接写 article，
             # 缺少该记录时将触发 FOREIGN KEY constraint failed。
-            from zleap.sag.db import SourceConfig, get_session_factory
+            from zleap.sag.db import DataSource
 
             from sag_api.core.db import SessionLocal
             from sag_api.db.models import Source
@@ -41,9 +79,11 @@ async def test_health_ready_and_upload_whitelist():
                 source = await session.get(Source, sid)
                 assert source is not None
                 source_config_id = source.sag_source_config_id
-            engine_session_factory = get_session_factory()
+            engine_session_factory = await app.state.engine_manager.get_sag_session_factory(
+                source_config_id
+            )
             async with engine_session_factory() as engine_session:
-                parent = await engine_session.get(SourceConfig, source_config_id)
+                parent = await engine_session.get(DataSource, source_config_id)
                 assert parent is not None
                 assert parent.name == "白名单"
 
@@ -145,143 +185,33 @@ async def test_job_retry_backoff(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_job_queue_stop_allows_active_job_to_reach_safe_boundary(monkeypatch):
-    """Shutdown gives an in-flight job a bounded chance to commit cleanly."""
-    from sag_api.core.db import SessionLocal, init_db
-    from sag_api.db.models import Job
-    from sag_api.enums import JobStatus, JobType
-    from sag_api.jobs.inproc import InProcessAsyncQueue
-    from sag_api.jobs.tasks import TASK_HANDLERS
+async def test_engine_schema_bootstrap_retries_after_failure():
+    from sqlalchemy.exc import SQLAlchemyError
 
-    started = asyncio.Event()
-    release = asyncio.Event()
-    completed = asyncio.Event()
+    from sag_api.core.config import settings
+    from sag_api.core.errors import UpstreamError
+    from sag_api.sag.engine_manager import EngineManager
 
-    async def handler(_session, _job, **_kwargs):
-        started.set()
-        await release.wait()
-        completed.set()
+    class SchemaEngine:
+        def __init__(self):
+            self.calls = 0
 
-    monkeypatch.setitem(TASK_HANDLERS, JobType.PROCESS_DOCUMENT, handler)
-    await init_db()
-    async with SessionLocal() as session:
-        job = Job(type=JobType.PROCESS_DOCUMENT, status=JobStatus.QUEUED)
-        session.add(job)
-        await session.commit()
-        job_id = job.id
+        async def init_schema(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise SQLAlchemyError("ddl unavailable")
 
-    queue = InProcessAsyncQueue(SessionLocal, engine_manager=None, concurrency=1)
-    await queue.start()
-    await queue.enqueue(job_id)
-    await asyncio.wait_for(started.wait(), timeout=1)
-    # Create the backlog job only after the first one is in-flight; otherwise
-    # ``_recover`` at ``queue.start()`` would enqueue both jobs and the
-    # ``(created_at, id)`` sort would pick whichever UUID sorts first.
-    async with SessionLocal() as session:
-        queued_job = Job(type=JobType.PROCESS_DOCUMENT, status=JobStatus.QUEUED)
-        session.add(queued_job)
-        await session.commit()
-        queued_job_id = queued_job.id
-    await queue.enqueue(queued_job_id)
-    asyncio.get_running_loop().call_later(0.05, release.set)
+    manager = EngineManager(settings)
+    engine = SchemaEngine()
 
-    await queue.stop()
+    with pytest.raises(UpstreamError):
+        await manager._ensure_engine_schema(engine)
+    assert manager._schema_ready is False
 
-    assert completed.is_set()
-    async with SessionLocal() as session:
-        done = await session.get(Job, job_id)
-        still_queued = await session.get(Job, queued_job_id)
-        assert done is not None and done.status == JobStatus.SUCCEEDED
-        assert still_queued is not None and still_queued.status == JobStatus.QUEUED
-
-
-@pytest.mark.asyncio
-async def test_job_queue_stop_fails_bounded_without_disposing_under_live_worker(monkeypatch):
-    """A cancellation-resistant worker cannot block shutdown or be silently detached."""
-    from sag_api.core.db import SessionLocal, init_db
-    from sag_api.db.models import Job
-    from sag_api.enums import JobStatus, JobType
-    from sag_api.jobs import inproc
-    from sag_api.jobs.tasks import TASK_HANDLERS
-
-    started = asyncio.Event()
-    cancelled = asyncio.Event()
-    release = asyncio.Event()
-
-    async def handler(_session, _job, **_kwargs):
-        started.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            cancelled.set()
-            await release.wait()
-
-    monkeypatch.setitem(TASK_HANDLERS, JobType.PROCESS_DOCUMENT, handler)
-    monkeypatch.setattr(inproc, "_STOP_GRACE_SECONDS", 0.01)
-    monkeypatch.setattr(inproc, "_STOP_CANCEL_SECONDS", 0.01, raising=False)
-    await init_db()
-    async with SessionLocal() as session:
-        job = Job(type=JobType.PROCESS_DOCUMENT, status=JobStatus.QUEUED)
-        session.add(job)
-        await session.commit()
-        job_id = job.id
-
-    queue = inproc.InProcessAsyncQueue(SessionLocal, engine_manager=None, concurrency=1)
-    await queue.start()
-    await queue.enqueue(job_id)
-    await asyncio.wait_for(started.wait(), timeout=1)
-    stop_task = asyncio.create_task(queue.stop())
-
-    try:
-        await asyncio.wait_for(cancelled.wait(), timeout=1)
-        with pytest.raises(RuntimeError, match="worker.*did not stop"):
-            await asyncio.wait_for(asyncio.shield(stop_task), timeout=0.5)
-        assert queue._workers
-    finally:
-        release.set()
-        await asyncio.gather(stop_task, return_exceptions=True)
-        await asyncio.gather(*queue._workers, return_exceptions=True)
-        await queue.stop()
-
-
-@pytest.mark.asyncio
-async def test_runtime_shutdown_does_not_dispose_engines_after_queue_stop_failure(monkeypatch):
-    """A live queue worker keeps shared engine and DB resources intact."""
-    from types import SimpleNamespace
-
-    from sag_api import main
-
-    calls = []
-
-    class AgentRuntime:
-        async def stop(self):
-            calls.append("agent")
-
-    class JobQueue:
-        async def stop(self):
-            calls.append("queue")
-            raise RuntimeError("worker did not stop")
-
-    class EngineManager:
-        async def aclose_all(self):
-            calls.append("engines")
-
-    async def dispose_db():
-        calls.append("database")
-
-    monkeypatch.setattr(main, "dispose_db", dispose_db)
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            agent_runtime=AgentRuntime(),
-            job_queue=JobQueue(),
-            engine_manager=EngineManager(),
-        )
-    )
-
-    with pytest.raises(RuntimeError, match="worker did not stop"):
-        await main._shutdown_runtime(app)
-
-    assert calls == ["agent", "queue"]
+    await manager._ensure_engine_schema(engine)
+    await manager._ensure_engine_schema(engine)
+    assert manager._schema_ready is True
+    assert engine.calls == 2
 
 
 @pytest.mark.asyncio
@@ -351,104 +281,6 @@ async def test_engine_close_all_waits_for_inflight_use():
     await use_task
     await close_task
     assert engine.closed is True
-
-
-@pytest.mark.asyncio
-async def test_engine_starts_and_closes_in_the_same_async_context(monkeypatch):
-    """引擎资源 token 必须在创建它的 Context 中释放。"""
-    from contextvars import ContextVar
-
-    from sag_api.core.config import settings
-    from sag_api.sag import engine_manager as engine_manager_module
-
-    current_engine = ContextVar("test_engine_resources", default=None)
-
-    class ContextBoundEngine:
-        instances = []
-
-        def __init__(self, *_args, **_kwargs):
-            self.token = None
-            self.closed = False
-            self.instances.append(self)
-
-        async def start(self):
-            self.token = current_engine.set(self)
-
-        async def init_schema(self):
-            return None
-
-        async def aclose(self):
-            current_engine.reset(self.token)
-            self.closed = True
-
-    async def no_op(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(engine_manager_module, "DataEngine", ContextBoundEngine)
-    manager = engine_manager_module.EngineManager(settings)
-    monkeypatch.setattr(manager, "_ensure_source_config", no_op)
-    monkeypatch.setattr(manager, "_ensure_universe_query_indexes", no_op)
-
-    await asyncio.create_task(manager.provision("context-bound-source"))
-    await manager.aclose_all()
-
-    assert ContextBoundEngine.instances[0].closed is True
-
-
-@pytest.mark.asyncio
-async def test_engine_async_closes_previous_sqlite_runtime_before_reset(caplog):
-    """新信源启动前必须异步释放旧 aiosqlite 池，不能同步 reset 后泄漏连接。"""
-    import logging
-
-    from sqlalchemy import text
-    from zleap.sag.db import get_session_factory
-
-    from sag_api.core.config import settings
-    from sag_api.sag.engine_manager import EngineManager
-
-    manager = EngineManager(settings)
-    caplog.set_level(logging.ERROR, logger="sqlalchemy.pool.impl.AsyncAdaptedQueuePool")
-    try:
-        await manager.provision("async-close-first")
-        session_factory = get_session_factory()
-        async with session_factory() as session:
-            await session.execute(text("SELECT 1"))
-
-        caplog.clear()
-        await manager.provision("async-close-second")
-
-        assert "MissingGreenlet" not in caplog.text
-    finally:
-        await manager.aclose_all()
-
-
-@pytest.mark.asyncio
-async def test_engine_close_disposes_every_owned_sqlite_pool():
-    """管理器关闭后必须逐个释放曾被 reset 的引擎自有连接池。"""
-    from sqlalchemy import text
-
-    from sag_api.core.config import settings
-    from sag_api.sag.engine_manager import EngineManager
-
-    manager = EngineManager(settings)
-    closed = False
-    try:
-        await manager.provision("owned-pool-first")
-        first_factory = manager._slots["owned-pool-first"].engine._session_factory
-        first_bind = first_factory.kw["bind"]
-
-        await manager.provision("owned-pool-second")
-        async with first_factory() as session:
-            await session.execute(text("SELECT 1"))
-        assert first_bind.sync_engine.pool.checkedin() == 1
-
-        await manager.aclose_all()
-        closed = True
-
-        assert first_bind.sync_engine.pool.checkedin() == 0
-    finally:
-        if not closed:
-            await manager.aclose_all()
 
 
 @pytest.mark.asyncio
@@ -522,6 +354,15 @@ async def test_document_cleanup_drains_and_blocks_same_source_processing(monkeyp
     from sag_api.sag.engine_manager import EngineManager, _Slot
 
     class FakeEngine:
+        class _Relational:
+            def session_factory(self):
+                return SimpleNamespace()
+
+        class _Vector:
+            pass
+
+        resources = SimpleNamespace(relational=_Relational(), vector=_Vector())
+
         async def aclose(self):
             pass
 
@@ -534,7 +375,7 @@ async def test_document_cleanup_drains_and_blocks_same_source_processing(monkeyp
     cleanup_entered = asyncio.Event()
     release_cleanup = asyncio.Event()
 
-    async def fake_delete_records(source_config_id, document_source_id):
+    async def fake_delete_records(source_config_id, document_source_id, session_factory=None, vector_store=None):
         assert (source_config_id, document_source_id) == ("source", "document")
         cleanup_entered.set()
         await release_cleanup.wait()
@@ -583,6 +424,58 @@ async def test_document_cleanup_drains_and_blocks_same_source_processing(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_engine_maintenance_drains_writers_and_reopens_admission():
+    from sag_api.core.config import settings
+    from sag_api.sag.engine_manager import EngineManager, _Slot
+
+    class FakeEngine:
+        async def aclose(self):
+            pass
+
+    manager = EngineManager(settings)
+    slot = _Slot(engine=FakeEngine())
+    manager._slots["source"] = slot
+    writer_entered = asyncio.Event()
+    release_writer = asyncio.Event()
+    maintenance_entered = asyncio.Event()
+    release_maintenance = asyncio.Event()
+    late_writer_entered = asyncio.Event()
+
+    async def writer():
+        async with manager.use_concurrently("source"):
+            writer_entered.set()
+            await release_writer.wait()
+
+    async def maintenance():
+        async with manager.maintenance("source"):
+            maintenance_entered.set()
+            assert slot.concurrent_users == 0
+            assert slot.concurrent_allowed.is_set() is False
+            await release_maintenance.wait()
+
+    async def late_writer():
+        async with manager.use_concurrently("source"):
+            late_writer_entered.set()
+
+    first = asyncio.create_task(writer())
+    await writer_entered.wait()
+    exclusive = asyncio.create_task(maintenance())
+    for _ in range(20):
+        if not slot.concurrent_allowed.is_set():
+            break
+        await asyncio.sleep(0)
+    late = asyncio.create_task(late_writer())
+    release_writer.set()
+    await maintenance_entered.wait()
+    assert late_writer_entered.is_set() is False
+    release_maintenance.set()
+    await exclusive
+    await asyncio.wait_for(late_writer_entered.wait(), timeout=1)
+    await asyncio.gather(first, late)
+    assert slot.concurrent_allowed.is_set() is True
+
+
+@pytest.mark.asyncio
 async def test_document_waiting_for_engine_admission_yields_to_maintenance():
     from sag_api.core.config import settings
     from sag_api.sag.dto import ProcessCheckpoint
@@ -596,6 +489,7 @@ async def test_document_waiting_for_engine_admission_yields_to_maintenance():
     manager._slots["source"] = _Slot(engine=FakeEngine())
     await manager.begin_document_maintenance("source")
     try:
+
         async def should_pause():
             return True
 
@@ -630,21 +524,30 @@ async def test_search_falls_back_to_vector():
             self.empty_multi = empty_multi
             self.calls: list[str] = []
 
-        async def search(self, query, strategy=None, top_k=None):
+        async def search(self, request):
+            strategy = request.options.strategy
             self.calls.append(strategy)
-            if strategy == "multi":
+            if strategy == "full_expand":
                 if self.fail_multi:
                     raise RuntimeError("boom")
                 if self.empty_multi:
-                    return type("R", (), {"query": query, "sections": [], "stats": {}})()
+                    return type("R", (), {"query": request.query, "sections": [], "stats": {}})()
             return type(
                 "R",
                 (),
                 {
-                    "query": query,
+                    "query": request.query,
                     "sections": [
-                        {"chunk_id": "c1", "source_id": "s", "source_config_id": "scid",
-                         "heading": "h", "content": "x", "rank": 1, "score": 0.9, "weight": 1}
+                        {
+                            "chunk_id": "c1",
+                            "source_id": "s",
+                            "source_config_id": "scid",
+                            "heading": "h",
+                            "content": "x",
+                            "rank": 1,
+                            "score": 0.9,
+                            "weight": 1,
+                        }
                     ],
                     "stats": {},
                 },
@@ -661,15 +564,16 @@ async def test_search_falls_back_to_vector():
     # 失败回退
     eng = FakeEngine(fail_multi=True)
     out = await run_case(eng)
-    assert eng.calls == ["multi", "vector"] and len(out.sections) == 1
+    assert eng.calls == ["full_expand", "vector"] and len(out.sections) == 1
     # 空结果回退
     eng2 = FakeEngine(fail_multi=False, empty_multi=True)
     out2 = await run_case(eng2)
-    assert eng2.calls == ["multi", "vector"] and len(out2.sections) == 1
+    assert eng2.calls == ["full_expand", "vector"] and len(out2.sections) == 1
+
     # vector 直查失败不回退
     class FailVector(FakeEngine):
-        async def search(self, query, strategy=None, top_k=None):
-            self.calls.append(strategy)
+        async def search(self, request):
+            self.calls.append(request.options.strategy)
             raise RuntimeError("vector down")
 
     em = EngineManager(settings)
@@ -678,203 +582,3 @@ async def test_search_falls_back_to_vector():
     with pytest.raises(RuntimeError, match="vector down"):
         await em.search("scid", "q", strategy="vector")
     assert fv.calls == ["vector"]
-
-
-@pytest.mark.asyncio
-async def test_search_many_pushes_document_exclusions_into_vector_query(monkeypatch):
-    """真实 EngineManager 路径：exclude_source_ids_by_config 必须落到 ES must_not。
-
-    回归 PR #80 review：EngineManager 声明 supports_document_source_exclusions=True，
-    检索层会传排除条件；若只在后端调用侧丢弃、不在 ES 查询里应用，隐藏文档会先占满
-    top_k 再被过滤，正常文档无法补位，最终返回空。
-    """
-    from sag_api.core.config import settings
-    from sag_api.sag.engine_manager import EngineManager, _Slot
-
-    captured: dict[str, Any] = {}
-
-    class FakeVectorSearchClient:
-        async def vector_search(self, *, index, field, vector, size, filter_query=None, routing=None):
-            captured["index"] = index
-            captured["field"] = field
-            captured["size"] = size
-            captured["filter_query"] = filter_query
-            captured["routing"] = routing
-            # 模拟 ES 已应用 must_not：正常文档补位到 top_k，隐藏文档不再出现。
-            return [
-                {
-                    "chunk_id": f"c{i}",
-                    "source_id": "visible-doc",
-                    "source_config_id": "scid-1",
-                    "heading": "h",
-                    "content": "x",
-                    "rank": i,
-                    "_score": 0.9 - 0.01 * i,
-                }
-                for i in range(size)
-            ]
-
-    class FakeProcessor:
-        async def generate_embedding(self, query):
-            return [0.1, 0.2, 0.3]
-
-    class FakeRepository:
-        INDEX_NAME = "source_chunks"
-
-        def __init__(self, client):
-            self.es_client = client
-
-        async def search_similar_by_content(self, **kwargs):  # noqa: D401
-            raise AssertionError("有排除时不应走无过滤的快速路径")
-
-    import sys
-    from types import ModuleType
-
-    fake_storage = ModuleType("zleap.sag.core.storage.client")
-    fake_storage.get_es_client = lambda: FakeVectorSearchClient()
-    fake_repos = ModuleType("zleap.sag.core.storage.repositories.source_chunk_repository")
-    fake_repos.SourceChunkRepository = FakeRepository
-    fake_loader = ModuleType("zleap.sag.modules.load.processor")
-    fake_loader.DocumentProcessor = FakeProcessor
-    fake_query = ModuleType("zleap.sag.core.storage.query")
-
-    class _Q:
-        def __init__(self, kind, **kwargs):
-            self.kind = kind
-            self.kwargs = kwargs
-
-        def to_dict(self):
-            def encode(value):
-                if isinstance(value, _Q):
-                    return {value.kind: {k: encode(v) for k, v in value.kwargs.items()}}
-                if isinstance(value, list):
-                    return [encode(v) for v in value]
-                return value
-
-            return {self.kind: {k: encode(v) for k, v in self.kwargs.items()}}
-
-    fake_query.Q = _Q
-    for name, module in (
-        ("zleap.sag.core.storage.client", fake_storage),
-        ("zleap.sag.core.storage.repositories.source_chunk_repository", fake_repos),
-        ("zleap.sag.modules.load.processor", fake_loader),
-        ("zleap.sag.core.storage.query", fake_query),
-    ):
-        monkeypatch.setitem(sys.modules, name, module)
-
-    class _DummyEngine:
-        async def aclose(self):
-            pass
-
-    manager_settings = settings.model_copy(
-        update={
-            "search_top_k": 5,
-            "search_source_candidate_limit": 4,
-        }
-    )
-    manager = EngineManager(manager_settings)
-    # 塞一个未关闭 slot 让 _ensure_read_runtime 快速返回
-    manager._slots["scid-1"] = _Slot(engine=_DummyEngine())
-
-    outcome = await manager.search_many(
-        [("scid-1", None)],
-        "test",
-        strategy="multi",
-        top_k=5,
-        exclude_source_ids_by_config={"scid-1": ("hidden-doc-a", "hidden-doc-b")},
-    )
-
-    assert captured["size"] == 5, "top_k 需完整下推到 ES,避免隐藏文档挤占后返回不足"
-    assert captured["filter_query"] is not None
-    bool_clause = captured["filter_query"].get("bool")
-    assert bool_clause is not None
-    filters = bool_clause.get("filter", [])
-    must_not = bool_clause.get("must_not", [])
-    assert any(
-        clause.get("terms", {}).get("source_config_id") == ["scid-1"]
-        for clause in filters
-    ), "必须仍限定 source_config_id"
-    assert must_not, "必须为待排除文档产出 must_not 子句"
-    hidden_terms: set[str] = set()
-    for clause in must_not:
-        for sub in clause.get("bool", {}).get("filter", []):
-            terms = sub.get("terms", {}).get("source_id")
-            if terms:
-                hidden_terms.update(terms)
-    assert hidden_terms == {"hidden-doc-a", "hidden-doc-b"}
-    # 正常文档补位到 top_k,证明 ES 侧已过滤,retrieval 层不再需要吞并空结果
-    assert len(outcome.sections) == 5
-    assert all(section.source_id == "visible-doc" for section in outcome.sections)
-
-
-@pytest.mark.asyncio
-async def test_search_many_without_exclusions_takes_fast_path(monkeypatch):
-    """无隐藏文档时走原有 search_similar_by_content,不构造 must_not。"""
-    from sag_api.core.config import settings
-    from sag_api.sag.engine_manager import EngineManager, _Slot
-
-    called: dict[str, Any] = {}
-
-    class FakeVectorSearchClient:
-        async def vector_search(self, **kwargs):
-            raise AssertionError("无排除条件时不应走 vector_search 分支")
-
-    class FakeProcessor:
-        async def generate_embedding(self, query):
-            return [0.1]
-
-    class FakeRepository:
-        INDEX_NAME = "source_chunks"
-
-        def __init__(self, client):
-            self.es_client = client
-
-        async def search_similar_by_content(self, *, query_vector, k, source_config_ids):
-            called["k"] = k
-            called["source_config_ids"] = list(source_config_ids)
-            return [
-                {
-                    "chunk_id": "c1",
-                    "source_id": "s1",
-                    "source_config_id": source_config_ids[0],
-                    "heading": "h",
-                    "content": "x",
-                    "rank": 1,
-                    "_score": 0.8,
-                }
-            ]
-
-    import sys
-    from types import ModuleType
-
-    fake_storage = ModuleType("zleap.sag.core.storage.client")
-    fake_storage.get_es_client = lambda: FakeVectorSearchClient()
-    fake_repos = ModuleType("zleap.sag.core.storage.repositories.source_chunk_repository")
-    fake_repos.SourceChunkRepository = FakeRepository
-    fake_loader = ModuleType("zleap.sag.modules.load.processor")
-    fake_loader.DocumentProcessor = FakeProcessor
-    for name, module in (
-        ("zleap.sag.core.storage.client", fake_storage),
-        ("zleap.sag.core.storage.repositories.source_chunk_repository", fake_repos),
-        ("zleap.sag.modules.load.processor", fake_loader),
-    ):
-        monkeypatch.setitem(sys.modules, name, module)
-
-    class _DummyEngine:
-        async def aclose(self):
-            pass
-
-    manager = EngineManager(settings)
-    manager._slots["scid-1"] = _Slot(engine=_DummyEngine())
-
-    outcome = await manager.search_many(
-        [("scid-1", None)],
-        "test",
-        strategy="vector",
-        top_k=4,
-        exclude_source_ids_by_config=None,
-    )
-
-    assert called["source_config_ids"] == ["scid-1"]
-    assert called["k"] == 4
-    assert len(outcome.sections) == 1

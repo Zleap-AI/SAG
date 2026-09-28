@@ -55,6 +55,14 @@ function job(overrides: Partial<BackgroundJob> = {}): BackgroundJob {
 }
 
 describe("document activity", () => {
+  it("permits pausing a retry only while the worker is processing it", () => {
+    const failed = document({ status: "failed" });
+    const retry = beginDocumentMutation(failed, "reprocess", 1_000);
+    expect(deriveDocumentActivity(failed, retry, 1_001).canPause).toBe(false);
+    expect(deriveDocumentActivity(document({ status: "extracting" }), retry, 1_002).canPause).toBe(true);
+    const extracting = document({ status: "extracting" });
+    expect(deriveDocumentActivity(extracting, beginDocumentMutation(extracting, "pause", 1_003), 1_004).canPause).toBe(false);
+  });
   it("describes deletion as immediate removal with automatic background cleanup", () => {
     expect(zhMessages.DocumentList.deleting).toBe("文档已移除，后台清理将自动完成");
     expect(enMessages.DocumentList.deleting).toBe("Document removed; background cleanup will finish automatically");

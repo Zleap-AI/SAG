@@ -121,6 +121,7 @@
     "signOut": "Return to launch page"
   },
   "DocumentStatus": {
+    "stale": "Reingestion needed",
     "pending": "Pending",
     "loading": "Parsing",
     "extracting": "Extracting",
@@ -366,6 +367,24 @@
       "queued": "queued",
       "running": "parsing"
     }
+  },
+  "FnOSKnowledgeUpgrade": {
+    "title": "Previous knowledge needs reingestion",
+    "description": "The engine has been upgraded. Previous extraction and indexes cannot be reused. Processing private originals starts only after you choose to reingest and may incur model costs. Legacy engine data and backups remain until an administrator removes them manually. Historical citations are stale.",
+    "progress": "Completed {ready, number} of {total, number} documents",
+    "reingest": "Reingest my previous knowledge",
+    "queued": "Queued {count, number} documents",
+    "failed": "Could not queue reingestion",
+    "missing": "These documents need their original files uploaded again:",
+    "uploaded": "Original saved. Choose reingest to process it.",
+    "uploadFailed": "Upload failed. Check that the filename matches the previous document.",
+    "uploadOriginal": "Upload {filename} again",
+    "statusTitle": "Knowledge upgrade status unavailable",
+    "statusFailed": "Could not read the knowledge upgrade status. Please retry.",
+    "retry": "Retry",
+    "openKnowledge": "Open knowledge bases to reingest",
+    "completedTitle": "Previous knowledge reingestion complete",
+    "completedDescription": "Previous knowledge is available for search and answers. Legacy engine data and backups remain for an administrator to review and remove manually; historical citations are not updated automatically."
   },
   "Knowledge": {
     "title": "Knowledge",
@@ -814,6 +833,7 @@
     "sessionMissing": "Conversation runtime session not found: {id}"
   },
   "Citations": {
+    "stale": "Previous engine citation; original unavailable",
     "visitExternal": "Visit external source: {title}",
     "openOriginal": "Open original",
     "original": "Original",
@@ -895,6 +915,8 @@
     "clearHistoryDescription": "This will delete {count, plural, one {# search query} other {# search queries}} saved on this device. This cannot be undone.",
     "noEvidence": "Not enough relevant evidence found",
     "noEvidenceDescription": "Try a more specific query or use @ to narrow the knowledge scope.",
+    "knowledgePending": "Some knowledge awaits reingestion",
+    "knowledgePendingDescription": "Each user can start reingestion from their knowledge base. Search results may be incomplete until then.",
     "relatedMaterial": "Related material",
     "unnamedEvent": "Untitled event",
     "noEventSummary": "No event summary",

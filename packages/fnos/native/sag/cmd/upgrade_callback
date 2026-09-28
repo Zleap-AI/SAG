@@ -10,6 +10,23 @@
 set -u
 
 command_dir="$(dirname "$0")"
+users="${TRIM_PKGVAR:-}/users"
+
+# fnpack may run the old payload's upgrade_init before swapping files. Check
+# consent again here, while no new process or metadata migration has started.
+if [ -n "${TRIM_PKGVAR:-}" ] && [ -d "$users" ] && [ -n "$(ls -A "$users" 2>/dev/null)" ]; then
+  py="/var/apps/python312/target/bin/python3"
+  [ -x "$py" ] || py="python3"
+  if [ "${SAG_ACCEPT_REINGEST_UPGRADE:-false}" != true ] &&
+     ! "$py" "${TRIM_APPDEST:-}/runtime/lifecycle.py" migration-ready --root "$users" >/dev/null 2>&1; then
+    message='upgrade_callback: reingest upgrade consent is required for existing Native knowledge'
+    if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+      printf '%s\n' "$message" >>"$TRIM_TEMP_LOGFILE" 2>/dev/null || :
+    fi
+    printf '%s\n' "$message" >&2
+    exit 1
+  fi
+fi
 
 if ! "$command_dir/main" stop; then
   log_file="${TRIM_TEMP_LOGFILE:-}"
@@ -19,10 +36,13 @@ if ! "$command_dir/main" stop; then
   exit 1
 fi
 
-if ! "$command_dir/install_callback"; then
+# The installed payload's upgrade_init can predate our cold-backup checks.
+# Run the new gate against the stopped, still-unmigrated user tree. A failure
+# must not restart this new payload and mutate metadata before backup succeeds.
+if ! SAG_UPGRADE_KEEP_STOPPED=true "$command_dir/upgrade_init"; then
   log_file="${TRIM_TEMP_LOGFILE:-}"
   if [ -n "$log_file" ]; then
-    printf 'upgrade_callback: install_callback delegation failed (see preceding install_callback lines)\n' >>"$log_file" 2>/dev/null || :
+    printf 'upgrade_callback: verified cold backup gate failed (see preceding upgrade_init lines)\n' >>"$log_file" 2>/dev/null || :
   fi
   exit 1
 fi

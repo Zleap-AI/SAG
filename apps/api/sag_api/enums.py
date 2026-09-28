@@ -5,8 +5,13 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-SearchStrategy = Literal["vector", "multi"]
-SEARCH_STRATEGIES = frozenset({"vector", "multi"})
+SearchStrategy = Literal["vector", "multi", "multi_es_fast"]
+SEARCH_STRATEGIES = frozenset({"vector", "multi", "multi_es_fast"})
+SEARCH_STRATEGY_REQUIREMENTS: dict[str, frozenset[str]] = {
+    "vector": frozenset(),
+    "multi": frozenset(),
+    "multi_es_fast": frozenset({"lexical_search"}),
+}
 
 
 def normalize_search_strategy(value: str) -> str:
@@ -41,6 +46,7 @@ class SourceStatus(StrEnum):
 
 
 class DocumentStatus(StrEnum):
+    STALE = "stale"            # 0.7.1 派生知识待用户确认重新入库
     PENDING = "pending"        # 已登记，待处理
     LOADING = "loading"        # ingest 中（解析 → 分块 → 入库 → 向量）
     EXTRACTING = "extracting"  # extract 中（事件 / 实体抽取）

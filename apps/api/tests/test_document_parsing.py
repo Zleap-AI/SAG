@@ -511,8 +511,10 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch):
             should_pause,
             max_concurrency,
             document_title,
+            original_path,
         ):
             self.seen_path = path
+            assert original_path == document.storage_path
             assert max_concurrency == tasks.settings.document_extract_concurrency
             assert document_title == "original"
             await on_stage("loading")

@@ -121,6 +121,7 @@
     "signOut": "退出到启动页"
   },
   "DocumentStatus": {
+    "stale": "待重新入库",
     "pending": "待处理",
     "loading": "解析入库",
     "extracting": "抽取中",
@@ -366,6 +367,24 @@
       "queued": "排队中",
       "running": "解析中"
     }
+  },
+  "FnOSKnowledgeUpgrade": {
+    "title": "旧知识需要重新入库",
+    "description": "引擎已升级。旧抽取结果与索引不可复用；点击重新入库后才会处理私有原件，并可能产生模型费用。旧引擎数据和备份会保留，直到管理员手动清理。历史引用已过期。",
+    "progress": "已完成 {ready, number} / {total, number} 个文档",
+    "reingest": "重新入库我的旧知识",
+    "queued": "已加入 {count, number} 个文档的处理任务",
+    "failed": "重新入库请求失败",
+    "missing": "以下文档缺少原件，请逐项重新上传：",
+    "uploaded": "原件已保存，请点击重新入库",
+    "uploadFailed": "原件上传失败，请检查文件名与原文档是否一致",
+    "uploadOriginal": "重新上传 {filename}",
+    "statusTitle": "知识升级状态暂时不可用",
+    "statusFailed": "暂时无法读取知识升级状态，请重试。",
+    "retry": "重试",
+    "openKnowledge": "查看知识库并重新入库",
+    "completedTitle": "旧知识已重新入库完成",
+    "completedDescription": "当前旧知识已恢复检索和问答。旧引擎数据与备份仍保留，管理员可确认后手动清理；历史旧引用不会自动更新。"
   },
   "Knowledge": {
     "title": "知识库",
@@ -814,6 +833,7 @@
     "sessionMissing": "对话运行实例不存在：{id}"
   },
   "Citations": {
+    "stale": "旧版引用，无法定位原文",
     "visitExternal": "访问外部来源：{title}",
     "openOriginal": "打开原文",
     "original": "原文",
@@ -895,6 +915,8 @@
     "clearHistoryDescription": "将删除当前设备保存的 {count, number} 条查询记录，此操作无法撤销。",
     "noEvidence": "没有找到足够相关的证据",
     "noEvidenceDescription": "换个更具体的说法，或通过 @ 缩小知识库范围。",
+    "knowledgePending": "部分知识尚未重新入库",
+    "knowledgePendingDescription": "升级后的旧知识需要由各用户在知识库页面主动重新入库；当前检索结果可能不完整。",
     "relatedMaterial": "相关资料",
     "unnamedEvent": "未命名事件",
     "noEventSummary": "暂无事件摘要",

@@ -25,6 +25,7 @@ const MAP: Record<
     spin?: boolean;
   }
 > = {
+  stale: { variant: "outline", icon: RefreshCw },
   pending: { variant: "outline", icon: CircleDashed },
   loading: { variant: "secondary", icon: Loader2, spin: true },
   extracting: { variant: "secondary", icon: Loader2, spin: true },

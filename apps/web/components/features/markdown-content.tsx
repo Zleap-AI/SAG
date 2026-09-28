@@ -3,7 +3,9 @@
 import * as React from "react";
 import { useTranslations } from "next-intl";
 import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 
 import { splitMarkdownBlocks } from "@/lib/markdown-blocks";
 import type { Citation } from "@/lib/types";
@@ -17,6 +19,199 @@ type MdNode = {
   children?: MdNode[];
   data?: Record<string, unknown>;
 };
+
+type HastNode = {
+  type?: string;
+  value?: string;
+  properties?: { className?: unknown };
+  children?: HastNode[];
+};
+
+/** Convert paired LaTeX delimiters only; never infer math from its contents. */
+function normalizeExplicitMathDelimiters(content: string): string {
+  let normalized = "";
+  let codeFence: string | null = null;
+  let inlineCodeTicks = 0;
+  let linkDestinationDepth = 0;
+  let autolinkDestination = false;
+
+  const hasOddBackslashRun = (index: number) => {
+    let count = 0;
+    for (let cursor = index; cursor >= 0 && content[cursor] === "\\"; cursor--) count++;
+    return count % 2 === 1;
+  };
+
+  const isEscaped = (index: number) => {
+    let count = 0;
+    for (let cursor = index - 1; cursor >= 0 && content[cursor] === "\\"; cursor--) count++;
+    return count % 2 === 1;
+  };
+
+  const findExplicitClose = (
+    start: number,
+    token: "\\)" | "\\]",
+    inline: boolean,
+  ) => {
+    for (let cursor = start; cursor < content.length - 1; cursor++) {
+      if (inline && content[cursor] === "\n") return -1;
+      if (content[cursor] === "`") return -1;
+      const lineStart = cursor === 0 || content[cursor - 1] === "\n";
+      if (lineStart && /^ {0,3}(?:`{3,}|~{3,})/.test(content.slice(cursor))) return -1;
+      if (content.startsWith(token, cursor) && hasOddBackslashRun(cursor)) return cursor;
+    }
+    return -1;
+  };
+
+  const findNextDollar = (start: number) => {
+    for (let cursor = start; cursor < content.length; cursor++) {
+      if (content[cursor] === "$" && !isEscaped(cursor)) return cursor;
+    }
+    return -1;
+  };
+
+  const startsLiteralDollarToken = (value: string) => {
+    return /^(?:\s*\d|[A-Z][A-Z0-9_]*(?=$|[^A-Z0-9_]))/.test(value);
+  };
+
+  for (let index = 0; index < content.length;) {
+    const lineStart = index === 0 || content[index - 1] === "\n";
+    if (lineStart && inlineCodeTicks === 0) {
+      const fenceMatch = /^( {0,3})(`{3,}|~{3,})/.exec(content.slice(index));
+      if (fenceMatch) {
+        const marker = fenceMatch[2];
+        const newlineIndex = content.indexOf("\n", index);
+        const lineEnd = newlineIndex === -1 ? content.length : newlineIndex + 1;
+        const markerSuffix = content.slice(index + fenceMatch[0].length, lineEnd).trim();
+        if (!codeFence) codeFence = marker;
+        else if (
+          codeFence[0] === marker[0]
+          && marker.length >= codeFence.length
+          && markerSuffix === ""
+        ) codeFence = null;
+        normalized += content.slice(index, lineEnd);
+        index = lineEnd;
+        continue;
+      }
+
+      if (!codeFence && /^ {0,3}\[[^\]\n]+\]:\s*/.test(content.slice(index))) {
+        const newlineIndex = content.indexOf("\n", index);
+        const lineEnd = newlineIndex === -1 ? content.length : newlineIndex + 1;
+        normalized += content.slice(index, lineEnd);
+        index = lineEnd;
+        continue;
+      }
+    }
+
+    if (!codeFence && content[index] === "`") {
+      let runLength = 1;
+      while (content[index + runLength] === "`") runLength++;
+      if (inlineCodeTicks === 0) inlineCodeTicks = runLength;
+      else if (inlineCodeTicks === runLength) inlineCodeTicks = 0;
+      normalized += content.slice(index, index + runLength);
+      index += runLength;
+      continue;
+    }
+
+    if (!codeFence && inlineCodeTicks === 0) {
+      if (autolinkDestination) {
+        if (content[index] === ">" && !isEscaped(index)) autolinkDestination = false;
+        normalized += content[index];
+        index++;
+        continue;
+      }
+      if (
+        content[index] === "<"
+        && /^(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:|[^ <>@]+@)/.test(content.slice(index + 1))
+      ) {
+        autolinkDestination = true;
+        normalized += content[index];
+        index++;
+        continue;
+      }
+      if (linkDestinationDepth > 0) {
+        if (content[index] === "(" && !isEscaped(index)) linkDestinationDepth++;
+        else if (content[index] === ")" && !isEscaped(index)) linkDestinationDepth--;
+        normalized += content[index];
+        index++;
+        continue;
+      }
+      if (content[index] === "(" && content[index - 1] === "]" && !isEscaped(index)) {
+        linkDestinationDepth = 1;
+        normalized += content[index];
+        index++;
+        continue;
+      }
+    }
+
+    if (
+      !codeFence
+      && inlineCodeTicks === 0
+      && content.startsWith("\\(", index)
+      && hasOddBackslashRun(index)
+    ) {
+      const closingIndex = findExplicitClose(index + 2, "\\)", true);
+      if (closingIndex !== -1) {
+        normalized += `$${content.slice(index + 2, closingIndex)}$`;
+        index = closingIndex + 2;
+        continue;
+      }
+      normalized += "\\\\(";
+      index += 2;
+      continue;
+    }
+
+    if (
+      !codeFence
+      && inlineCodeTicks === 0
+      && content.startsWith("\\[", index)
+      && hasOddBackslashRun(index)
+    ) {
+      const closingIndex = findExplicitClose(index + 2, "\\]", false);
+      if (closingIndex !== -1) {
+        const math = content.slice(index + 2, closingIndex).replace(/^\s+|\s+$/g, "");
+        normalized += `\n$$\n${math}\n$$\n`;
+        index = closingIndex + 2;
+        continue;
+      }
+      normalized += "\\\\[";
+      index += 2;
+      continue;
+    }
+
+    if (
+      !codeFence
+      && inlineCodeTicks === 0
+      && content[index] === "$"
+      && !isEscaped(index)
+      && startsLiteralDollarToken(content.slice(index + 1))
+    ) {
+      const closingIndex = findNextDollar(index + 1);
+      if (
+        closingIndex === -1
+        || startsLiteralDollarToken(content.slice(closingIndex + 1))
+      ) {
+        normalized += "\\$";
+        index++;
+        continue;
+      }
+    }
+
+    if (
+      !codeFence
+      && inlineCodeTicks === 0
+      && (content.startsWith("\\)", index) || content.startsWith("\\]", index))
+      && hasOddBackslashRun(index)
+    ) {
+      normalized += `\\\\${content[index + 1]}`;
+      index += 2;
+      continue;
+    }
+
+    normalized += content[index];
+    index++;
+  }
+  return normalized;
+}
 
 function remarkCitationLinks(validNumbers: ReadonlySet<string>) {
   return () => {
@@ -60,6 +255,53 @@ function remarkCitationLinks(validNumbers: ReadonlySet<string>) {
       });
     };
     return visit;
+  };
+}
+
+/**
+ * 知识库与模型输出常把百分号写成 `5.2%`，而 TeX 会把裸 `%` 当作注释起点。
+ * 在 rehype-katex 消费数学 HAST 前补全转义，避免改写普通 Markdown、URL 或代码块。
+ */
+function rehypeMathLiteralPercent() {
+  return (tree: HastNode) => {
+    const escapeLiteralPercents = (value: string) => {
+      let escaped = "";
+      for (let index = 0; index < value.length; index++) {
+        const character = value[index];
+        if (character !== "%") {
+          escaped += character;
+          continue;
+        }
+
+        let precedingBackslashes = 0;
+        for (let cursor = index - 1; cursor >= 0 && value[cursor] === "\\"; cursor--) {
+          precedingBackslashes++;
+        }
+        escaped += precedingBackslashes % 2 === 0 ? "\\%" : "%";
+      }
+      return escaped;
+    };
+
+    const escapeText = (node: HastNode) => {
+      if (node.type === "text" && typeof node.value === "string") {
+        node.value = escapeLiteralPercents(node.value);
+      }
+      node.children?.forEach(escapeText);
+    };
+    const visit = (node: HastNode) => {
+      const rawClassName = node.properties?.className;
+      const classNames = Array.isArray(rawClassName)
+        ? rawClassName.filter((value): value is string => typeof value === "string")
+        : typeof rawClassName === "string"
+          ? rawClassName.split(/\s+/)
+          : [];
+      if (classNames.some((name) => name === "math-inline" || name === "math-display")) {
+        node.children?.forEach(escapeText);
+        return;
+      }
+      node.children?.forEach(visit);
+    };
+    visit(tree);
   };
 }
 
@@ -121,7 +363,20 @@ export const MarkdownContent = React.memo(function MarkdownContent({
       aria-busy={streaming || undefined}
     >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, citationPlugin]}
+        remarkPlugins={[remarkGfm, remarkMath, citationPlugin]}
+        rehypePlugins={[
+          rehypeMathLiteralPercent,
+          [
+            rehypeKatex,
+            {
+              trust: false,
+              throwOnError: false,
+              strict: "warn",
+              maxSize: 100,
+              maxExpand: 1000,
+            },
+          ],
+        ]}
         components={{
           img: MdImage,
           a: ({ href, children, ...props }) => {
@@ -159,7 +414,7 @@ export const MarkdownContent = React.memo(function MarkdownContent({
           },
         }}
       >
-        {content}
+        {normalizeExplicitMathDelimiters(content)}
       </ReactMarkdown>
     </div>
   );

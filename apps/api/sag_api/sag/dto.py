@@ -41,7 +41,20 @@ class SearchOutcome(BaseModel):
 
     @classmethod
     def from_result(cls, result: Any) -> SearchOutcome:
-        raw_sections = getattr(result, "sections", None) or []
+        raw_sections = getattr(result, "sections", None)
+        if raw_sections is None:
+            raw_sections = [
+                {
+                    "chunk_id": hit.chunk_id or hit.id,
+                    "heading": hit.title or "",
+                    "content": hit.content,
+                    "score": hit.score or 0.0,
+                    "rank": hit.metadata.get("rank", index),
+                    "source_id": hit.source_id,
+                    "source_config_id": hit.data_source_id,
+                }
+                for index, hit in enumerate(getattr(result, "chunks", ()) or (), 1)
+            ]
         query = getattr(result, "query", "") or ""
         if not isinstance(query, str):
             query = str(query)
@@ -210,6 +223,9 @@ class ProcessCheckpoint(BaseModel):
     event_ids: list[str] = []
     eventless_chunk_ids: list[str] = []
     token_usage: int = 0
+    generation_id: str | None = None
+    chunk_version: str | None = None
+    source_version: str | None = None
 
     @classmethod
     def from_payload(cls, payload: dict | None) -> ProcessCheckpoint:

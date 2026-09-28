@@ -1,0 +1,23 @@
+[
+  {
+    "step_title": "SAG 知识引擎升级",
+    "items": [
+      {
+        "type": "singleselect",
+        "desc": "知识引擎将从 0.7.1 升级到 0.13.0，旧版抽取结果和检索索引无法复用。升级后每位用户可自行决定何时重新入库，重新入库可能产生模型费用。文档私有原件和设置会保留；旧引擎数据和升级备份将保留，直到管理员手动清理。",
+        "subitems": [
+          {
+            "key": "SAG_DECLINE_REINGEST_UPGRADE",
+            "desc": "暂不升级，保留当前版本和数据（推荐：尚未准备好时）",
+            "defaultValue": true
+          },
+          {
+            "key": "SAG_ACCEPT_REINGEST_UPGRADE",
+            "desc": "我已了解上述影响，选择升级并在之后重新入库",
+            "defaultValue": false
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -160,7 +160,7 @@ class WorkspacePaths:
             root=root,
             meta_dir=meta_dir,
             database_file=meta_dir / "sag.db",
-            engine_dir=root / "engine",
+            engine_dir=root / "engine-v0.13",
             uploads_dir=root / "uploads",
             logs_dir=root / "logs",
             socket_file=temp_root / "workers" / f"{key}.sock",
@@ -179,7 +179,7 @@ class WorkspacePaths:
                         _regular_file_or_missing(meta_fd, self.database_file.name)
                     finally:
                         os.close(meta_fd)
-                    for name in ("engine", "uploads", "logs"):
+                    for name in (self.engine_dir.name, "uploads", "logs"):
                         directory_fd = _private_directory_at(root_fd, name)
                         os.close(directory_fd)
                 finally:
