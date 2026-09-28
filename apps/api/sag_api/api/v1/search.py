@@ -425,13 +425,13 @@ async def _run_one_strategy(
             top_k=top_k,
             include_ranked_candidates=include_ranked_candidates,
         )
-    except Exception as error:  # noqa: BLE001
-        log.warning("eval-compare 策略 %s 失败:%s", strategy, error)
+    except Exception:  # noqa: BLE001
+        log.exception("eval-compare 策略 %s 失败", strategy)
         return EvalStrategyResultOut(
             strategy=strategy,  # type: ignore[arg-type]
             sections=[],
             stats={},
-            error=getattr(error, "message", None) or str(error),
+            error="检索失败，请稍后重试",
         )
     section_outputs: list[SectionOut] = []
     for section in outcome.sections:

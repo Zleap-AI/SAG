@@ -932,3 +932,21 @@ async def test_visibility_prefilter_failure_never_falls_back_to_unfiltered_legac
     assert outcome.sections == []
     assert legacy_calls == 0
     assert outcome.stats["chunk_recall"] == "batch-vector-prefilter-failed"
+
+
+@pytest.mark.asyncio
+async def test_eval_compare_hides_internal_errors_including_wrapped_engine_errors(monkeypatch):
+    from sag_api.api.v1 import search
+    from sag_api.core.errors import UpstreamError
+
+    errors = [OSError(13, "Permission denied", "/private/tenant/engine/index"),
+              UpstreamError(message="engine failed at /private/tenant/engine/index")]
+    for error in errors:
+        async def fail(*_args, _error=error, **_kwargs):
+            raise _error
+
+        monkeypatch.setattr(search, "retrieve_relevant_sections", fail)
+        result = await search._run_one_strategy(None, [], "query", "vector", None, {})
+        assert result.sections == []
+        assert result.error == "检索失败，请稍后重试"
+        assert "/private/tenant" not in result.model_dump_json()
