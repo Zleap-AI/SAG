@@ -91,8 +91,17 @@ LAST_STEP="env-check"
 # service until its administrator has accepted reingestion and model cost.
 LAST_STEP="migration-consent"
 if [ -d "$users" ] && [ -n "$(ls -A "$users" 2>/dev/null)" ]; then
-  [ "${SAG_ACCEPT_REINGEST_UPGRADE:-false}" = true ] ||
-    die "reingest upgrade consent is required: existing knowledge must be reingested after upgrading the engine"
+  # Manual update on fnOS 1.2 can omit upgrade_uifile. A committed
+  # per-tenant engine marker proves this is a routine 0.13 update, even
+  # while users still choose when to rebuild. Never bypass the cold backup.
+  if [ "${SAG_ACCEPT_REINGEST_UPGRADE:-false}" != true ]; then
+    [ -f "$lifecycle" ] && "$py" "$lifecycle" migration-ready --root "$users" >/dev/null 2>&1 ||
+      die "reingest upgrade consent is required: existing knowledge must be reingested after upgrading the engine"
+  fi
+  [ -f "$lifecycle" ] || die "verified cold backup is required, but runtime/lifecycle.py is missing; reinstall the backup tool before upgrading"
+  if [ ! -x "$py312" ] && ! command -v python3 >/dev/null 2>&1; then
+    die "cannot create required cold backup: Python runtime is unavailable"
+  fi
 fi
 
 # ---- Delegate identity-secret provisioning to install_callback -----------
@@ -130,7 +139,7 @@ else
 fi
 
 restore_if_needed() {
-  if [ "$was_running" = true ]; then
+  if [ "$was_running" = true ] && [ "${SAG_UPGRADE_KEEP_STOPPED:-false}" != true ]; then
     TRIM_TEMP_LOGFILE=/dev/null "$main" start >/dev/null 2>&1 || :
   fi
 }
@@ -141,10 +150,6 @@ trap 'restore_if_needed; on_exit' EXIT HUP INT TERM
 #   - Native users directory does not exist yet
 #     (Docker→Native transition, or fresh first install)
 #   - Directory exists but is empty (fresh Native install)
-#   - lifecycle.py is not yet present in TRIM_APPDEST
-#     (fnpack ran upgrade_init before dropping new files, so the
-#     appdest still holds the OLD Docker payload)
-#   - python3 is not on PATH (edge case: minimal fnOS image)
 LAST_STEP="check-users-dir"
 if [ ! -d "$users" ]; then
   log "no users directory yet — skipping pre-upgrade backup (first Native install)"
@@ -155,20 +160,6 @@ fi
 LAST_STEP="check-users-empty"
 if [ -z "$(ls -A "$users" 2>/dev/null)" ]; then
   log "users directory is empty — nothing to back up"
-  trap - EXIT HUP INT TERM
-  exit 0
-fi
-
-LAST_STEP="check-lifecycle-py"
-if [ ! -f "$lifecycle" ]; then
-  log "runtime/lifecycle.py not present in TRIM_APPDEST yet (fnpack has not swapped in the new package payload) — skipping pre-upgrade backup"
-  trap - EXIT HUP INT TERM
-  exit 0
-fi
-
-LAST_STEP="check-python3"
-if [ ! -x "$py312" ] && ! command -v python3 >/dev/null 2>&1; then
-  log "no python3 available (neither bundled $py312 nor system python3) — skipping pre-upgrade backup (this is safe on a first install; main uses its own bundled runtime)"
   trap - EXIT HUP INT TERM
   exit 0
 fi

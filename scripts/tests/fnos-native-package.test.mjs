@@ -445,3 +445,31 @@ test("probe builder embeds the probe and vendor payload inside app.tgz", {
   assert.match(contents.stdout, /server\/fnos-native-probe\.py/);
   assert.match(contents.stdout, /server\/vendor\/fixture-native\.so/);
 });
+
+
+for (const defect of ["missing", "invalid-json", "wrong-key", "wrong-type", "default-accept", "no-default-decline"]) {
+  test(`native package rejects upgrade consent wizard: ${defect}`, async (t) => {
+    const root = await renderedPackage(t, "x86");
+    const wizardPath = path.join(root, "wizard/upgrade_uifile");
+    if (defect === "missing") await unlink(wizardPath);
+    else if (defect === "invalid-json") await writeFile(wizardPath, "{");
+    else {
+      const wizard = JSON.parse(await readFile(wizardPath, "utf8"));
+      const item = wizard[0].items[0];
+      if (defect === "wrong-key") item.subitems[1].key = "SAG_WRONG_ACCEPT";
+      if (defect === "wrong-type") item.type = "textfield";
+      if (defect === "default-accept") item.subitems[1].defaultValue = true;
+      if (defect === "no-default-decline") item.subitems[0].defaultValue = false;
+      await writeFile(wizardPath, JSON.stringify(wizard));
+    }
+    await expectRejected(root, "x86", /upgrade.*wizard|upgrade_uifile/i);
+  });
+}
+
+for (const file of ["cmd/upgrade_init", "cmd/upgrade_callback", "app/runtime/lifecycle.py"]) {
+  test(`native package rejects absent engine-update contract: ${file}`,async(t)=>{
+    const root=await renderedPackage(t,"x86");
+    await writeFile(path.join(root,file),"# contract removed");
+    await expectRejected(root,"x86",/consent|engine|lifecycle/i);
+  });
+}

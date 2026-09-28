@@ -205,6 +205,25 @@ describe("agent run activity", () => {
     expect(steps[0]).toMatchObject({ status: "error", error: "已停止" });
   });
 
+  it("preserves expired internal citations when restoring conversation history", () => {
+    const citation = {
+      n: 1,
+      chunk_id: "legacy-chunk",
+      heading: "Historical source",
+      snippet: "Retained citation copy",
+      score: 0.8,
+      source_id: "legacy-source",
+      stale: true,
+    };
+    expect(citationsFromArtifacts({ citations: [citation] })).toEqual([
+      { ...citation, kind: "internal" },
+    ]);
+    for (const stale of [false, "true", null]) {
+      expect(citationsFromArtifacts({ citations: [{ ...citation, stale }] })[0])
+        .not.toHaveProperty("stale");
+    }
+  });
+
   it("normalizes and merges internal and external citation artifacts", () => {
     const first = {
       n: 1,

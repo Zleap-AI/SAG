@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -89,6 +90,30 @@ def validate(archive: Path) -> None:
                 connection.close()
 
 
+def migration_ready(root: Path) -> None:
+    """Permit a routine update only when every tenant committed the 0.13 marker.
+
+    Read live SQLite including WAL without mutating metadata. Missing, unreadable,
+    corrupt or mixed legacy tenants require explicit administrator consent.
+    """
+    root = _users_root(root)
+    _validate_tree(root)
+    for user in root.iterdir():
+        database = user / "meta" / "sag.db"
+        if not database.is_file():
+            raise ValueError("tenant engine migration marker is missing")
+        connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
+        try:
+            row = connection.execute(
+                "SELECT value_json FROM settings WHERE scope=? AND key=?",
+                ("global", "fnos_knowledge_engine_0_13"),
+            ).fetchone()
+            if row is None or json.loads(row[0]).get("engine") != "0.13.0":
+                raise ValueError("tenant engine migration is not committed")
+        finally:
+            connection.close()
+
+
 def delete(root: Path) -> None:
     if os.environ.get("SAG_DELETE_DATA") != "true":
         raise ValueError("SAG_DELETE_DATA=true is required")
@@ -100,7 +125,7 @@ def delete(root: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("size", "backup", "validate", "delete"))
+    parser.add_argument("action", choices=("size", "backup", "validate", "delete", "migration-ready"))
     parser.add_argument("--root", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--archive", type=Path)
@@ -111,6 +136,8 @@ def main() -> None:
         backup(args.root, args.output)
     elif args.action == "validate":
         validate(args.archive)
+    elif args.action == "migration-ready":
+        migration_ready(args.root)
     else:
         delete(args.root)
 

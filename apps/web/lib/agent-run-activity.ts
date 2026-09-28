@@ -158,6 +158,7 @@ function normalizeCitation(value: unknown): Citation | null {
     snippet: citation.snippet,
     score,
     source_id: sourceId,
+    ...(citation.stale === true ? { stale: true } : {}),
     ...citationMapping(citation),
   };
   const sourceName = optionalText(citation.source_name);

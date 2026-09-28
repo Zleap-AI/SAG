@@ -378,7 +378,13 @@
     "missing": "These documents need their original files uploaded again:",
     "uploaded": "Original saved. Choose reingest to process it.",
     "uploadFailed": "Upload failed. Check that the filename matches the previous document.",
-    "uploadOriginal": "Upload {filename} again"
+    "uploadOriginal": "Upload {filename} again",
+    "statusTitle": "Knowledge upgrade status unavailable",
+    "statusFailed": "Could not read the knowledge upgrade status. Please retry.",
+    "retry": "Retry",
+    "openKnowledge": "Open knowledge bases to reingest",
+    "completedTitle": "Previous knowledge reingestion complete",
+    "completedDescription": "Previous knowledge is available for search and answers. Legacy engine data and backups remain for an administrator to review and remove manually; historical citations are not updated automatically."
   },
   "Knowledge": {
     "title": "Knowledge",

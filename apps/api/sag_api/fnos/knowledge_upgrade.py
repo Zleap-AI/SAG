@@ -9,7 +9,7 @@ from pathlib import Path
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sag_api.db.models import Document, Job, Message, Setting, Source
+from sag_api.db.models import Document, Job, Message, Setting, Source, UniverseOverview
 from sag_api.enums import DocumentStatus, JobStatus, JobType
 
 _UPGRADE_KEY = "fnos_knowledge_engine_0_13"
@@ -56,6 +56,10 @@ async def mark_legacy_knowledge_pending(
     if legacy_engine_dir.is_symlink():
         raise ValueError("legacy engine directory must not be a symlink")
     if not legacy_engine_dir.is_dir():
+        # Fresh 0.13 workspaces also need a committed engine marker so a
+        # later package update does not demand legacy reingestion consent.
+        session.add(Setting(scope="global", key=_UPGRADE_KEY, value={"engine": "0.13.0", "legacy_retained": False}))
+        await session.commit()
         return 0
 
     documents = list((await session.scalars(select(Document))).all())
@@ -70,6 +74,8 @@ async def mark_legacy_knowledge_pending(
     for source in (await session.scalars(select(Source))).all():
         source.chunk_count = 0
         source.event_count = 0
+    # Retain legacy snapshots for recovery, but never expose them as current knowledge.
+    await session.execute(update(UniverseOverview).values(is_active=False))
     for message in (await session.scalars(select(Message))).all():
         if isinstance(message.citations, list) and message.citations:
             message.citations = stale_internal_citations(message.citations)
@@ -104,6 +110,14 @@ async def queue_legacy_reingest(session: AsyncSession, uploads_dir: Path, job_qu
             .where(
                 Document.id == document.id,
                 Document.knowledge_state == document.knowledge_state,
+                ~select(Job.id)
+                .where(
+                    Job.document_id == Document.id,
+                    Job.type == JobType.PROCESS_DOCUMENT,
+                    Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+                )
+                .correlate(Document)
+                .exists(),
             )
             .values(
                 status=DocumentStatus.PENDING,
@@ -131,7 +145,7 @@ async def queue_legacy_reingest(session: AsyncSession, uploads_dir: Path, job_qu
     session.add_all(queued_jobs)
     await session.commit()
     for job in queued_jobs:
-        await job_queue.enqueue(job.id)
+        await job_queue.enqueue_durably(job.id)
     return {"queued": len(queued_jobs), "needs_file": needs_file}
 
 
@@ -149,7 +163,12 @@ async def reingest_status(session: AsyncSession) -> dict:
             missing.append(
                 {"source_id": document.source_id, "document_id": document.id, "filename": document.filename}
             )
-    return {"required": bool(documents), "total": len(documents), "states": states, "missing": missing}
+    return {
+        "required": any(document.knowledge_state != "ready" for document in documents),
+        "total": len(documents),
+        "states": states,
+        "missing": missing,
+    }
 
 
 async def replace_missing_original(

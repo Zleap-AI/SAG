@@ -166,6 +166,8 @@ async def _mark_document_waiting_retry(session, job) -> None:
         return
     document.status = DocumentStatus.PENDING
     document.error = None
+    if getattr(document, "knowledge_state", None) is not None:
+        document.knowledge_state = "queued"
 
 
 async def _mark_reprocess_failed(session, document_id: str, message: str) -> None:

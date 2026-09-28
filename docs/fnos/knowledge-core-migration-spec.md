@@ -18,6 +18,7 @@ Refresh both refs before comparing or delivering.
 - Keep the old 0.7.1 engine and a verified cold backup. Stage a new 0.13.0 engine separately for each tenant; never run the new engine against the old store. Metadata, source names, document originals, settings, conversations, and agents remain accessible. Legacy extracted events/vectors are not served as current evidence; old citations are marked stale.
 - An administrator must explicitly accept the disruptive package upgrade before it proceeds. The warning says old knowledge must be reingested and can incur model cost. Missing consent fails closed. Declining does not mutate the old data.
 - Each tenant chooses when to reingest. No automatic model call before that action. Reingest uses retained private originals, is resumable/idempotent, and reports missing originals for manual upload. Each tenant sees readiness and progress. Search/QA must not silently treat pending sources as ready.
+- Show pending upgrade guidance across authenticated Native pages, with full controls in source details. Keep the last known status and a retry action on status failures; after all legacy documents are ready, show completion in details and remove the global warning. Polling must not discard slow responses or carry status across tenant sessions.
 - Old engine data and backups are retained until an administrator manually clears them after checking rebuild and backup. The cleanup must not cross tenant boundaries.
 
 ## Proof and delivery
