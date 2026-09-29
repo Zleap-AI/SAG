@@ -246,7 +246,7 @@ async def test_real_uds_http_queue_filesystem_import_and_replacement(
     nas_file = shared_root / "handbook.md"
     nas_file.write_text("# Policy\n\nold knowledge", encoding="utf-8")
     uploads = tmp_path / "uploads"
-    data = tmp_path / "engine-v0.13"
+    data = tmp_path / "engine-v0.13-clean"
     secret = tmp_path / "internal-secret"
     secret.write_text("a" * 64, encoding="ascii")
     secret.chmod(0o600)

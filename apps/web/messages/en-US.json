@@ -368,24 +368,6 @@
       "running": "parsing"
     }
   },
-  "FnOSKnowledgeUpgrade": {
-    "title": "Previous knowledge needs reingestion",
-    "description": "The engine has been upgraded. Previous extraction and indexes cannot be reused. Processing private originals starts only after you choose to reingest and may incur model costs. Legacy engine data and backups remain until an administrator removes them manually. Historical citations are stale.",
-    "progress": "Completed {ready, number} of {total, number} documents",
-    "reingest": "Reingest my previous knowledge",
-    "queued": "Queued {count, number} documents",
-    "failed": "Could not queue reingestion",
-    "missing": "These documents need their original files uploaded again:",
-    "uploaded": "Original saved. Choose reingest to process it.",
-    "uploadFailed": "Upload failed. Check that the filename matches the previous document.",
-    "uploadOriginal": "Upload {filename} again",
-    "statusTitle": "Knowledge upgrade status unavailable",
-    "statusFailed": "Could not read the knowledge upgrade status. Please retry.",
-    "retry": "Retry",
-    "openKnowledge": "Open knowledge bases to reingest",
-    "completedTitle": "Previous knowledge reingestion complete",
-    "completedDescription": "Previous knowledge is available for search and answers. Legacy engine data and backups remain for an administrator to review and remove manually; historical citations are not updated automatically."
-  },
   "Knowledge": {
     "title": "Knowledge",
     "description": "Your sources: upload documents, index them automatically, and use them immediately in chat and search.",

@@ -91,7 +91,7 @@ def validate(archive: Path) -> None:
 
 
 def migration_ready(root: Path) -> None:
-    """Permit a routine update only when every tenant committed the 0.13 marker.
+    """Permit a routine update only when every tenant committed the knowledge reset.
 
     Read live SQLite including WAL without mutating metadata. Missing, unreadable,
     corrupt or mixed legacy tenants require explicit administrator consent.
@@ -108,7 +108,8 @@ def migration_ready(root: Path) -> None:
                 "SELECT value_json FROM settings WHERE scope=? AND key=?",
                 ("global", "fnos_knowledge_engine_0_13"),
             ).fetchone()
-            if row is None or json.loads(row[0]).get("engine") != "0.13.0":
+            value = json.loads(row[0]) if row else {}
+            if value.get("engine") != "0.13.0" or value.get("knowledge_reset") is not True:
                 raise ValueError("tenant engine migration is not committed")
         finally:
             connection.close()

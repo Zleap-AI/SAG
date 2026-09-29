@@ -160,7 +160,7 @@ class WorkspacePaths:
             root=root,
             meta_dir=meta_dir,
             database_file=meta_dir / "sag.db",
-            engine_dir=root / "engine-v0.13",
+            engine_dir=root / "engine-v0.13-clean",
             uploads_dir=root / "uploads",
             logs_dir=root / "logs",
             socket_file=temp_root / "workers" / f"{key}.sock",

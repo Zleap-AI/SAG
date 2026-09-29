@@ -95,13 +95,6 @@ export interface Doc {
   updated_at: string;
 }
 
-export interface FnOSKnowledgeUpgradeStatus {
-  required: boolean;
-  total: number;
-  states: Record<"pending" | "needs_file" | "queued" | "running" | "ready" | "failed", number>;
-  missing: Array<{ source_id: string; document_id: string; filename: string }>;
-}
-
 export type FnOSNasMode = "automatic" | "legacy_manual" | "unavailable";
 export type FnOSNasFolderSource = "host_api" | "legacy_manual";
 export type FnOSNasFileState =

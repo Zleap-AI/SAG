@@ -368,24 +368,6 @@
       "running": "解析中"
     }
   },
-  "FnOSKnowledgeUpgrade": {
-    "title": "旧知识需要重新入库",
-    "description": "引擎已升级。旧抽取结果与索引不可复用；点击重新入库后才会处理私有原件，并可能产生模型费用。旧引擎数据和备份会保留，直到管理员手动清理。历史引用已过期。",
-    "progress": "已完成 {ready, number} / {total, number} 个文档",
-    "reingest": "重新入库我的旧知识",
-    "queued": "已加入 {count, number} 个文档的处理任务",
-    "failed": "重新入库请求失败",
-    "missing": "以下文档缺少原件，请逐项重新上传：",
-    "uploaded": "原件已保存，请点击重新入库",
-    "uploadFailed": "原件上传失败，请检查文件名与原文档是否一致",
-    "uploadOriginal": "重新上传 {filename}",
-    "statusTitle": "知识升级状态暂时不可用",
-    "statusFailed": "暂时无法读取知识升级状态，请重试。",
-    "retry": "重试",
-    "openKnowledge": "查看知识库并重新入库",
-    "completedTitle": "旧知识已重新入库完成",
-    "completedDescription": "当前旧知识已恢复检索和问答。旧引擎数据与备份仍保留，管理员可确认后手动清理；历史旧引用不会自动更新。"
-  },
   "Knowledge": {
     "title": "知识库",
     "description": "你的信息源：上传文档，自动解析入库，对话与搜索即刻可用。",

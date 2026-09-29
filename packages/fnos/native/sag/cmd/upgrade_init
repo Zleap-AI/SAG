@@ -86,17 +86,18 @@ LAST_STEP="env-check"
 [ -n "$TRIM_APPDEST" ] || die "TRIM_APPDEST is empty; fnpack did not inject the appdest directory"
 [ -n "$TRIM_PKGVAR" ]  || die "TRIM_PKGVAR is empty; fnpack did not inject the package var directory"
 
-# Existing Native knowledge was built with zleap-sag 0.7.1. The package
-# upgrade is a user-visible breaking change and must not even stop the old
-# service until its administrator has accepted reingestion and model cost.
+# Existing knowledge, including earlier 0.13 candidates, must be reset once.
+# The upgrade must not stop the old service until its administrator accepts
+# the loss of current knowledge and the need to upload documents again.
 LAST_STEP="migration-consent"
 if [ -d "$users" ] && [ -n "$(ls -A "$users" 2>/dev/null)" ]; then
   # Manual update on fnOS 1.2 can omit upgrade_uifile. A committed
-  # per-tenant engine marker proves this is a routine 0.13 update, even
-  # while users still choose when to rebuild. Never bypass the cold backup.
+  # per-tenant reset marker proves this is a routine update. The consent
+  # environment key is retained for compatibility with installed callbacks.
+  # Never bypass the cold backup.
   if [ "${SAG_ACCEPT_REINGEST_UPGRADE:-false}" != true ]; then
     [ -f "$lifecycle" ] && "$py" "$lifecycle" migration-ready --root "$users" >/dev/null 2>&1 ||
-      die "reingest upgrade consent is required: existing knowledge must be reingested after upgrading the engine"
+      die "旧知识库将被重置，需重新上传文档；请先确认升级影响。reset consent is required"
   fi
   [ -f "$lifecycle" ] || die "verified cold backup is required, but runtime/lifecycle.py is missing; reinstall the backup tool before upgrading"
   if [ ! -x "$py312" ] && ! command -v python3 >/dev/null 2>&1; then
@@ -111,7 +112,7 @@ fi
 # on the same $TRIM_PKGVAR mode 0700 / internal-secret 0600 guarantees
 # a fresh install produces. Idempotent.
 LAST_STEP="install_callback"
-if ! "$command_dir/install_callback"; then
+if ! SAG_INSTALL_FROM_UPGRADE=true "$command_dir/install_callback"; then
   die "install_callback failed (see preceding install_callback lines in this log)"
 fi
 

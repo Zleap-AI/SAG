@@ -62,14 +62,14 @@ test("delete requires explicit consent and keeps live data otherwise", async (t)
   assert.deepEqual(await (await import("node:fs/promises")).readdir(users), []);
 });
 
-for (const defect of [null, "missing", "wrong-engine", "invalid-json", "second-legacy", "corrupt"]) {
+for (const defect of [null, "missing", "wrong-engine", "invalid-json", "second-legacy", "corrupt", "old-reingest-marker"]) {
   test(`migration-ready only accepts all migrated tenants: ${defect ?? "ready"}`, async (t) => {
     const pkg = await mkdtemp(path.join(os.tmpdir(), "sag-engine-marker-"));
     t.after(() => rm(pkg, { recursive: true, force: true }));
     const users = path.join(pkg, "users");
     const database = path.join(users, "1000", "meta", "sag.db");
     await mkdir(path.dirname(database), { recursive: true });
-    const marker = defect === "invalid-json" ? "invalid" : JSON.stringify({engine: defect === "wrong-engine" ? "0.7.1" : "0.13.0"});
+    const marker = defect === "invalid-json" ? "invalid" : JSON.stringify({engine: defect === "wrong-engine" ? "0.7.1" : "0.13.0", knowledge_reset: defect !== "old-reingest-marker"});
     const create = spawnSync("python3", ["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table settings (scope text,key text,value_json text)'); c.execute('insert into settings values (?,?,?)',('global','fnos_knowledge_engine_0_13',sys.argv[2])); c.commit()", database, marker]);
     assert.equal(create.status, 0);
     if (defect === "missing") await rm(database);

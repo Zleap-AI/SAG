@@ -466,10 +466,32 @@ for (const defect of ["missing", "invalid-json", "wrong-key", "wrong-type", "def
   });
 }
 
-for (const file of ["cmd/upgrade_init", "cmd/upgrade_callback", "app/runtime/lifecycle.py"]) {
+for (const file of ["cmd/upgrade_init", "cmd/upgrade_callback", "cmd/install_callback", "app/runtime/lifecycle.py"]) {
   test(`native package rejects absent engine-update contract: ${file}`,async(t)=>{
     const root=await renderedPackage(t,"x86");
     await writeFile(path.join(root,file),"# contract removed");
-    await expectRejected(root,"x86",/consent|engine|lifecycle/i);
+    await expectRejected(root,"x86",/consent|engine|lifecycle|install_callback/i);
+  });
+}
+
+
+test("native consent wizard covers retained-data install and warns of reset", async () => {
+  const upgrade = JSON.parse(await readFile(path.join(repoRoot, "packages/fnos/native/sag/wizard/upgrade_uifile"), "utf8"));
+  const install = JSON.parse(await readFile(path.join(repoRoot, "packages/fnos/native/sag/wizard/install_uifile"), "utf8"));
+  assert.deepEqual(install, upgrade);
+  assert.match(install[0].items[0].desc, /重置.*重新上传/);
+});
+
+for (const defect of ["missing", "no-reset-warning"]) {
+  test(`native package rejects install consent: ${defect}`, async (t) => {
+    const root = await renderedPackage(t, "x86");
+    const filename = path.join(root, "wizard/install_uifile");
+    if (defect === "missing") await unlink(filename);
+    else {
+      const wizard = JSON.parse(await readFile(filename, "utf8"));
+      wizard[0].items[0].desc = "普通更新";
+      await writeFile(filename, JSON.stringify(wizard));
+    }
+    await expectRejected(root, "x86", /install_uifile|reset|re-upload/i);
   });
 }

@@ -77,10 +77,6 @@ import {
   useDetailPanel,
   useIsLgUp,
 } from "@/components/features/detail-panel";
-import {
-  FnOSKnowledgeUpgradeBanner,
-  FnOSKnowledgeUpgradeProvider,
-} from "@/components/features/fnos-knowledge-upgrade-panel";
 import { KnowledgeProvider } from "@/components/features/knowledge-provider";
 import { PetWithPreference } from "@/components/features/pet";
 import { PetHeadAvatar } from "@/components/features/pet-head-avatar";
@@ -815,10 +811,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         },
       }}
     >
-      <FnOSKnowledgeUpgradeProvider
-        key={user.id}
-        enabled={capabilities?.auth_mode === "fnos"}
-      >
       <SearchProvider
         defaultStrategy={
           isSearchStrategy(capabilities?.search_strategy)
@@ -927,7 +919,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     <AppSidebar contained={windowed} />
                     <SidebarInset className="min-w-0 overflow-hidden">
                       <SiteHeader />
-                      {!/^\/knowledge\/[^/]+/.test(pathname) && <FnOSKnowledgeUpgradeBanner />}
                       <ContentArea>{children}</ContentArea>
                     </SidebarInset>
                   </SidebarProvider>
@@ -951,7 +942,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </ConversationProvider>
         </KnowledgeProvider>
       </SearchProvider>
-      </FnOSKnowledgeUpgradeProvider>
     </AppContext.Provider>
   );
 }
