@@ -90,6 +90,10 @@ LAST_STEP="env-check"
 # The upgrade must not stop the old service until its administrator accepts
 # the loss of current knowledge and the need to upload documents again.
 LAST_STEP="migration-consent"
+# Explicit refusal takes precedence over an already-reset workspace.
+if [ "${SAG_ACCEPT_REINGEST_UPGRADE:-}" = false ]; then
+  die "您已选择暂不升级，请取消本次更新。"
+fi
 if [ -d "$users" ] && [ -n "$(ls -A "$users" 2>/dev/null)" ]; then
   # A committed per-tenant reset marker proves this is a routine update.
   # The consent environment key is retained for compatibility with installed callbacks.

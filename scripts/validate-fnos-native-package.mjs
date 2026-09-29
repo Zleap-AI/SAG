@@ -90,6 +90,8 @@ async function assertUpgradeConsentWizard(root, filename) {
   }
   if (choice.type !== "radio" || choice.field !== "SAG_ACCEPT_REINGEST_UPGRADE"
       || !choice.label || choice.initValue !== "false"
+      || choice.rules?.length !== 1 || choice.rules[0]?.pattern !== "^true$"
+      || !choice.rules[0]?.message
       || !Array.isArray(choice.options) || choice.options.length !== 2
       || choice.options[0]?.value !== "false" || !choice.options[0]?.label
       || choice.options[1]?.value !== "true" || !choice.options[1]?.label) {
@@ -167,7 +169,7 @@ export async function validateNativeTemplate(root, platform) {
   }
   for (const callback of ["upgrade_init", "upgrade_callback"]) {
     const source = await readFile(path.join(root, "cmd", callback), "utf8");
-    if (!source.includes("migration-ready --root") || !source.includes("SAG_ACCEPT_REINGEST_UPGRADE")) {
+    if (!source.includes("migration-ready --root") || !source.includes('"${SAG_ACCEPT_REINGEST_UPGRADE:-}" = false')) {
       fail(`${callback} must enforce legacy consent and recognize committed engine updates`);
     }
   }

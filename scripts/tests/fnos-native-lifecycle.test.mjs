@@ -709,6 +709,24 @@ for (const callback of ["upgrade_init", "upgrade_callback"]) {
   });
 }
 
+for (const callback of ["upgrade_init", "upgrade_callback"]) {
+  test(`${callback} rejects explicit decline even after a committed reset`, async (t) => {
+    const {cmdDir, appdest, pkgvar, logFile, env} = await stageUpgradeFixture(t);
+    await writeStubInstallCallback(cmdDir);
+    await writeStubMain(cmdDir, {statusExit:0});
+    await cp(path.join(cmd,"upgrade_callback"),path.join(cmdDir,"upgrade_callback"));
+    await cp(path.join(root,"packages/fnos/native/sag/app/runtime/lifecycle.py"),path.join(appdest,"runtime/lifecycle.py"));
+    const database = path.join(pkgvar,"users/1000/meta/sag.db");
+    await mkdir(path.dirname(database), {recursive:true});
+    const create = spawnSync("python3",["-c","import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table settings(scope text,key text,value_json text)'); c.execute('insert into settings values (?,?,?)',('global','fnos_knowledge_engine_0_13','{\"engine\":\"0.13.0\",\"knowledge_reset\":true}')); c.commit()", database]);
+    assert.equal(create.status,0,create.stderr?.toString());
+    const result=spawnSync("/bin/sh",[path.join(cmdDir,callback)],{encoding:"utf8",env:{...env,SAG_ACCEPT_REINGEST_UPGRADE:"false"}});
+    assert.notEqual(result.status,0);
+    assert.match(await readFile(logFile,"utf8"),/暂不升级/);
+    assert.equal(existsSync(path.join(pkgvar,"backup")),false);
+  });
+}
+
 
 test("retained-data reinstall refuses reset without consent before metadata or secret writes", async (t) => {
   const { cmdDir, appdest, pkgvar, logFile, env } = await stageUpgradeFixture(t);
@@ -771,7 +789,7 @@ for (const [phase, callback] of [["upgrade", "upgrade_init"], ["upgrade", "upgra
         assert.match(log, /pre-upgrade backup written/);
       } else {
         assert.notEqual(result.status, 0);
-        assert.match(log, /consent|重置/);
+        assert.match(log, /暂不升级/);
         assert.equal(existsSync(path.join(pkgvar, "backup")), false);
         assert.equal(existsSync(path.join(pkgvar, "internal-secret")), false);
       }

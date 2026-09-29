@@ -447,7 +447,7 @@ test("probe builder embeds the probe and vendor payload inside app.tgz", {
 });
 
 
-for (const defect of ["missing", "invalid-json", "wrong-key", "wrong-type", "default-accept", "no-default-decline", "boolean-option", "legacy-title"]) {
+for (const defect of ["missing", "invalid-json", "wrong-key", "wrong-type", "default-accept", "no-default-decline", "boolean-option", "legacy-title", "missing-refusal-rule"]) {
   test(`native package rejects upgrade consent wizard: ${defect}`, async (t) => {
     const root = await renderedPackage(t, "x86");
     const wizardPath = path.join(root, "wizard/upgrade");
@@ -460,6 +460,7 @@ for (const defect of ["missing", "invalid-json", "wrong-key", "wrong-type", "def
       if (defect === "wrong-type") item.type = "textfield";
       if (defect === "default-accept") item.initValue = "true";
       if (defect === "no-default-decline") delete item.initValue;
+      if (defect === "missing-refusal-rule") delete item.rules;
       if (defect === "boolean-option") item.options[1].value = true;
       if (defect === "legacy-title") { wizard[0].step_title = wizard[0].stepTitle; delete wizard[0].stepTitle; }
       await writeFile(wizardPath, JSON.stringify(wizard));
@@ -507,6 +508,9 @@ for (const phase of ["install", "upgrade"]) {
     const choice = wizard[0].items.find((item) => item.field === "SAG_ACCEPT_REINGEST_UPGRADE");
     assert.equal(choice.type, "radio");
     assert.equal(choice.initValue, "false");
+    const allowed = new RegExp(choice.rules[0].pattern);
+    assert.equal(allowed.test(choice.initValue), false, "decline must block Next");
+    assert.equal(allowed.test("true"), true);
     assert.deepEqual(choice.options.map((option) => option.value), ["false", "true"]);
   });
 }
