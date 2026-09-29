@@ -76,8 +76,8 @@ async function assertNoDockerOrTokens(root) {
   }
 }
 
-async function assertUpgradeConsentWizard(root) {
-  const wizard = await readJson(root, "wizard/upgrade_uifile");
+async function assertUpgradeConsentWizard(root, filename) {
+  const wizard = await readJson(root, `wizard/${filename}`);
   if (!Array.isArray(wizard) || wizard.length !== 1 || !wizard[0]?.step_title
       || !Array.isArray(wizard[0]?.items) || wizard[0].items.length !== 1) {
     fail("upgrade consent wizard must contain one titled step and one choice");
@@ -86,6 +86,9 @@ async function assertUpgradeConsentWizard(root) {
   if (item.type !== "singleselect" || typeof item.desc !== "string" || !item.desc.trim()
       || !Array.isArray(item.subitems) || item.subitems.length !== 2) {
     fail("upgrade consent wizard must contain a warning and a singleselect choice");
+  }
+  if (!item.desc.includes("重置") || !item.desc.includes("重新上传")) {
+    fail("consent wizard must warn about knowledge reset and re-upload");
   }
   const [decline, accept] = item.subitems;
   if (decline?.key !== "SAG_DECLINE_REINGEST_UPGRADE" || decline.defaultValue !== true
@@ -157,7 +160,12 @@ export async function validateNativeTemplate(root, platform) {
   if (entry.allUsers !== true) fail("UI allUsers must be true");
   if (Object.hasOwn(entry, "port")) fail("UI must not expose a direct service port");
 
-  await assertUpgradeConsentWizard(root);
+  await assertUpgradeConsentWizard(root, "upgrade_uifile");
+  await assertUpgradeConsentWizard(root, "install_uifile");
+  const install = await readFile(path.join(root, "cmd/install_callback"), "utf8");
+  if (!install.includes("SAG_INSTALL_FROM_UPGRADE") || !install.includes("$command_dir/upgrade_init")) {
+    fail("install_callback must apply the upgrade backup and consent gate to retained data");
+  }
   for (const callback of ["upgrade_init", "upgrade_callback"]) {
     const source = await readFile(path.join(root, "cmd", callback), "utf8");
     if (!source.includes("migration-ready --root") || !source.includes("SAG_ACCEPT_REINGEST_UPGRADE")) {
@@ -165,7 +173,8 @@ export async function validateNativeTemplate(root, platform) {
     }
   }
   const lifecycle = await readFile(path.join(root, "app/runtime/lifecycle.py"), "utf8");
-  if (!lifecycle.includes("def migration_ready") || !lifecycle.includes("fnos_knowledge_engine_0_13")) {
+  if (!lifecycle.includes("def migration_ready")
+      || !lifecycle.includes("fnos_knowledge_engine_0_13") || !lifecycle.includes("knowledge_reset")) {
     fail("lifecycle must verify committed tenant engine markers");
   }
   await assertFiles(root, requiredIcons);

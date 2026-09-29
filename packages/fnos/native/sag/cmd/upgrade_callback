@@ -13,13 +13,13 @@ command_dir="$(dirname "$0")"
 users="${TRIM_PKGVAR:-}/users"
 
 # fnpack may run the old payload's upgrade_init before swapping files. Check
-# consent again here, while no new process or metadata migration has started.
+# consent again here, while no new process or knowledge reset has started.
 if [ -n "${TRIM_PKGVAR:-}" ] && [ -d "$users" ] && [ -n "$(ls -A "$users" 2>/dev/null)" ]; then
   py="/var/apps/python312/target/bin/python3"
   [ -x "$py" ] || py="python3"
   if [ "${SAG_ACCEPT_REINGEST_UPGRADE:-false}" != true ] &&
      ! "$py" "${TRIM_APPDEST:-}/runtime/lifecycle.py" migration-ready --root "$users" >/dev/null 2>&1; then
-    message='upgrade_callback: reingest upgrade consent is required for existing Native knowledge'
+    message='upgrade_callback: 旧知识库将被重置，需重新上传文档；请先确认升级影响。reset consent is required'
     if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
       printf '%s\n' "$message" >>"$TRIM_TEMP_LOGFILE" 2>/dev/null || :
     fi

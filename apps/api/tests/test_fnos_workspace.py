@@ -97,7 +97,7 @@ def test_workspace_layout_is_tenant_key_scoped_when_enabled(
     assert paths.root == tmp_path / f"data/users/{KEY_ALICE}"
     assert paths.meta_dir == tmp_path / f"data/users/{KEY_ALICE}/meta"
     assert paths.database_file == tmp_path / f"data/users/{KEY_ALICE}/meta/sag.db"
-    assert paths.engine_dir == tmp_path / f"data/users/{KEY_ALICE}/engine-v0.13"
+    assert paths.engine_dir == tmp_path / f"data/users/{KEY_ALICE}/engine-v0.13-clean"
     assert paths.uploads_dir == tmp_path / f"data/users/{KEY_ALICE}/uploads"
     assert paths.logs_dir == tmp_path / f"data/users/{KEY_ALICE}/logs"
     assert paths.socket_file == tmp_path / f"tmp/workers/{KEY_ALICE}.sock"

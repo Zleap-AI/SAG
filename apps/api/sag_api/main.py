@@ -69,16 +69,15 @@ async def lifespan(app: FastAPI):
     if settings.auth_mode == "fnos":
         from pathlib import Path
 
-        from sag_api.fnos.knowledge_upgrade import mark_legacy_knowledge_pending
+        from sag_api.fnos.knowledge_upgrade import reset_legacy_knowledge
 
         active_engine_dir = Path(settings.data_dir)
-        if active_engine_dir.name != "engine-v0.13":
-            raise RuntimeError("fnOS 0.13 engine must use the isolated engine-v0.13 directory")
+        if active_engine_dir.name != "engine-v0.13-clean":
+            raise RuntimeError("fnOS 0.13 engine must use the isolated engine-v0.13-clean directory")
         async with SessionLocal() as migration_session:
-            await mark_legacy_knowledge_pending(
+            await reset_legacy_knowledge(
                 migration_session,
                 active_engine_dir.parent / "engine",
-                Path(settings.upload_dir),
             )
 
     # 把 DB 里保存的模型配置覆盖到 settings 单例（在构建 LLM/引擎之前）

@@ -252,7 +252,7 @@ test("upgrade_callback also refuses existing Native users without migration cons
   });
   assert.notEqual(result.status, 0);
   assert.equal(existsSync(trace), false);
-  assert.match(await readFile(logFile, "utf8"), /consent|reingest/i);
+  assert.match(await readFile(logFile, "utf8"), /consent|reset/i);
 });
 
 test("upgrade_callback under strict /bin/sh (dash on fnOS)", () => {
@@ -477,7 +477,7 @@ test("upgrade_init requires explicit engine migration consent before touching in
 
   const result = spawnSync("bash", [path.join(cmdDir, "upgrade_init")], { encoding: "utf8", env });
   assert.notEqual(result.status, 0);
-  assert.match(await readFile(logFile, "utf8"), /reingest|consent/i);
+  assert.match(await readFile(logFile, "utf8"), /reset|consent/i);
   assert.equal(await readFile(retained, "utf8"), "legacy");
 });
 
@@ -701,10 +701,44 @@ for (const callback of ["upgrade_init", "upgrade_callback"]) {
     await cp(path.join(root,"packages/fnos/native/sag/app/runtime/lifecycle.py"),path.join(appdest,"runtime/lifecycle.py"));
     const database = path.join(pkgvar,"users/1000/meta/sag.db");
     await mkdir(path.dirname(database), {recursive:true});
-    const create = spawnSync("python3",["-c","import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table settings(scope text,key text,value_json text)'); c.execute('insert into settings values (?,?,?)',('global','fnos_knowledge_engine_0_13','{\"engine\":\"0.13.0\"}')); c.commit()", database]);
+    const create = spawnSync("python3",["-c","import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table settings(scope text,key text,value_json text)'); c.execute('insert into settings values (?,?,?)',('global','fnos_knowledge_engine_0_13','{\"engine\":\"0.13.0\",\"knowledge_reset\":true}')); c.commit()", database]);
     assert.equal(create.status,0,create.stderr?.toString());
     const result=spawnSync("/bin/sh",[path.join(cmdDir,callback)],{encoding:"utf8",env});
     assert.equal(result.status,0,result.stderr+await readFile(logFile,"utf8"));
     assert.match(await readFile(logFile,"utf8"),/pre-upgrade backup written/);
   });
 }
+
+
+test("retained-data reinstall refuses reset without consent before metadata or secret writes", async (t) => {
+  const { cmdDir, appdest, pkgvar, logFile, env } = await stageUpgradeFixture(t);
+  await cp(path.join(cmd, "install_callback"), path.join(cmdDir, "install_callback"));
+  await writeStubMain(cmdDir, { statusExit: 3 });
+  await cp(path.join(root, "packages/fnos/native/sag/app/runtime/lifecycle.py"), path.join(appdest, "runtime/lifecycle.py"));
+  const database = path.join(pkgvar, "users/1000/meta/sag.db");
+  await mkdir(path.dirname(database), { recursive: true });
+  await writeFile(database, "existing metadata");
+  const before = await readFile(database);
+  const result = spawnSync("/bin/sh", [path.join(cmdDir, "install_callback")], { encoding: "utf8", env });
+  assert.notEqual(result.status, 0);
+  assert.deepEqual(await readFile(database), before);
+  assert.equal(existsSync(path.join(pkgvar, "internal-secret")), false);
+  assert.match(await readFile(logFile, "utf8"), /consent|重置/);
+});
+
+test("retained-data reinstall with consent uses real cold backup without recursion", async (t) => {
+  const { cmdDir, appdest, pkgvar, logFile, env } = await stageUpgradeFixture(t);
+  await cp(path.join(cmd, "install_callback"), path.join(cmdDir, "install_callback"));
+  await writeStubMain(cmdDir, { statusExit: 3 });
+  await cp(path.join(root, "packages/fnos/native/sag/app/runtime/lifecycle.py"), path.join(appdest, "runtime/lifecycle.py"));
+  const database = path.join(pkgvar, "users/1000/meta/sag.db");
+  await mkdir(path.dirname(database), { recursive: true });
+  const create = spawnSync("python3", ["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table data(value text)'); c.commit()", database]);
+  assert.equal(create.status, 0);
+  const result = spawnSync("/bin/sh", [path.join(cmdDir, "install_callback")], {
+    encoding: "utf8", env: { ...env, SAG_ACCEPT_REINGEST_UPGRADE: "true" }, timeout: 15000,
+  });
+  assert.equal(result.status, 0, result.stderr + await readFile(logFile, "utf8"));
+  assert.match(await readFile(logFile, "utf8"), /pre-upgrade backup written/);
+  assert.equal((await stat(path.join(pkgvar, "internal-secret"))).size, 64);
+});
