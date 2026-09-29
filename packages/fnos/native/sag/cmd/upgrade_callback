@@ -12,6 +12,16 @@ set -u
 command_dir="$(dirname "$0")"
 users="${TRIM_PKGVAR:-}/users"
 
+# Enforce explicit refusal even if the installed upgrade_init predates this gate.
+if [ "${SAG_ACCEPT_REINGEST_UPGRADE:-}" = false ]; then
+  message='upgrade_callback: 您已选择暂不升级，请取消本次更新。'
+  if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+    printf '%s\n' "$message" >>"$TRIM_TEMP_LOGFILE" 2>/dev/null || :
+  fi
+  printf '%s\n' "$message" >&2
+  exit 1
+fi
+
 # fnpack may run the old payload's upgrade_init before swapping files. Check
 # consent again here, while no new process or knowledge reset has started.
 if [ -n "${TRIM_PKGVAR:-}" ] && [ -d "$users" ] && [ -n "$(ls -A "$users" 2>/dev/null)" ]; then

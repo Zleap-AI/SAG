@@ -447,22 +447,25 @@ test("probe builder embeds the probe and vendor payload inside app.tgz", {
 });
 
 
-for (const defect of ["missing", "invalid-json", "wrong-key", "wrong-type", "default-accept", "no-default-decline"]) {
+for (const defect of ["missing", "invalid-json", "wrong-key", "wrong-type", "default-accept", "no-default-decline", "boolean-option", "legacy-title", "missing-refusal-rule"]) {
   test(`native package rejects upgrade consent wizard: ${defect}`, async (t) => {
     const root = await renderedPackage(t, "x86");
-    const wizardPath = path.join(root, "wizard/upgrade_uifile");
+    const wizardPath = path.join(root, "wizard/upgrade");
     if (defect === "missing") await unlink(wizardPath);
     else if (defect === "invalid-json") await writeFile(wizardPath, "{");
     else {
       const wizard = JSON.parse(await readFile(wizardPath, "utf8"));
-      const item = wizard[0].items[0];
-      if (defect === "wrong-key") item.subitems[1].key = "SAG_WRONG_ACCEPT";
+      const item = wizard[0].items[1];
+      if (defect === "wrong-key") item.field = "SAG_WRONG_ACCEPT";
       if (defect === "wrong-type") item.type = "textfield";
-      if (defect === "default-accept") item.subitems[1].defaultValue = true;
-      if (defect === "no-default-decline") item.subitems[0].defaultValue = false;
+      if (defect === "default-accept") item.initValue = "true";
+      if (defect === "no-default-decline") delete item.initValue;
+      if (defect === "missing-refusal-rule") delete item.rules;
+      if (defect === "boolean-option") item.options[1].value = true;
+      if (defect === "legacy-title") { wizard[0].step_title = wizard[0].stepTitle; delete wizard[0].stepTitle; }
       await writeFile(wizardPath, JSON.stringify(wizard));
     }
-    await expectRejected(root, "x86", /upgrade.*wizard|upgrade_uifile/i);
+    await expectRejected(root, "x86", /wizard|wizard\/upgrade/i);
   });
 }
 
@@ -476,22 +479,38 @@ for (const file of ["cmd/upgrade_init", "cmd/upgrade_callback", "cmd/install_cal
 
 
 test("native consent wizard covers retained-data install and warns of reset", async () => {
-  const upgrade = JSON.parse(await readFile(path.join(repoRoot, "packages/fnos/native/sag/wizard/upgrade_uifile"), "utf8"));
-  const install = JSON.parse(await readFile(path.join(repoRoot, "packages/fnos/native/sag/wizard/install_uifile"), "utf8"));
+  const upgrade = JSON.parse(await readFile(path.join(repoRoot, "packages/fnos/native/sag/wizard/upgrade"), "utf8"));
+  const install = JSON.parse(await readFile(path.join(repoRoot, "packages/fnos/native/sag/wizard/install"), "utf8"));
   assert.deepEqual(install, upgrade);
-  assert.match(install[0].items[0].desc, /重置.*重新上传/);
+  assert.match(install[0].items[0].helpText, /重置.*重新上传/);
 });
 
 for (const defect of ["missing", "no-reset-warning"]) {
   test(`native package rejects install consent: ${defect}`, async (t) => {
     const root = await renderedPackage(t, "x86");
-    const filename = path.join(root, "wizard/install_uifile");
+    const filename = path.join(root, "wizard/install");
     if (defect === "missing") await unlink(filename);
     else {
       const wizard = JSON.parse(await readFile(filename, "utf8"));
-      wizard[0].items[0].desc = "普通更新";
+      wizard[0].items[0].helpText = "普通更新";
       await writeFile(filename, JSON.stringify(wizard));
     }
-    await expectRejected(root, "x86", /install_uifile|reset|re-upload/i);
+    await expectRejected(root, "x86", /install|reset|re-upload/i);
+  });
+}
+
+// fnOS only discovers these filenames and exports each item's field value.
+// See https://developer.fnnas.com/docs/core-concepts/wizard
+for (const phase of ["install", "upgrade"]) {
+  test(`fnOS discovers ${phase} reset consent with an explicit string value`, async () => {
+    const wizard = JSON.parse(await readFile(path.join(repoRoot, `packages/fnos/native/sag/wizard/${phase}`), "utf8"));
+    assert.ok(wizard[0].stepTitle);
+    const choice = wizard[0].items.find((item) => item.field === "SAG_ACCEPT_REINGEST_UPGRADE");
+    assert.equal(choice.type, "radio");
+    assert.equal(choice.initValue, "false");
+    const allowed = new RegExp(choice.rules[0].pattern);
+    assert.equal(allowed.test(choice.initValue), false, "decline must block Next");
+    assert.equal(allowed.test("true"), true);
+    assert.deepEqual(choice.options.map((option) => option.value), ["false", "true"]);
   });
 }
