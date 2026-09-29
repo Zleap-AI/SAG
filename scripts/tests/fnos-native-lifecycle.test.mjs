@@ -742,3 +742,39 @@ test("retained-data reinstall with consent uses real cold backup without recursi
   assert.match(await readFile(logFile, "utf8"), /pre-upgrade backup written/);
   assert.equal((await stat(path.join(pkgvar, "internal-secret"))).size, 64);
 });
+
+for (const [phase, callback] of [["upgrade", "upgrade_init"], ["upgrade", "upgrade_callback"], ["install", "install_callback"]]) {
+  for (const accept of [false, true]) {
+    test(`${phase} wizard ${accept ? "acceptance" : "decline"} reaches ${callback} with legacy data`, async (t) => {
+      const { cmdDir, appdest, pkgvar, logFile, env } = await stageUpgradeFixture(t);
+      await cp(path.join(cmd, "install_callback"), path.join(cmdDir, "install_callback"));
+      await cp(path.join(cmd, "upgrade_callback"), path.join(cmdDir, "upgrade_callback"));
+      await writeStubMain(cmdDir, { statusExit: 3 });
+      await cp(path.join(root, "packages/fnos/native/sag/app/runtime/lifecycle.py"), path.join(appdest, "runtime/lifecycle.py"));
+      const database = path.join(pkgvar, "users/1000/meta/sag.db");
+      await mkdir(path.dirname(database), { recursive: true });
+      const create = spawnSync("python3", ["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table data(value text)'); c.commit()", database]);
+      assert.equal(create.status, 0, create.stderr?.toString());
+      const before = await readFile(database);
+      // Model the documented host boundary: discover wizard/<phase>,
+      // export the radio's selected string under its field name.
+      const wizard = JSON.parse(await readFile(path.join(root, `packages/fnos/native/sag/wizard/${phase}`), "utf8"));
+      const choice = wizard[0].items.find((item) => item.field === "SAG_ACCEPT_REINGEST_UPGRADE");
+      const value = accept ? choice.options.find((option) => option.value === "true").value : choice.initValue;
+      const result = spawnSync("/bin/sh", [path.join(cmdDir, callback)], {
+        encoding: "utf8", env: { ...env, [choice.field]: value }, timeout: 15000,
+      });
+      const log = await readFile(logFile, "utf8");
+      assert.deepEqual(await readFile(database), before);
+      if (accept) {
+        assert.equal(result.status, 0, result.stderr + log);
+        assert.match(log, /pre-upgrade backup written/);
+      } else {
+        assert.notEqual(result.status, 0);
+        assert.match(log, /consent|重置/);
+        assert.equal(existsSync(path.join(pkgvar, "backup")), false);
+        assert.equal(existsSync(path.join(pkgvar, "internal-secret")), false);
+      }
+    });
+  }
+}

@@ -91,9 +91,8 @@ LAST_STEP="env-check"
 # the loss of current knowledge and the need to upload documents again.
 LAST_STEP="migration-consent"
 if [ -d "$users" ] && [ -n "$(ls -A "$users" 2>/dev/null)" ]; then
-  # Manual update on fnOS 1.2 can omit upgrade_uifile. A committed
-  # per-tenant reset marker proves this is a routine update. The consent
-  # environment key is retained for compatibility with installed callbacks.
+  # A committed per-tenant reset marker proves this is a routine update.
+  # The consent environment key is retained for compatibility with installed callbacks.
   # Never bypass the cold backup.
   if [ "${SAG_ACCEPT_REINGEST_UPGRADE:-false}" != true ]; then
     [ -f "$lifecycle" ] && "$py" "$lifecycle" migration-ready --root "$users" >/dev/null 2>&1 ||

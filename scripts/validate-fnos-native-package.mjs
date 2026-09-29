@@ -76,25 +76,24 @@ async function assertNoDockerOrTokens(root) {
   }
 }
 
+// fnOS wizard contract: https://developer.fnnas.com/docs/core-concepts/wizard
 async function assertUpgradeConsentWizard(root, filename) {
   const wizard = await readJson(root, `wizard/${filename}`);
-  if (!Array.isArray(wizard) || wizard.length !== 1 || !wizard[0]?.step_title
-      || !Array.isArray(wizard[0]?.items) || wizard[0].items.length !== 1) {
-    fail("upgrade consent wizard must contain one titled step and one choice");
+  if (!Array.isArray(wizard) || wizard.length !== 1 || !wizard[0]?.stepTitle
+      || !Array.isArray(wizard[0]?.items) || wizard[0].items.length !== 2) {
+    fail("upgrade consent wizard must contain one titled step, warning and choice");
   }
-  const item = wizard[0].items[0];
-  if (item.type !== "singleselect" || typeof item.desc !== "string" || !item.desc.trim()
-      || !Array.isArray(item.subitems) || item.subitems.length !== 2) {
-    fail("upgrade consent wizard must contain a warning and a singleselect choice");
-  }
-  if (!item.desc.includes("重置") || !item.desc.includes("重新上传")) {
+  const [warning, choice] = wizard[0].items;
+  if (warning.type !== "tips" || typeof warning.helpText !== "string"
+      || !warning.helpText.includes("重置") || !warning.helpText.includes("重新上传")) {
     fail("consent wizard must warn about knowledge reset and re-upload");
   }
-  const [decline, accept] = item.subitems;
-  if (decline?.key !== "SAG_DECLINE_REINGEST_UPGRADE" || decline.defaultValue !== true
-      || accept?.key !== "SAG_ACCEPT_REINGEST_UPGRADE" || accept.defaultValue !== false
-      || !decline.desc || !accept.desc) {
-    fail("upgrade consent wizard must default to decline and use the required consent keys");
+  if (choice.type !== "radio" || choice.field !== "SAG_ACCEPT_REINGEST_UPGRADE"
+      || !choice.label || choice.initValue !== "false"
+      || !Array.isArray(choice.options) || choice.options.length !== 2
+      || choice.options[0]?.value !== "false" || !choice.options[0]?.label
+      || choice.options[1]?.value !== "true" || !choice.options[1]?.label) {
+    fail("upgrade consent wizard must default to decline and export the required consent field");
   }
 }
 
@@ -160,8 +159,8 @@ export async function validateNativeTemplate(root, platform) {
   if (entry.allUsers !== true) fail("UI allUsers must be true");
   if (Object.hasOwn(entry, "port")) fail("UI must not expose a direct service port");
 
-  await assertUpgradeConsentWizard(root, "upgrade_uifile");
-  await assertUpgradeConsentWizard(root, "install_uifile");
+  await assertUpgradeConsentWizard(root, "upgrade");
+  await assertUpgradeConsentWizard(root, "install");
   const install = await readFile(path.join(root, "cmd/install_callback"), "utf8");
   if (!install.includes("SAG_INSTALL_FROM_UPGRADE") || !install.includes("$command_dir/upgrade_init")) {
     fail("install_callback must apply the upgrade backup and consent gate to retained data");

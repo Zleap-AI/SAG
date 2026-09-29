@@ -1,0 +1,27 @@
+[
+  {
+    "stepTitle": "SAG 知识引擎升级",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "本次升级涉及底层算法与索引格式更新，现有知识库将被重置，旧知识无法继续用于检索和问答。升级后需重新上传文档。模型配置和历史会话保留；旧引擎、原件和冷备保留用于恢复。请确认已备份重要资料。"
+      },
+      {
+        "type": "radio",
+        "field": "SAG_ACCEPT_REINGEST_UPGRADE",
+        "label": "是否接受知识库重置",
+        "initValue": "false",
+        "options": [
+          {
+            "label": "暂不升级，保留当前版本和数据（推荐：尚未准备好时）",
+            "value": "false"
+          },
+          {
+            "label": "我已了解现有知识库将被重置，确认升级",
+            "value": "true"
+          }
+        ]
+      }
+    ]
+  }
+]
