@@ -406,3 +406,69 @@ async def test_websocket_proxy_relays_text_binary_and_worker_close_code() -> Non
     assert worker.sent == ["text frame", b"binary frame"]
     assert client.sent_text == ["worker reply"]
     assert client.close_code == 4001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("username", ["Alice", "钱浩", "Renée", "%E9%92%B1", ""])
+@pytest.mark.parametrize("username_isolation", [False, True])
+async def test_non_ascii_gateway_headers_reach_authenticated_me(
+    username, username_isolation, tmp_path, monkeypatch, worker, gateway, gateway_client
+):
+    """Catch session=200/me=401 after UTF-8 identity headers cross an ASGI hop."""
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from sag_api.api.v1.auth import router
+    from sag_api.core.config import settings
+    from sag_api.core.db import get_session
+    from sag_api.core.errors import ApiError
+    from sag_api.db.models import User
+
+    secret = tmp_path / "secret"
+    secret.write_text((b"s" * 32).hex(), encoding="ascii")
+    secret.chmod(0o600)
+    # Preserve the existing gateway interpretation/tenant key during an upgrade.
+    gateway_username = username.encode("utf-8").decode("latin-1")
+    for key, value in {
+        "auth_mode": "fnos", "fnos_uid": 1000, "fnos_username": gateway_username,
+        "fnos_username_isolation": username_isolation,
+        "fnos_internal_secret_file": str(secret),
+    }.items():
+        monkeypatch.setitem(settings.__dict__, key, value)
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(User.__table__.create)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def session_override():
+        async with sessions() as session:
+            yield session
+
+    api = FastAPI()
+    api.include_router(router, prefix="/api/v1")
+    api.dependency_overrides[get_session] = session_override
+
+    @api.exception_handler(ApiError)
+    async def api_error(_request: Request, error: ApiError):
+        return JSONResponse(status_code=error.status_code, content={"detail": error.message})
+
+    await worker.client.aclose()
+    worker.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=api), base_url="http://worker")
+    headers = [
+        (b"x-trim-userid", b"1000"),
+        (b"x-trim-username", username.encode("utf-8")),
+        (b"x-trim-isadmin", b"false"),
+    ]
+    try:
+        session = await gateway_client.get("/app/sag/api/v1/auth/session", headers=headers)
+        assert session.status_code == 200
+        for _ in range(2):
+            me = await gateway_client.get("/app/sag/api/v1/auth/me", headers=headers)
+            assert me.status_code == 200, me.text
+            assert me.json()["id"] == "fnos_1000"
+            assert me.json()["name"] == (gateway_username or "fnos_1000")
+        assert gateway.state.supervisor.identities[-1].username == gateway_username
+    finally:
+        await worker.client.aclose()
+        await engine.dispose()
