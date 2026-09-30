@@ -392,3 +392,44 @@ async def test_fnos_mode_ignores_username_when_isolation_disabled(
 
     assert renamed.status_code == 200  # 关：改名/username 漂移不 401
     await engine.dispose()
+
+
+@pytest.mark.parametrize("username", ["钱浩", "Renée", "钱浩".encode().decode("latin-1"), "%E9%92%B1", "a b", ""])
+def test_internal_username_survives_http_and_websocket_header_transport(username):
+    """Catch Unicode re-encoding and literal percent names changing signed identity."""
+    from starlette.datastructures import Headers
+    from websockets.datastructures import Headers as WebSocketHeaders
+
+    identity = GatewayIdentity(1000, username, False)
+    signer = InternalIdentitySigner(b"s" * 32)
+    for request_id in ("http", "websocket"):
+        signed = signer.sign(identity, request_id, 100)
+        # Both HTTP and WebSocket headers must be safe ASCII on the wire.
+        for value in signed.values():
+            value.encode("ascii")
+        if request_id == "http":
+            raw = [(key.lower().encode(), value.encode()) for key, value in signed.items()]
+        else:
+            wire = WebSocketHeaders(signed).serialize()
+            raw = [tuple(line.split(b": ", 1)) for line in wire.split(b"\r\n") if line]
+        assert signer.verify(
+            Headers(raw=raw), expected_uid=1000, expected_username=username, now=100
+        ) == identity
+
+
+def test_internal_encoded_username_tampering_is_rejected():
+    """Encoding must not allow substitution of another user's signed name."""
+    signer = InternalIdentitySigner(b"s" * 32)
+    signed = signer.sign(GatewayIdentity(1000, "钱浩", False), "tampered", 100)
+    signed["X-SAG-Internal-Username"] = "%41lice"
+    with pytest.raises(AuthError):
+        signer.verify(signed, expected_uid=1000, now=100)
+
+
+def test_internal_invalid_utf8_username_is_rejected():
+    """Malformed internal encoding must fail as auth, not crash or become empty."""
+    signer = InternalIdentitySigner(b"s" * 32)
+    signed = signer.sign(GatewayIdentity(1000, "", False), "malformed", 100)
+    signed["X-SAG-Internal-Username"] = "%FF"
+    with pytest.raises(AuthError):
+        signer.verify(signed, expected_uid=1000, now=100)

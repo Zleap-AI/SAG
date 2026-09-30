@@ -35,13 +35,16 @@ def _short_tmp_root() -> str:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("username", ["Alice", "钱浩"])
 async def test_two_fnos_users_receive_disjoint_worker_databases(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest, username: str
 ) -> None:
     """The complete Gateway → UDS Worker path must preserve UID isolation.
 
     With username isolation off (the default) the layout is pure-UID.
     """
+    headers_a = {**FNOS_A, "X-Trim-Username": username.encode("utf-8")}
+    headers_b = {**FNOS_B, "X-Trim-Username": username.encode("utf-8")}
     monkeypatch.delenv("SAG_FNOS_USERNAME_ISOLATION", raising=False)
     secret = tmp_path / "internal-secret"
     secret.write_text("a" * 64, encoding="ascii")
@@ -64,12 +67,12 @@ async def test_two_fnos_users_receive_disjoint_worker_databases(
 
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=transport, base_url="http://gateway") as client:
-            created = await client.post("/app/sag/api/v1/sources", headers=FNOS_A, json={"name": "private"})
+            created = await client.post("/app/sag/api/v1/sources", headers=headers_a, json={"name": "private"})
             assert created.status_code == 201, created.text
             source_id = created.json()["id"]
-            own = await client.get("/app/sag/api/v1/sources", headers=FNOS_A)
-            other = await client.get("/app/sag/api/v1/sources", headers=FNOS_B)
-            guessed = await client.get(f"/app/sag/api/v1/sources/{source_id}", headers=FNOS_B)
+            own = await client.get("/app/sag/api/v1/sources", headers=headers_a)
+            other = await client.get("/app/sag/api/v1/sources", headers=headers_b)
+            guessed = await client.get(f"/app/sag/api/v1/sources/{source_id}", headers=headers_b)
 
     assert [source["id"] for source in own.json()] == [source_id]
     assert other.json() == []

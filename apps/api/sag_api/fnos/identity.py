@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
+from urllib.parse import quote, unquote
 
 from sag_api.core.errors import AuthError
 
@@ -205,7 +206,9 @@ class InternalIdentitySigner:
         payload = self._payload(identity, request_id, now)
         return {
             "X-SAG-Internal-Uid": str(identity.uid),
-            "X-SAG-Internal-Username": identity.username,
+            # HTTP/ASGI reads header bytes as Latin-1. Keep the wire value ASCII
+            # so the worker verifies exactly the username the gateway signed.
+            "X-SAG-Internal-Username": quote(identity.username, safe=""),
             "X-SAG-Internal-Isadmin": "1" if identity.is_admin else "0",
             "X-SAG-Internal-Timestamp": str(now),
             "X-SAG-Internal-Request-Id": request_id,
@@ -222,7 +225,12 @@ class InternalIdentitySigner:
     ) -> GatewayIdentity:
         """Validate a signed internal identity and bind it to this fnOS worker."""
         uid = _uid(_header(headers, _INTERNAL_HEADERS[0]))
-        username = normalize_username(_header(headers, _INTERNAL_HEADERS[1]))
+        try:
+            username = normalize_username(
+                unquote(_header(headers, _INTERNAL_HEADERS[1]), errors="strict")
+            )
+        except UnicodeError as error:
+            raise AuthError("fnOS 内部用户名编码无效") from error
         is_admin = _internal_admin(_header(headers, _INTERNAL_HEADERS[2]))
         timestamp_text = _header(headers, _INTERNAL_HEADERS[3])
         request_id = _request_id(_header(headers, _INTERNAL_HEADERS[4]))
