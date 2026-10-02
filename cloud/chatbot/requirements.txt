@@ -1,0 +1,5 @@
+cryptography>=46.0.5,<51
+# The query route and existing Responses extension share this audited SDK seam.
+litellm==1.103.0
+# Preserve the stock API's bound when pip installs into Compose's target directory.
+filelock>=3.16,<4

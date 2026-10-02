@@ -1,0 +1,30 @@
+{
+  "sources": {
+    "sag_api.core.config": "f4cd27b08183674e2c5b91b1059136d7f76197ff55ab7d350a2a2d68d8a3a461",
+    "sag_api.core.model_providers": "bdf9fb8014716745e294d64530044363986384bdcd7879ba1593daa0de07b938",
+    "sag_api.core.litellm_policy": "87ea4fd6ae48ff41f466e1c01b3874f0241910739168954c69b9057e32389e12",
+    "sag_api.services.settings_service": "14ce4fa26a652f1fc68e9dddc56f91467b933be2c84c311cd6b5a4fd6b6ec692",
+    "sag_api.runtime": "ed8e39fa0a9c865061e3c75eaeb28f88808713ea892564bd66bb5f75a02152ca",
+    "sag_api.sag.search_reader": "0c089355045c0574bdba043acbc93084e97d971cef7d221e8aa6a9f98d14c161",
+    "sag_api.sag.config_builder": "ee10e2bea479d805c0a0b017b982bd593cfb728e22ca358ee97c6147bc6c21fb",
+    "sag_api.services.agent_domain": "375243031b3ab81b311fdcba1a7adef016c3ef2e3ec34d5737395514cfa487c3",
+    "sag_api.api.v1.system": "d8ea9211f4325836fadaa5f8cc81426bbf7d01e018672196a27817bf53ba1dc4",
+    "sag_api.generation.llm": "a4e0d63c1d3cdc092d3dcdba961b3b9a9f866dad619baac1ad4f99737df85fa9",
+    "sag_api.db.models.setting": "3f7a65e3bfd9444875e5c2c3ec8994fe5da1a72561711ab13a3393bf05173bd8",
+    "sag_api.core.deps": "dc1bbe07289fd84138a0e8fc8522d6672291957cfbd2263966a74b0e5806f04b",
+    "sag_api.main": "8ea06f971ddbc249734bf6227d0163df45ce42903a2c85f04daac3a7c25edeee",
+    "sag_agent.runtime": "e5b98288ba4921d7bf6bceb63d542a6c17dad4b7eb2457b8f4b4fc0b419e1a9e",
+    "zleap.sag.core.adapters.defaults": "0732694965a60289fe89fe49460f64a0f99e07cff68210586ed70e0c4db5a128",
+    "zleap.sag.core.resources": "6a70e854bd27a3eabe3be936962a2fe315ef68c50423f65ed6955cd4bd4d2800",
+    "zleap.sag.core.ai.litellm_client": "436a4c2d1abeb6cad60393d226d77c58ed05d120dd657ab4b6d953e9f5898fbe",
+    "zleap.sag.core.ai.embedding": "a8d16c6fe9002bc671732bc8ad2c1ed5efbfa9954ee9ab80ee83a548a4437f49"
+  },
+  "dependencies": {
+    "zleap-sag": [
+      "0.13.0"
+    ],
+    "litellm": [
+      "1.103.0"
+    ]
+  }
+}

@@ -1,0 +1,35 @@
+# Optional overlay on stock compose.yaml; no stock sources or image are changed.
+services:
+  chatbot-deps:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    restart: "no"
+    entrypoint: python
+    command: ["-m", "pip", "install", "--upgrade", "--target", "/dependencies", "-r", "/extension/requirements.txt"]
+    volumes:
+      - ./cloud/chatbot:/extension:ro
+      - chatbot-deps:/dependencies
+
+  api:
+    command: ["python", "-m", "sag_chatbot.bootstrap", "--host", "0.0.0.0", "--port", "8000"]
+    env_file:
+      - path: ./cloud/compose/.env.chatbot.local
+        required: false
+    environment:
+      PYTHONPATH: /opt/sag-chatbot:/opt/sag-chatbot-deps
+    volumes:
+      - ./cloud/chatbot:/opt/sag-chatbot:ro
+      - chatbot-deps:/opt/sag-chatbot-deps:ro
+    depends_on:
+      chatbot-deps:
+        condition: service_completed_successfully
+
+  web:
+    build:
+      dockerfile: ../../cloud/chatbot/web/Dockerfile
+      additional_contexts:
+        chatbot: ./cloud/chatbot
+
+volumes:
+  chatbot-deps:

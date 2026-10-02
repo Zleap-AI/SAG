@@ -1,0 +1,14 @@
+{
+  "qwen3.6-flash": {
+    "default_effort": "none",
+    "legacy_disabled_field": "enable_thinking"
+  },
+  "deepseek-v4-flash": {
+    "default_effort": "none",
+    "legacy_disabled_field": "thinking"
+  },
+  "deepseek-v4-pro": {
+    "default_effort": "none",
+    "legacy_disabled_field": "thinking"
+  }
+}
