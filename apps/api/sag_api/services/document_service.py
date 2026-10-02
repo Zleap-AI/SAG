@@ -80,13 +80,16 @@ async def read_document_lines(
     source: Source,
     engine_manager: EngineManager,
 ) -> list[str] | None:
-    """返回供按行阅读的文本；文本类读原文件，其余格式读入库时保存的解析 Markdown。
+    """返回供按行阅读的文本；文本类和 OCTX 正文读本地文件，其余格式读入库 Markdown。
 
     PDF / Office 等原文件是二进制，按 UTF-8 逐行读取只会得到乱码，因此改读
     解析后的 Markdown（与 ``/parsed`` 端点同源）。尚未入库时返回 None。
     """
     path = document.storage_path
-    if _is_raw_readable(document) and path and os.path.isfile(path):
+    # OCTX 保存的是受控 Markdown，展示文件名仍可能保留 PDF / Office 扩展名。
+    # OCTX 本地优先仅用于活跃文档，旧安装仍需遵循当前信源的数据库过滤。
+    can_read_local = (bool(document.octx_installation_id) and document.is_active) or _is_raw_readable(document)
+    if can_read_local and path and os.path.isfile(path):
         with open(path, encoding="utf-8", errors="replace") as file:
             return file.readlines()
     if not document.sag_source_id:

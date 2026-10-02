@@ -1,6 +1,8 @@
 """按行阅读（REST `/read` 与 MCP `read`）：PDF / Office 读解析后的 Markdown，文本类仍读原文件。"""
 
+import asyncio
 import uuid
+from pathlib import Path
 
 import httpx
 import pytest
@@ -142,3 +144,110 @@ async def test_read_returns_parsed_markdown_for_binary_documents(tmp_path):
                 source = await s.get(Source, src["id"])
                 await s.delete(source)
                 await s.commit()
+
+
+@pytest.fixture
+async def octx_read_context(tmp_path):
+    from zleap.sag.db.models import Article, ArticleParseStatus, DataSource
+
+    from sag_api.core.config import Settings
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
+    from sag_api.sag import EngineManager
+
+    manager = EngineManager(
+        Settings(
+            _env_file=None,
+            data_dir=str(tmp_path / "engine"),
+            upload_dir=str(tmp_path / "uploads"),
+            sag_relational_provider="sqlite",
+            sag_vector_provider="lancedb",
+            embedding_schema_dimensions=2,
+            embedding_request_dimensions=2,
+        )
+    )
+    busy = Source(id="busy-source", name="处理中", sag_source_config_id="busy-config", config={})
+    source = Source(id="octx-source", name="知识包", sag_source_config_id="octx-config", config={})
+    path = tmp_path / "octx-installation" / "00000000-document.md"
+    path.parent.mkdir()
+    path.write_text("# 知识包正文\n本地连续上下文\n", encoding="utf-8")
+    document = Document(
+        id="octx-document",
+        source_id=source.id,
+        filename="report.pdf",
+        content_type="application/pdf",
+        storage_path=str(path),
+        size_bytes=path.stat().st_size,
+        status=DocumentStatus.READY,
+        sag_source_id="octx-article",
+        octx_installation_id="installation",
+        is_active=True,
+    )
+    try:
+        # Seed the shared store through another source, keeping the OCTX engine cold.
+        session_factory = await manager.get_sag_session_factory(busy.sag_source_config_id, busy)
+        async with session_factory() as session:
+            session.add(DataSource(id=source.sag_source_config_id, name=source.name))
+            await session.flush()
+            session.add(
+                Article(
+                    id=document.sag_source_id,
+                    data_source_id=source.sag_source_config_id,
+                    document_id=document.id,
+                    title=document.filename,
+                    content="# 数据库正文\n回退内容\n",
+                    status="COMPLETED",
+                    parse_status=ArticleParseStatus.COMPLETED,
+                )
+            )
+            await session.commit()
+        yield manager, busy, source, document
+    finally:
+        await manager.aclose_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "content_type"),
+    [
+        ("report.pdf", "application/pdf"),
+        ("notes.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    ],
+)
+async def test_octx_read_does_not_wait_for_other_source_processing(octx_read_context, filename, content_type):
+    from sag_api.services.document_service import read_document_lines
+
+    manager, busy, source, document = octx_read_context
+    document.filename = filename
+    document.content_type = content_type
+    assert source.sag_source_config_id not in manager._slots
+
+    # Real processing holds the lifecycle read gate; cold engine creation needs its write gate.
+    async with manager.use_concurrently(busy.sag_source_config_id, busy):
+        lines = await asyncio.wait_for(read_document_lines(document, source, manager), timeout=2)
+        assert lines == ["# 知识包正文\n", "本地连续上下文\n"]
+        assert source.sag_source_config_id not in manager._slots
+
+
+@pytest.mark.asyncio
+async def test_octx_read_falls_back_to_stored_markdown_when_local_file_is_missing(octx_read_context):
+    from sag_api.services.document_service import read_document_lines
+
+    manager, _busy, source, document = octx_read_context
+    Path(document.storage_path).unlink()
+
+    assert await read_document_lines(document, source, manager) == ["# 数据库正文\n", "回退内容\n"]
+    document.sag_source_id = "missing-article"
+    assert await read_document_lines(document, source, manager) is None
+
+
+@pytest.mark.asyncio
+async def test_octx_read_does_not_reopen_retained_document_from_previous_installation(octx_read_context):
+    from sag_api.services.document_service import read_document_lines
+
+    manager, _busy, source, document = octx_read_context
+    # An OCTX upgrade keeps the old local file while moving the source to a new partition.
+    document.is_active = False
+    source.sag_source_config_id = "replacement-config"
+
+    assert await read_document_lines(document, source, manager) is None
