@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,7 +15,7 @@ from sag_api.schemas.chunk import (
     OutlineOut,
     ReadResponse,
 )
-from sag_api.services.document_service import get_public_document
+from sag_api.services.document_service import get_public_document, read_document_lines
 from sag_api.services.source_service import get_source
 
 router = APIRouter(prefix="/sources/{source_id}", tags=["knowledge"])
@@ -89,17 +87,17 @@ async def read(
     limit: int = Query(default=120, ge=1, le=500),
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    engine_manager: EngineManager = Depends(get_engine_manager),
 ) -> ReadResponse:
-    """按行分页读取原始文件。"""
+    """按行分页读取文档文本：文本类读原文件，PDF / Office 等读解析后的 Markdown。"""
     source = await get_source(session, source_id)
     document = await get_public_document(session, source, document_id)
-    if not document.storage_path or not os.path.isfile(document.storage_path):
-        raise NotFoundError("原始文件不存在或已清理")
     try:
-        with open(document.storage_path, encoding="utf-8", errors="replace") as f:
-            all_lines = f.readlines()
+        all_lines = await read_document_lines(document, source, engine_manager)
     except OSError as exc:
         raise NotFoundError("文件读取失败") from exc
+    if all_lines is None:
+        raise NotFoundError("文档尚无可读文本，可能仍在处理中或原始文件已清理")
     total = len(all_lines)
     start = max(0, offset - 1)
     page = all_lines[start : start + limit]

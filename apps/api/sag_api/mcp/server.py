@@ -66,7 +66,7 @@ MCP_TOOL_DETAILS: tuple[MCPToolDetail, ...] = (
     {
         "name": "read",
         "label": "按行读原文",
-        "description": "按行分页读取指定文档的原始文本，适合查看连续上下文。",
+        "description": "按行分页读取指定文档的文本（PDF、Office 等读取解析后的 Markdown），适合查看连续上下文。",
     },
     {
         "name": "get_chunk",
@@ -438,15 +438,14 @@ def build_source_mcp(
         if match is None:
             return "（未找到该文档）"
         document, source = match
-        import os
+        from sag_api.services.document_service import read_document_lines
 
-        if not document.storage_path or not os.path.isfile(document.storage_path):
-            return "（原始文件不存在或已清理）"
         try:
-            with open(document.storage_path, encoding="utf-8", errors="replace") as file:
-                lines = file.readlines()
+            lines = await read_document_lines(document, source, scope.engine_manager)
         except OSError:
             return "（文件读取失败）"
+        if lines is None:
+            return "（尚无可读文本：文档可能仍在处理中，或原始文件已清理）"
         start = max(0, offset - 1)
         page = lines[start : start + max(1, min(limit, 500))]
         if not page:
