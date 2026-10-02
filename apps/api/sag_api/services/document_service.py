@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,8 +15,15 @@ from sag_api.db.models import Document, Job, Source
 from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs import JobQueue
 from sag_api.jobs.scheduling import DELETE_PRIORITY, RESUME_PRIORITY, set_scheduler
+from sag_api.parsing.text import is_text_preview
 from sag_api.sag.document_vector_identity import refresh_source_vector_identity
 from sag_api.services.source_operation_service import touch_source_revision
+
+if TYPE_CHECKING:
+    from sag_api.sag import EngineManager
+
+# 按行阅读时可直接读原文件的格式；其余格式（PDF / Office 等）原文件是二进制。
+_RAW_READABLE_SUFFIXES = {".md", ".markdown"}
 
 
 async def _enqueue_persisted_job(job_queue: JobQueue, job_id: str) -> None:
@@ -60,6 +68,35 @@ async def get_public_document(
     }:
         raise NotFoundError("文档不存在")
     return document
+
+
+def _is_raw_readable(document: Document) -> bool:
+    suffix = os.path.splitext(document.filename)[1].lower()
+    return suffix in _RAW_READABLE_SUFFIXES or is_text_preview(document.filename, document.content_type)
+
+
+async def read_document_lines(
+    document: Document,
+    source: Source,
+    engine_manager: EngineManager,
+) -> list[str] | None:
+    """返回供按行阅读的文本；文本类读原文件，其余格式读入库时保存的解析 Markdown。
+
+    PDF / Office 等原文件是二进制，按 UTF-8 逐行读取只会得到乱码，因此改读
+    解析后的 Markdown（与 ``/parsed`` 端点同源）。尚未入库时返回 None。
+    """
+    path = document.storage_path
+    if _is_raw_readable(document) and path and os.path.isfile(path):
+        with open(path, encoding="utf-8", errors="replace") as file:
+            return file.readlines()
+    if not document.sag_source_id:
+        return None
+    markdown = await engine_manager.get_document_markdown(
+        source.sag_source_config_id,
+        document.sag_source_id,
+        source=source,
+    )
+    return markdown.splitlines(keepends=True) if markdown else None
 
 
 async def create_document_from_upload(
