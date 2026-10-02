@@ -146,13 +146,17 @@ def _dsh_connection_descriptor(
     )
 
 
-def _capabilities() -> dict:
+def _capabilities(*, current: bool = False) -> dict:
+    from sag_api.services.chatbot_service import manager, operation
+
+    snapshot = None if current else operation.get()
+    active = (snapshot or manager.snapshot()).settings
     strategy_report = EngineManager.strategies_capability_report(settings)
     return {
-        "llm_configured": settings.llm_configured,
-        "llm_provider": settings.llm_provider,
-        "llm_model": settings.llm_model,
-        "context_window": settings.llm_context_window,
+        "llm_configured": active.llm_configured,
+        "llm_provider": active.llm_provider,
+        "llm_model": active.llm_model,
+        "context_window": active.llm_context_window,
         "embedding_model": settings.embedding_model,
         "document_parser": settings.document_parser,
         "effective_document_parser": settings.effective_document_parser,
@@ -354,7 +358,7 @@ async def quick_setup_302(
 
     config = await settings_service.save_302_quick_setup(session, body.api_key)
     await request.app.state.knowledge_runtime.apply_settings(settings, reset_engines=True)
-    return {"config": config, "capabilities": _capabilities()}
+    return {"config": config, "capabilities": _capabilities(current=True)}
 
 
 @router.put("/model-config")
@@ -389,7 +393,7 @@ async def update_model_config(
         settings,
         reset_engines=engine_changed,
     )
-    return {"config": config, "capabilities": _capabilities()}
+    return {"config": config, "capabilities": _capabilities(current=True)}
 
 
 @router.post("/model-config/mineru/302")
@@ -401,7 +405,7 @@ async def configure_302_mineru(
     """已有 302 LLM/Embedding 用户一键复用服务端保存的 Key 启用 MinerU。"""
     config = await settings_service.save_302_mineru_setup(session)
     await request.app.state.knowledge_runtime.apply_settings(settings, reset_engines=False)
-    return {"config": config, "capabilities": _capabilities()}
+    return {"config": config, "capabilities": _capabilities(current=True)}
 
 
 @router.post("/model-config/test")
@@ -414,7 +418,7 @@ async def test_model_config(
     llm: LLMClient
     active = settings
     if body is None:
-        llm = request.app.state.llm
+        llm = LLMClient(settings)
     else:
         patch = body.model_dump(exclude_unset=True)
         updates = {

@@ -24,6 +24,7 @@ from sag_api.db.models import Agent, AgentBinding, Message, Source, Thread
 from sag_api.enums import BindingTargetType, MessageRole, MessageStatus
 from sag_api.generation import build_agent_messages, build_prompt_preview
 from sag_api.generation.prompt import estimate_tokens
+from sag_api.services.chatbot_service import query_operation
 from sag_api.services.source_service import search_source_candidates
 
 _DEFAULT_TITLES = {"新会话", "New chat"}
@@ -493,6 +494,7 @@ def build_ask_context(
     )
 
 
+@query_operation
 async def prepare_ask(
     session: AsyncSession,
     *,
@@ -527,7 +529,10 @@ async def prepare_ask(
 
     history = await _history(session, thread.id, exclude_id=user_msg.id)
     # 历史预算 = 上下文窗口的 40%（其余留给工具轮/回答）
-    history = await compress_history(history, llm=llm, budget_tokens=int(settings.llm_context_window * 0.4))
+    from sag_api.services.chatbot_service import manager, operation
+
+    active = operation.get() or manager.snapshot()
+    history = await compress_history(history, llm=llm, budget_tokens=int(active.settings.llm_context_window * 0.4))
     plan = build_ask_context(
         agent=agent,
         query=query,

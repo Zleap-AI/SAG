@@ -164,7 +164,21 @@ def apply_litellm_completion_policy(
     infer.  An explicit ``enable_thinking: true`` remains an opt-in override.
     """
 
+    from sag_api.core.chatbot_config import KEYLESS_API_KEY
+    from sag_api.services.chatbot_service import operation, query_scope
+
     normalized = dict(request)
+    snapshot = operation.get()
+    if snapshot is not None and query_scope.get() and snapshot.connections["llm"].enabled:
+        settings = snapshot.settings
+        normalized["extra_body"] = dict(settings.llm_extra_body or {})
+        normalized["temperature"] = settings.effective_llm_temperature
+        if not snapshot.connections["llm"].api_key:
+            from openai import omit
+
+            normalized["api_key"] = KEYLESS_API_KEY
+            if settings.llm_provider == "openai":
+                normalized["extra_headers"] = {**(normalized.get("extra_headers") or {}), "Authorization": omit}
     if "extra_body" not in normalized and settings.llm_extra_body:
         normalized["extra_body"] = dict(settings.llm_extra_body)
 

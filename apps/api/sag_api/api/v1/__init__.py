@@ -5,6 +5,7 @@ from sag_api.api.v1 import (
     agents,
     attachments,
     auth,
+    chatbot,
     dify,
     documents,
     insights,
@@ -39,6 +40,7 @@ for _module in (
     octx,
 ):
     api_router.include_router(_module.router)
+api_router.include_router(chatbot.router, prefix="/system")
 api_router.include_router(search.global_router)
 
 __all__ = ["api_router"]

@@ -292,6 +292,10 @@ async def apply_startup_overrides(session_factory: async_sessionmaker) -> None:
             else:
                 _settings.timezone = timezone
 
+    from sag_api.services.chatbot_service import manager
+
+    await manager.load(session_factory)
+
 
 def effective_model_config() -> dict:
     """当前生效的模型配置（读 settings 单例；密钥脱敏为 *_set 布尔）。"""
