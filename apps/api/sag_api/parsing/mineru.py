@@ -379,6 +379,10 @@ class MinerUClient:
             from sag_api.parsing.mineru_official import OfficialMinerUClient
 
             return OfficialMinerUClient(settings)
+        if settings.mineru_provider == "self_hosted":
+            from sag_api.parsing.mineru_v1 import SelfHostedMinerUClient
+
+            return SelfHostedMinerUClient(settings)
         return MinerU302Client(settings)
 
 
@@ -644,7 +648,9 @@ def _markdown_from_zip(content: bytes, size_limit: int) -> str:
                 raise UpstreamError("MinerU 结果压缩包中没有 Markdown 文件")
             candidates.sort(
                 key=lambda info: (
-                    os.path.basename(info.filename).lower() not in {"full.md", "full.markdown"},
+                    # MinerU ≤3 / 官方 v4 为 full.md；MinerU 4.x V1 结果包为 markdown.md。
+                    os.path.basename(info.filename).lower()
+                    not in {"full.md", "full.markdown", "markdown.md"},
                     -info.file_size,
                 )
             )

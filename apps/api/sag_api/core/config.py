@@ -193,11 +193,16 @@ class Settings(BaseSettings):
     # ── 文档解析（进入 zleap-sag 前统一转为 Markdown）─────────────────
     # auto：PDF 优先 MinerU，未配置或 MinerU 失败时回退本地 MarkItDown。
     document_parser: Literal["auto", "markitdown", "mineru"] = "auto"
-    mineru_provider: Literal["302", "official"] = "302"
+    # self_hosted：自部署 MinerU 4.x V1 API（`mineru-kit api-server`），API Key 可留空。
+    mineru_provider: Literal["302", "official", "self_hosted"] = "302"
     mineru_base_url: str | None = "https://api.302ai.cn"
     mineru_api_key: str | None = None
     mineru_version: Literal["2.0", "2.5"] = "2.5"
     mineru_official_model: Literal["pipeline", "vlm"] = "vlm"
+    # 自部署 V1 解析档位；留空时使用服务端默认档位。
+    mineru_tier: Literal["flash", "basic", "standard", "advanced"] | None = None
+    # 仅对显式配置的自部署 Base URL 放行本机/内网地址；结果下载仍须与其同源。
+    mineru_allow_private_base_url: bool = False
     mineru_parse_method: Literal["auto", "txt", "ocr"] = "auto"
     mineru_request_timeout: float = 60.0
     mineru_poll_interval: float = 2.0
@@ -276,6 +281,12 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("mineru_tier", mode="before")
+    @classmethod
+    def _blank_mineru_tier_as_default(cls, value: object) -> object:
+        # compose 透传未设置的 SAG_MINERU_TIER 时为空串，视为使用服务端默认档位。
+        return None if isinstance(value, str) and not value.strip() else value
 
     @field_validator("search_strategy", mode="before")
     @classmethod
@@ -380,7 +391,9 @@ class Settings(BaseSettings):
 
     @property
     def mineru_configured(self) -> bool:
-        """MinerU 是否具备可调用的端点与密钥。"""
+        """MinerU 是否具备可调用的端点与密钥（自部署服务可匿名访问）。"""
+        if self.mineru_provider == "self_hosted":
+            return bool(self.mineru_base_url)
         return bool(self.mineru_base_url and self.mineru_api_key)
 
     @property
