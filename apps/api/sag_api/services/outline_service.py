@@ -79,14 +79,14 @@ def build_outline(markdown: str | None, rows: list[dict[str, Any]]) -> list[Outl
         nodes.append(node)
         stack.append(node)
 
-    cursor = 0
+    position = 0
     orphans: dict[str, OutlineNode] = {}
     ordered = list(nodes)
     for row in sorted(rows, key=lambda item: int(item.get("rank") or 0)):
         heading = normalize_heading(str(row.get("heading") or ""))
-        target = _match(nodes, heading, cursor) if heading else None
+        target = _match(nodes, heading, position) if heading else None
         if target is not None:
-            cursor = target
+            position = target
             nodes[target].chunks.append(row)
             continue
         key = heading or _UNTITLED
@@ -99,12 +99,12 @@ def build_outline(markdown: str | None, rows: list[dict[str, Any]]) -> list[Outl
     return ordered
 
 
-def _match(nodes: list[OutlineNode], heading: str, cursor: int) -> int | None:
+def _match(nodes: list[OutlineNode], heading: str, position: int) -> int | None:
     """优先从当前位置向后找（同名章节按出现顺序对应），找不到再回头找。"""
-    for index in range(cursor, len(nodes)):
+    for index in range(position, len(nodes)):
         if nodes[index].title == heading:
             return index
-    for index in range(0, min(cursor, len(nodes))):
+    for index in range(0, min(position, len(nodes))):
         if nodes[index].title == heading:
             return index
     return None
