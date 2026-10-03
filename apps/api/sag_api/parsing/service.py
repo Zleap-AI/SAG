@@ -424,6 +424,11 @@ def _signature(provider: str, settings: Settings) -> str:
                 f"mineru-official-{settings.mineru_official_model}-"
                 f"{settings.mineru_parse_method}"
             )
+        if settings.mineru_provider == "self_hosted":
+            return (
+                f"mineru-v1-{settings.mineru_tier or 'default'}-"
+                f"{settings.mineru_parse_method}"
+            )
         return f"mineru-{settings.mineru_version}-{settings.mineru_parse_method}"
     return "markitdown"
 
@@ -447,6 +452,8 @@ def _compatible_state(
         expected["mineru_service"] = settings.mineru_provider
         if settings.mineru_provider == "official":
             expected["mineru_model"] = settings.mineru_official_model
+        elif settings.mineru_provider == "self_hosted":
+            expected["mineru_tier"] = settings.mineru_tier
         else:
             expected["mineru_version"] = settings.mineru_version
         if settings.mineru_provider == "302" and "mineru_service" not in current:
