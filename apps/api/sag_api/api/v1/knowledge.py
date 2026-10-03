@@ -16,6 +16,7 @@ from sag_api.schemas.chunk import (
     ReadResponse,
 )
 from sag_api.services.document_service import get_public_document, read_document_lines
+from sag_api.services.outline_service import build_outline, outline_rows
 from sag_api.services.source_service import get_source
 
 router = APIRouter(prefix="/sources/{source_id}", tags=["knowledge"])
@@ -29,7 +30,7 @@ async def outline(
     session: AsyncSession = Depends(get_session),
     engine_manager: EngineManager = Depends(get_engine_manager),
 ) -> OutlineOut:
-    """文档大纲：标题 + chunk_id，按阅读顺序排列。"""
+    """文档大纲：标题 + chunk_id，按阅读顺序排列，并附带标题层级与章节路径。"""
     source = await get_source(session, source_id)
     document = await get_public_document(session, source, document_id)
     if not document.sag_source_id:
@@ -41,13 +42,15 @@ async def outline(
     )
     if not rows:
         raise NotFoundError("文档尚无大纲，可能仍在处理中")
+    markdown = await engine_manager.get_document_markdown(
+        source.sag_source_config_id,
+        document.sag_source_id,
+        source=source,
+    )
     return OutlineOut(
         document_id=document.id,
         filename=document.filename,
-        outline=[
-            {"rank": row["rank"], "heading": row["heading"], "chunk_id": row["chunk_id"]}
-            for row in rows
-        ],
+        outline=outline_rows(build_outline(markdown, rows)),
     )
 
 
