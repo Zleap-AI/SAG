@@ -83,6 +83,9 @@ def _mineru_details(state: dict[str, Any] | None = None) -> tuple[str, str]:
     if service == "official":
         model = current.get("mineru_model")
         return "official", model if model in {"vlm", "pipeline"} else "vlm"
+    if service == "self_hosted":
+        tier = current.get("mineru_tier")
+        return "self_hosted", tier if isinstance(tier, str) and tier else "default"
     if service == "302":
         version = str(current.get("mineru_version") or "").lower()
         # The public contract predates 302's 2.0 label. "pipeline" is the
