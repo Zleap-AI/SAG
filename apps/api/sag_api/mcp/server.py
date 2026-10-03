@@ -19,6 +19,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from sag_api.services.outline_service import build_outline, render_outline_text
 from sag_api.services.retrieval_service import retrieve_relevant_sections
 
 if TYPE_CHECKING:
@@ -56,7 +57,7 @@ MCP_TOOL_DETAILS: tuple[MCPToolDetail, ...] = (
     {
         "name": "outline",
         "label": "文档大纲",
-        "description": "查看指定文档的章节和分块结构，并获取 chunk_id，便于快速定位内容。",
+        "description": "按标题层级查看指定文档的章节树及各章节下的分块，并获取 chunk_id，便于快速定位内容。",
     },
     {
         "name": "grep",
@@ -356,11 +357,12 @@ def build_source_mcp(
         )
         if not rows:
             return "（尚无大纲：文档可能仍在处理中）"
-        return "\n".join(
-            f"{row['rank']:>3}. {row['heading'] or '（无标题分块）'}"
-            f"（chunk_id={row['chunk_id']}）"
-            for row in rows
+        markdown = await scope.engine_manager.get_document_markdown(
+            source.sag_source_config_id,
+            document.sag_source_id,
+            source=source,
         )
+        return render_outline_text(build_outline(markdown, rows))
 
     @mcp.tool(
         title=MCP_TOOL_LABELS["grep"],
