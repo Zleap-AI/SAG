@@ -1,0 +1,17 @@
+# 本地验证镜像：在现有 API 运行时镜像上补装测试工具链。
+#
+# 本机 Windows 无法完成 `uv sync`（`litellm==1.92.0` 未发布 win 版 wheel，
+# 源码构建需要 MSVC linker），因此后端检查统一在 Linux 容器内执行：
+#
+#   docker build -t sag-api-anydoc-verify:local -f apps/api/Dockerfile apps/api
+#   docker build -t sag-api-verify:local -f apps/api/tests/scripts/Dockerfile.verify apps/api
+#   docker run --rm -v "<repo>/apps/api:/app" -w /app sag-api-verify:local \
+#       ruff check sag_api/ sag_agent/ tests/
+#   docker run --rm -v "<repo>:/repo" -w /repo/apps/api sag-api-verify:local python -m pytest -q
+#   docker run --rm -v "<repo>/apps/api:/app" -w /app sag-api-verify:local \
+#       python /app/tests/scripts/anydoc_docker_smoke.py
+#
+# 后端测试需要挂载仓库根目录：`tests/test_dify_setup.py` 会向上解析到仓库根。
+FROM sag-api-anydoc-verify:local
+
+RUN pip install --no-cache-dir "pytest>=8.2" "pytest-asyncio>=0.23" "anyio>=4.4" "ruff>=0.5"

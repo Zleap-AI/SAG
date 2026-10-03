@@ -25,6 +25,7 @@ dependencies = [
     "alembic>=1.13",
     "trafilatura>=1.8",
     "markitdown[docx,pdf,pptx,xls,xlsx]>=0.1.6,<0.2",
+    "firecrawl-anydoc==0.2.4",
     "charset-normalizer>=3.3,<4",
     "mcp>=1.28,<2",
     "octx[vectors]==0.1.6",

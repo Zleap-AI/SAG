@@ -8,7 +8,7 @@ sag 的后端服务：FastAPI + `zleap-sag`。
 |---|---|---|
 | 适配层 | `sag_api/sag/` | **唯一** import `zleap-sag` 之处；信源 ↔ `DataEngine` |
 | 连接器 | `sag_api/connectors/` | 采集抽象 + 注册表（文件上传 → 动态同步） |
-| 文档解析 | `sag_api/parsing/` | Markdown 直通；PDF 优先 MinerU、失败自动回退；其余由 MarkItDown 转换 |
+| 文档解析 | `sag_api/parsing/` | Markdown 直通；PDF 优先 MinerU、失败自动回退；`anydoc` 模式本机转换 DOCX/PPTX/EPUB/PDF/CSV（`parsing/anydoc.py`）；Excel 与其余格式由 MarkItDown 转换 |
 | 任务队列 | `sag_api/jobs/` | 后台处理编排（ingest → extract 状态机） |
 | 生成层 | `sag_api/generation/` | 检索结果 → LLM 流式答案 + 引用 |
 | 工具层 | `sag_api/tools/` | Agent 工具：内置检索/实体 + 远端 MCP 适配（统一 `Tool` 接口） |

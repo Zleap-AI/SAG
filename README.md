@@ -206,6 +206,8 @@ Create a source and add Markdown, text, PDF, Office, or other supported document
 
 PDF files use MinerU when it is configured and fall back to local MarkItDown when it is unavailable or fails. Other Office and text formats use MarkItDown by default.
 
+You can also switch the parsing method to **AnyDoc** in settings (or set `SAG_DOCUMENT_PARSER=anydoc`): docx/pptx/epub/pdf/csv are converted on this machine by [AnyDoc](https://github.com/firecrawl/anydoc), nothing is uploaded, and no hosted OCR runs. XLS/XLSX retain local MarkItDown conversion to preserve Excel record groups and searchable chunks; the actual parser is recorded. Only files explicitly rejected as unsupported fall back to MarkItDown; other conversion errors are reported as failures. CSV is first decoded with SAG's encoding detection and normalized to UTF-8 before AnyDoc sees it, so non-UTF-8 Chinese CSV does not turn into mojibake. A scanned or image-only PDF is reported as needing OCR for the whole file (with page numbers) — switch to a configured MinerU and reprocess it; no partial text is cached. The default `auto` behaviour is unchanged.
+
 ### Search and verify the source
 
 Search globally or restrict the query to selected sources. Every result can open the original chunk beside the ranked result, so retrieval quality is inspectable before an Agent uses it.

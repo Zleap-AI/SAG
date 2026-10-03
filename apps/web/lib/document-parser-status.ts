@@ -4,6 +4,8 @@ export type DocumentParserMethodKey =
   | "officialMineruVlm"
   | "officialMineruPipeline"
   | "ai302Mineru"
+  | "anydoc"
+  | "anydocFallback"
   | "markitdown"
   | "markitdownFallback"
   | "failed"
@@ -46,7 +48,13 @@ export function documentParserStatus(
     : null;
   if (parserStatus === "failed") return { methodKey: "failed", progressKey: null };
   if (parserProvider === "original") return { methodKey: "original", progressKey };
+  if (parserProvider === "anydoc") {
+    return { methodKey: "anydoc", progressKey };
+  }
   if (parserProvider === "markitdown") {
+    if (fallbackFrom === "anydoc") {
+      return { methodKey: "anydocFallback", progressKey };
+    }
     return {
       methodKey:
         parserStatus === "fallback" || fallbackFrom === "mineru"
@@ -55,13 +63,17 @@ export function documentParserStatus(
       progressKey,
     };
   }
-
-  if (mineruProvider === "302" || mineruModel === "2.5") {
-    return { methodKey: "ai302Mineru", progressKey };
+  // Only a MinerU-identified provider falls through to the MinerU labels: an
+  // unrecognized provider must not be presented as MinerU.
+  if (parserProvider === "mineru") {
+    if (mineruProvider === "302" || mineruModel === "2.5") {
+      return { methodKey: "ai302Mineru", progressKey };
+    }
+    return {
+      methodKey:
+        mineruModel === "pipeline" ? "officialMineruPipeline" : "officialMineruVlm",
+      progressKey,
+    };
   }
-  return {
-    methodKey:
-      mineruModel === "pipeline" ? "officialMineruPipeline" : "officialMineruVlm",
-    progressKey,
-  };
+  return null;
 }

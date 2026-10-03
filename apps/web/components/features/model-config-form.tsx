@@ -621,6 +621,7 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
                   <SelectItem value="auto">{t("autoRecommended")}</SelectItem>
                   <SelectItem value="markitdown">MarkItDown</SelectItem>
                   <SelectItem value="mineru">MinerU</SelectItem>
+                  <SelectItem value="anydoc">AnyDoc</SelectItem>
                 </SelectContent>
               </Select>
               <FieldDescription>
@@ -628,7 +629,9 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
                   ? t("autoDescription")
                   : documentParser === "markitdown"
                     ? t("markitdownDescription")
-                    : t("mineruDescription")}
+                    : documentParser === "anydoc"
+                      ? t("anydocDescription")
+                      : t("mineruDescription")}
               </FieldDescription>
             </Field>
             <Field>
