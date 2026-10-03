@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Check, Plug, RotateCw, Save, Sparkles, X } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { ChatbotConfigSections } from "./chatbot-config-sections";
 import { toast } from "sonner";
 
 import { useApp } from "@/components/features/app-shell";
@@ -42,7 +43,7 @@ function is302Api(url: string | null) {
   }
 }
 
-export function ModelConfigForm() {
+function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
   const t = useTranslations("ModelConfig");
   const { refreshCapabilities } = useApp();
   const [cfg, setCfg] = React.useState<ModelConfig | null>(null);
@@ -138,6 +139,12 @@ export function ModelConfigForm() {
     void load();
   }, [load]);
 
+  React.useImperativeHandle(saveRef, () => ({ save }));
+  const changed = Object.keys(changedPatch()).length > 0;
+  React.useEffect(() => {
+    onState?.({ ready: Boolean(cfg && providers.length > 0 && !loadError && !saving && !testing), changed });
+  }, [cfg, providers.length, loadError, saving, testing, changed, onState]);
+
   function currentPatch(): ModelConfigPatch {
     const patch: ModelConfigPatch = {
       llm_provider: llmProvider,
@@ -163,14 +170,29 @@ export function ModelConfigForm() {
     return patch;
   }
 
+  function changedPatch(): ModelConfigPatch {
+    if (!cfg) return {};
+    const configured: Record<string, unknown> = { ...cfg,
+      llm_base_url: cfg.llm_base_url ?? null,
+      llm_timeout_ms: cfg.llm_timeout_ms ?? 60_000,
+      llm_max_retries: cfg.llm_max_retries ?? 2,
+      llm_context_window: cfg.llm_context_window ?? 128000,
+      embedding_base_url: cfg.embedding_base_url ?? "",
+      embedding_dimensions: cfg.embedding_dimensions ?? null,
+      mineru_base_url: cfg.mineru_base_url ?? null,
+    };
+    return Object.fromEntries(Object.entries(currentPatch()).filter(([key, value]) =>
+      !cfg.locked_fields.includes(key) && value !== configured[key]));
+  }
+
   async function save() {
+    const patch = changedPatch();
+    if (!Object.keys(patch).length) return;
     setSaving(true);
     setTestResult(null);
     try {
-      const patch = currentPatch();
       const { config } = await api.saveModelConfig(patch);
       hydrate(config);
-      await refreshCapabilities();
       getDiagnosticsStore().record("model.save", {
         llm_provider: config.llm_provider,
         llm_base_url: config.llm_base_url,
@@ -192,9 +214,8 @@ export function ModelConfigForm() {
         embedding_api_key_changed: Boolean(embKey.trim()),
         mineru_api_key_changed: Boolean(mineruKey.trim()),
       });
-      toast.success(t("saved"));
     } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : t("saveFailed"));
+      throw new Error(error instanceof ApiError ? error.message : t("saveFailed"));
     } finally {
       setSaving(false);
     }
@@ -268,6 +289,7 @@ export function ModelConfigForm() {
       const { config } = await api.setup302MinerU();
       hydrate(config);
       await refreshCapabilities();
+      window.dispatchEvent(new Event("sag:stock-model-saved"));
       toast.success(t("mineruEnabled"));
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : t("mineruFailed"));
@@ -334,7 +356,29 @@ export function ModelConfigForm() {
           <AlertDescription>{t("deploymentLockDescription")}</AlertDescription>
         </Alert>
       )}
-      <SettingsSection title={t("generationTitle")} description={t("generationDescription")}>
+      <SettingsSection title={t("generationTitle")} description={t("generationDescription")}
+        footer={
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-h-5 min-w-0">
+              {testResult && (
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1.5 text-sm",
+                    testResult.ok ? "text-success" : "text-destructive",
+                  )}
+                >
+                  {testResult.ok ? <Check className="size-4" /> : <X className="size-4" />}
+                  {testResult.message}
+                </span>
+              )}
+            </div>
+            <Button type="button" onClick={test} variant="outline" disabled={llmLocked || testing || saving}>
+              {testing ? <Spinner /> : <Plug />}
+              {testing ? t("testing") : t("testGeneration")}
+            </Button>
+          </div>
+        }
+      >
         <SettingsRow title={t("connectionTitle")} description={t("connectionDescription")}>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field>
@@ -687,31 +731,91 @@ export function ModelConfigForm() {
         </SettingsRow>
       </SettingsSection>
 
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
-        <div className="min-h-5 min-w-0">
-          {testResult && (
-            <span
-              className={cn(
-                "inline-flex items-center gap-1.5 text-sm",
-                testResult.ok ? "text-success" : "text-destructive",
-              )}
-            >
-              {testResult.ok ? <Check className="size-4" /> : <X className="size-4" />}
-              {testResult.message}
-            </span>
-          )}
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" onClick={test} variant="outline" disabled={llmLocked || testing || saving}>
-            {testing ? <Spinner /> : <Plug />}
-            {testing ? t("testing") : t("testGeneration")}
-          </Button>
-          <Button type="button" onClick={save} disabled={saving || testing}>
-            {saving ? <Spinner /> : <Save />}
-            {saving ? t("saving") : t("save")}
-          </Button>
-        </div>
-      </div>
     </div>
   );
+}
+
+export type ModelSettingsHandle = { save: () => Promise<void> };
+export type ModelSettingsProps = {
+  saveRef?: React.Ref<ModelSettingsHandle>;
+  onState?: (state: { ready: boolean; changed: boolean }) => void;
+};
+
+export function ModelConfigForm() {
+  const t = useTranslations("ModelConfig");
+  const c = useTranslations("ChatbotConfig");
+  const { refreshCapabilities } = useApp();
+  const original = React.useRef<ModelSettingsHandle>(null);
+  const chatbot = React.useRef<ModelSettingsHandle>(null);
+  const [originalState, setOriginalState] = React.useState({ ready: false, changed: false });
+  const [chatbotState, setChatbotState] = React.useState({ ready: false, changed: false });
+  type Target = "original" | "chatbot";
+  const pending = React.useRef({ original: false, chatbot: false });
+  const [saving, setSaving] = React.useState({ original: false, chatbot: false });
+  const [results, setResults] = React.useState<Partial<Record<Target, { ok: boolean; message: string }>>>({});
+  const [refreshError, setRefreshError] = React.useState("");
+  const canSave = {
+    original: originalState.ready && originalState.changed && !saving.original,
+    chatbot: chatbotState.ready && chatbotState.changed && !saving.chatbot,
+  };
+
+  async function save() {
+    const handles = { original: original.current, chatbot: chatbot.current };
+    await Promise.all((["original", "chatbot"] as const).map(async target => {
+      const handle = handles[target];
+      if (!canSave[target] || pending.current[target] || !handle) return;
+      pending.current[target] = true;
+      setSaving(current => ({ ...current, [target]: true }));
+      setResults(current => ({ ...current, [target]: undefined }));
+      setRefreshError("");
+      try {
+        await handle.save();
+        const message = target === "original"
+          ? c("originalSaved")
+          : c("connectionsSaved");
+        setResults(current => ({ ...current, [target]: { ok: true, message } }));
+        toast.success(message);
+        // Refresh shared embedding identity after either independent write.
+        window.dispatchEvent(new Event("sag:stock-model-saved"));
+        try { await refreshCapabilities(); }
+        catch {
+          setRefreshError(c("refreshFailed"));
+        }
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : t("saveFailed");
+        const message = target === "original"
+          ? c("originalSaveFailed", { detail })
+          : c("connectionsSaveFailed", { detail });
+        setResults(current => ({ ...current, [target]: { ok: false, message } }));
+      } finally {
+        pending.current[target] = false;
+        setSaving(current => ({ ...current, [target]: false }));
+      }
+    }));
+  }
+
+  const status = (target: Target) => saving[target]
+    ? <p role="status" className="text-sm text-muted-foreground">{target === "original"
+      ? c("savingOriginal")
+      : c("savingConnections")}</p>
+    : results[target] && <p role={results[target].ok ? "status" : "alert"}
+      className={results[target].ok ? "text-sm text-muted-foreground" : "text-sm text-destructive"}>{results[target].message}</p>;
+  const busy = saving.original || saving.chatbot;
+  return <div className="flex flex-col gap-8">
+    <fieldset disabled={saving.original} inert={saving.original} className="flex min-w-0 flex-col gap-8">
+      <BaseModelConfigForm saveRef={original} onState={setOriginalState} />
+    </fieldset>
+    {status("original")}
+    <fieldset disabled={saving.chatbot} inert={saving.chatbot} className="flex min-w-0 flex-col gap-8">
+      <ChatbotConfigSections saveRef={chatbot} onState={setChatbotState} />
+    </fieldset>
+    {status("chatbot")}
+    <div className="flex flex-wrap items-center justify-end gap-3 border-t pt-4">
+      {refreshError && <p role="alert" className="w-full text-sm text-destructive">{refreshError}</p>}
+      <Button type="button" onClick={() => void save()} disabled={!canSave.original && !canSave.chatbot}>
+        {busy ? <Spinner /> : <Save />}
+        {busy && !canSave.original && !canSave.chatbot ? t("saving") : t("save")}
+      </Button>
+    </div>
+  </div>;
 }

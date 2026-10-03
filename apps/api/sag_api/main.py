@@ -17,6 +17,7 @@ from sag_api.core.db import SessionLocal, dispose_db, init_db
 from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
 from sag_api.core.errors import ApiError
 from sag_api.core.logging import RequestContextMiddleware, configure_logging, get_logger
+from sag_api.services.chatbot_service import CaptureMiddleware
 
 # [storage-bootstrap] 知识库重建与活动数据目录的统一入口
 from sag_api.upgrades.integration import bind_storage_bootstrap, install_storage_bootstrap_middleware
@@ -111,6 +112,7 @@ def create_app() -> FastAPI:
     app.add_middleware(CORSMiddleware, **cors_kwargs)
     # [storage-bootstrap] 存储重建期间拦截未就绪请求
     install_storage_bootstrap_middleware(app)
+    app.add_middleware(CaptureMiddleware)
     # 请求追踪（放在 CORS 之后添加 → 更外层执行，最先分配 request_id）
     app.add_middleware(RequestContextMiddleware)
 

@@ -12,6 +12,8 @@ import type {
   Binding,
   BindingTargetType,
   Capabilities,
+  ChatbotConfig,
+  ChatbotConfigPatch,
   DshIntegrationDescriptor,
   Doc,
   MessagePage,
@@ -678,6 +680,18 @@ export const api = {
     }),
 
   // 模型与检索配置
+  getChatbotConfig: () =>
+    request<{ config: ChatbotConfig }>("/api/v1/system/chatbot-config"),
+  saveChatbotConfig: (b: ChatbotConfigPatch) =>
+    request<{ config: ChatbotConfig }>("/api/v1/system/chatbot-config", {
+      method: "PUT",
+      body: JSON.stringify(b),
+    }),
+  testChatbotConfig: (b: ChatbotConfigPatch & { target: "llm" | "embedding" }) =>
+    request<{ ok: boolean; message: string }>("/api/v1/system/chatbot-config/test", {
+      method: "POST",
+      body: JSON.stringify(b),
+    }),
   getModelConfig: () => request<ModelConfig>("/api/v1/system/model-config"),
   getModelProviders: () =>
     request<ModelProviderSpec[]>("/api/v1/system/model-providers"),

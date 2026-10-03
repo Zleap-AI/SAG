@@ -160,6 +160,9 @@ class EngineManager:
     supports_document_source_exclusions = True
 
     def __init__(self, settings: Settings):
+        from sag_api.services.chatbot_service import install_query_adapters
+
+        install_query_adapters()
         self._settings = settings
         self._slots: dict[str, _Slot] = {}
         self._create_lock = asyncio.Lock()

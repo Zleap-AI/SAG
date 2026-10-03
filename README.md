@@ -194,6 +194,8 @@ The UI and services still start without model credentials. Embeddings are requir
 
 To make the deployment configuration mandatory, set `SAG_LOCK_LLM_CONFIG=true`. SAG then shows the generation fields as locked in Settings and continues to use the `SAG_LLM_*` values. Change Docker Compose or `.env` and restart the API container to update a locked configuration. API keys remain deployment-managed and are never returned by the Settings API.
 
+For separate chat and query endpoints, enable **Chatbot LLM** or **Query embedding** in the same Models page. Both are optional and leave document extraction/indexing on the original connections. Query embeddings share the original model and vector dimensions. See [optional chatbot connections](docs/chatbot-connections.md) for deployment settings, credential storage, and recovery.
+
 ### Import knowledge
 
 Create a source and add Markdown, text, PDF, Office, or other supported documents. SAG normalizes documents to Markdown, then runs chunking, embedding, event extraction, and entity extraction in the background.

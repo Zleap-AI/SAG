@@ -509,9 +509,13 @@ async def serve_stdio(source_id: str | None = None) -> None:
 
     from sag_api.core.config import settings
     from sag_api.core.db import SessionLocal
+    from sag_api.core.litellm_policy import install_litellm_policy, uninstall_litellm_policy
     from sag_api.db.models import Source
     from sag_api.sag import EngineManager
+    from sag_api.services.chatbot_service import SettingsView
+    from sag_api.services.settings_service import apply_startup_overrides
 
+    await apply_startup_overrides(SessionLocal)
     engine_manager = EngineManager(settings)
     async with SessionLocal() as session:
         statement = select(Source).order_by(Source.created_at, Source.id)
@@ -522,11 +526,15 @@ async def serve_stdio(source_id: str | None = None) -> None:
         raise SystemExit(f"信源不存在：{source_id}")
 
     mcp = get_source_mcp()
+    policy = install_litellm_policy(SettingsView(settings))
     try:
         with use_scope(engine_manager, sources):
             await mcp.run_stdio_async()
     finally:
-        await engine_manager.aclose_all()
+        try:
+            await engine_manager.aclose_all()
+        finally:
+            uninstall_litellm_policy(policy)
 
 
 def _main() -> None:

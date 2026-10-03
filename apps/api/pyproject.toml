@@ -17,6 +17,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "sse-starlette>=2.1",
     "httpx>=0.27",
+    "cryptography>=46.0.5,<51",
     "filelock>=3.16,<4",
     "litellm>=1.92,<2",
     "orjson>=3.11.6,<4",

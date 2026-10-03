@@ -173,6 +173,25 @@ class Settings(BaseSettings):
     # 未配置时对 qwen 系模型通过 LiteLLM reasoning_effort=none 统一关闭思考。
     llm_extra_body: dict | None = None
 
+    # Optional chatbot/query connections; extraction and indexing retain the original clients.
+    chatbot_llm_enabled: bool = False
+    chatbot_llm_provider: ModelProviderId = "openai"
+    chatbot_llm_base_url: str = ""
+    chatbot_llm_model: str = ""
+    chatbot_llm_api_key: str = Field(default="", repr=False)
+    chatbot_embedding_enabled: bool = False
+    chatbot_embedding_base_url: str = ""
+    chatbot_embedding_api_key: str = Field(default="", repr=False)
+    lock_chatbot_config: bool = False
+    chatbot_config_encryption_key: str = Field(default="", repr=False)
+    chatbot_llm_temperature: float | None = Field(default=None, ge=0, le=2)
+    chatbot_llm_max_tokens: int | None = Field(default=None, ge=1)
+    chatbot_llm_context_window: int | None = Field(default=None, ge=1)
+    chatbot_llm_timeout_ms: int | None = Field(default=None, ge=1_000, le=600_000)
+    chatbot_llm_max_retries: int | None = Field(default=None, ge=0, le=10)
+    chatbot_llm_structured_output_mode: str | None = None
+    chatbot_llm_extra_body: Annotated[dict | None, NoDecode] = None
+
     # ── Embedding（OpenAI-compatible；仅 OpenAI provider 可复用生成配置）───────
     embedding_model: str = "bge-large-en-v1.5"
     embedding_base_url: str | None = "https://api.302ai.cn/v1"
@@ -280,6 +299,24 @@ class Settings(BaseSettings):
         """compose 以 ${SAG_*_DIMENSIONS} 透传、变量未设置时注入空串，等价于未配置。"""
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator(
+        "chatbot_llm_temperature", "chatbot_llm_max_tokens", "chatbot_llm_context_window",
+        "chatbot_llm_timeout_ms", "chatbot_llm_max_retries", "chatbot_llm_structured_output_mode",
+        "chatbot_llm_extra_body", mode="before",
+    )
+    @classmethod
+    def _blank_chatbot_tuning_as_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("chatbot_llm_extra_body", mode="before")
+    @classmethod
+    def _decode_chatbot_extra_body(cls, value: object) -> object:
+        if isinstance(value, str):
+            return json.loads(value) if value.strip() else None
         return value
 
     @field_validator("mineru_tier", mode="before")

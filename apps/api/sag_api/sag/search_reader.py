@@ -21,6 +21,7 @@ from sag_api.sag._timings_probe import capture_scope as _timings_capture_scope
 from sag_api.sag._timings_probe import release_scope as _timings_release_scope
 from sag_api.sag.dto import RetrievedSection, SearchOutcome
 from sag_api.sag.errors import map_sag_errors
+from sag_api.services.chatbot_service import query_operation
 
 if TYPE_CHECKING:
     from sag_api.db.models import Source
@@ -35,6 +36,7 @@ class SearchReader:
     def __init__(self, access: EngineAccess) -> None:
         self._access = access
 
+    @query_operation
     async def _search_raw(
         self,
         source_config_id: str,
@@ -85,6 +87,7 @@ class SearchReader:
             outcome = SearchOutcome(query=outcome.query, sections=outcome.sections, stats=merged_stats)
         return outcome
 
+    @query_operation
     async def search(
         self,
         source_config_id: str,
@@ -162,6 +165,7 @@ class SearchReader:
             },
         )
 
+    @query_operation
     async def search_many(
         self,
         targets: list[tuple[str, Source | None]],
@@ -346,6 +350,7 @@ class SearchReader:
             stats=stats,
         )
 
+    @query_operation
     async def _search_chunk_vectors(
         self,
         targets: list[tuple[str, Source | None]],
@@ -459,6 +464,7 @@ class SearchReader:
             },
         )
 
+    @query_operation
     async def search_event_scores(
         self,
         query: str,

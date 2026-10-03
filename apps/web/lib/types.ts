@@ -211,6 +211,29 @@ export interface ModelProviderSpec {
 
 export type MinerUProvider = "302" | "official";
 
+export interface ChatbotConnection {
+  enabled: boolean;
+  base_url: string;
+  api_key_set: boolean;
+  credential_source: string;
+  provider?: ModelProviderId;
+  model?: string;
+  schema_dimensions?: number;
+  request_dimensions?: number | null;
+}
+
+export interface ChatbotConfig {
+  locked: boolean;
+  encryption_configured: boolean;
+  llm: ChatbotConnection & { provider: ModelProviderId; model: string };
+  embedding: ChatbotConnection & { model: string; schema_dimensions: number; request_dimensions: number | null };
+}
+
+export interface ChatbotConfigPatch {
+  llm?: Partial<Pick<ChatbotConnection, "enabled" | "provider" | "base_url" | "model">> & { api_key?: string };
+  embedding?: Partial<Pick<ChatbotConnection, "enabled" | "base_url">> & { api_key?: string };
+}
+
 export interface ModelConfig {
   llm_provider: ModelProviderId;
   llm_base_url: string | null;
