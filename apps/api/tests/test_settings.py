@@ -1,10 +1,11 @@
 """模型配置端点：GET 脱敏、PUT 持久化+生效、密钥保留、非法值 422、连接测试（离线）。
 
 全程离线且**不留全局副作用**：`finally` 删除 settings 表行 + 还原被改的 `settings` 单例字段，
-避免跨测试泄漏（端点会就地覆盖进程级单例）。连接测试只验证「未配置」分支（无网络）。
+避免跨测试泄漏（端点会就地覆盖进程级单例）。连接测试仅替换外部模型传输（无网络）。
 """
 
 import logging
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
@@ -318,6 +319,138 @@ async def _register(c, email):
     assert r.status_code == 201, r.text
     assert r.json()["user"]["created_at"].endswith(("Z", "+00:00"))
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+@asynccontextmanager
+async def _self_hosted_model_config_client(monkeypatch):
+    from sqlalchemy import delete
+
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Setting, User
+    from sag_api.main import app
+    from sag_api.services.settings_service import save_model_config
+
+    snapshot = {key: getattr(settings, key) for key in _RESTORE}
+    monkeypatch.setattr(settings, "mineru_tier", "flash")
+    monkeypatch.setattr(settings, "mineru_allow_private_base_url", True)
+    await init_db()
+    try:
+        async with SessionLocal() as session:
+            await save_model_config(
+                session,
+                {
+                    "llm_provider": "openai",
+                    "llm_base_url": "https://llm.example/v1",
+                    "llm_api_key": "schema-regression-key",
+                    "llm_model": "test-model",
+                    "llm_temperature": 0.2,
+                    "mineru_provider": "self_hosted",
+                    "mineru_base_url": "http://127.0.0.1:18000",
+                },
+            )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+                headers = await _register(client, "self-hosted-modelcfg@t.com")
+                response = await client.get("/api/v1/system/model-config", headers=headers)
+                assert response.status_code == 200, response.text
+                config = response.json()
+                # Match the settings form's currentPatch(), including its empty URL conversion.
+                payload = {
+                    key: config[key]
+                    for key in (
+                        "llm_provider", "llm_base_url", "llm_model", "llm_temperature",
+                        "llm_max_tokens", "llm_timeout_ms", "llm_max_retries", "llm_context_window",
+                        "embedding_model", "embedding_base_url", "embedding_dimensions",
+                        "document_parser", "mineru_provider", "mineru_base_url", "mineru_version",
+                        "mineru_official_model",
+                    )
+                }
+                payload["embedding_base_url"] = config["embedding_base_url"] or ""
+                payload["llm_temperature"] = 0.7
+                yield client, headers, config, payload
+    finally:
+        async with SessionLocal() as session:
+            await session.execute(delete(Setting).where(Setting.scope == "global", Setting.key == "model_config"))
+            await session.execute(delete(User).where(User.email == "self-hosted-modelcfg@t.com"))
+            await session.commit()
+        for key, value in snapshot.items():
+            setattr(settings, key, value)
+
+
+@pytest.mark.asyncio
+async def test_self_hosted_model_config_form_save_preserves_deployment_settings(monkeypatch):
+    from sqlalchemy import select
+
+    from sag_api.core.db import SessionLocal
+    from sag_api.db.models import Setting
+    from sag_api.main import app
+
+    async with _self_hosted_model_config_client(monkeypatch) as (client, headers, config, payload):
+        assert config["mineru_provider"] == "self_hosted"
+        assert config["mineru_base_url"] == "http://127.0.0.1:18000"
+        assert config["llm_temperature"] == 0.2
+
+        response = await client.put("/api/v1/system/model-config", headers=headers, json=payload)
+
+        assert response.status_code == 200, response.text
+        saved = (await client.get("/api/v1/system/model-config", headers=headers)).json()
+        assert saved["llm_temperature"] == 0.7
+        assert saved["mineru_provider"] == "self_hosted"
+        assert saved["mineru_base_url"] == "http://127.0.0.1:18000"
+        async with SessionLocal() as session:
+            row = await session.scalar(select(Setting).where(Setting.scope == "global", Setting.key == "model_config"))
+            assert row is not None
+            assert row.value["llm_temperature"] == 0.7
+            assert row.value["mineru_provider"] == "self_hosted"
+        for active in (settings, app.state.knowledge_runtime._settings):
+            assert active.llm_temperature == 0.7
+            assert active.mineru_provider == "self_hosted"
+            assert active.mineru_tier == "flash"
+            assert active.mineru_allow_private_base_url is True
+
+
+@pytest.mark.asyncio
+async def test_self_hosted_model_config_form_test_uses_draft_without_saving(monkeypatch):
+    from sqlalchemy import select
+
+    from sag_api.core.db import SessionLocal
+    from sag_api.db.models import Setting
+    from sag_api.main import app
+
+    observed: dict = {}
+
+    async def fake_completion(**request):
+        observed.update(request)
+        return {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "test-model",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "pong"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+    monkeypatch.setattr("sag_api.generation.llm._litellm_completion", fake_completion)
+    async with _self_hosted_model_config_client(monkeypatch) as (client, headers, config, payload):
+        runtime_before = app.state.knowledge_runtime._settings.model_dump()
+        settings_before = settings.model_dump()
+        response = await client.post("/api/v1/system/model-config/test", headers=headers, json=payload)
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"ok": True, "message": "连接成功 · openai / test-model"}
+        assert observed["model"] == "openai/test-model"
+        assert observed["api_key"] == "schema-regression-key"
+        assert observed["api_base"] == "https://llm.example/v1"
+        assert observed["temperature"] == 0.7
+        assert observed["messages"] == [{"role": "user", "content": "ping"}]
+        assert (await client.get("/api/v1/system/model-config", headers=headers)).json() == config
+        assert settings.model_dump() == settings_before
+        assert app.state.knowledge_runtime._settings.model_dump() == runtime_before
+        async with SessionLocal() as session:
+            row = await session.scalar(select(Setting).where(Setting.scope == "global", Setting.key == "model_config"))
+            assert row is not None
+            assert row.value["llm_temperature"] == 0.2
+            assert row.value["mineru_provider"] == "self_hosted"
 
 
 @pytest.mark.asyncio
