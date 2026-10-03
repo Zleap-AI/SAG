@@ -347,6 +347,49 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
   const canReuse302Key =
     (cfg.llm_api_key_set && is302Api(cfg.llm_base_url)) ||
     (cfg.embedding_api_key_set && is302Api(cfg.embedding_base_url));
+  const embeddingUrl = embBaseUrl.trim();
+  const generationUrl = llmBaseUrl.trim();
+  let embeddingAddressPlaceholder: string;
+  if (!providerSpec.can_reuse_embedding_credentials) {
+    embeddingAddressPlaceholder = t("separateEmbeddingAddress");
+  } else if (generationUrl) {
+    embeddingAddressPlaceholder = t("embeddingAddressPlaceholder");
+  } else {
+    embeddingAddressPlaceholder = t("embeddingAddressDefaultPlaceholder");
+  }
+  const inheritsEmbeddingUrl = !embeddingUrl && providerSpec.can_reuse_embedding_credentials;
+  const embeddingAddressChanged =
+    embeddingUrl !== (cfg.embedding_base_url ?? "") ||
+    (!embeddingUrl && (
+      llmProvider !== cfg.llm_provider ||
+      (inheritsEmbeddingUrl && generationUrl !== (cfg.llm_base_url ?? ""))
+    ));
+  const embeddingAddressStatus = t(
+    embeddingAddressChanged ? "embeddingAddressAfterSave" : "embeddingAddressCurrent",
+  );
+  let embeddingAddressDescription: string;
+  if (embeddingUrl) {
+    embeddingAddressDescription = t("embeddingAddressIndependent", { status: embeddingAddressStatus, address: embeddingUrl });
+  } else if (!inheritsEmbeddingUrl) {
+    embeddingAddressDescription = t("embeddingAddressNativeDefault", { status: embeddingAddressStatus });
+  } else if (generationUrl) {
+    embeddingAddressDescription = t("embeddingAddressInherited", { status: embeddingAddressStatus, address: generationUrl });
+  } else {
+    embeddingAddressDescription = t("embeddingAddressDefault", { status: embeddingAddressStatus });
+  }
+  const hasSeparateEmbeddingKey = Boolean(embKey.trim() || cfg.embedding_api_key_set);
+  const hasGenerationKey = Boolean(llmKey.trim() || cfg.llm_api_key_set);
+  let embeddingKeyDescription: string;
+  if (embKey.trim()) {
+    embeddingKeyDescription = t("embeddingKeyNew");
+  } else if (cfg.embedding_api_key_set) {
+    embeddingKeyDescription = t("embeddingKeySaved");
+  } else if (providerSpec.can_reuse_embedding_credentials && hasGenerationKey) {
+    embeddingKeyDescription = t("embeddingKeyInherited");
+  } else {
+    embeddingKeyDescription = t("embeddingKeyRequired");
+  }
+  const showInheritedAddressKeyNote = inheritsEmbeddingUrl && Boolean(generationUrl) && hasSeparateEmbeddingKey;
 
   return (
     <div className="flex flex-col gap-6">
@@ -576,8 +619,18 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
                 id="emb-url"
                 value={embBaseUrl}
                 onChange={(event) => setEmbBaseUrl(event.target.value)}
-                placeholder="https://api.302ai.cn/v1"
+                placeholder={embeddingAddressPlaceholder}
+                aria-describedby={showInheritedAddressKeyNote
+                  ? "emb-url-description emb-url-key-note" : "emb-url-description"}
               />
+              <FieldDescription id="emb-url-description" className="break-words [overflow-wrap:anywhere]">
+                {embeddingAddressDescription}
+              </FieldDescription>
+              {showInheritedAddressKeyNote && (
+                <FieldDescription id="emb-url-key-note">
+                  {t("embeddingInheritedAddressIndependentKey")}
+                </FieldDescription>
+              )}
             </Field>
             <Field>
               <FieldLabel htmlFor="emb-key">{t("optionalApiKey")}</FieldLabel>
@@ -587,6 +640,7 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
                 autoComplete="off"
                 value={embKey}
                 onChange={(event) => setEmbKey(event.target.value)}
+                aria-describedby="emb-key-description"
                 placeholder={
                   cfg.embedding_api_key_set
                     ? t("keyConfigured")
@@ -595,6 +649,9 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
                       : t("separateEmbeddingKey")
                 }
               />
+              <FieldDescription id="emb-key-description">
+                {embeddingKeyDescription}
+              </FieldDescription>
             </Field>
           </div>
         </SettingsRow>
