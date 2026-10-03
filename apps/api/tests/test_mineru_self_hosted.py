@@ -457,3 +457,30 @@ def test_blank_tier_env_means_server_default(monkeypatch):
     settings = Settings(_env_file=None)
     assert settings.mineru_tier is None
     assert settings.mineru_allow_private_base_url is False
+
+
+@pytest.mark.asyncio
+async def test_self_hosted_v1_parse_result_keeps_zip_sidecars(v1_server, pdf):
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as target:
+        target.writestr("markdown.md", "# Paper\n\n![](images/page_0_image_1.jpg)\n")
+        target.writestr("middle_json.json", json.dumps({
+            "pages": [{"page_idx": 2, "blocks": [{
+                "type": "paragraph_title",
+                "content": [{"type": "text", "content": "Method"}],
+                "level": 2,
+            }]}],
+        }))
+        target.writestr("structured_content.json", "{}")
+        target.writestr("images/page_0_image_1.jpg", b"jpeg-bytes")
+    v1_server.overrides[("GET", "/v1/files/file-zip/content")] = httpx.Response(
+        200, content=archive.getvalue(), headers={"content-type": "application/zip"}
+    )
+
+    result = await MinerUClient(_settings()).parse_result(str(pdf))
+
+    assert result.markdown == "# Paper\n\n![](images/page_0_image_1.jpg)\n"
+    assert result.files["images/page_0_image_1.jpg"] == b"jpeg-bytes"
+    assert json.loads(result.files["headings.json"]) == [
+        {"title": "Method", "level": 2, "page_idx": 2}
+    ]

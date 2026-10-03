@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import ipaddress
 import json
 import logging
@@ -16,7 +15,6 @@ import os
 import re
 import socket
 import time
-import zipfile
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal, NoReturn
 from urllib.parse import urljoin, urlparse
@@ -30,6 +28,7 @@ from sag_api.core.errors import (
     UpstreamError,
     ValidationError,
 )
+from sag_api.parsing.mineru_artifacts import MinerUResult, result_from_zip
 
 StateCallback = Callable[[dict[str, Any]], Awaitable[None]]
 PauseCallback = Callable[[], Awaitable[bool]]
@@ -117,6 +116,20 @@ class MinerU302Client:
         on_state: StateCallback | None = None,
         should_pause: PauseCallback | None = None,
     ) -> str:
+        result = await self.parse_result(
+            path, state=state, on_state=on_state, should_pause=should_pause
+        )
+        return result.markdown
+
+    async def parse_result(
+        self,
+        path: str,
+        *,
+        state: dict[str, Any] | None = None,
+        on_state: StateCallback | None = None,
+        should_pause: PauseCallback | None = None,
+    ) -> MinerUResult:
+        """解析并返回 Markdown 与结果包中的 sidecar（图片、content_list、middle_json）。"""
         state = dict(state or {})
         upload_url = state.get("upload_url")
         if not isinstance(upload_url, str) or not _is_http_url(upload_url):
@@ -129,20 +142,20 @@ class MinerU302Client:
         if not isinstance(task_id, str) or not task_id.strip():
             created_kind, created_value = await self._create_task(upload_url)
             if created_kind == "url":
-                markdown = await self._download_markdown(created_value)
+                result = await self._download_result(created_value)
                 if on_state:
                     await on_state({**state, "status": "done"})
-                return markdown
+                return result
             if created_kind == "markdown":
                 if on_state:
                     await on_state({**state, "status": "done"})
-                return _require_markdown(created_value)
+                return MinerUResult(_require_markdown(created_value))
             task_id = created_value
             state["task_id"] = task_id
             if on_state:
                 await on_state(dict(state))
 
-        markdown = await self._poll(
+        result = await self._poll(
             str(task_id),
             state=state,
             on_state=on_state,
@@ -150,7 +163,7 @@ class MinerU302Client:
         )
         if on_state:
             await on_state({**state, "status": "done"})
-        return markdown
+        return result
 
     async def _upload(self, path: str) -> str:
         try:
@@ -218,7 +231,7 @@ class MinerU302Client:
         state: dict[str, Any] | None = None,
         on_state: StateCallback | None = None,
         should_pause: PauseCallback | None = None,
-    ) -> str:
+    ) -> MinerUResult:
         deadline = time.monotonic() + self._poll_timeout
         base_state = dict(state or {})
         last_status: str | None = None
@@ -231,9 +244,9 @@ class MinerU302Client:
             )
             kind, value = _interpret_poll_payload(_response_payload(response), task_id)
             if kind == "markdown":
-                return _require_markdown(value)
+                return MinerUResult(_require_markdown(value))
             if kind == "url":
-                return await self._download_markdown(value)
+                return await self._download_result(value)
             if kind == "failed":
                 raise UpstreamError(f"MinerU 解析失败：{value}")
             # kind == "pending"：透出真实进度，避免 UI 长时间停留在“排队中”。
@@ -255,6 +268,9 @@ class MinerU302Client:
             await asyncio.sleep(self._poll_interval)
 
     async def _download_markdown(self, url: str) -> str:
+        return (await self._download_result(url)).markdown
+
+    async def _download_result(self, url: str) -> MinerUResult:
         # 结果地址通常位于 file.302.ai；不向第三方下载地址转发 API Key。
         try:
             async with httpx.AsyncClient(timeout=self._request_timeout) as client:
@@ -283,7 +299,7 @@ class MinerU302Client:
 
         suffix = os.path.splitext(urlparse(response_url).path)[1].lower()
         if content.startswith(b"PK\x03\x04") or suffix == ".zip" or "zip" in content_type:
-            return _markdown_from_zip(content, self._result_limit)
+            return result_from_zip(content, self._result_limit)
 
         text = content.decode(encoding, errors="replace")
         if "json" in content_type or suffix == ".json":
@@ -293,12 +309,12 @@ class MinerU302Client:
                 pass
             else:
                 if kind == "markdown":
-                    return _require_markdown(value)
+                    return MinerUResult(_require_markdown(value))
                 if kind == "url" and value != url:
-                    return await self._download_markdown(value)
+                    return await self._download_result(value)
                 if kind == "failed":
                     raise UpstreamError(f"MinerU 解析失败：{value}")
-        return _require_markdown(text)
+        return MinerUResult(_require_markdown(text))
 
     async def _read_result_response(self, response: httpx.Response) -> bytes:
         if not response.is_success:
@@ -637,29 +653,7 @@ def _require_markdown(value: str) -> str:
 
 
 def _markdown_from_zip(content: bytes, size_limit: int) -> str:
-    try:
-        with zipfile.ZipFile(io.BytesIO(content)) as archive:
-            candidates = [
-                info
-                for info in archive.infolist()
-                if not info.is_dir() and info.filename.lower().endswith((".md", ".markdown"))
-            ]
-            if not candidates:
-                raise UpstreamError("MinerU 结果压缩包中没有 Markdown 文件")
-            candidates.sort(
-                key=lambda info: (
-                    # MinerU ≤3 / 官方 v4 为 full.md；MinerU 4.x V1 结果包为 markdown.md。
-                    os.path.basename(info.filename).lower()
-                    not in {"full.md", "full.markdown", "markdown.md"},
-                    -info.file_size,
-                )
-            )
-            chosen = candidates[0]
-            if chosen.file_size > size_limit:
-                raise UpstreamError("MinerU Markdown 结果超过允许大小")
-            return _require_markdown(archive.read(chosen).decode("utf-8", errors="replace"))
-    except zipfile.BadZipFile as exc:
-        raise UpstreamError("MinerU 返回的结果压缩包已损坏") from exc
+    return result_from_zip(content, size_limit).markdown
 
 
 def _error_message(response: httpx.Response) -> str:
