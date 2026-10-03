@@ -23,6 +23,11 @@ from sag_api.core.errors import (
     ValidationError,
 )
 from sag_api.parsing.mineru import MinerUClient, PauseCallback
+from sag_api.parsing.mineru_artifacts import (
+    remove_path,
+    rewrite_image_links,
+    write_assets,
+)
 from sag_api.parsing.text import TextDecodingError, is_plain_text_path, read_text_file
 
 ParseStateCallback = Callable[[dict[str, Any]], Awaitable[None]]
@@ -211,9 +216,20 @@ async def _prepare_and_cache(
                 on_state=track_state,
             )
         try:
-            markdown = await MinerUClient(settings).parse(
-                path, state=parser_state, on_state=track_state, should_pause=should_pause
-            )
+            client = MinerUClient(settings)
+            parse_result = getattr(client, "parse_result", None)
+            if parse_result is None:
+                markdown = await client.parse(
+                    path, state=parser_state, on_state=track_state, should_pause=should_pause
+                )
+            else:
+                result = await parse_result(
+                    path, state=parser_state, on_state=track_state, should_pause=should_pause
+                )
+                # sidecar 先于 Markdown 落盘：Markdown 缓存存在即代表其图片/结构化产物已就绪。
+                markdown = await asyncio.to_thread(
+                    _store_mineru_assets, cache_path, result.markdown, result.files
+                )
         except ApiError as mineru_error:
             return await _prepare_markitdown_fallback(
                 path,
@@ -404,6 +420,20 @@ def _lock_for(path: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _PARSE_LOCKS[path] = lock
     return lock
+
+
+def _store_mineru_assets(cache_path: str, markdown: str, files: dict[str, bytes]) -> str:
+    """写入 ``<缓存名>.assets/`` 并返回图片路径已指向该目录的 Markdown。"""
+    assets_dir = write_assets(cache_path, files)
+    if assets_dir is None:
+        return markdown
+    return rewrite_image_links(markdown, os.path.basename(assets_dir), files)
+
+
+def remove_parsed_sidecars(path: str) -> None:
+    """删除原文件及其解析缓存、回退标记和 sidecar 目录。"""
+    for candidate in [path, *parsed_sidecar_paths(path)]:
+        remove_path(candidate)
 
 
 def parsed_sidecar_paths(path: str) -> list[str]:

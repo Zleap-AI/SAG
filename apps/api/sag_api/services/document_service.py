@@ -764,14 +764,9 @@ async def delete_document(
         await session.commit()
         await session.refresh(completed)
         if path:
-            from sag_api.parsing.service import parsed_sidecar_paths
+            from sag_api.parsing.service import remove_parsed_sidecars
 
-            for candidate in [path, *parsed_sidecar_paths(path)]:
-                try:
-                    if os.path.exists(candidate):
-                        os.remove(candidate)
-                except OSError:
-                    pass
+            remove_parsed_sidecars(path)
         return completed
 
     if existing is None:

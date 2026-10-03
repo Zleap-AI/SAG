@@ -20,6 +20,7 @@ from sag_api.core.errors import (
 )
 from sag_api.parsing import mineru as mineru_core
 from sag_api.parsing.mineru import MinerU302Client, ParsePaused, PauseCallback, StateCallback
+from sag_api.parsing.mineru_artifacts import MinerUResult
 
 _PENDING_STATES = {"waiting-file", "pending", "running", "converting"}
 
@@ -36,14 +37,14 @@ class OfficialMinerUClient(MinerU302Client):
             f"mineru-official-{self._official_model}-{self._parse_method}"
         )
 
-    async def parse(
+    async def parse_result(
         self,
         path: str,
         *,
         state: dict[str, Any] | None = None,
         on_state: StateCallback | None = None,
         should_pause: PauseCallback | None = None,
-    ) -> str:
+    ) -> MinerUResult:
         filename = os.path.basename(path)
         current = dict(state or {})
         saved_filename = current.get("filename")
@@ -84,10 +85,10 @@ class OfficialMinerUClient(MinerU302Client):
             filename,
             should_pause=should_pause,
         )
-        markdown = await self._download_markdown(result_url)
+        result = await self._download_result(result_url)
         if on_state:
             await on_state({**current, "status": "done"})
-        return markdown
+        return result
 
     async def _request_upload(self, filename: str) -> tuple[str, str]:
         file_config: dict[str, Any] = {"name": filename}

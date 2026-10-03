@@ -28,6 +28,7 @@ from sag_api.core.errors import (
 )
 from sag_api.parsing import mineru as mineru_core
 from sag_api.parsing.mineru import MinerU302Client, ParsePaused, PauseCallback, StateCallback
+from sag_api.parsing.mineru_artifacts import MinerUResult, result_from_zip
 from sag_api.parsing.mineru_official import _file_chunks
 
 log = logging.getLogger(__name__)
@@ -58,19 +59,19 @@ class SelfHostedMinerUClient(MinerU302Client):
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
 
-    async def parse(
+    async def parse_result(
         self,
         path: str,
         *,
         state: dict[str, Any] | None = None,
         on_state: StateCallback | None = None,
         should_pause: PauseCallback | None = None,
-    ) -> str:
+    ) -> MinerUResult:
         current = dict(state or {})
         current["mineru_service"] = "self_hosted"
         for attempt in range(2):
             try:
-                markdown = await self._run(
+                result = await self._run(
                     path, current, on_state=on_state, should_pause=should_pause
                 )
             except _ResourceLost as exc:
@@ -85,7 +86,7 @@ class SelfHostedMinerUClient(MinerU302Client):
                 continue
             if on_state:
                 await on_state({**current, "status": "done"})
-            return markdown
+            return result
         raise UpstreamError("MinerU 自部署服务任务重试失败")  # pragma: no cover
 
     async def _run(
@@ -95,7 +96,7 @@ class SelfHostedMinerUClient(MinerU302Client):
         *,
         on_state: StateCallback | None,
         should_pause: PauseCallback | None,
-    ) -> str:
+    ) -> MinerUResult:
         job_id = current.get("job_id")
         if not _non_empty(job_id):
             file_id = current.get("file_id")
@@ -233,7 +234,7 @@ class SelfHostedMinerUClient(MinerU302Client):
                 raise ServiceUnavailableError(f"MinerU 解析等待超时（任务 {job_id}）")
             await asyncio.sleep(self._poll_interval)
 
-    async def _download_zip(self, file_id: str) -> str:
+    async def _download_zip(self, file_id: str) -> MinerUResult:
         current_url = f"{self._api_root}/v1/files/{file_id}/content"
         try:
             async with httpx.AsyncClient(timeout=self._request_timeout) as client:
@@ -255,7 +256,7 @@ class SelfHostedMinerUClient(MinerU302Client):
             raise ServiceUnavailableError("下载 MinerU 解析结果超时") from exc
         except httpx.RequestError as exc:
             raise ServiceUnavailableError(f"无法下载 MinerU 解析结果：{exc}") from exc
-        return mineru_core._markdown_from_zip(content, self._result_limit)
+        return result_from_zip(content, self._result_limit)
 
     async def _v1_json(
         self,
