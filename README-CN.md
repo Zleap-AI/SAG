@@ -204,6 +204,8 @@ Docker Compose 或 `.env` 中的 `SAG_LLM_*` 用于提供首次启动时的模�
 
 PDF 在 MinerU 配置完整时优先使用 MinerU；未配置或解析失败时自动回退本地 MarkItDown。其他 Office 和文本格式默认使用 MarkItDown。
 
+也可以在设置页把解析方式切换为 **AnyDoc**（或设置 `SAG_DOCUMENT_PARSER=anydoc`）：docx/pptx/epub/pdf/csv 在本机由 [AnyDoc](https://github.com/firecrawl/anydoc) 转换，文件不上传、不调用托管 OCR；xls/xlsx 沿用本机 MarkItDown 转换，以保留引擎的 Excel 记录组和检索切片，并记录实际解析器。仅 AnyDoc 明确不支持的文件回退 MarkItDown，其他转换错误直接报告失败。CSV 先按 SAG 的编码识别规范成 UTF-8 再交给 AnyDoc，避免非 UTF-8 中文出现乱码。扫描版或图文混排 PDF 会被整体提示需要 OCR（保留页码），此时请用已配置的 MinerU 重新处理；该路径不缓存部分文本。`auto` 默认规则保持不变。
+
 ### 检索并核对原文
 
 可以跨全部信源检索，也可以只搜索指定信源。每一条结果都能在右侧打开对应原文块，让 Agent 使用前的召回质量可以被直接核验。

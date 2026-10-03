@@ -50,9 +50,10 @@ export interface StorageBootstrapStatus {
 
 export type SourceStatus = "active" | "paused" | "error";
 export type SourceType = "document" | "web" | "message" | "audio";
-export type DocumentParser = "auto" | "markitdown" | "mineru";
+export type DocumentParser = "auto" | "markitdown" | "mineru" | "anydoc";
 export type EffectiveDocumentParser = Exclude<DocumentParser, "auto">;
-export type ParserProvider = "mineru" | "markitdown" | "original";
+export type ParserProvider = "mineru" | "markitdown" | "anydoc" | "original";
+export type ParserFallbackSource = "mineru" | "anydoc";
 export type MineruProvider = "official" | "302";
 export type MineruModel = "vlm" | "pipeline" | "2.5";
 export type ParserStatus =
@@ -115,7 +116,7 @@ export interface Doc {
   mineru_provider?: MineruProvider | null;
   mineru_model?: MineruModel | null;
   parser_status?: ParserStatus | null;
-  fallback_from?: "mineru" | null;
+  fallback_from?: ParserFallbackSource | null;
   fallback_reason?: string | null;
   /** False when an OCTX package contains parsed content but not the original attachment bytes. */
   original_file_available?: boolean;
