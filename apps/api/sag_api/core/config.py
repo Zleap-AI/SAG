@@ -211,7 +211,8 @@ class Settings(BaseSettings):
 
     # ── 文档解析（进入 zleap-sag 前统一转为 Markdown）─────────────────
     # auto：PDF 优先 MinerU，未配置或 MinerU 失败时回退本地 MarkItDown。
-    document_parser: Literal["auto", "markitdown", "mineru"] = "auto"
+    # anydoc：本地 AnyDoc 转换（不做 OCR），仅其不支持的文件回退 MarkItDown。
+    document_parser: Literal["auto", "markitdown", "mineru", "anydoc"] = "auto"
     # self_hosted：自部署 MinerU 4.x V1 API（`mineru-kit api-server`），API Key 可留空。
     mineru_provider: Literal["302", "official", "self_hosted"] = "302"
     mineru_base_url: str | None = "https://api.302ai.cn"
@@ -434,8 +435,15 @@ class Settings(BaseSettings):
         return bool(self.mineru_base_url and self.mineru_api_key)
 
     @property
-    def effective_document_parser(self) -> Literal["markitdown", "mineru"]:
-        """当前自动解析偏好；具体文件仍由解析服务按格式路由。"""
+    def effective_document_parser(self) -> Literal["markitdown", "mineru", "anydoc"]:
+        """当前自动解析偏好；具体文件仍由解析服务按格式路由。
+
+        显式选择 AnyDoc 时直接返回 anydoc —— 本机解析不依赖 MinerU 配置，
+        不能被 `mineru_configured` 改写成 MinerU。其余模式保留原有规则：
+        非显式 MarkItDown 时按 MinerU 可用性选择 mineru / markitdown。
+        """
+        if self.document_parser == "anydoc":
+            return "anydoc"
         if self.document_parser == "markitdown":
             return "markitdown"
         return "mineru" if self.mineru_configured else "markitdown"

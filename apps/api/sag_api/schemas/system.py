@@ -56,7 +56,7 @@ class ModelConfigUpdate(BaseModel):
     embedding_api_key: str | None = Field(default=None, max_length=500)
     embedding_dimensions: int | None = Field(default=None, ge=1, le=8192)
 
-    document_parser: Literal["auto", "markitdown", "mineru"] | None = None
+    document_parser: Literal["auto", "markitdown", "mineru", "anydoc"] | None = None
     mineru_provider: Literal["302", "official", "self_hosted"] | None = None
     mineru_base_url: str | None = Field(default=None, max_length=500)
     mineru_api_key: str | None = Field(default=None, max_length=500)
