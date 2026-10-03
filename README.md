@@ -401,6 +401,7 @@ Start the backend and frontend in separate terminals from the repository root.
 cd apps/api
 python -m venv .venv
 . .venv/bin/activate
+pip install --no-deps vendor/zleap_sag-0.13.0+sag.1-py3-none-any.whl
 pip install -e ".[dev]"
 cp .env.example .env
 uvicorn sag_api.main:app --reload
@@ -428,7 +429,7 @@ The Electron client packages the same Next.js application together with the loca
 
 ### Use `zleap-sag` directly
 
-[`zleap-sag`](https://pypi.org/project/zleap-sag/) is the continuously maintained Python engine behind the SAG application. Distribution name: `zleap-sag`; import path: `zleap.sag`; Python: 3.11+; license: MIT. The application currently requires `zleap-sag==0.13.0`.
+[`zleap-sag`](https://pypi.org/project/zleap-sag/) is the continuously maintained Python engine behind the SAG application. Distribution name: `zleap-sag`; import path: `zleap.sag`; Python: 3.11+; license: MIT. The application currently requires the bundled `zleap-sag==0.13.0+sag.1` hotfix, which preserves trailing zeros in General-format integers; see its [provenance and rebuild instructions](apps/api/vendor/README.md).
 
 Install the zero-infrastructure local stack:
 

@@ -14,7 +14,9 @@ RUN apt-get update \
 
 # 先装第三方依赖；业务代码变化不会让这一层失效。
 COPY pyproject.toml ./
+COPY vendor ./vendor
 RUN pip install --upgrade pip hatchling \
+ && pip install --no-deps vendor/zleap_sag-0.13.0+sag.1-py3-none-any.whl \
  && python -c 'import os, tomllib; p=tomllib.load(open("pyproject.toml", "rb")); deps=list(p["project"]["dependencies"]); deps += p["project"]["optional-dependencies"].get(os.environ.get("SAG_API_EXTRAS", ""), []); print("\n".join(deps))' > /tmp/requirements.txt \
  && pip install -r /tmp/requirements.txt
 

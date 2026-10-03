@@ -53,7 +53,9 @@ jobs:
           cache: pip
           cache-dependency-path: apps/api/pyproject.toml
       - name: 安装依赖
-        run: pip install -e ".[dev]"
+        run: |
+          pip install --no-deps vendor/zleap_sag-0.13.0+sag.1-py3-none-any.whl
+          pip install -e ".[dev]"
       - name: Lint（ruff）
         run: ruff check sag_api/ sag_agent/ tests/
       - name: 测试（离线全套）
@@ -99,7 +101,9 @@ jobs:
           cache: pip
           cache-dependency-path: apps/api/pyproject.toml
       - name: 安装 PostgreSQL E2E 依赖
-        run: pip install -e ".[dev,postgres]"
+        run: |
+          pip install --no-deps vendor/zleap_sag-0.13.0+sag.1-py3-none-any.whl
+          pip install -e ".[dev,postgres]"
       - name: 测试全新 PostgreSQL 引擎初始化
         run: python -m pytest -q -s tests/test_postgres_schema_e2e.py
 

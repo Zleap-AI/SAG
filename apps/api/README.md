@@ -22,11 +22,16 @@ sag 的后端服务：FastAPI + `zleap-sag`。
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
+pip install --no-deps vendor/zleap_sag-0.13.0+sag.1-py3-none-any.whl
 pip install -e ".[dev]"
 cp .env.example .env
 uvicorn sag_api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 文档 UI：http://localhost:8000/docs
+
+引擎固定为 `0.13.0+sag.1`，修复 General 格式下整数末尾零被截断的问题。
+`uv sync --frozen` 会自动使用项目内 wheel；来源、哈希和复现方式见
+[依赖热修复说明](vendor/README.md)。旧版生成的分块需要重新处理。
 
 也可以在仓库根目录运行 `make api`。开发服务器默认监听全部本机网卡，便于从局域网地址访问 Web；生产环境请通过反向代理与访问控制暴露服务。

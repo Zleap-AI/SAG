@@ -3366,8 +3366,8 @@ requires-dist = [
     { name = "trafilatura", specifier = ">=1.8" },
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
-    { name = "zleap-sag", specifier = "==0.13.0" },
-    { name = "zleap-sag", extras = ["postgres"], marker = "extra == 'postgres'", specifier = "==0.13.0" },
+    { name = "zleap-sag", path = "vendor/zleap_sag-0.13.0+sag.1-py3-none-any.whl" },
+    { name = "zleap-sag", extras = ["postgres"], marker = "extra == 'postgres'", path = "vendor/zleap_sag-0.13.0+sag.1-py3-none-any.whl" },
 ]
 provides-extras = ["postgres", "dev", "desktop"]
 
@@ -4070,8 +4070,8 @@ wheels = [
 
 [[package]]
 name = "zleap-sag"
-version = "0.13.0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.13.0+sag.1"
+source = { path = "vendor/zleap_sag-0.13.0+sag.1-py3-none-any.whl" }
 dependencies = [
     { name = "aiohttp" },
     { name = "aiosqlite" },
@@ -4090,9 +4090,8 @@ dependencies = [
     { name = "tokenizers" },
     { name = "tzdata" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bf/69/fbc8a16f141380d03bb754399fca03b6ed9d0f1dd2c54a329f0f249b1d7d/zleap_sag-0.13.0.tar.gz", hash = "sha256:17f915fb5c2ee9baee44048d03f5eb6937138e73c2c88e062f39111f4ab9519b", size = 3846713, upload-time = "2026-09-17T09:10:17.211Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9f/1e/948587e74ddb5fc3ee9f8e0af6876ab389f48882b357e481c506fb62d12c/zleap_sag-0.13.0-py3-none-any.whl", hash = "sha256:2beee6f89a66af20adda6c3e96321a99113de6f682d2f2a023d6f50297bd41a9", size = 3304995, upload-time = "2026-09-17T09:10:15.272Z" },
+    { filename = "zleap_sag-0.13.0+sag.1-py3-none-any.whl", hash = "sha256:cbeb3c4cae716438d6098eb86518428250596f8838822e0556c83bcaf10a2c45" },
 ]
 
 [package.optional-dependencies]
@@ -4100,3 +4099,61 @@ postgres = [
     { name = "asyncpg" },
     { name = "psycopg2-binary" },
 ]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp", specifier = ">=3.14.3" },
+    { name = "aiomysql", marker = "extra == 'all'", specifier = ">=0.2" },
+    { name = "aiomysql", marker = "extra == 'dev'", specifier = ">=0.2" },
+    { name = "aiomysql", marker = "extra == 'mysql'", specifier = ">=0.2" },
+    { name = "aiosqlite", specifier = ">=0.19" },
+    { name = "asyncpg", marker = "extra == 'all'", specifier = ">=0.29" },
+    { name = "asyncpg", marker = "extra == 'dev'", specifier = ">=0.29" },
+    { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29" },
+    { name = "cryptography", marker = "extra == 'all'", specifier = ">=50" },
+    { name = "cryptography", marker = "extra == 'dev'", specifier = ">=50" },
+    { name = "cryptography", marker = "extra == 'mysql'", specifier = ">=50" },
+    { name = "elasticsearch", marker = "extra == 'all'", specifier = ">=8,<9" },
+    { name = "elasticsearch", marker = "extra == 'dev'", specifier = ">=8,<9" },
+    { name = "elasticsearch", marker = "extra == 'es'", specifier = ">=8,<9" },
+    { name = "json-repair", specifier = ">=0.58" },
+    { name = "jsonschema", specifier = ">=4" },
+    { name = "lancedb", specifier = ">=0.16" },
+    { name = "litellm", marker = "extra == 'all'", specifier = ">=1.40,<2" },
+    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.40,<2" },
+    { name = "markitdown", extras = ["xlsx"], marker = "extra == 'all'", specifier = ">=0.1.5,<0.2" },
+    { name = "markitdown", extras = ["xlsx"], marker = "extra == 'dev'", specifier = ">=0.1.5,<0.2" },
+    { name = "markitdown", extras = ["xlsx"], marker = "extra == 'tables'", specifier = ">=0.1.5,<0.2" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "openai", specifier = ">=1.6" },
+    { name = "openpyxl", marker = "extra == 'all'", specifier = ">=3.1.5,<4" },
+    { name = "openpyxl", marker = "extra == 'dev'", specifier = ">=3.1.5,<4" },
+    { name = "openpyxl", marker = "extra == 'tables'", specifier = ">=3.1.5,<4" },
+    { name = "pandas", marker = "extra == 'all'", specifier = ">=2.2,<3" },
+    { name = "pandas", marker = "extra == 'dev'", specifier = ">=2.2,<3" },
+    { name = "pandas", marker = "extra == 'tables'", specifier = ">=2.2,<3" },
+    { name = "pillow", specifier = ">=10" },
+    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.6" },
+    { name = "psycopg2-binary", marker = "extra == 'all'", specifier = ">=2.9" },
+    { name = "psycopg2-binary", marker = "extra == 'dev'", specifier = ">=2.9" },
+    { name = "psycopg2-binary", marker = "extra == 'postgres'", specifier = ">=2.9" },
+    { name = "pydantic", specifier = ">=2.5" },
+    { name = "pydantic-settings", specifier = ">=2.6" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7" },
+    { name = "pyyaml", specifier = ">=6" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.16.4" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
+    { name = "sumy", extras = ["chinese"], marker = "extra == 'all'", specifier = ">=0.12,<0.13" },
+    { name = "sumy", extras = ["chinese"], marker = "extra == 'dev'", specifier = ">=0.12,<0.13" },
+    { name = "sumy", extras = ["chinese"], marker = "extra == 'summary'", specifier = ">=0.12,<0.13" },
+    { name = "tiktoken", specifier = ">=0.5" },
+    { name = "tokenizers", specifier = ">=0.22" },
+    { name = "tzdata" },
+    { name = "xlrd", marker = "extra == 'all'", specifier = ">=2.0.2,<3" },
+    { name = "xlrd", marker = "extra == 'dev'", specifier = ">=2.0.2,<3" },
+    { name = "xlrd", marker = "extra == 'tables'", specifier = ">=2.0.2,<3" },
+]
+provides-extras = ["all", "dev", "es", "litellm", "mysql", "postgres", "summary", "tables"]

@@ -401,6 +401,7 @@ docs/assets/readme/         README 配图与示意图
 cd apps/api
 python -m venv .venv
 . .venv/bin/activate
+pip install --no-deps vendor/zleap_sag-0.13.0+sag.1-py3-none-any.whl
 pip install -e ".[dev]"
 cp .env.example .env
 uvicorn sag_api.main:app --reload
@@ -428,7 +429,7 @@ Electron 客户端将同一套 Next.js 应用与本地 FastAPI 后端一起打�
 
 ### 直接使用 `zleap-sag`
 
-[`zleap-sag`](https://pypi.org/project/zleap-sag/) 是 SAG 应用底层持续维护的 Python 引擎。发行包名为 `zleap-sag`，导入路径为 `zleap.sag`，要求 Python 3.11+，采用 MIT 许可。当前应用要求 `zleap-sag==0.13.0`。
+[`zleap-sag`](https://pypi.org/project/zleap-sag/) 是 SAG 应用底层持续维护的 Python 引擎。发行包名为 `zleap-sag`，导入路径为 `zleap.sag`，要求 Python 3.11+，采用 MIT 许可。当前应用要求项目内的 `zleap-sag==0.13.0+sag.1`，修复 General 数字格式下整数末尾零被截断的问题；来源和复现见[热修复说明](apps/api/vendor/README.md)。
 
 安装默认的零基础设施版本：
 

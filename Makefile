@@ -7,7 +7,7 @@ help: ## 显示可用命令
 install: install-api install-web ## 安装前后端依赖
 
 install-api: ## 安装后端依赖（editable + dev）
-	cd apps/api && python -m venv .venv && . .venv/bin/activate && pip install -e ".[dev]"
+	cd apps/api && python -m venv .venv && . .venv/bin/activate && pip install --no-deps vendor/zleap_sag-0.13.0+sag.1-py3-none-any.whl && pip install -e ".[dev]"
 
 install-web: ## 安装前端依赖
 	cd apps/web && npm ci
