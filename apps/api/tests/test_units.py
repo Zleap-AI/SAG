@@ -35,10 +35,15 @@ def test_connector_registry():
 
 def test_model_provider_registry_is_the_public_source_of_truth():
     catalog = model_provider_catalog()
-    assert [provider["id"] for provider in catalog] == ["openai", "anthropic", "gemini"]
+    assert [provider["id"] for provider in catalog] == ["openai", "anthropic", "gemini", "responses"]
     assert all("litellm_prefix" not in provider for provider in catalog)
     assert get_model_provider("openai").route_model("qwen3.6-flash") == "openai/qwen3.6-flash"
     assert get_model_provider("gemini").route_model("gemini/gemini-3.5-flash") == "gemini/gemini-3.5-flash"
+    responses = get_model_provider("responses")
+    assert responses.route_model("gpt-5") == "sag_responses/gpt-5"
+    assert responses.route_model("sag_responses/gpt-5") == "sag_responses/gpt-5"
+    assert responses.protocol == "openai_responses"
+    assert responses.can_reuse_embedding_credentials is False
 
 
 def test_build_engine_config_zero_infra():
