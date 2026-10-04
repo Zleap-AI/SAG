@@ -47,6 +47,13 @@ class StructuredOutputCapabilityCache:
 
 def _capability_key(request: Mapping[str, Any], settings: Settings) -> CapabilityKey:
     model = str(request.get("model") or settings.routed_llm_model)
+    if model.startswith("sag_responses/"):
+        from sag_api.core.responses import Config as ResponsesConfig
+        from sag_api.generation.responses.routing import request_settings
+
+        active = request_settings.get() or settings
+        config = ResponsesConfig.from_settings(active)
+        return CapabilityKey("responses:" + config.provider, config.endpoint, model.casefold())
     explicit_provider = request.get("custom_llm_provider")
     provider = str(
         explicit_provider
@@ -168,6 +175,10 @@ def apply_litellm_completion_policy(
     from sag_api.services.chatbot_service import operation, query_scope
 
     normalized = dict(request)
+    if str(normalized.get("model", "")).startswith("sag_responses/"):
+        from sag_api.generation.responses.routing import request_settings
+
+        settings = request_settings.get() or settings
     snapshot = operation.get()
     if snapshot is not None and query_scope.get() and snapshot.connections["llm"].enabled:
         settings = snapshot.settings
@@ -183,6 +194,15 @@ def apply_litellm_completion_policy(
         normalized["extra_body"] = dict(settings.llm_extra_body)
 
     model = str(normalized.get("model") or settings.routed_llm_model)
+    if model.startswith("sag_responses/"):
+        from sag_api.core.responses import Config as ResponsesConfig
+        from sag_api.generation.responses.policy import normalize_thinking
+
+        normalized["extra_body"] = {**(settings.llm_extra_body or {}), **(normalized.get("extra_body") or {})}
+        normalized = normalize_thinking(normalized, ResponsesConfig.from_settings(settings).thinking_rules)
+        if normalized.get("stream"):
+            normalized["stream_options"] = {**(normalized.get("stream_options") or {}), "include_usage": True}
+        return normalized
     if _is_deepseek_v4(model):
         extra_body = dict(normalized.get("extra_body") or {})
         extra_body["thinking"] = {"type": "disabled"}
@@ -203,6 +223,10 @@ def install_litellm_policy(settings: Settings) -> Any:
 
     import litellm
     from litellm.integrations.custom_logger import CustomLogger
+
+    from sag_api.generation.responses.routing import register
+
+    register()
 
     class MuseLiteLLMPolicy(CustomLogger):
         async def async_pre_call_deployment_hook(

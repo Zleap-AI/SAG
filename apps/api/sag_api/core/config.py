@@ -19,10 +19,12 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, PrivateAttr, field_validator
+from pydantic import Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from sag_api.core.model_providers import ModelProviderId, get_model_provider
+from sag_api.core.responses import Config as ResponsesConfig
+from sag_api.core.responses import ResponsesProviderId
 from sag_api.enums import SearchStrategy, normalize_search_strategy
 
 _DEFAULT_LLM_PROVIDER = get_model_provider("openai")
@@ -52,6 +54,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        hide_input_in_errors=True,
     )
 
     # ── 应用 ────────────────────────────────────────────────────────────
@@ -172,6 +175,11 @@ class Settings(BaseSettings):
     # 透传给 chat/completions 的额外请求体（JSON），如 {"enable_thinking": false}；
     # 未配置时对 qwen 系模型通过 LiteLLM reasoning_effort=none 统一关闭思考。
     llm_extra_body: dict | None = None
+    llm_responses_provider: ResponsesProviderId = "openai"
+    llm_responses_endpoint: str = "https://api.openai.com/v1/responses"
+    llm_responses_api_version: str = ""
+    llm_responses_send_temperature: bool = False
+    llm_responses_thinking_config: str | None = None
 
     # Optional chatbot/query connections; extraction and indexing retain the original clients.
     chatbot_llm_enabled: bool = False
@@ -191,6 +199,17 @@ class Settings(BaseSettings):
     chatbot_llm_max_retries: int | None = Field(default=None, ge=0, le=10)
     chatbot_llm_structured_output_mode: str | None = None
     chatbot_llm_extra_body: Annotated[dict | None, NoDecode] = None
+    chatbot_llm_responses_provider: ResponsesProviderId = "openai"
+    chatbot_llm_responses_endpoint: str = ""
+    chatbot_llm_responses_api_version: str = ""
+    chatbot_llm_responses_send_temperature: bool = False
+    chatbot_llm_responses_thinking_config: str | None = None
+
+    @model_validator(mode="after")
+    def validate_responses(self):
+        if self.llm_provider == "responses":
+            ResponsesConfig.from_settings(self)
+        return self
 
     # ── Embedding（OpenAI-compatible；仅 OpenAI provider 可复用生成配置）───────
     embedding_model: str = "bge-large-en-v1.5"

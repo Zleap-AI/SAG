@@ -1,5 +1,6 @@
 """Authenticated administrative connections. Draft tests never persist credentials."""
 
+import math
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -8,7 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sag_api.core.chatbot_config import TestDraft, Update
+from sag_api.core.chatbot_config import OriginalEmbeddingDraft, TestDraft, Update
 from sag_api.core.db import get_session
 from sag_api.core.deps import get_current_user
 from sag_api.core.errors import ConfigurationError
@@ -38,6 +39,59 @@ class SecretSafeRoute(APIRoute):
 
 
 router = APIRouter(tags=["system"], route_class=SecretSafeRoute)
+
+
+@router.post("/model-config/embedding/test")
+async def test_original_embedding(
+    body: OriginalEmbeddingDraft,
+    _user: Annotated[object, Depends(get_current_user)],
+):
+    from zleap.sag.config import EmbeddingConfig
+    from zleap.sag.core.adapters.defaults import OpenAIEmbeddingAdapter
+
+    updates = {
+        key: (None if key.endswith("base_url") and value == "" else value)
+        for key, value in body.model_dump(exclude_unset=True).items()
+        if not (key.endswith("api_key") and not value)
+    }
+    stock = rt.manager.stock
+    active = stock.model_copy(update=updates, deep=True)
+    if (
+        active.llm_provider != stock.llm_provider
+        and "responses" in {active.llm_provider, stock.llm_provider}
+        and not updates.get("llm_api_key")
+    ):
+        active.llm_api_key = None
+    if not active.effective_embedding_api_key:
+        return {"ok": False, "message": "No embedding API key configured"}
+    try:
+        # Use the original adapter directly; query connections cannot replace this test.
+        adapter = OpenAIEmbeddingAdapter(
+            config=EmbeddingConfig(
+                model=active.embedding_model,
+                api_key=active.effective_embedding_api_key,
+                base_url=active.effective_embedding_base_url,
+                schema_dimensions=active.effective_embedding_schema_dimensions,
+                request_dimensions=active.effective_embedding_request_dimensions,
+                timeout=active.embedding_timeout,
+            )
+        )
+        try:
+            vector = await adapter.generate("SAG embedding connection test")
+            if not all(math.isfinite(value) for value in vector):
+                raise ValueError("Non-finite embedding vector")
+        finally:
+            await adapter.close()
+    except Exception:  # noqa: BLE001 -- provider bodies and credentials must stay private.
+        return {
+            "ok": False,
+            "message": "Embedding test failed; check endpoint, model, credentials, dimensions and server availability",
+        }
+    return {
+        "ok": True,
+        "message": f"Embedding connection successful · {len(vector)} dimensions",
+        "dimensions": len(vector),
+    }
 
 
 @router.get("/chatbot-config")

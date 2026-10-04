@@ -9,7 +9,10 @@ from PyInstaller.utils.hooks import (
 
 project_root = Path(SPECPATH).parent
 
-datas = []
+# Responses configuration reads this policy file at runtime beside its module.
+datas = [
+    (str(project_root / "sag_api" / "core" / "responses_thinking.json"), "sag_api/core"),
+]
 binaries = []
 hiddenimports = [
     "aiosqlite",

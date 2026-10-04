@@ -6,6 +6,8 @@ import uuid
 import httpx
 import pytest
 
+from tests.test_dsh_integration import _draining_app_lifespan
+
 
 @pytest.mark.asyncio
 async def test_entity_read_path():
@@ -15,7 +17,7 @@ async def test_entity_read_path():
     from sag_api.main import app
 
     transport = httpx.ASGITransport(app=app)
-    async with app.router.lifespan_context(app):
+    async with _draining_app_lifespan(app):
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
             _reg = await c.post(
                 "/api/v1/auth/register", json={"email": "book@x.com", "password": "password123"}

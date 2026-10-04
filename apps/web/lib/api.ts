@@ -726,6 +726,13 @@ export const api = {
         body: b ? JSON.stringify(b) : undefined,
       },
     ),
+  testEmbeddingModelConfig: (b?: Pick<ModelConfigPatch,
+    "embedding_model" | "embedding_base_url" | "embedding_api_key" | "embedding_dimensions" |
+    "llm_provider" | "llm_base_url" | "llm_api_key">) =>
+    request<{ ok: boolean; message: string; dimensions?: number }>(
+      "/api/v1/system/model-config/embedding/test",
+      { method: "POST", body: JSON.stringify(b ?? {}) },
+    ),
 
   // 信源
   listSources: () => request<Source[]>("/api/v1/sources"),

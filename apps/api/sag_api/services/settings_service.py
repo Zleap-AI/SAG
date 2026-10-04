@@ -31,6 +31,10 @@ log = get_logger("settings")
 _FIELDS = frozenset(
     {
         "llm_provider",
+        "llm_responses_provider",
+        "llm_responses_endpoint",
+        "llm_responses_api_version",
+        "llm_responses_send_temperature",
         "llm_base_url",
         "llm_api_key",
         "llm_model",
@@ -63,6 +67,10 @@ _NULLABLE_FIELDS = frozenset({"llm_base_url", "embedding_base_url", "embedding_d
 _LOCKABLE_LLM_FIELDS = frozenset(
     {
         "llm_provider",
+        "llm_responses_provider",
+        "llm_responses_endpoint",
+        "llm_responses_api_version",
+        "llm_responses_send_temperature",
         "llm_base_url",
         "llm_api_key",
         "llm_model",
@@ -293,6 +301,14 @@ async def apply_startup_overrides(session_factory: async_sessionmaker) -> None:
             else:
                 _settings.timezone = timezone
 
+    if _settings.llm_provider == "responses":
+        try:
+            Settings.model_validate(_settings.model_dump())
+        except ValueError:
+            raise ConfigurationError(
+                "Invalid saved Responses configuration; repair the model settings before startup"
+            ) from None
+
     from sag_api.services.chatbot_service import manager
 
     await manager.load(session_factory)
@@ -302,6 +318,10 @@ def effective_model_config() -> dict:
     """当前生效的模型配置（读 settings 单例；密钥脱敏为 *_set 布尔）。"""
     return {
         "llm_provider": _settings.llm_provider,
+        "llm_responses_provider": _settings.llm_responses_provider,
+        "llm_responses_endpoint": _settings.llm_responses_endpoint,
+        "llm_responses_api_version": _settings.llm_responses_api_version,
+        "llm_responses_send_temperature": _settings.llm_responses_send_temperature,
         "llm_base_url": _settings.llm_base_url,
         "llm_model": _settings.llm_model,
         "llm_temperature": _settings.llm_temperature,
@@ -383,6 +403,24 @@ async def save_model_config(session: AsyncSession, patch: dict) -> dict:
         stored[key] = value
 
     stored = _normalize_overrides(stored)
+    candidate = {**_settings.model_dump(), **stored}
+    if _settings.lock_llm_config:
+        candidate.update({key: getattr(_settings, key) for key in _LOCKABLE_LLM_FIELDS})
+    if candidate["llm_provider"] == "responses":
+        try:
+            Settings.model_validate(candidate)
+        except ValueError:
+            raise ConfigurationError(
+                "Invalid Responses configuration; check endpoint, API version and reasoning options"
+            ) from None
+    identity = ("llm_provider", "llm_responses_provider", "llm_responses_endpoint")
+    if (
+        not _settings.lock_llm_config
+        and not patch.get("llm_api_key")
+        and (candidate["llm_provider"] == "responses" or _settings.llm_provider == "responses")
+        and any(candidate[field] != getattr(_settings, field) for field in identity)
+    ):
+        stored["llm_api_key"] = ""
 
     if row is None:
         session.add(Setting(scope=_SCOPE, key=_KEY, value=stored))

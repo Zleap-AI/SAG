@@ -51,6 +51,28 @@ async def _register(client: httpx.AsyncClient) -> dict[str, str]:
 
 
 @asynccontextmanager
+async def _draining_app_lifespan(app):
+    """Isolate unrelated rebuild work and finish writes before app shutdown."""
+    from sag_api.enums import JobType
+    from sag_api.jobs.tasks import TASK_HANDLERS
+
+    async def unrelated_universe_rebuild(_session, _job, **_kwargs):
+        return None
+
+    # These cases test source/connector behavior. A global rebuild would scan
+    # every earlier case's persisted sources; dedicated universe tests cover it.
+    # Keep real scheduling, worker claims, commits and cleanup in this fixture.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(TASK_HANDLERS, JobType.INDEX_UNIVERSE, unrelated_universe_rebuild)
+        async with app.router.lifespan_context(app):
+            try:
+                yield
+            finally:
+                async with asyncio.timeout(60):
+                    await app.state.job_queue._queue.join()
+
+
+@asynccontextmanager
 async def _connector_api_resource():
     """Create an API source and remove it through the production cleanup path."""
     from sag_api.core.config import settings
@@ -65,7 +87,7 @@ async def _connector_api_resource():
     engine_manager = None
     transport = httpx.ASGITransport(app=app)
     try:
-        async with app.router.lifespan_context(app):
+        async with _draining_app_lifespan(app):
             engine_manager = app.state.engine_manager
             async with httpx.AsyncClient(transport=transport, base_url="http://sag") as client:
                 response = await client.post(

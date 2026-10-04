@@ -5,6 +5,8 @@ import os
 import httpx
 import pytest
 
+from tests.test_dsh_integration import _draining_app_lifespan
+
 
 @pytest.mark.asyncio
 async def test_delete_cleanup_and_registration():
@@ -14,7 +16,7 @@ async def test_delete_cleanup_and_registration():
     from sag_api.main import app
 
     transport = httpx.ASGITransport(app=app)
-    async with app.router.lifespan_context(app):
+    async with _draining_app_lifespan(app):
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
             tok = (
                 await c.post(

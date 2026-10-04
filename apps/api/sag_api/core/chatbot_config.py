@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from sag_api.core.config import Settings
 from sag_api.core.errors import ConfigurationError
 from sag_api.core.model_providers import MODEL_PROVIDERS, ModelProviderId, get_model_provider
+from sag_api.core.responses import ResponsesProviderId, endpoint_url
 
 PROVIDERS = MODEL_PROVIDERS
 # SDK factories require a nonempty token; never let a keyless query inherit SDK credentials.
@@ -54,6 +55,10 @@ class LLMConnection(Draft):
     base_url: str = ""
     model: str = ""
     api_key: str = Field(default="", repr=False, max_length=8192)
+    responses_provider: ResponsesProviderId = "openai"
+    responses_endpoint: str = ""
+    responses_api_version: str = ""
+    responses_send_temperature: bool = False
 
     @model_validator(mode="after")
     def validate_connection(self):
@@ -64,9 +69,15 @@ class LLMConnection(Draft):
             raise ValueError("Model and API key must be single-line values")
         if self.enabled and not self.model.strip():
             raise ValueError("An enabled separate LLM requires its own model")
+        if self.provider == "responses" and (self.enabled or self.responses_endpoint):
+            self.responses_endpoint = endpoint_url(
+                self.responses_endpoint, self.responses_provider, self.responses_api_version
+            )
         return self
 
     def identity(self):
+        if self.provider == "responses":
+            return self.provider, self.responses_provider, self.responses_endpoint, self.responses_api_version
         return self.provider, self.base_url.rstrip("/")
 
 
@@ -94,6 +105,10 @@ class LLMUpdate(Draft):
     base_url: str | None = None
     model: str | None = None
     api_key: str | None = Field(default=None, repr=False, max_length=8192)
+    responses_provider: ResponsesProviderId | None = None
+    responses_endpoint: str | None = None
+    responses_api_version: str | None = None
+    responses_send_temperature: bool | None = None
 
 
 class EmbeddingUpdate(Draft):
@@ -109,6 +124,33 @@ class Update(Draft):
 
 class TestDraft(Update):
     target: str
+
+
+class OriginalEmbeddingDraft(Draft):
+    """Original embedding settings and optional generation credential reuse."""
+
+    embedding_model: str | None = Field(default=None, min_length=1, max_length=200)
+    embedding_base_url: str | None = Field(default=None, max_length=500)
+    embedding_api_key: str | None = Field(default=None, repr=False, max_length=500)
+    embedding_dimensions: int | None = Field(default=None, ge=1, le=8192)
+    llm_provider: ModelProviderId | None = None
+    llm_base_url: str | None = Field(default=None, max_length=500)
+    llm_api_key: str | None = Field(default=None, repr=False, max_length=8192)
+
+    @model_validator(mode="after")
+    def validate_connection(self):
+        for name in ("embedding_model", "llm_provider"):
+            if name in self.model_fields_set and getattr(self, name) is None:
+                raise ValueError("Model and provider cannot be null")
+        for name in ("embedding_base_url", "llm_base_url"):
+            validate_url(getattr(self, name) or "")
+        for name in ("embedding_model", "embedding_api_key", "llm_api_key"):
+            value = getattr(self, name) or ""
+            if "\n" in value or "\r" in value:
+                raise ValueError("Model and API keys must be single-line values")
+        if self.embedding_model is not None and not self.embedding_model.strip():
+            raise ValueError("Embedding model cannot be blank")
+        return self
 
 
 class QuerySettings(Settings):
@@ -158,7 +200,11 @@ class Environment:
             for field in cls.model_fields:
                 name = f"SAG_CHATBOT_{target.upper()}_{field.upper()}"
                 if name in self.env:
-                    values[field] = self.flag(name) if field == "enabled" else self.env[name].strip()
+                    values[field] = (
+                        self.flag(name)
+                        if field in {"enabled", "responses_send_temperature"}
+                        else self.env[name].strip()
+                    )
             # Validate syntax now; credentials can be supplied by a saved UI row at startup.
             enabled = values.pop("enabled", False)
             try:
@@ -215,6 +261,14 @@ class Environment:
                 chatbot_route=spec.litellm_prefix,
             )
             values.update(self.tuning)
+            if llm.provider == "responses":
+                values.update(
+                    llm_responses_provider=llm.responses_provider,
+                    llm_responses_endpoint=llm.responses_endpoint,
+                    llm_responses_api_version=llm.responses_api_version,
+                    llm_responses_send_temperature=llm.responses_send_temperature,
+                    llm_responses_thinking_config=self.env.get("SAG_CHATBOT_LLM_RESPONSES_THINKING_CONFIG"),
+                )
         try:
             active = QuerySettings.model_validate(values)
             if llm.enabled and (

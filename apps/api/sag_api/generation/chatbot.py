@@ -108,5 +108,23 @@ class QueryAgentRuntime(AgentRuntime):
     """Keep one snapshot alive across all model turns and nested retrieval tools."""
 
     async def _drive(self, agent, handle, tools):
-        async with rt.manager.scope():
-            await super()._drive(agent, handle, tools)
+        from sag_api.generation.responses.routing import run_replay
+
+        state = {}
+        token = run_replay.set(state)
+        try:
+            async with rt.manager.scope():
+                await super()._drive(agent, handle, tools)
+        finally:
+            state.clear()
+            run_replay.reset(token)
+
+    async def _model_turn(self, *args, **kwargs):
+        from sag_api.generation.responses.codec import replay
+        from sag_api.generation.responses.routing import run_replay
+
+        token = replay.set(run_replay.get())
+        try:
+            return await super()._model_turn(*args, **kwargs)
+        finally:
+            replay.reset(token)

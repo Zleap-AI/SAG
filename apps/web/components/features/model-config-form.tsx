@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Check, Plug, RotateCw, Save, Sparkles, X } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { OpenAIAPIFormatField, ResponsesBaseURLField, ResponsesConnectionFields } from "./responses-connection-fields";
 import { ChatbotConfigSections } from "./chatbot-config-sections";
 import { toast } from "sonner";
 
@@ -52,8 +53,14 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
   const [saving, setSaving] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
   const [testResult, setTestResult] = React.useState<{ ok: boolean; message: string } | null>(null);
+  const [testingEmbedding, setTestingEmbedding] = React.useState(false);
+  const [embeddingTestResult, setEmbeddingTestResult] = React.useState<{ ok: boolean; message: string } | null>(null);
 
   const [llmProvider, setLlmProvider] = React.useState<ModelProviderId>("openai");
+  const [responses, setResponses] = React.useState({
+    provider: "openai" as import("@/lib/types").ResponsesProviderId,
+    endpoint: "https://api.openai.com/v1/responses", api_version: "", send_temperature: false,
+  });
   const [llmBaseUrl, setLlmBaseUrl] = React.useState("");
   const [llmKey, setLlmKey] = React.useState("");
   const [llmModel, setLlmModel] = React.useState("");
@@ -80,6 +87,10 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
   const hydrate = React.useCallback((config: ModelConfig) => {
     setCfg(config);
     setLlmProvider(config.llm_provider);
+    setResponses({ provider: config.llm_responses_provider ?? "openai",
+      endpoint: config.llm_responses_endpoint ?? "https://api.openai.com/v1/responses",
+      api_version: config.llm_responses_api_version ?? "",
+      send_temperature: config.llm_responses_send_temperature ?? false });
     setLlmBaseUrl(config.llm_base_url ?? "");
     setLlmModel(config.llm_model);
     setTemperature(config.llm_temperature);
@@ -142,8 +153,8 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
   React.useImperativeHandle(saveRef, () => ({ save }));
   const changed = Object.keys(changedPatch()).length > 0;
   React.useEffect(() => {
-    onState?.({ ready: Boolean(cfg && providers.length > 0 && !loadError && !saving && !testing), changed });
-  }, [cfg, providers.length, loadError, saving, testing, changed, onState]);
+    onState?.({ ready: Boolean(cfg && providers.length > 0 && !loadError && !saving && !testing && !testingEmbedding), changed });
+  }, [cfg, providers.length, loadError, saving, testing, testingEmbedding, changed, onState]);
 
   function currentPatch(): ModelConfigPatch {
     const patch: ModelConfigPatch = {
@@ -164,6 +175,10 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
       mineru_version: mineruVersion,
       mineru_official_model: mineruOfficialModel,
     };
+    if (llmProvider === "responses") Object.assign(patch, {
+      llm_responses_provider: responses.provider, llm_responses_endpoint: responses.endpoint.trim(),
+      llm_responses_api_version: responses.api_version.trim(), llm_responses_send_temperature: responses.send_temperature,
+    });
     if (llmKey.trim()) patch.llm_api_key = llmKey.trim();
     if (embKey.trim()) patch.embedding_api_key = embKey.trim();
     if (mineruKey.trim()) patch.mineru_api_key = mineruKey.trim();
@@ -240,6 +255,30 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
       });
     } finally {
       setTesting(false);
+    }
+  }
+
+  async function testEmbedding() {
+    setTestingEmbedding(true);
+    setEmbeddingTestResult(null);
+    try {
+      const result = await api.testEmbeddingModelConfig({
+        embedding_model: embModel.trim(),
+        embedding_base_url: embBaseUrl.trim(),
+        embedding_api_key: embKey.trim(),
+        embedding_dimensions: embDims.trim() ? Number(embDims) : null,
+        llm_provider: llmProvider,
+        ...(providers.find(provider => provider.id === llmProvider)?.can_reuse_embedding_credentials ? {
+          llm_base_url: llmBaseUrl.trim() || null,
+          ...(llmKey.trim() ? { llm_api_key: llmKey.trim() } : {}),
+        } : {}),
+      });
+      setEmbeddingTestResult(result);
+      getDiagnosticsStore().record("model.test", { target: "embedding", ok: result.ok, message: result.message });
+    } catch (error) {
+      setEmbeddingTestResult({ ok: false, message: error instanceof ApiError ? error.message : t("testFailed") });
+    } finally {
+      setTestingEmbedding(false);
     }
   }
 
@@ -337,11 +376,16 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
   }
 
   const providerSpec = providers.find((provider) => provider.id === llmProvider)!;
+  const providerFamily = llmProvider === "responses" ? "openai" : llmProvider;
   const llmLocked = isLlmConfigLocked(cfg);
 
   const keyPlaceholder = (isSet: boolean) => (isSet ? t("keyConfigured") : "sk-…");
+  const responsesIdentityChanged = (llmProvider === "responses" || cfg.llm_provider === "responses") && (
+    cfg.llm_provider !== llmProvider || cfg.llm_responses_provider !== responses.provider ||
+    cfg.llm_responses_endpoint !== responses.endpoint || cfg.llm_responses_api_version !== responses.api_version
+  );
   const generationKeyPlaceholder =
-    cfg.llm_api_key_set && cfg.llm_provider === llmProvider
+    cfg.llm_api_key_set && cfg.llm_provider === llmProvider && !responsesIdentityChanged
       ? t("keyConfigured")
       : providerSpec.api_key_placeholder;
   const canReuse302Key =
@@ -378,7 +422,7 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
     embeddingAddressDescription = t("embeddingAddressDefault", { status: embeddingAddressStatus });
   }
   const hasSeparateEmbeddingKey = Boolean(embKey.trim() || cfg.embedding_api_key_set);
-  const hasGenerationKey = Boolean(llmKey.trim() || cfg.llm_api_key_set);
+  const hasGenerationKey = Boolean(llmKey.trim() || (cfg.llm_api_key_set && !responsesIdentityChanged));
   let embeddingKeyDescription: string;
   if (embKey.trim()) {
     embeddingKeyDescription = t("embeddingKeyNew");
@@ -426,21 +470,26 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
           <div className="grid gap-4 sm:grid-cols-2">
             <Field>
               <FieldLabel htmlFor="llm-provider">{t("provider")}</FieldLabel>
-              <Select value={llmProvider} onValueChange={changeProvider} disabled={llmLocked}>
+              <Select value={providerFamily} onValueChange={changeProvider} disabled={llmLocked}>
                 <SelectTrigger id="llm-provider">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {providers.map((provider) => (
+                  {providers.filter(provider => provider.id !== "responses").map((provider) => (
                     <SelectItem key={provider.id} value={provider.id}>
                       {provider.display_name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              <FieldDescription>{t(`providerDescription.${llmProvider}`)}</FieldDescription>
+              <FieldDescription>{t(`providerDescription.${providerFamily}`)}</FieldDescription>
             </Field>
-            <Field>
+            {providerFamily === "openai" && providers.some(provider => provider.id === "responses") &&
+              <OpenAIAPIFormatField id="llm-api-format" value={llmProvider as "openai" | "responses"}
+                disabled={llmLocked} onChange={value => { setLlmProvider(value); setTestResult(null); }} />}
+            {llmProvider === "responses" ?
+              <ResponsesBaseURLField id="original-responses" value={responses.endpoint} disabled={llmLocked}
+                onChange={endpoint => setResponses(current => ({ ...current, endpoint }))} /> : <Field>
               <FieldLabel htmlFor="llm-url">Base URL</FieldLabel>
               <Input
                 id="llm-url"
@@ -450,7 +499,7 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
                 placeholder={providerSpec.default_base_url ?? t("officialEndpoint")}
               />
               <FieldDescription>{t(`baseUrlDescription.${llmProvider}`)}</FieldDescription>
-            </Field>
+            </Field>}
             <Field>
               <FieldLabel htmlFor="llm-key">API Key</FieldLabel>
               <Input
@@ -463,13 +512,18 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
                 placeholder={generationKeyPlaceholder}
               />
               <FieldDescription>
-                {cfg.llm_provider !== llmProvider && cfg.llm_api_key_set
-                  ? t("providerChangedKeyDescription")
+                {(cfg.llm_provider !== llmProvider || responsesIdentityChanged) && cfg.llm_api_key_set
+                  ? t(llmProvider === "responses" || cfg.llm_provider === "responses" ? "responsesChangedKeyDescription" : "providerChangedKeyDescription")
                   : t("secretDescription")}
               </FieldDescription>
             </Field>
           </div>
         </SettingsRow>
+
+        {llmProvider === "responses" && <SettingsRow title={t("responsesTitle")}>
+          <ResponsesConnectionFields id="original-responses" value={responses} disabled={llmLocked}
+            onChange={setResponses} />
+        </SettingsRow>}
 
         <SettingsRow title={t("generationParams")} description={t("generationParamsDescription")}>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -582,7 +636,21 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("embeddingTitle")} description={t("embeddingDescription")}>
+      <SettingsSection title={t("embeddingTitle")} description={t("embeddingDescription")}
+        footer={<div className="flex flex-wrap items-center justify-between gap-3">
+          <div role="status" className="min-h-5 min-w-0">
+            {embeddingTestResult && <span className={cn("inline-flex items-center gap-1.5 text-sm",
+              embeddingTestResult.ok ? "text-success" : "text-destructive")}>
+              {embeddingTestResult.ok ? <Check className="size-4" /> : <X className="size-4" />}
+              {embeddingTestResult.message}
+            </span>}
+          </div>
+          <Button type="button" onClick={testEmbedding} variant="outline" disabled={testingEmbedding || saving}>
+            {testingEmbedding ? <Spinner /> : <Plug />}
+            {testingEmbedding ? t("testing") : t("testEmbedding")}
+          </Button>
+        </div>}
+      >
         <SettingsRow
           title={t("modelAndConnection")}
           description={t(

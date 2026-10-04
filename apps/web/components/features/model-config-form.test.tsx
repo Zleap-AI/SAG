@@ -8,8 +8,8 @@ import chinese from "@/messages/zh-CN.json";
 import type { ModelConfig, ModelProviderSpec } from "@/lib/types";
 import { ModelConfigForm } from "./model-config-form";
 
-const mocks = vi.hoisted(() => ({ translate: (key: string) => key === "testGeneration" ? "Test generation model" : key === "testing" ? "Testing…" : key,
-  getModelConfig: vi.fn(), getModelProviders: vi.fn(), saveModelConfig: vi.fn(),
+const mocks = vi.hoisted(() => ({ translate: (key: string) => key === "testGeneration" ? "Test generation model" : key === "testEmbedding" ? "Test embedding model" : key === "testing" ? "Testing…" : key,
+  getModelConfig: vi.fn(), getModelProviders: vi.fn(), saveModelConfig: vi.fn(), testModelConfig: vi.fn(), testEmbeddingModelConfig: vi.fn(),
   getChatbotConfig: vi.fn(), saveChatbotConfig: vi.fn(), testChatbotConfig: vi.fn(),
   refreshCapabilities: vi.fn(), success: vi.fn(), order: [] as string[] }));
 const chatbotTranslate = (key: string, values?: Record<string, string>) => {
@@ -20,7 +20,7 @@ const chatbotTranslate = (key: string, values?: Record<string, string>) => {
 let modelMessages: Record<string, unknown> = english.ModelConfig;
 const modelTranslate = (key: string, values?: Record<string, string | number>) => {
   const message = key.startsWith("embeddingAddress") || key.startsWith("embeddingKey") ||
-    key === "separateEmbeddingAddress" || key === "embeddingInheritedAddressIndependentKey"
+    key.startsWith("responses") || key === "separateEmbeddingAddress" || key === "embeddingInheritedAddressIndependentKey"
     ? modelMessages[key] : mocks.translate(key);
   let text = typeof message === "string" ? message : key;
   for (const [name, value] of Object.entries(values ?? {})) text = text.replaceAll(`{${name}}`, String(value));
@@ -60,6 +60,8 @@ beforeEach(() => {
     mocks.order.push("original"); return { config: { ...original, ...patch } };
   });
   mocks.refreshCapabilities.mockResolvedValue(undefined);
+  mocks.testModelConfig.mockResolvedValue({ ok: true, message: "Draft connected" });
+  mocks.testEmbeddingModelConfig.mockResolvedValue({ ok: true, message: "Embedding connected" });
   fetcher = vi.fn(async (_url: string, request: { method: string; body?: string }) => {
     if (request.method === "PUT") {
       mocks.order.push("chatbot");
@@ -94,6 +96,21 @@ async function edit(selector: string, value: string) {
   });
 }
 function writes() { return fetcher.mock.calls.filter(([, request]) => request.method === "PUT"); }
+async function selectFormat(value: "openai" | "responses") {
+  const scrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: () => undefined });
+  try {
+    await act(async () => container.querySelector("#llm-api-format")!.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+    ));
+    const label = value === "responses" ? "Responses API" : "Chat Completions";
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent === label)!;
+    await act(async () => option.click());
+  } finally {
+    if (scrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", scrollIntoView);
+    else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+  }
+}
 
 function fieldDescription(selector: string) {
   const input = container.querySelector<HTMLInputElement>(selector)!;
@@ -104,6 +121,8 @@ function fieldDescription(selector: string) {
 const embeddingConfig: ModelConfig = {
   ...original, llm_provider: "openai", llm_context_window: 128000, llm_timeout_ms: 60000,
   llm_max_retries: 2, llm_api_key_set: true, embedding_api_key_set: true,
+  llm_responses_provider: "openai", llm_responses_endpoint: "https://api.openai.com/v1/responses",
+  llm_responses_api_version: "", llm_responses_send_temperature: false,
   document_parser: "auto", mineru_provider: "302", mineru_base_url: null,
   mineru_version: "2.5", mineru_official_model: "vlm", mineru_api_key_set: false,
   effective_document_parser: "markitdown", document_extract_concurrency: 5,
@@ -115,6 +134,10 @@ const embeddingProviders: ModelProviderSpec[] = [
     default_base_url: "https://api.302ai.cn/v1", default_context_window: 128000,
     default_temperature: 0.3, temperature_configurable: true,
     can_reuse_embedding_credentials: true, api_key_placeholder: "sk-…" },
+  { id: "responses", display_name: "Responses API", protocol: "responses", default_model: "",
+    default_base_url: null, default_context_window: 128000,
+    default_temperature: 0.3, temperature_configurable: true,
+    can_reuse_embedding_credentials: false, api_key_placeholder: "Responses key" },
   ...(["anthropic", "gemini"] as const).map(id => ({
     id, display_name: id, protocol: id, default_model: "native-model",
     default_base_url: null, default_context_window: 128000, default_temperature: 0.3,
@@ -240,6 +263,8 @@ describe("embedding connection hints", () => {
     ["anthropic", true, "A separate embedding key is already saved. Leave blank to keep it."],
     ["gemini", false, "No embedding key is configured. Configure a separate key."],
     ["gemini", true, "A separate embedding key is already saved. Leave blank to keep it."],
+    ["responses", false, "No embedding key is configured. Configure a separate key."],
+    ["responses", true, "A separate embedding key is already saved. Leave blank to keep it."],
   ] as const)("shows SDK default URL for %s with saved independent key=%s without inheriting generation credentials", async (llm_provider, embedding_api_key_set, keyDescription) => {
     mocks.getModelConfig.mockResolvedValue({ ...embeddingConfig, llm_provider, embedding_base_url: null, embedding_api_key_set });
     await mount();
@@ -281,6 +306,18 @@ describe("embedding connection hints", () => {
     expect(mocks.saveModelConfig).toHaveBeenCalledWith({ llm_provider: "openai" });
   });
 
+  it("requires a replacement generation key for embedding inheritance after leaving Responses", async () => {
+    mocks.getModelConfig.mockResolvedValue({ ...embeddingConfig, llm_provider: "responses",
+      llm_responses_provider: "openai", llm_responses_endpoint: "https://responses.invalid/v1/responses",
+      llm_responses_api_version: null, embedding_base_url: null, embedding_api_key_set: false });
+    await mount();
+    await selectFormat("openai");
+    expect(fieldDescription("#emb-key")).toContain("No embedding key is configured. Configure a separate key.");
+    await edit("#llm-key", "new-chat-completions-key");
+    expect(fieldDescription("#emb-key")).toContain("Uses the generation model key.");
+    expect(container.textContent).not.toContain("new-chat-completions-key");
+  });
+
   it("uses SDK-default wording instead of guessing the catalog URL when both raw addresses are empty", async () => {
     mocks.getModelConfig.mockResolvedValue({ ...embeddingConfig, llm_base_url: null, embedding_base_url: null });
     await mount();
@@ -313,6 +350,140 @@ describe("embedding connection hints", () => {
 });
 
 describe("one page-wide model Save", () => {
+  it("tests the unsaved original embedding draft without saving and reports dimensions", async () => {
+    let finish!: (result: { ok: boolean; message: string; dimensions: number }) => void;
+    mocks.testEmbeddingModelConfig.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    await mount();
+    await edit("#emb-model", "draft-embedding"); await edit("#emb-url", "https://draft.invalid/v1");
+    await edit("#emb-dims", "4"); await edit("#emb-key", "draft-embedding-key");
+    const button = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent === "Test embedding model")!;
+    await act(async () => button.click());
+    expect(mocks.testEmbeddingModelConfig).toHaveBeenCalledWith({
+      embedding_model: "draft-embedding", embedding_base_url: "https://draft.invalid/v1",
+      embedding_api_key: "draft-embedding-key", embedding_dimensions: 4,
+      llm_provider: "openai", llm_base_url: original.llm_base_url,
+    });
+    expect(button.disabled).toBe(true); expect(button.textContent).toBe("Testing…");
+    expect(saveButton().disabled).toBe(true);
+    expect([...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent === "Test generation model")!.disabled).toBe(false);
+    await act(async () => finish({ ok: true, message: "Embedding connection successful · 4 dimensions", dimensions: 4 }));
+    expect(button.closest("section")!.textContent).toContain("4 dimensions");
+    expect(button.disabled).toBe(false); expect(saveButton().disabled).toBe(false);
+    expect(container.querySelector<HTMLInputElement>("#emb-key")!.value).toBe("draft-embedding-key");
+    expect(mocks.saveModelConfig).not.toHaveBeenCalled(); expect(writes()).toHaveLength(0);
+  });
+
+  it("keeps Responses credentials out of the original embedding test", async () => {
+    mocks.getModelConfig.mockResolvedValue({ ...original, llm_provider: "responses" });
+    mocks.getModelProviders.mockResolvedValue([
+      { id: "openai", display_name: "OpenAI-compatible", temperature_configurable: true, default_temperature: 0.3 },
+      { id: "responses", display_name: "Responses API", temperature_configurable: true, default_temperature: 0.3,
+        can_reuse_embedding_credentials: false },
+    ]);
+    await mount(); await edit("#llm-key", "responses-private-key");
+    const button = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent === "Test embedding model")!;
+    await act(async () => button.click());
+    const draft = mocks.testEmbeddingModelConfig.mock.calls[0][0];
+    expect(draft.llm_provider).toBe("responses");
+    expect(draft.llm_api_key).toBeUndefined(); expect(draft.llm_base_url).toBeUndefined();
+    expect(JSON.stringify(draft)).not.toContain("responses-private-key");
+  });
+
+  it("saves the original Responses endpoint and service fields from the native form", async () => {
+    const responses = { ...original, llm_provider: "responses", llm_responses_provider: "openai",
+      llm_responses_endpoint: "https://original.invalid/v1/responses", llm_responses_api_version: "",
+      llm_responses_send_temperature: false };
+    mocks.getModelConfig.mockResolvedValue(responses);
+    mocks.saveModelConfig.mockImplementation(async patch => ({ config: { ...responses, ...patch } }));
+    mocks.getModelProviders.mockResolvedValue([
+      { id: "openai", display_name: "OpenAI-compatible" },
+      { id: "responses", display_name: "Responses API", default_model: "", temperature_configurable: true,
+        default_temperature: 0.3, can_reuse_embedding_credentials: false },
+    ]);
+    await mount();
+    expect(container.querySelector("#llm-provider")!.textContent).toBe("OpenAI-compatible");
+    expect(container.querySelector("#llm-api-format")!.textContent).toBe("Responses API");
+    expect(container.querySelector("#llm-url")).toBeNull();
+    expect(container.querySelector("#original-responses-service")).toBeNull();
+    expect(container.querySelector("#original-responses-auth")!.closest("details")!.open).toBe(false);
+    await edit("#original-responses-endpoint", "https://edited.invalid/v1/responses");
+    await save();
+    expect(mocks.saveModelConfig.mock.calls[0][0]).toEqual({
+      llm_responses_endpoint: "https://edited.invalid/v1/responses",
+    });
+  });
+
+  it("preserves saved Azure authentication and version when only the original temperature switch changes", async () => {
+    const responses = { ...embeddingConfig, llm_provider: "responses", llm_responses_provider: "azure",
+      llm_responses_endpoint: "https://resource.invalid/openai/responses",
+      llm_responses_api_version: "2025-04-01-preview", llm_responses_send_temperature: false };
+    mocks.getModelConfig.mockResolvedValue(responses);
+    mocks.saveModelConfig.mockImplementation(async patch => ({ config: { ...responses, ...patch } }));
+    mocks.getModelProviders.mockResolvedValue(embeddingProviders);
+    await mount();
+    expect(container.querySelector("#original-responses-service")).toBeNull();
+    expect(container.querySelector("#original-responses-auth")!.textContent).toBe("API key header (Azure)");
+    expect(container.querySelector<HTMLInputElement>("#original-responses-version")!.value)
+      .toBe(responses.llm_responses_api_version);
+    await act(async () => container.querySelector<HTMLButtonElement>("#original-responses-temperature")!.click());
+    await save();
+    expect(mocks.saveModelConfig).toHaveBeenCalledWith({ llm_responses_send_temperature: true });
+    expect(container.querySelector<HTMLInputElement>("#llm-key")!.value).toBe("");
+    expect(container.querySelector<HTMLInputElement>("#llm-key")!.placeholder).toBe("keyConfigured");
+  });
+
+  it("selects Responses under OpenAI-compatible and preserves drafts when switching API formats", async () => {
+    mocks.getModelProviders.mockResolvedValue([
+      { id: "openai", display_name: "OpenAI-compatible", default_model: "m", default_base_url: null,
+        default_context_window: 128000, temperature_configurable: true, default_temperature: 0.3 },
+      { id: "responses", display_name: "Responses API", default_model: "", default_base_url: null,
+        default_context_window: 128000, temperature_configurable: true, default_temperature: 0.3 },
+    ]);
+    await mount();
+    expect(container.querySelector("#llm-api-format")!.textContent).toBe("Chat Completions");
+    await selectFormat("responses");
+    expect(container.querySelector("#llm-provider")!.textContent).toBe("OpenAI-compatible");
+    expect(container.querySelector("#llm-url")).toBeNull();
+    expect(container.querySelector<HTMLInputElement>("#llm-model")!.value).toBe(original.llm_model);
+    await edit("#original-responses-endpoint", "https://api.deepseek.com/responses");
+    const test = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent === "Test generation model")!;
+    await act(async () => test.click());
+    expect(mocks.testModelConfig).toHaveBeenLastCalledWith(expect.objectContaining({
+      llm_provider: "responses", llm_model: original.llm_model,
+      llm_responses_endpoint: "https://api.deepseek.com/responses",
+    }));
+    await selectFormat("openai");
+    expect(container.querySelector<HTMLInputElement>("#llm-url")!.value).toBe(original.llm_base_url);
+    expect(container.querySelector("#original-responses-endpoint")).toBeNull();
+    expect(saveButton().disabled).toBe(true);
+    await act(async () => test.click());
+    expect(mocks.testModelConfig).toHaveBeenLastCalledWith(expect.objectContaining({
+      llm_provider: "openai", llm_base_url: original.llm_base_url,
+    }));
+    expect(mocks.testModelConfig.mock.calls.at(-1)![0].llm_responses_endpoint).toBeUndefined();
+    await selectFormat("responses");
+    expect(container.querySelector<HTMLInputElement>("#original-responses-endpoint")!.value)
+      .toBe("https://api.deepseek.com/responses");
+    await save();
+    expect(mocks.saveModelConfig).toHaveBeenLastCalledWith(expect.objectContaining({
+      llm_provider: "responses", llm_responses_endpoint: "https://api.deepseek.com/responses",
+    }));
+  });
+
+  it("locks the nested API format with deployment-managed generation settings", async () => {
+    mocks.getModelConfig.mockResolvedValue({ ...original, locked_fields: ["llm_provider"] });
+    mocks.getModelProviders.mockResolvedValue([
+      { id: "openai", display_name: "OpenAI-compatible", temperature_configurable: true, default_temperature: 0.3 },
+      { id: "responses", display_name: "Responses API" },
+    ]);
+    await mount();
+    expect(container.querySelector<HTMLButtonElement>("#llm-api-format")!.disabled).toBe(true);
+  });
+
   it("renders one Save after every section and retains per-section Tests", async () => {
     await mount();
     const saves = [...container.querySelectorAll<HTMLButtonElement>("button")].filter(button => button.textContent === "save");
