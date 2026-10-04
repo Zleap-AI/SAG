@@ -1,5 +1,6 @@
 """回归：删除信源收尾（绑定清理 + 引擎槽释放 + 上传目录移除）、注册开关。"""
 
+import asyncio
 import os
 
 import httpx
@@ -62,3 +63,8 @@ async def test_delete_cleanup_and_registration():
                 assert r.status_code == 403
             finally:
                 settings.allow_registration = True
+
+            # Drain source-deletion follow-ups before shutdown cancels workers
+            # and the next fixture writes to the shared SQLite database.
+            async with asyncio.timeout(60):
+                await app.state.job_queue._queue.join()

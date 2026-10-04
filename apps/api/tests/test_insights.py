@@ -276,6 +276,11 @@ async def test_entity_read_path():
             assert empty_graph["relations"] == []
             assert empty_graph["truncated"] is False
 
+            # Finish document-delete follow-up writes before shutdown cancels
+            # workers and the shared database cleanup starts.
+            async with asyncio.timeout(60):
+                await app.state.job_queue._queue.join()
+
 
 @pytest.mark.asyncio
 async def test_source_graph_can_filter_one_or_multiple_documents(monkeypatch):
