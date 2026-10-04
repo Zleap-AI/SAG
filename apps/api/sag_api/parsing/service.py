@@ -22,7 +22,8 @@ from sag_api.core.errors import (
     UpstreamError,
     ValidationError,
 )
-from sag_api.parsing.mineru import MinerUClient, PauseCallback
+from sag_api.parsing import anydoc as anydoc_parser
+from sag_api.parsing.mineru import MinerUClient, ParsePaused, PauseCallback
 from sag_api.parsing.mineru_artifacts import (
     remove_path,
     rewrite_image_links,
@@ -31,6 +32,8 @@ from sag_api.parsing.mineru_artifacts import (
 from sag_api.parsing.text import TextDecodingError, is_plain_text_path, read_text_file
 
 ParseStateCallback = Callable[[dict[str, Any]], Awaitable[None]]
+ParserProvider = Literal["markitdown", "mineru", "anydoc"]
+FallbackSource = Literal["mineru", "anydoc"]
 _PARSE_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
 _DOCX_EXTENSION = ".docx"
@@ -53,9 +56,9 @@ _RELATIONSHIP_ID_ATTRIBUTE = f"{{{_OFFICE_DOCUMENT_RELATIONSHIP_NAMESPACE}}}id"
 @dataclass(frozen=True, slots=True)
 class PreparedDocument:
     path: str
-    provider: Literal["original", "markitdown", "mineru"]
+    provider: Literal["original", "markitdown", "mineru", "anydoc"]
     cached: bool = False
-    fallback_from: Literal["mineru"] | None = None
+    fallback_from: FallbackSource | None = None
     fallback_error: str | None = None
 
 
@@ -73,7 +76,18 @@ async def prepare_document(
         return PreparedDocument(path=path, provider="original")
 
     use_mineru = suffix == ".pdf" and settings.effective_document_parser == "mineru"
-    provider: Literal["markitdown", "mineru"] = "mineru" if use_mineru else "markitdown"
+    # AnyDoc 接管适配层支持的格式；Excel 沿用 MarkItDown，保留记录组边界。
+    use_anydoc = (
+        not use_mineru
+        and settings.effective_document_parser == anydoc_parser.PROVIDER
+        and anydoc_parser.handles_path(path)
+    )
+    if use_mineru:
+        provider: ParserProvider = "mineru"
+    elif use_anydoc:
+        provider = "anydoc"
+    else:
+        provider = "markitdown"
     signature = _signature(provider, settings)
     cache_path = f"{path}.parsed.{signature}.md"
     if _is_cached(cache_path):
@@ -84,7 +98,7 @@ async def prepare_document(
     cached_fallback = _cached_fallback_document(path, provider, signature, settings)
     if cached_fallback:
         await _emit_cached_fallback_state(
-            state, signature, cached_fallback, settings, on_state
+            state, provider, signature, cached_fallback, settings, on_state
         )
         return cached_fallback
 
@@ -98,7 +112,7 @@ async def prepare_document(
         cached_fallback = _cached_fallback_document(path, provider, signature, settings)
         if cached_fallback:
             await _emit_cached_fallback_state(
-                state, signature, cached_fallback, settings, on_state
+                state, provider, signature, cached_fallback, settings, on_state
             )
             return cached_fallback
         return await _prepare_and_cache(
@@ -115,6 +129,7 @@ async def prepare_document(
 
 async def _emit_cached_fallback_state(
     state: dict[str, Any] | None,
+    provider: ParserProvider,
     signature: str,
     prepared: PreparedDocument,
     settings: Settings,
@@ -124,17 +139,18 @@ async def _emit_cached_fallback_state(
         return
     fallback = state.get("fallback") if isinstance(state, dict) else None
     fallback_state = dict(fallback) if isinstance(fallback, dict) else {}
+    source = prepared.fallback_from or provider
+    error_key = _fallback_error_key(source)
     await on_state(
         {
-            **_compatible_state(state, "mineru", signature, settings),
+            **_compatible_state(state, provider, signature, settings),
             "status": "fallback_done",
             "fallback": {
                 **fallback_state,
                 "provider": "markitdown",
                 "status": "done",
                 "cached": True,
-                "mineru_error": fallback_state.get("mineru_error")
-                or prepared.fallback_error,
+                error_key: fallback_state.get(error_key) or prepared.fallback_error,
             },
         }
     )
@@ -142,7 +158,7 @@ async def _emit_cached_fallback_state(
 
 async def _emit_cached_state(
     state: dict[str, Any] | None,
-    provider: Literal["markitdown", "mineru"],
+    provider: ParserProvider,
     signature: str,
     cache_path: str,
     settings: Settings,
@@ -161,7 +177,7 @@ async def _emit_cached_state(
 async def _prepare_and_cache(
     path: str,
     cache_path: str,
-    provider: Literal["markitdown", "mineru"],
+    provider: ParserProvider,
     signature: str,
     settings: Settings,
     *,
@@ -184,9 +200,11 @@ async def _prepare_and_cache(
     if provider == "mineru":
         fallback_signature = _signature("markitdown", settings)
         fallback_cache_path = f"{path}.parsed.{fallback_signature}.md"
-        fallback_marker_path = _fallback_marker_path(path, signature, settings)
+        fallback_marker_path = _fallback_marker_path(
+            path, "mineru", signature, settings
+        )
         fallback = _compatible_fallback(
-            parser_state, fallback_signature, fallback_cache_path
+            parser_state, fallback_signature, fallback_cache_path, "mineru"
         )
         if fallback and parser_state.get("status") == "fallback_done" and _is_cached(
             fallback_cache_path
@@ -209,9 +227,10 @@ async def _prepare_and_cache(
                 fallback_cache_path,
                 fallback_signature,
                 fallback_marker_path,
-                mineru_message=_state_string(fallback, "mineru_error")
+                fallback_from="mineru",
+                source_message=_state_string(fallback, "mineru_error")
                 or "MinerU 解析失败",
-                mineru_error_code=_state_string(fallback, "mineru_error_code")
+                source_error_code=_state_string(fallback, "mineru_error_code")
                 or UpstreamError.code,
                 on_state=track_state,
             )
@@ -237,10 +256,21 @@ async def _prepare_and_cache(
                 fallback_cache_path,
                 fallback_signature,
                 fallback_marker_path,
-                mineru_message=_exception_message(mineru_error),
-                mineru_error_code=mineru_error.code,
+                fallback_from="mineru",
+                source_message=_exception_message(mineru_error),
+                source_error_code=mineru_error.code,
                 on_state=track_state,
             )
+    elif provider == "anydoc":
+        return await _prepare_anydoc(
+            path,
+            cache_path,
+            signature,
+            settings,
+            current_state=current_state,
+            track_state=track_state,
+            should_pause=should_pause,
+        )
     else:
         markdown = (
             await asyncio.to_thread(_convert_plain_text, path)
@@ -262,6 +292,63 @@ async def _prepare_and_cache(
     return PreparedDocument(path=cache_path, provider=provider)
 
 
+async def _prepare_anydoc(
+    path: str,
+    cache_path: str,
+    signature: str,
+    settings: Settings,
+    *,
+    current_state: dict[str, Any],
+    track_state: ParseStateCallback,
+    should_pause: PauseCallback | None,
+) -> PreparedDocument:
+    """AnyDoc 本地转换；只有转换本身不支持文件时才回退一次 MarkItDown。
+
+    运行中的 Rust 转换不承诺立即中断：这里只在转换前后做边界暂停检查。
+    """
+    if should_pause is not None and await should_pause():
+        raise ParsePaused()
+    await track_state({**current_state, "status": "running", "cache_path": cache_path})
+    try:
+        markdown = await asyncio.to_thread(anydoc_parser.convert, path)
+    except anydoc_parser.AnyDocUnsupportedError as unsupported:
+        # 仅 AnyDoc 转换本身的 UnsupportedError 允许回退；回调/写盘/控制流
+        # 异常不在此分支，因此不会被包装成转换错误。
+        if should_pause is not None and await should_pause():
+            raise ParsePaused() from unsupported
+        fallback_signature = _signature("markitdown", settings)
+        fallback_cache_path = f"{path}.parsed.{fallback_signature}.md"
+        fallback_marker_path = _fallback_marker_path(
+            path, "anydoc", signature, settings
+        )
+        return await _prepare_markitdown_fallback(
+            path,
+            current_state,
+            fallback_cache_path,
+            fallback_signature,
+            fallback_marker_path,
+            fallback_from="anydoc",
+            source_message=_exception_message(unsupported),
+            source_error_code=unsupported.code,
+            on_state=track_state,
+            should_pause=should_pause,
+        )
+    if should_pause is not None and await should_pause():
+        # 暂停发生在缓存写入前：恢复时需要重新转换，恢复后按签名复用旧缓存。
+        raise ParsePaused()
+    await asyncio.to_thread(_write_markdown, cache_path, markdown)
+    await track_state(
+        {
+            **current_state,
+            "provider": "anydoc",
+            "signature": signature,
+            "status": "done",
+            "cache_path": cache_path,
+        }
+    )
+    return PreparedDocument(path=cache_path, provider="anydoc")
+
+
 async def _prepare_markitdown_fallback(
     path: str,
     parser_state: dict[str, Any],
@@ -269,19 +356,26 @@ async def _prepare_markitdown_fallback(
     signature: str,
     marker_path: str,
     *,
-    mineru_message: str,
-    mineru_error_code: str,
+    fallback_from: FallbackSource,
+    source_message: str,
+    source_error_code: str,
     on_state: ParseStateCallback,
+    should_pause: PauseCallback | None = None,
 ) -> PreparedDocument:
+    if should_pause is not None and await should_pause():
+        raise ParsePaused()
+    error_key = _fallback_error_key(fallback_from)
     fallback_state = {
         "provider": "markitdown",
         "signature": signature,
         "status": "running",
         # 只用于诊断；恢复时始终从原文件路径重新推导并校验缓存路径。
         "cache_path": cache_path,
-        "mineru_error": mineru_message,
-        "mineru_error_code": mineru_error_code,
+        "fallback_from": fallback_from,
+        error_key: source_message,
     }
+    if fallback_from == "mineru":
+        fallback_state["mineru_error_code"] = source_error_code
     running_state = {
         **parser_state,
         "status": "fallback_running",
@@ -292,11 +386,19 @@ async def _prepare_markitdown_fallback(
     fallback_cached = False
     try:
         async with _lock_for(cache_path):
+            if should_pause is not None and await should_pause():
+                raise ParsePaused()
             fallback_cached = _is_cached(cache_path)
             if not fallback_cached:
                 markdown = await _convert_with_markitdown(path)
+                if should_pause is not None and await should_pause():
+                    raise ParsePaused()
                 await asyncio.to_thread(_write_markdown, cache_path, markdown)
+            if should_pause is not None and await should_pause():
+                raise ParsePaused()
             await asyncio.to_thread(_write_fallback_marker, marker_path)
+    except ParsePaused:
+        raise
     except Exception as fallback_error:  # noqa: BLE001 - 本地转换/写盘错误合并上游原因
         fallback_message = _exception_message(fallback_error)
         await on_state(
@@ -311,13 +413,14 @@ async def _prepare_markitdown_fallback(
             }
         )
         message = (
-            f"MinerU 解析失败：{mineru_message}；"
+            f"{_fallback_source_label(fallback_from)}解析失败：{source_message}；"
             f"MarkItDown 回退失败：{fallback_message}"
         )
-        if mineru_error_code == ServiceUnavailableError.code:
-            raise ServiceUnavailableError(message) from fallback_error
-        if mineru_error_code == UpstreamError.code:
-            raise UpstreamError(message) from fallback_error
+        if fallback_from == "mineru":
+            if source_error_code == ServiceUnavailableError.code:
+                raise ServiceUnavailableError(message) from fallback_error
+            if source_error_code == UpstreamError.code:
+                raise UpstreamError(message) from fallback_error
         raise ValidationError(message) from fallback_error
 
     await on_state(
@@ -335,13 +438,16 @@ async def _prepare_markitdown_fallback(
         path=cache_path,
         provider="markitdown",
         cached=fallback_cached,
-        fallback_from="mineru",
-        fallback_error=mineru_message,
+        fallback_from=fallback_from,
+        fallback_error=source_message,
     )
 
 
 def _compatible_fallback(
-    state: dict[str, Any], signature: str, cache_path: str
+    state: dict[str, Any],
+    signature: str,
+    cache_path: str,
+    source: FallbackSource,
 ) -> dict[str, Any] | None:
     fallback = state.get("fallback")
     if not isinstance(fallback, dict):
@@ -352,7 +458,32 @@ def _compatible_fallback(
         or fallback.get("cache_path") != cache_path
     ):
         return None
+    if not _fallback_source_matches(state, fallback, source):
+        return None
     return fallback
+
+
+def _fallback_source_matches(
+    state: dict[str, Any], fallback: dict[str, Any], source: FallbackSource
+) -> bool:
+    """回退标记是否确实来自当前解析器。
+
+    旧记录只在 `state.provider` 上标记来源，新记录同时写入 `fallback.fallback_from`。
+    两者都不匹配时返回 False —— 历史 MinerU 标记不能阻止 AnyDoc 重新转换，
+    反过来 AnyDoc 标记也不能被 MinerU 复用。
+    """
+    recorded = fallback.get("fallback_from")
+    if isinstance(recorded, str):
+        return recorded == source
+    return state.get("provider") == source
+
+
+def _fallback_error_key(source: FallbackSource) -> str:
+    return f"{source}_error"
+
+
+def _fallback_source_label(source: FallbackSource) -> str:
+    return "AnyDoc" if source == "anydoc" else "MinerU"
 
 
 def _state_string(state: dict[str, Any], key: str) -> str | None:
@@ -362,35 +493,40 @@ def _state_string(state: dict[str, Any], key: str) -> str | None:
 
 def _cached_fallback_document(
     path: str,
-    provider: Literal["markitdown", "mineru"],
+    provider: ParserProvider,
     signature: str,
     settings: Settings,
 ) -> PreparedDocument | None:
-    if provider != "mineru":
+    if provider not in {"mineru", "anydoc"}:
         return None
-    cache_path = f"{path}.parsed.{_signature('markitdown', settings)}.md"
-    marker_path = _fallback_marker_path(path, signature, settings)
+    source: FallbackSource = "mineru" if provider == "mineru" else "anydoc"
+    markitdown_signature = _signature("markitdown", settings)
+    cache_path = f"{path}.parsed.{markitdown_signature}.md"
+    marker_path = _fallback_marker_path(path, source, signature, settings)
     if not (_is_cached(marker_path) and _is_cached(cache_path)):
         return None
     return PreparedDocument(
         path=cache_path,
         provider="markitdown",
         cached=True,
-        fallback_from="mineru",
-        fallback_error="MinerU 曾解析失败，已复用 MarkItDown 回退缓存",
+        fallback_from=source,
+        fallback_error=f"{_fallback_source_label(source)} 曾解析失败，已复用 MarkItDown 回退缓存",
     )
 
 
-def _fallback_marker_path(path: str, signature: str, settings: Settings) -> str:
-    identity = "\0".join(
-        (
-            signature,
-            str(settings.mineru_base_url or ""),
-            _mineru_key_fingerprint(settings),
-        )
-    )
-    digest = hashlib.sha256(identity.encode()).hexdigest()[:16]
+def _fallback_marker_path(
+    path: str, source: FallbackSource, signature: str, settings: Settings
+) -> str:
+    # 历史 MinerU 标记的文件名只由签名 + MinerU 端点身份决定；保持原样以复用
+    # 既有回退缓存。AnyDoc 标记带上来源，避免与 MinerU 标记互相误判。
+    parts = [signature]
+    if source == "anydoc":
+        parts.append(source)
+    parts.append(str(settings.mineru_base_url or "") if source == "mineru" else "")
+    parts.append(_mineru_key_fingerprint(settings) if source == "mineru" else "")
+    digest = hashlib.sha256("\0".join(parts).encode()).hexdigest()[:16]
     return f"{path}.parsed.{signature}.fallback-{digest}.marker"
+
 
 
 def _write_fallback_marker(path: str) -> None:
@@ -460,6 +596,8 @@ def _signature(provider: str, settings: Settings) -> str:
                 f"{settings.mineru_parse_method}"
             )
         return f"mineru-{settings.mineru_version}-{settings.mineru_parse_method}"
+    if provider == anydoc_parser.PROVIDER:
+        return anydoc_parser.signature()
     return "markitdown"
 
 

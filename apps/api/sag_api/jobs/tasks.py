@@ -71,6 +71,7 @@ _PARSER_UPLOAD_STATES = {"uploading", "uploaded"}
 _PARSER_QUEUE_STATES = {"created", "pending", "queued", "queueing"}
 _PARSER_DONE_STATES = {"done", "success", "succeeded", "completed", "finished"}
 _PARSER_FAILED_STATES = {"failed", "failure", "error", "cancelled", "canceled", "fallback_failed"}
+_PARSER_SOURCES = {"mineru", "markitdown", "anydoc", "original"}
 _SECRET_QUERY_KEYS = re.compile(r"(?i)([?&](?:token|key|signature|credential|authorization|x-amz-[^=]+)=)[^&#\s]+")
 _BEARER_TOKEN = re.compile(r"(?i)bearer\s+\S+")
 _API_KEY = re.compile(r"(?i)\b(?:sk|ak)-[a-z0-9._-]{6,}\b")
@@ -107,22 +108,28 @@ def _redact_parser_reason(value: object) -> str | None:
     return message[:300]
 
 
-def _fallback_reason(state: dict[str, Any]) -> str | None:
+def _fallback_reason(state: dict[str, Any], source: str) -> str | None:
+    """回退原因按来源解析器取值，回退目标自己的失败作为兜底。"""
     fallback = state.get("fallback")
     if isinstance(fallback, dict):
-        return _redact_parser_reason(fallback.get("mineru_error") or fallback.get("markitdown_error"))
+        return _redact_parser_reason(
+            fallback.get(f"{source}_error") or fallback.get("markitdown_error")
+        )
     return _redact_parser_reason(state.get("error") or state.get("message"))
 
 
 def _parser_state_values(state: dict[str, Any]) -> dict[str, str | None]:
     raw_provider = state.get("provider")
-    provider = raw_provider if raw_provider in {"mineru", "markitdown", "original"} else None
+    provider = raw_provider if raw_provider in _PARSER_SOURCES else None
     raw_status = str(state.get("status") or "").lower()
     fallback = isinstance(state.get("fallback"), dict)
     if raw_status.startswith("fallback_") or fallback:
-        status = "failed" if raw_status == "fallback_failed" else "fallback"
-        parser_provider = "markitdown" if raw_status != "fallback_failed" else provider
-        fallback_from = "mineru"
+        failed = raw_status == "fallback_failed"
+        # 回退来源取实际来源解析器；旧记录只在顶层 provider 上标记来源。
+        source = provider or _legacy_fallback_source(state) or "mineru"
+        status = "failed" if failed else "fallback"
+        parser_provider = source if failed else "markitdown"
+        fallback_from = source
     elif raw_status in _PARSER_UPLOAD_STATES or state.get("upload_url") and not state.get("task_id"):
         status = "uploading"
         parser_provider = provider
@@ -144,7 +151,7 @@ def _parser_state_values(state: dict[str, Any]) -> dict[str, str | None]:
         parser_provider = provider
         fallback_from = None
     mineru_provider = mineru_model = None
-    if provider == "mineru" or fallback_from == "mineru":
+    if "mineru" in {parser_provider, fallback_from}:
         mineru_provider, mineru_model = _mineru_details(state)
     return {
         "parser_provider": parser_provider,
@@ -152,13 +159,30 @@ def _parser_state_values(state: dict[str, Any]) -> dict[str, str | None]:
         "mineru_model": mineru_model,
         "parser_status": status,
         "fallback_from": fallback_from,
-        "fallback_reason": _fallback_reason(state) if fallback_from else None,
+        "fallback_reason": _fallback_reason(state, fallback_from)
+        if fallback_from
+        else None,
     }
+
+
+def _legacy_fallback_source(state: dict[str, Any]) -> str | None:
+    """从旧回退记录里读出真实来源解析器。
+
+    历史 MinerU 状态没有 `fallback.fallback_from`，来源在顶层 `provider` 上；
+    两者都缺失时无法确认来源，交由调用方按 MinerU 兼容处理。
+    """
+    fallback = state.get("fallback")
+    if isinstance(fallback, dict):
+        recorded = fallback.get("fallback_from")
+        if isinstance(recorded, str) and recorded in _PARSER_SOURCES:
+            return recorded
+    recorded = state.get("provider")
+    return recorded if isinstance(recorded, str) and recorded in _PARSER_SOURCES else None
 
 
 def _prepared_parser_values(prepared, state: dict[str, Any] | None) -> dict[str, str | None]:  # noqa: ANN001
     mineru_provider = mineru_model = None
-    if prepared.provider == "mineru" or prepared.fallback_from == "mineru":
+    if "mineru" in {prepared.provider, prepared.fallback_from}:
         mineru_provider, mineru_model = _mineru_details(state)
     return {
         "parser_provider": prepared.provider,
@@ -167,6 +191,18 @@ def _prepared_parser_values(prepared, state: dict[str, Any] | None) -> dict[str,
         "parser_status": "fallback" if prepared.fallback_from else "done",
         "fallback_from": prepared.fallback_from,
         "fallback_reason": _redact_parser_reason(prepared.fallback_error),
+    }
+
+
+def _cleared_parser_values() -> dict[str, None]:
+    """重新处理前清空上一轮的解析器信息，避免旧状态冒充本轮结果。"""
+    return {
+        "parser_provider": None,
+        "mineru_provider": None,
+        "mineru_model": None,
+        "parser_status": None,
+        "fallback_from": None,
+        "fallback_reason": None,
     }
 
 
@@ -233,13 +269,6 @@ async def _process_document_unlocked(
         raise NotFoundError("信源不存在")
     checkpoint = ProcessCheckpoint.from_payload(job.payload)
     scheduler_yield_reason: str | None = None
-
-    # A worker retry reuses the document row. Clear the previous attempt's
-    # failure before parsing can block for a long time, so active processing
-    # never carries a stale terminal error.
-    if document.error is not None and document.status not in _CONTROL_TRANSITION_STATES:
-        document.error = None
-        await session.commit()
 
     async def refresh_payload() -> dict:
         await session.refresh(job, attribute_names=["payload"])
@@ -330,6 +359,23 @@ async def _process_document_unlocked(
         await session.commit()
         raise JobPaused()
 
+    # A worker retry reuses the document row. Clear the previous attempt's
+    # failure before parsing can block for a long time. A fresh parse clears
+    # stale provenance; retries retain saved parser tasks and chunk resumes
+    # retain their completed parser result. Ready-document reprocessing already
+    # clears both checkpoints and provenance in document_service.
+    # A winning pause/delete intent (document-side transition state) is left
+    # untouched so concurrent control flows are never overwritten.
+    if document.status not in _CONTROL_TRANSITION_STATES:
+        saved_parser = (job.payload or {}).get("document_parser")
+        resuming_parse = isinstance(saved_parser, dict) and bool(saved_parser)
+        if not checkpoint.chunk_ids and not resuming_parse:
+            for field, value in _cleared_parser_values().items():
+                setattr(document, field, value)
+        if document.error is not None:
+            document.error = None
+        await session.commit()
+
     try:
         prepared = None
         parser_stage = False
@@ -386,14 +432,11 @@ async def _process_document_unlocked(
         public_message = message
         parser_failure_values: dict[str, str | None] = {}
         parser_state = (job.payload or {}).get("document_parser")
-        parser_failed = parser_stage
+        parser_failed = parser_stage and isinstance(parser_state, dict)
         if parser_failed:
             public_message = _redact_parser_reason(message) or "文档解析失败"
-        if (
-            parser_failed
-            and isinstance(parser_state, dict)
-            and str(parser_state.get("status") or "").lower() == "fallback_failed"
-        ):
+            # 有解析器上下文的普通解析失败与回退失败都要落 parser_status=failed：
+            # 只处理 fallback_failed 会让“AnyDoc 直接失败”在文档上仍显示 done。
             parser_failure_values = _parser_state_values(parser_state)
             parser_failure_values["parser_status"] = "failed"
             parser_failure_values["fallback_reason"] = _redact_parser_reason(message)

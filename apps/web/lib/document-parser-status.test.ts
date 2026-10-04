@@ -39,6 +39,35 @@ describe("documentParserStatus", () => {
     expect(documentParserStatus({ ...base, parser_provider: "original" })).toEqual({ methodKey: "original", progressKey: null });
   });
 
+  it("maps local AnyDoc success and progress states", () => {
+    const anydoc = { ...base, parser_provider: "anydoc" as const, mineru_provider: null, mineru_model: null };
+    expect(documentParserStatus(anydoc)).toEqual({ methodKey: "anydoc", progressKey: null });
+    expect(documentParserStatus({ ...anydoc, parser_status: "queued" })).toEqual({ methodKey: "anydoc", progressKey: "queued" });
+    expect(documentParserStatus({ ...anydoc, parser_status: "running" })).toEqual({ methodKey: "anydoc", progressKey: "running" });
+  });
+
+  it("maps MarkItDown fallback after AnyDoc", () => {
+    expect(
+      documentParserStatus({
+        ...base,
+        parser_provider: "markitdown",
+        mineru_provider: null,
+        mineru_model: null,
+        parser_status: "fallback",
+        fallback_from: "anydoc",
+      }),
+    ).toEqual({ methodKey: "anydocFallback", progressKey: null });
+  });
+
+  it("does not present an unknown provider as MinerU", () => {
+    expect(
+      documentParserStatus({
+        ...base,
+        parser_provider: "future-parser" as unknown as "mineru",
+      }),
+    ).toBeNull();
+  });
+
   it("returns null for legacy rows", () => {
     expect(documentParserStatus({ parser_provider: null, mineru_provider: null, mineru_model: null, parser_status: null, fallback_from: null })).toBeNull();
     expect(documentParserStatus({})).toBeNull();
