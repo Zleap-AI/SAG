@@ -35,6 +35,9 @@ async def _litellm_completion(**kwargs: Any) -> Any:
     """Import lazily so an unconfigured server can still start without provider work."""
     from litellm import acompletion
 
+    from sag_api.generation.responses.routing import register
+
+    register()
     return await acompletion(**kwargs)
 
 
@@ -126,6 +129,15 @@ class LLMClient:
         if self._settings.llm_base_url:
             request["api_base"] = self._settings.llm_base_url
         request = apply_litellm_completion_policy(self._settings, request)
+        if self._settings.llm_provider == "responses":
+            from sag_api.generation.responses.routing import ConfiguredStream, request_settings
+
+            token = request_settings.set(self._settings)
+            try:
+                response = await _litellm_completion(**request)
+            finally:
+                request_settings.reset(token)
+            return ConfiguredStream(response, self._settings) if stream else response
         return await _litellm_completion(**request)
 
     @staticmethod

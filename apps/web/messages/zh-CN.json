@@ -698,17 +698,21 @@
     "keyConfigured": "已配置，留空保持不变",
     "generationDescription": "用于答案生成和信息抽取，支持 OpenAI-compatible、Anthropic 和 Gemini 原生协议。",
     "connectionTitle": "连接信息",
-    "connectionDescription": "选择接入协议，配置服务地址和访问密钥。",
+    "connectionDescription": "选择接入方式和 API 格式，配置服务地址和访问密钥。",
     "provider": "接入方式",
+    "apiFormat": "API 格式",
+    "apiFormatDescription": "选择服务支持的 API 格式。",
     "providerDescription": {
-      "openai": "支持 OpenAI 官方及 302.AI、私有网关等兼容端点。",
+      "openai": "通过 Chat Completions 或 Responses API 接入 OpenAI、Azure、Bedrock、DeepSeek 和私有网关等兼容服务。",
       "anthropic": "使用 Anthropic Messages 协议，支持 Claude 工具调用与流式回答。",
-      "gemini": "使用 Gemini GenerateContent 协议，支持函数调用与流式回答。"
+      "gemini": "使用 Gemini GenerateContent 协议，支持函数调用与流式回答。",
+      "responses": "通过 Responses API 生成内容，支持流式输出与函数工具。"
     },
     "baseUrlDescription": {
       "openai": "填写兼容 Chat Completions 的 API 根地址。",
       "anthropic": "留空使用 Anthropic 官方端点；私有代理可填自定义地址。",
-      "gemini": "留空使用 Google Gemini 官方端点；私有代理可填自定义地址。"
+      "gemini": "留空使用 Google Gemini 官方端点；私有代理可填自定义地址。",
+      "responses": "请在下方填写完整 Responses 端点。"
     },
     "officialEndpoint": "留空使用官方端点",
     "providerChangedKeyDescription": "已切换接入方式；请输入新 provider 的 API Key，留空将继续使用原密钥。",
@@ -728,7 +732,7 @@
     "embeddingDescription": "用于文档向量化和语义检索。",
     "modelAndConnection": "模型与连接",
     "embeddingConnectionDescription": "地址和密钥分别配置，留空时的使用规则见下方说明。",
-    "embeddingNativeConnectionDescription": "Anthropic 和 Gemini 不提供同格式的向量接口，请单独配置 OpenAI-compatible Embedding 端点与密钥。",
+    "embeddingNativeConnectionDescription": "Responses API、Anthropic 与 Gemini 使用独立的向量连接；请配置 OpenAI-compatible 向量地址和 Key。",
     "embeddingAddressPlaceholder": "留空使用生成模型地址",
     "embeddingAddressDefaultPlaceholder": "留空使用默认向量服务地址",
     "separateEmbeddingAddress": "请填写独立的向量服务地址",
@@ -767,8 +771,21 @@
     "secretDescription": "密钥不会回显，留空保持当前配置不变。",
     "testing": "测试中…",
     "testGeneration": "测试生成模型",
+    "testEmbedding": "测试向量模型",
     "saving": "保存中…",
-    "save": "保存并生效"
+    "save": "保存并生效",
+    "responsesChangedKeyDescription": "更换 Responses 认证方式或端点会清除已保存的密钥。请为新连接填写 API Key。",
+    "responsesTitle": "Responses 选项",
+    "responsesAdvanced": "高级连接设置",
+    "responsesAuthentication": "认证方式",
+    "responsesBearerAuthentication": "Bearer（OpenAI-compatible）",
+    "responsesAzureAuthentication": "API Key 请求头（Azure）",
+    "responsesAuthenticationDescription": "Bearer 适用于 OpenAI-compatible 服务、Bedrock 和 Azure v1。旧版 Azure 连接或 Azure 网关可使用 Azure 请求头覆盖设置。",
+    "responsesEndpoint": "Base URL",
+    "responsesEndpointDescription": "填写以 /responses 结尾的完整 URL，例如 https://api.deepseek.com/responses。",
+    "responsesApiVersion": "Azure API 版本",
+    "responsesSendTemperature": "发送温度参数",
+    "responsesTemperatureDescription": "仅在模型支持温度参数时启用。"
   },
   "AgentSettings": {
     "saved": "助手设定已保存",

@@ -698,17 +698,21 @@
     "keyConfigured": "Configured; leave blank to keep unchanged",
     "generationDescription": "Used for answer generation and information extraction, with OpenAI-compatible, Anthropic, and native Gemini protocols.",
     "connectionTitle": "Connection",
-    "connectionDescription": "Choose a provider protocol, then configure its endpoint and access key.",
+    "connectionDescription": "Choose a provider protocol and API format, then configure its endpoint and access key.",
     "provider": "Provider protocol",
+    "apiFormat": "API format",
+    "apiFormatDescription": "Choose the API format supported by your service.",
     "providerDescription": {
-      "openai": "Works with OpenAI and compatible gateways such as 302.AI or private deployments.",
+      "openai": "Use Chat Completions or Responses API with OpenAI and compatible services such as Azure, Bedrock, DeepSeek, or private gateways.",
       "anthropic": "Uses the Anthropic Messages protocol with Claude streaming and tool calls.",
-      "gemini": "Uses Gemini GenerateContent with streaming and function calling."
+      "gemini": "Uses Gemini GenerateContent with streaming and function calling.",
+      "responses": "Generate with the Responses API, including streaming and function tools."
     },
     "baseUrlDescription": {
       "openai": "Enter the API root for an OpenAI-compatible Chat Completions endpoint.",
       "anthropic": "Leave blank for Anthropic's official endpoint, or enter a custom proxy URL.",
-      "gemini": "Leave blank for Google Gemini's official endpoint, or enter a custom proxy URL."
+      "gemini": "Leave blank for Google Gemini's official endpoint, or enter a custom proxy URL.",
+      "responses": "Use the full Responses endpoint below."
     },
     "officialEndpoint": "Leave blank to use the official endpoint",
     "providerChangedKeyDescription": "The provider changed. Enter its API key; leaving this blank keeps the previously saved key.",
@@ -728,7 +732,7 @@
     "embeddingDescription": "Used for document embeddings and semantic retrieval.",
     "modelAndConnection": "Model and connection",
     "embeddingConnectionDescription": "Configure the URL and key independently. The hints below show which settings will be used.",
-    "embeddingNativeConnectionDescription": "Anthropic and Gemini do not share this embedding format. Configure a separate OpenAI-compatible embedding endpoint and key.",
+    "embeddingNativeConnectionDescription": "Responses API, Anthropic, and Gemini use separate embedding connections. Configure an OpenAI-compatible embedding endpoint and key.",
     "embeddingAddressPlaceholder": "Leave blank to use generation URL",
     "embeddingAddressDefaultPlaceholder": "Leave blank to use default URL",
     "separateEmbeddingAddress": "Configure a separate embedding endpoint",
@@ -767,8 +771,21 @@
     "secretDescription": "The key is never displayed. Leave blank to keep the current value.",
     "testing": "Testing…",
     "testGeneration": "Test generation model",
+    "testEmbedding": "Test embedding model",
     "saving": "Saving…",
-    "save": "Save and apply"
+    "save": "Save and apply",
+    "responsesChangedKeyDescription": "Changing Responses authentication or its endpoint clears the saved key. Enter a key for the new connection.",
+    "responsesTitle": "Responses options",
+    "responsesAdvanced": "Advanced connection settings",
+    "responsesAuthentication": "Authentication",
+    "responsesBearerAuthentication": "Bearer (OpenAI-compatible)",
+    "responsesAzureAuthentication": "API key header (Azure)",
+    "responsesAuthenticationDescription": "Bearer works with OpenAI-compatible services, Bedrock, and Azure v1. Use the Azure header override for older Azure connections or Azure gateways.",
+    "responsesEndpoint": "Base URL",
+    "responsesEndpointDescription": "Enter the full URL ending in /responses, such as https://api.deepseek.com/responses.",
+    "responsesApiVersion": "Azure API version",
+    "responsesSendTemperature": "Send temperature",
+    "responsesTemperatureDescription": "Enable only when your model supports temperature."
   },
   "AgentSettings": {
     "saved": "Assistant settings saved",

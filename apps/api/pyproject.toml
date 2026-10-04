@@ -19,7 +19,7 @@ dependencies = [
     "httpx>=0.27",
     "cryptography>=46.0.5,<51",
     "filelock>=3.16,<4",
-    "litellm>=1.92,<2",
+    "litellm>=1.103,<2",
     "orjson>=3.11.6,<4",
     "zleap-sag==0.13.0",
     "alembic>=1.13",

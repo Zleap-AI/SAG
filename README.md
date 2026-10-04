@@ -196,6 +196,8 @@ To make the deployment configuration mandatory, set `SAG_LOCK_LLM_CONFIG=true`. 
 
 For separate chat and query endpoints, enable **Chatbot LLM** or **Query embedding** in the same Models page. Both are optional and leave document extraction/indexing on the original connections. Query embeddings share the original model and vector dimensions. See [optional chatbot connections](docs/chatbot-connections.md) for deployment settings, credential storage, and recovery.
 
+Select **OpenAI-compatible**, then choose the **Responses API** format for original generation or the optional chatbot LLM to use OpenAI-compatible, Azure, or Bedrock Responses endpoints. See [Responses API setup](docs/responses-api.md) for endpoint configuration, reasoning controls, authentication, and verification.
+
 ### Import knowledge
 
 Create a source and add Markdown, text, PDF, Office, or other supported documents. SAG normalizes documents to Markdown, then runs chunking, embedding, event extraction, and entity extraction in the background.

@@ -5,7 +5,7 @@ and interactive queries. Settings → Models offers two independent switches:
 
 - **Chatbot LLM** selects a separate provider, model, endpoint, and optional API key
   for answer generation, tool turns, history compression, and query-side LLM work.
-  It uses SAG's existing OpenAI-compatible, Anthropic, and Gemini providers.
+  It uses OpenAI-compatible Chat Completions or Responses API, Anthropic, and Gemini.
 - **Query embedding** selects a separate OpenAI-compatible endpoint and optional
   API key for retrieval. Document embeddings continue using the original endpoint.
 
@@ -21,7 +21,7 @@ The normal `compose.yaml` passes them through; no alternate launcher is needed.
 | Variable | Default / meaning |
 | --- | --- |
 | `SAG_CHATBOT_LLM_ENABLED` | `false` |
-| `SAG_CHATBOT_LLM_PROVIDER` | `openai`; also `anthropic` or `gemini` |
+| `SAG_CHATBOT_LLM_PROVIDER` | `openai`; also `anthropic`, `gemini`, or `responses` |
 | `SAG_CHATBOT_LLM_MODEL` | Required when the separate LLM is enabled |
 | `SAG_CHATBOT_LLM_BASE_URL` | Blank selects the provider's official endpoint |
 | `SAG_CHATBOT_LLM_API_KEY` | Optional for keyless OpenAI-compatible endpoints |
@@ -32,6 +32,9 @@ The normal `compose.yaml` passes them through; no alternate launcher is needed.
 | `SAG_CHATBOT_CONFIG_ENCRYPTION_KEY` | Stable Fernet key for UI-saved API keys |
 
 Use HTTP(S) base URLs without embedded credentials, query strings, or fragments.
+Responses uses a full endpoint ending in `/responses` and permits query parameters;
+see [Responses configuration](responses-api.md) for the default Bearer connection
+and advanced Azure authentication/version overrides. There is no Responses vendor selector.
 Keyless local endpoints are supported. An optional connection never borrows an
 original or SDK-environment API key. Changing the endpoint or provider clears the
 previous UI key unless a new key is supplied; a matching deployment connection can
@@ -59,6 +62,14 @@ independently. Unchanged original settings are skipped. An original write waitin
 for active extraction does not block optional saves/tests. Partial success is shown
 per group, and failed drafts remain available for retry. Connection Tests use the
 unsaved draft without activating or persisting it.
+
+The original **Embedding model** section also has a Test button. Its authenticated
+`POST /api/v1/system/model-config/embedding/test` endpoint accepts an unsaved
+original embedding draft, returns the resulting dimensions, and never writes
+settings or rebuilds vectors. Blank keys retain saved keys; blank URLs follow
+the original generation provider's credential-reuse rules. Responses credentials
+are never reused for embeddings. This test bypasses independent query connections
+and closes its client after success, failure, or cancellation.
 
 Authenticated users have the same settings access as existing model configuration.
 The API is `GET /api/v1/system/chatbot-config`, `PUT` at that path, and

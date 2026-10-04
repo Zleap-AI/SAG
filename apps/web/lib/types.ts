@@ -194,7 +194,8 @@ export interface Binding {
   config: Record<string, unknown>;
 }
 
-export type ModelProviderId = "openai" | "anthropic" | "gemini";
+export type ModelProviderId = "openai" | "anthropic" | "gemini" | "responses";
+export type ResponsesProviderId = "openai" | "azure" | "bedrock_runtime" | "bedrock_mantle";
 
 export interface ModelProviderSpec {
   id: ModelProviderId;
@@ -217,6 +218,10 @@ export interface ChatbotConnection {
   api_key_set: boolean;
   credential_source: string;
   provider?: ModelProviderId;
+  responses_provider?: ResponsesProviderId;
+  responses_endpoint?: string;
+  responses_api_version?: string;
+  responses_send_temperature?: boolean;
   model?: string;
   schema_dimensions?: number;
   request_dimensions?: number | null;
@@ -230,12 +235,16 @@ export interface ChatbotConfig {
 }
 
 export interface ChatbotConfigPatch {
-  llm?: Partial<Pick<ChatbotConnection, "enabled" | "provider" | "base_url" | "model">> & { api_key?: string };
+  llm?: Partial<Pick<ChatbotConnection, "enabled" | "provider" | "base_url" | "model" | "responses_provider" | "responses_endpoint" | "responses_api_version" | "responses_send_temperature">> & { api_key?: string };
   embedding?: Partial<Pick<ChatbotConnection, "enabled" | "base_url">> & { api_key?: string };
 }
 
 export interface ModelConfig {
   llm_provider: ModelProviderId;
+  llm_responses_provider?: ResponsesProviderId;
+  llm_responses_endpoint?: string;
+  llm_responses_api_version?: string;
+  llm_responses_send_temperature?: boolean;
   llm_base_url: string | null;
   llm_model: string;
   llm_context_window: number;
@@ -267,6 +276,10 @@ export interface ModelConfig {
 
 export type ModelConfigPatch = Partial<{
   llm_provider: ModelConfig["llm_provider"];
+  llm_responses_provider: ResponsesProviderId;
+  llm_responses_endpoint: string;
+  llm_responses_api_version: string;
+  llm_responses_send_temperature: boolean;
   llm_base_url: string | null;
   llm_api_key: string;
   llm_model: string;
@@ -765,6 +778,10 @@ export interface ExplorationDetail {
 export interface Capabilities {
   llm_configured: boolean;
   llm_provider: ModelProviderId;
+  llm_responses_provider?: ResponsesProviderId;
+  llm_responses_endpoint?: string;
+  llm_responses_api_version?: string;
+  llm_responses_send_temperature?: boolean;
   llm_model: string;
   context_window?: number;
   embedding_model: string;

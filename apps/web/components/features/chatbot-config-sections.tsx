@@ -5,11 +5,14 @@ import { Plug } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { SettingsRow, SettingsSection } from "@/components/features/settings-section";
 import { Button } from "@/components/ui/button";
+import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
-import type { ChatbotConfig as Config, ChatbotConnection as Connection, ModelProviderSpec } from "@/lib/types";
+import type { ChatbotConfig as Config, ChatbotConnection as Connection, ModelProviderId, ModelProviderSpec } from "@/lib/types";
+import { OpenAIAPIFormatField, ResponsesBaseURLField, ResponsesConnectionFields } from "./responses-connection-fields";
 import type { ModelSettingsProps } from "./model-config-form";
 
 type Target = "llm" | "embedding";
@@ -63,6 +66,8 @@ export function ChatbotConfigSections({ saveRef, onState }: ModelSettingsProps =
     const fields = target === "llm"
       ? ["enabled", "provider", "base_url", "model"]
       : ["enabled", "base_url"];
+    if (target === "llm" && connection.provider === "responses") fields.push(
+      "responses_provider", "responses_endpoint", "responses_api_version", "responses_send_temperature");
     return Object.fromEntries(fields.map(field => [field, connection[field as keyof Connection]]));
   };
   const changes = () => !config || !saved.current || config.locked ? {} : Object.fromEntries((["llm", "embedding"] as const).flatMap(target => {
@@ -104,16 +109,25 @@ export function ChatbotConfigSections({ saveRef, onState }: ModelSettingsProps =
   if (!config) return <p>{c("loading")}</p>;
 
   const disabled = (target: Target) => config.locked || saving || testing[target];
-  const input = (target: Target, field: string, label: string, type = "text") => <label className="grid gap-2 text-sm">
-    {label}<Input aria-label={label} type={type} disabled={disabled(target)}
+  const providerFamily = config.llm.provider === "responses" ? "openai" : config.llm.provider;
+  const changeLlmProvider = (value: ModelProviderId) => {
+    update("llm", "provider", value);
+    if (value === "responses" && !config.llm.responses_endpoint) {
+      update("llm", "responses_endpoint", "https://api.openai.com/v1/responses");
+    }
+  };
+  const input = (target: Target, field: string, label: string, type = "text") => <Field>
+    <FieldLabel htmlFor={`chatbot-${target}-${field}`}>{label}</FieldLabel>
+    <Input id={`chatbot-${target}-${field}`} aria-label={label} type={type} disabled={disabled(target)}
       value={String(config[target][field as keyof Connection] ?? "")}
       onChange={e => update(target, field, e.target.value)} autoComplete="off" />
-  </label>;
-  const keyInput = (target: Target) => <label className="grid gap-2 text-sm">{c("optionalKey")}
-    <Input aria-label={`${target} API Key`} type="password" value={keys[target]} autoComplete="new-password"
+  </Field>;
+  const keyInput = (target: Target) => <Field>
+    <FieldLabel htmlFor={`chatbot-${target}-api-key`}>{c("optionalKey")}</FieldLabel>
+    <Input id={`chatbot-${target}-api-key`} aria-label={`${target} API Key`} type="password" value={keys[target]} autoComplete="new-password"
       disabled={disabled(target)} onChange={e => setKeys(current => ({ ...current, [target]: e.target.value }))}
       placeholder={config[target].api_key_set ? (c("keyConfigured")) : (c("keyPlaceholder"))} />
-  </label>;
+  </Field>;
   const controls = (target: Target) => <div className="flex flex-wrap items-center justify-between gap-3">
     <div role="status" className="min-h-5 min-w-0">
       {results[target] && <span className="text-sm">{results[target]}</span>}
@@ -140,17 +154,41 @@ export function ChatbotConfigSections({ saveRef, onState }: ModelSettingsProps =
       {enable("llm")}
       <SettingsRow title={c("connection")}>
         <div className="grid gap-4 sm:grid-cols-2">
-          <label className="grid gap-2 text-sm">{t("provider")}
-            <select aria-label="Chatbot provider" className="h-10 rounded-md border bg-background px-3" disabled={disabled("llm")}
-              value={config.llm.provider} onChange={e => update("llm", "provider", e.target.value)}>
-              {providers.map(provider => <option key={provider.id} value={provider.id}>{provider.display_name}</option>)}
-            </select>
-          </label>
+          <Field>
+            <FieldLabel htmlFor="chatbot-provider">{t("provider")}</FieldLabel>
+            <Select value={providerFamily} disabled={disabled("llm")}
+              onValueChange={provider => changeLlmProvider(provider as ModelProviderId)}>
+              <SelectTrigger id="chatbot-provider" aria-label="Chatbot provider"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {providers.filter(provider => provider.id !== "responses").map(provider =>
+                  <SelectItem key={provider.id} value={provider.id}>{provider.display_name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </Field>
+          {providerFamily === "openai" && providers.some(provider => provider.id === "responses") &&
+            <OpenAIAPIFormatField id="chatbot-api-format" value={config.llm.provider as "openai" | "responses"}
+              disabled={disabled("llm")} onChange={changeLlmProvider} />}
           {input("llm", "model", c("model"))}
-          {input("llm", "base_url", c("endpoint"))}
+          {config.llm.provider === "responses" ?
+            <ResponsesBaseURLField id="chatbot-responses" value={config.llm.responses_endpoint ?? ""}
+              disabled={disabled("llm")} onChange={endpoint => update("llm", "responses_endpoint", endpoint)} />
+            : input("llm", "base_url", c("endpoint"))}
           {keyInput("llm")}
         </div>
       </SettingsRow>
+      {config.llm.provider === "responses" && <SettingsRow title={t("responsesTitle")}>
+        <ResponsesConnectionFields id="chatbot-responses" disabled={disabled("llm")} value={{
+          provider: config.llm.responses_provider ?? "openai",
+          endpoint: config.llm.responses_endpoint ?? "",
+          api_version: config.llm.responses_api_version ?? "",
+          send_temperature: config.llm.responses_send_temperature ?? false,
+        }} onChange={value => {
+          update("llm", "responses_provider", value.provider);
+          update("llm", "responses_endpoint", value.endpoint);
+          update("llm", "responses_api_version", value.api_version);
+          update("llm", "responses_send_temperature", value.send_temperature);
+        }} />
+      </SettingsRow>}
     </SettingsSection>
     <SettingsSection title={c("embeddingTitle")}
       description={c("embeddingDescription")}

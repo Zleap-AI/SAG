@@ -376,6 +376,10 @@ async def update_model_config(
     # 解析器/检索参数保存无需打断暖引擎；只有引擎配置真的变化才安全重建。
     engine_fields = {
         "llm_provider",
+        "llm_responses_provider",
+        "llm_responses_endpoint",
+        "llm_responses_api_version",
+        "llm_responses_send_temperature",
         "llm_base_url",
         "llm_model",
         "llm_temperature",
@@ -427,6 +431,23 @@ async def test_model_config(
             if not (key == "llm_api_key" and not value)
         }
         active = settings.model_copy(update=updates)
+        if (active.llm_provider == "responses" or settings.llm_provider == "responses") and not patch.get(
+            "llm_api_key"
+        ):
+            if (active.llm_provider, active.llm_responses_provider, active.llm_responses_endpoint) != (
+                settings.llm_provider,
+                settings.llm_responses_provider,
+                settings.llm_responses_endpoint,
+            ):
+                active.llm_api_key = None
+        if active.llm_provider == "responses":
+            try:
+                active = type(settings).model_validate(active.model_dump())
+            except ValueError:
+                return {
+                    "ok": False,
+                    "message": "Invalid Responses configuration; check endpoint, API version and reasoning options",
+                }
         llm = LLMClient(active)
     if not llm.configured:
         return {"ok": False, "message": "尚未配置 API Key"}
