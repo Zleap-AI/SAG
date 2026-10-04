@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -25,8 +25,8 @@ from sag_api.api.v1.system import _request_is_loopback
 from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal, init_db
 from sag_api.core.errors import NotFoundError
-from sag_api.db.models import Document, Job, Setting, Source, User
-from sag_api.enums import DocumentStatus, JobStatus
+from sag_api.db.models import Document, Setting, Source, User
+from sag_api.enums import DocumentStatus
 from sag_api.services import dsh_integration_service
 from sag_api.services.dsh_integration_service import (
     authenticate_connector,
@@ -51,6 +51,17 @@ async def _register(client: httpx.AsyncClient) -> dict[str, str]:
 
 
 @asynccontextmanager
+async def _draining_app_lifespan(app):
+    """Finish queued database writes before the integration app shuts down."""
+    async with app.router.lifespan_context(app):
+        try:
+            yield
+        finally:
+            async with asyncio.timeout(60):
+                await app.state.job_queue._queue.join()
+
+
+@asynccontextmanager
 async def _connector_api_resource():
     """Create an API source and remove it through the production cleanup path."""
     from sag_api.core.config import settings
@@ -65,7 +76,7 @@ async def _connector_api_resource():
     engine_manager = None
     transport = httpx.ASGITransport(app=app)
     try:
-        async with app.router.lifespan_context(app):
+        async with _draining_app_lifespan(app):
             engine_manager = app.state.engine_manager
             async with httpx.AsyncClient(transport=transport, base_url="http://sag") as client:
                 response = await client.post(
@@ -88,40 +99,11 @@ async def _connector_api_resource():
                 connector_headers = {
                     "Authorization": f"Bearer {connection.json()['accessToken']}"
                 }
-                try:
-                    yield client, app, jwt_headers, connector_headers, source_id, source_ids
-                finally:
-                    # READY precedes the document worker's final commit. Wait
-                    # for this fixture's source jobs before shutdown; global
-                    # universe refreshes also index other tests' persisted sources.
-                    async with asyncio.timeout(60):
-                        while True:
-                            async with SessionLocal() as session:
-                                pending = await session.scalar(
-                                    select(Job.id)
-                                    .where(
-                                        Job.source_id.in_(source_ids),
-                                        Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
-                                    )
-                                    .limit(1)
-                                )
-                            if pending is None:
-                                break
-                            await asyncio.sleep(0.05)
-                        # Global refresh jobs have no source_id. Drain their
-                        # workers too, including final commits and session cleanup,
-                        # before lifespan shutdown cancels the worker tasks.
-                        await app.state.job_queue._queue.join()
+                yield client, app, jwt_headers, connector_headers, source_id, source_ids
     finally:
-        assert engine_manager is not None
-        for cleanup_source_id in reversed(source_ids):
-            # Reserve SQLite's writer before reading. Upgrading a read snapshot
-            # during cleanup can fail immediately despite the busy timeout.
-            # Each production deletion commits and schedules its own follow-up,
-            # so keep a fresh transaction per source instead of reusing a snapshot.
-            async with SessionLocal() as session:
-                if session.bind.dialect.name == "sqlite":
-                    await session.execute(text("BEGIN IMMEDIATE"))
+        async with SessionLocal() as session:
+            assert engine_manager is not None
+            for cleanup_source_id in reversed(source_ids):
                 if await session.get(Source, cleanup_source_id) is not None:
                     await delete_source(
                         session,
@@ -129,7 +111,6 @@ async def _connector_api_resource():
                         engine_manager=engine_manager,
                         upload_dir=settings.upload_dir,
                     )
-        async with SessionLocal() as session:
             await session.execute(delete(User).where(User.email == email))
             await session.commit()
 
