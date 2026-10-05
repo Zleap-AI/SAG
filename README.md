@@ -224,6 +224,8 @@ The default Agent searches the bound knowledge sources, streams the answer, and 
 
 Select sources with `@` to narrow a question's knowledge scope. Each question keeps its selected-source badges in conversation history, and Retry reuses that saved scope. The badges show the selected search scope; the answer's citations show the evidence actually used. See [source scope in chat history](docs/chat-source-scope.md).
 
+Use **New conversation** in the sidebar to open a blank draft from any page. The draft stays selected when returning to chat, even while an older conversation finishes generating. Existing conversations remain in history; a new thread is saved when you send the first question. SAG generates one answer at a time, so wait for the ongoing answer to finish or stop it before sending in the new draft.
+
 <p align="center">
   <img src="docs/assets/readme/product-chat.png" alt="Agent answer with source citations" width="940" />
 </p>
