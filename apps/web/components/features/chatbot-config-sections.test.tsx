@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import english from "@/messages/en-US.json";
+import { clientErrorMessage } from "@/i18n/client-errors";
 import { ChatbotConfigSections } from "./chatbot-config-sections";
 
 vi.mock("@/components/features/app-shell", () => ({ useApp: () => ({ refreshCapabilities: vi.fn() }) }));
@@ -60,6 +61,33 @@ async function select(selector: string, label: string) {
 }
 
 describe("native chatbot settings", () => {
+  it.each(["llm", "embedding"])("shows green success and red failures for optional %s tests", async target => {
+    await mount();
+    const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button =>
+      button.textContent === (target === "llm" ? "Test generation model" : "Test embedding model"))!;
+    const message = target === "llm" ? "连接成功 · openai / m" : "Embedding connection successful · 3 dimensions";
+    fetcher.mockImplementation(async () => Response.json({ ok: true, message }));
+    await act(async () => button.click());
+    const status = [...container.querySelectorAll<HTMLElement>('[role="status"]')].find(status => status.textContent === message)!;
+    expect(status.querySelector("span")!.classList.contains("text-success")).toBe(true);
+    expect(status.querySelector("svg.lucide-check")).toBeTruthy();
+
+    let finish: (response: Response) => void = () => undefined;
+    fetcher.mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve; }));
+    await act(async () => button.click());
+    expect(status.textContent).toBe("");
+    expect(button.disabled).toBe(true);
+    await act(async () => finish(Response.json({ ok: false, message: "Connection test failed" })));
+    expect(status.textContent).toBe("Connection test failed");
+    expect(status.querySelector("span")!.classList.contains("text-destructive")).toBe(true);
+    expect(status.querySelector("svg.lucide-x")).toBeTruthy();
+
+    fetcher.mockRejectedValueOnce(new Error("Network unavailable"));
+    await act(async () => button.click());
+    expect(status.textContent).toBe(clientErrorMessage("network"));
+    expect(status.querySelector("span")!.classList.contains("text-destructive")).toBe(true);
+    expect(status.querySelector("svg.lucide-x")).toBeTruthy();
+  });
   it("uses a single Responses connection and tests an unsaved advanced Azure authentication draft", async () => {
     await mount({ ...initial, llm: { ...initial.llm, provider: "responses" } },
       [{ id: "openai", display_name: "OpenAI-compatible" }, { id: "responses", display_name: "Responses API" }]);

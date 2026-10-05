@@ -76,7 +76,8 @@ async def test_unsaved_test_sends_draft_not_active_and_sanitizes_errors(client, 
         "llm": {"enabled": True, "model": "draft", "api_key": "draft-secret", "base_url": "https://draft.invalid/v1"},
     }
     response = await client.post("/api/v1/system/chatbot-config/test", json=body)
-    assert response.json()["ok"] and requests[0]["api_key"] == "draft-secret"
+    assert response.json() == {"ok": True, "message": "连接成功 · openai / draft"}
+    assert requests[0]["api_key"] == "draft-secret"
     assert requests[0]["model"] == "openai/draft" and isolate.persisted == {}
 
     async def fail(**kwargs):
@@ -162,6 +163,12 @@ async def test_keyless_optional_connections_save_test_restart_and_never_inherit_
     for target, draft in drafts.items():
         result = await client.post("/api/v1/system/chatbot-config/test", json={"target": target, target: draft})
         assert result.status_code == 200 and result.json()["ok"], result.text
+        expected_message = (
+            "连接成功 · openai / local-model"
+            if target == "llm"
+            else "Embedding connection successful · 3 dimensions"
+        )
+        assert result.json()["message"] == expected_message
         assert isolate.persisted == {}
     result = await client.put("/api/v1/system/chatbot-config", json=drafts)
     assert result.status_code == 200, result.text

@@ -124,9 +124,11 @@ async def test_config(body: TestDraft, _user: Annotated[object, Depends(get_curr
         try:
             if body.target == "llm":
                 await QueryLLM(snapshot.settings).complete([{"role": "user", "content": "ping"}])
+                message = f"连接成功 · {snapshot.settings.llm_provider} / {snapshot.settings.llm_model}"
             else:
                 adapter = rt.ScopedAdapter(snapshot.adapter("embedding"), "embedding")
-                await adapter.generate("ping")
+                vector = await adapter.generate("ping")
+                message = f"Embedding connection successful · {len(vector)} dimensions"
         except Exception:  # noqa: BLE001 -- this boundary must hide every provider's error bodies.
             # Provider errors, including headers/bodies/URLs, never reach the administrative UI.
             return {
@@ -135,4 +137,4 @@ async def test_config(body: TestDraft, _user: Annotated[object, Depends(get_curr
                     "Connection test failed; check endpoint, provider, model, credentials and server availability"
                 ),
             }
-    return {"ok": True, "message": "Connection successful"}
+    return {"ok": True, "message": message}

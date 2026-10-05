@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Plug } from "lucide-react";
+import { Check, Plug, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { SettingsRow, SettingsSection } from "@/components/features/settings-section";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import type { ChatbotConfig as Config, ChatbotConnection as Connection, ModelProviderId, ModelProviderSpec } from "@/lib/types";
 import { OpenAIAPIFormatField, ResponsesBaseURLField, ResponsesConnectionFields } from "./responses-connection-fields";
 import type { ModelSettingsProps } from "./model-config-form";
@@ -26,7 +27,7 @@ export function ChatbotConfigSections({ saveRef, onState }: ModelSettingsProps =
   const [saving, setSaving] = React.useState(false);
   const [testing, setTesting] = React.useState<Record<Target, boolean>>({ llm: false, embedding: false });
   const [error, setError] = React.useState("");
-  const [results, setResults] = React.useState<Partial<Record<Target, string>>>({});
+  const [results, setResults] = React.useState<Partial<Record<Target, { ok: boolean; message: string }>>>({});
   const saved = React.useRef<Config | null>(null);
   const load = React.useCallback(async (retainEdits = false) => {
     try {
@@ -60,7 +61,7 @@ export function ChatbotConfigSections({ saveRef, onState }: ModelSettingsProps =
   const update = (target: Target, field: string, value: string | boolean) => {
     setConfig(current => current ? { ...current, [target]: { ...current[target], [field]: value,
     } } : current);
-    setResults(current => ({ ...current, [target]: "" }));
+    setResults(current => ({ ...current, [target]: undefined }));
   };
   const draft = (target: Target, connection: Connection) => {
     const fields = target === "llm"
@@ -95,14 +96,16 @@ export function ChatbotConfigSections({ saveRef, onState }: ModelSettingsProps =
   const test = async (target: Target) => {
     if (!config || config.locked || saving || testing[target]) return;
     setTesting(current => ({ ...current, [target]: true }));
-    setResults(current => ({ ...current, [target]: "" }));
+    setResults(current => ({ ...current, [target]: undefined }));
     try {
       const result = await api.testChatbotConfig({
         [target]: { ...draft(target, config[target]), api_key: keys[target] }, target,
       });
-      setResults(current => ({ ...current, [target]: result.message }));
+      setResults(current => ({ ...current, [target]: result }));
     } catch (e) {
-      setResults(current => ({ ...current, [target]: e instanceof Error ? e.message : c("testFailed") }));
+      setResults(current => ({ ...current, [target]: {
+        ok: false, message: e instanceof Error ? e.message : c("testFailed"),
+      } }));
     } finally { setTesting(current => ({ ...current, [target]: false })); }
   };
   if (error && !config) return <div role="alert">{error}<Button type="button" variant="outline" onClick={() => void load()}>{c("retry")}</Button></div>;
@@ -130,12 +133,16 @@ export function ChatbotConfigSections({ saveRef, onState }: ModelSettingsProps =
   </Field>;
   const controls = (target: Target) => <div className="flex flex-wrap items-center justify-between gap-3">
     <div role="status" className="min-h-5 min-w-0">
-      {results[target] && <span className="text-sm">{results[target]}</span>}
+      {results[target] && <span className={cn("inline-flex items-center gap-1.5 text-sm",
+        results[target]?.ok ? "text-success" : "text-destructive")}>
+        {results[target]?.ok ? <Check className="size-4" /> : <X className="size-4" />}
+        {results[target]?.message}
+      </span>}
     </div>
     <Button type="button" variant="outline" disabled={disabled(target)} onClick={() => void test(target)}>
       {testing[target] ? <Spinner /> : <Plug />}
       {testing[target] ? t("testing") : target === "llm" ? t("testGeneration")
-        : (c("testEmbedding"))}
+        : t("testEmbedding")}
     </Button>
   </div>;
   const enable = (target: Target) => <SettingsRow title={c("enable")} layout="inline">

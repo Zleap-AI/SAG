@@ -500,7 +500,7 @@ describe("one page-wide model Save", () => {
     const section = { llm: sections[0], embedding: sections[1] };
     const controls = (target: Target) => [...section[target].querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>("input, button, select")];
     const buttons = Object.fromEntries((["llm", "embedding"] as const).map(target => [target,
-      [...section[target].querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === (target === "llm" ? "Test generation model" : "Test embedding connection"))!,
+      [...section[target].querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === (target === "llm" ? "Test generation model" : "Test embedding model"))!,
     ])) as Record<Target, HTMLButtonElement>;
     const finish: Partial<Record<Target, (response: FetchResponse) => void>> = {};
     fetcher.mockImplementation((_url, request) => new Promise(resolve => {
