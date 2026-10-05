@@ -997,6 +997,8 @@
     "loadEarlier": "Load earlier messages",
     "removeImage": "Remove image",
     "knowledgeScope": "@ Knowledge scope{query} (↑↓ to select · Enter to confirm)",
+    "selectedSourceScope": "Selected sources for this question",
+    "sourceScopeHint": "Selected search scope; evidence used is shown in the response’s references.",
     "querySuffix": ": {query}",
     "noMatchingSources": "No matching sources",
     "removeSource": "Remove {name}",

@@ -465,6 +465,7 @@ class AskPlan:
     citations: list[dict] = field(default_factory=list)
     prompt_preview: str = ""
     source_ids: list[str] | None = None  # @范围：限定循环内检索工具可见的信源
+    source_scope: list[dict[str, str]] | None = None
     user_message_id: str | None = None
 
 
@@ -514,12 +515,18 @@ async def prepare_ask(
         media_type = media_type_for_attachment(aid)
         resolved.append({"id": aid, "media_type": media_type, "path": path})
 
+    selected_ids = list(dict.fromkeys(source_ids or []))
+    selected_sources = await search_source_candidates(session, selected_ids) if selected_ids else []
+    names_by_id = {source.id: source.name for source in selected_sources}
+    # Retain unavailable IDs too: a retry must never widen an explicit scope to default.
+    source_scope = [{"id": source_id, "name": names_by_id.get(source_id) or source_id} for source_id in selected_ids]
     user_msg = Message(
         thread_id=thread.id,
         role=MessageRole.USER,
         content=query,
         citations=[],
         attachments=[{k: a[k] for k in ("id", "media_type")} for a in resolved],
+        source_scope=source_scope,
     )
     session.add(user_msg)
     if thread.title in _DEFAULT_TITLES:
@@ -541,6 +548,7 @@ async def prepare_ask(
         source_ids=source_ids,
     )
     plan.user_message_id = user_msg.id
+    plan.source_scope = source_scope
     return plan
 
 

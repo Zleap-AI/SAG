@@ -172,6 +172,7 @@ async def generate_stream(
                     output_payload = {
                         **payload,
                         "user_message_id": plan.user_message_id,
+                        "source_scope": plan.source_scope,
                         "citations": citations,
                         "sources": [{"id": source.id, "name": source.name} for source in sources],
                         "tools": [tool.spec.name for tool in tools],

@@ -122,7 +122,7 @@ class FakeTransport implements ConversationTransport {
   readonly deleteCalls: string[] = [];
   readonly historyPages: MessagePage[] = [];
   readonly historyCursors: Array<string | null | undefined> = [];
-  readonly streamCalls: Array<{ webEnabled: boolean; knowledgeOnly?: boolean }> = [];
+  readonly streamCalls: Array<{ webEnabled: boolean; knowledgeOnly?: boolean; sourceIds?: string[] }> = [];
   approvalResult: Promise<void> | null = null;
   onEvent: ((event: AgentEvent) => void) | null = null;
   streamSignal: AbortSignal | null = null;
@@ -142,6 +142,7 @@ class FakeTransport implements ConversationTransport {
     this.streamCalls.push({
       webEnabled: input.webEnabled,
       knowledgeOnly: input.knowledgeOnly,
+      sourceIds: input.sourceIds,
     });
     this.onEvent = input.onEvent;
     this.streamSignal = input.signal;
@@ -188,6 +189,7 @@ class SequentialTransport extends FakeTransport {
     this.streamCalls.push({
       webEnabled: input.webEnabled,
       knowledgeOnly: input.knowledgeOnly,
+      sourceIds: input.sourceIds,
     });
     this.onEvent = input.onEvent;
     this.streamSignal = input.signal;
@@ -222,6 +224,69 @@ afterEach(() => {
 });
 
 describe("conversation runtime", () => {
+  it("snapshots selected sources before streaming and accepts authoritative server names", async () => {
+    const transport = new FakeTransport();
+    const conversations = runtime(transport);
+    const sessionId = conversations.forThread("thread-1");
+    const scope = [{ id: "source-1", name: "Original name" }];
+    const running = conversations.send(sessionId, { query: "Question", sourceScope: scope });
+    scope[0].name = "Changed composer";
+    expect(conversations.getSessionSnapshot(sessionId).messages[0].sourceScope).toEqual([
+      { id: "source-1", name: "Original name" },
+    ]);
+    expect(transport.streamCalls[0].sourceIds).toEqual(["source-1"]);
+
+    const savedScope = [{ id: "source-1", name: "Server snapshot" }];
+    transport.emit(event("run.started", 0, {
+      user_message_id: "server-user", source_scope: savedScope,
+      sources: [{ id: "other-source", name: "Resolved defaults must not become badges" }],
+    }));
+    expect(conversations.getSessionSnapshot(sessionId).messages[0]).toMatchObject({
+      id: "server-user", sourceScope: savedScope,
+    });
+    transport.streamResult.resolve({ status: "completed", runId: "run-1" });
+    await running;
+    expect(conversations.getSessionSnapshot(sessionId).messages[0].sourceScope).toEqual(savedScope);
+    conversations.dispose();
+  });
+
+  it("restores saved scopes and distinguishes default from unknown legacy history", async () => {
+    const transport = new FakeTransport();
+    const historical = persistedMessage({
+      id: "scoped", role: "user", content: "Scoped question", created_at: "2026-07-12T00:00:00Z",
+    });
+    transport.historyPages.push(page([
+      { ...historical, source_scope: [{ id: "deleted-source", name: "Historical name" }] },
+      { ...historical, id: "default", source_scope: [] },
+      { ...historical, id: "legacy" },
+    ]));
+    const conversations = runtime(transport);
+    const sessionId = conversations.forThread("thread-1");
+    await conversations.ensureHistory(sessionId);
+    expect(conversations.getSessionSnapshot(sessionId).messages.map((item) => item.sourceScope)).toEqual([
+      [{ id: "deleted-source", name: "Historical name" }], [], null,
+    ]);
+    conversations.dispose();
+  });
+
+  it("keeps different source selections on successive turns and default scope empty", async () => {
+    const transport = new SequentialTransport();
+    const conversations = runtime(transport);
+    const sessionId = conversations.forThread("thread-1");
+    for (const scope of [[{ id: "source-1", name: "First" }], [{ id: "source-2", name: "Second" }], []]) {
+      const pending = transport.enqueueStream();
+      const running = conversations.send(sessionId, { query: "Question", sourceScope: scope });
+      pending.resolve({ status: "completed", runId: "run-1" });
+      await running;
+    }
+    expect(conversations.getSessionSnapshot(sessionId).messages.filter((item) => item.role === "user")
+      .map((item) => item.sourceScope)).toEqual([
+      [{ id: "source-1", name: "First" }], [{ id: "source-2", name: "Second" }], [],
+    ]);
+    expect(transport.streamCalls.map((item) => item.sourceIds)).toEqual([["source-1"], ["source-2"], undefined]);
+    conversations.dispose();
+  });
+
   it("keeps stable session/thread identity and loads MessagePage history", async () => {
     const transport = new FakeTransport();
     transport.historyPages.push(

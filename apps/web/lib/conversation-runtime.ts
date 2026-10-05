@@ -13,6 +13,7 @@ import type {
   Message,
   MessageAttachment,
   MessagePage,
+  MessageSourceScope,
   MessageStep,
   UniverseActivation,
 } from "./types";
@@ -79,6 +80,7 @@ export interface ConversationMessage {
   content: string;
   citations: Citation[];
   attachments: MessageAttachment[];
+  sourceScope?: MessageSourceScope[] | null;
   steps: MessageStep[];
   createdAt: string;
   delivery: ConversationDelivery;
@@ -143,6 +145,7 @@ export interface ConversationSendInput {
   query: string;
   attachmentIds?: string[];
   sourceIds?: string[];
+  sourceScope?: MessageSourceScope[];
   knowledgeOnly?: boolean;
   webEnabled?: boolean;
   title?: string;
@@ -234,6 +237,7 @@ function normalizeMessage(message: Message): ConversationMessage {
     content: message.content,
     citations: citationsFromArtifacts({ citations: message.citations }),
     attachments: Array.isArray(message.attachments) ? message.attachments : [],
+    sourceScope: message.source_scope ?? null,
     steps: Array.isArray(message.steps) ? message.steps : [],
     promptPreview:
       typeof message.prompt_preview === "string" && message.prompt_preview
@@ -551,6 +555,8 @@ export class ConversationRuntime {
     this.record(sessionId);
     const query = input.query.trim();
     const attachmentIds = [...(input.attachmentIds ?? [])];
+    const sourceScope = (input.sourceScope ?? input.sourceIds?.map((id) => ({ id, name: id })) ?? [])
+      .map((source) => ({ ...source }));
     if (!query && !attachmentIds.length) {
       throw new Error(clientErrorMessage("queryOrAttachmentRequired"));
     }
@@ -592,6 +598,7 @@ export class ConversationRuntime {
             content: query,
             citations: [],
             attachments: attachmentIds.map((id) => ({ id })),
+            sourceScope,
             steps: [],
             createdAt: new Date(startedAt).toISOString(),
             delivery: "pending",
@@ -647,7 +654,7 @@ export class ConversationRuntime {
         threadId,
         query,
         attachmentIds: attachmentIds.length ? attachmentIds : undefined,
-        sourceIds: input.sourceIds?.length ? [...input.sourceIds] : undefined,
+        sourceIds: sourceScope.length ? sourceScope.map((source) => source.id) : undefined,
         knowledgeOnly: input.knowledgeOnly,
         webEnabled: input.webEnabled === true,
         onEvent: (event) => this.handleEvent(operation, event),
@@ -829,6 +836,12 @@ export class ConversationRuntime {
     let error = snapshot.error;
 
     if (event.type === "run.started") {
+      if (Array.isArray(event.payload.source_scope)) {
+        messages = updateMessage(messages, operation.userMessageId, (message) => ({
+          ...message,
+          sourceScope: event.payload.source_scope as MessageSourceScope[],
+        }));
+      }
       const persistedUserId = event.payload.user_message_id;
       if (typeof persistedUserId === "string" && persistedUserId) {
         messages = updateMessage(messages, operation.userMessageId, (message) => ({

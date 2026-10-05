@@ -67,6 +67,11 @@ class ThreadOut(BaseModel):
     updated_at: datetime
 
 
+class MessageSourceScope(BaseModel):
+    id: str
+    name: str
+
+
 class MessageOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -76,6 +81,7 @@ class MessageOut(BaseModel):
     content: str
     citations: list[dict[str, Any]]
     attachments: list[dict[str, Any]] = Field(default_factory=list)
+    source_scope: list[MessageSourceScope] | None = None
     steps: list[dict[str, Any]] = Field(default_factory=list)
     prompt_preview: str = ""
     # 助手气泡的终态：ok / failed / cancelled。用户消息始终 ok。

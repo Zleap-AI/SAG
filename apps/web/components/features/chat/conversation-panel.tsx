@@ -15,7 +15,7 @@ import {
   isComposerCompositionKeyEvent,
   shouldSubmitAfterEnter,
 } from "@/lib/composer-keyboard";
-import type { Citation, Source } from "@/lib/types";
+import type { Citation, MessageSourceScope, Source } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { copyText } from "@/lib/clipboard";
 import { useApp } from "@/components/features/app-shell";
@@ -220,7 +220,7 @@ export function ConversationPanel({
   const bottomRef = React.useRef<HTMLDivElement>(null);
   const lastScrollAt = React.useRef(0);
   const followOutputRef = React.useRef(true);
-  const sendRef = React.useRef<(text: string) => void>(() => {});
+  const sendRef = React.useRef<(text: string, sourceScope?: MessageSourceScope[] | null) => void>(() => {});
   const lastDraftPromptRef = React.useRef<number | null>(null);
 
   if (!session) throw new Error(t("sessionMissing", { id: sessionId }));
@@ -290,8 +290,8 @@ export function ConversationPanel({
     () => setStepsCollapsed((value) => !value),
     [],
   );
-  sendRef.current = (text) => {
-    void send(text);
+  sendRef.current = (text, sourceScope) => {
+    void send(text, sourceScope);
   };
 
   React.useEffect(() => {
@@ -406,7 +406,7 @@ export function ConversationPanel({
             createdAt={message.createdAt}
             onRetry={
               canMutate && previousUser?.content
-                ? () => sendRef.current(previousUser.content)
+                ? () => sendRef.current(previousUser.content, previousUser.sourceScope)
                 : undefined
             }
             onDelete={
@@ -516,9 +516,10 @@ export function ConversationPanel({
     });
   }
 
-  async function send(text?: string) {
+  async function send(text?: string, sourceScope?: MessageSourceScope[] | null) {
     const query = (text ?? input).trim();
     const pendingImages = images;
+    const selectedScope = (sourceScope ?? scoped).map((source) => ({ ...source }));
     if ((!query && pendingImages.length === 0) || uploadingRef.current) return;
     if (!capabilities?.llm_configured) {
       toast.error(t("modelNotConfigured"));
@@ -543,7 +544,7 @@ export function ConversationPanel({
       const request = runtime.send(sessionId, {
         query,
         attachmentIds: uploaded.map((item) => item.id),
-        sourceIds: scoped.map((source) => source.id),
+        sourceScope: selectedScope,
         webEnabled,
       });
 

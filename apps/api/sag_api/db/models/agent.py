@@ -49,6 +49,11 @@ class Message(IDMixin, TimestampMixin, Base):
     thread_id: Mapped[str] = mapped_column(ForeignKey("threads.id", ondelete="CASCADE"))
     # 图片附件 meta：[{id, name, media_type}]（文件在 upload_dir/attachments/）
     attachments: Mapped[list] = mapped_column("attachments_json", JSON, default=list)
+    # User-selected scope: [{id, name}] snapshots, [] = default, NULL = unknown legacy scope.
+    # Independent of source rows so renaming/deleting a source preserves chat history.
+    source_scope: Mapped[list[dict[str, str]] | None] = mapped_column(
+        "source_scope_json", JSON(none_as_null=True), nullable=True,
+    )
     # Agentic 执行轨迹：[{kind:thinking|tool, step, name?, args?, ms, count?}]（助手消息）
     steps: Mapped[list] = mapped_column("steps_json", JSON, default=list)
     role: Mapped[MessageRole] = mapped_column(SAEnum(MessageRole, native_enum=False, length=16))
