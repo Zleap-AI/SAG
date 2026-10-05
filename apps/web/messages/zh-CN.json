@@ -997,6 +997,8 @@
     "loadEarlier": "加载更早消息",
     "removeImage": "移除图片",
     "knowledgeScope": "@ 知识库范围{query}（↑↓ 选择 · Enter 确认）",
+    "selectedSourceScope": "本次提问选择的信源",
+    "sourceScopeHint": "所选检索范围；实际引用的资料请查看回答中的引用。",
     "querySuffix": "：{query}",
     "noMatchingSources": "没有匹配的信源",
     "removeSource": "移除 {name}",

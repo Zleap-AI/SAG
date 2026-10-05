@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useTranslations } from "next-intl";
 
-import type { Citation } from "@/lib/types";
+import type { Citation, MessageSourceScope } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { MarkdownContent } from "@/components/features/markdown-content";
 import {
@@ -18,6 +18,7 @@ export interface ConversationTranscriptMessage {
   content: string;
   citations?: Citation[];
   steps?: AgentActivityStep[];
+  sourceScope?: MessageSourceScope[] | null;
   /** 失败/取消气泡的错误说明；有值时以警示样式显示在正文下方。 */
   errorMessage?: string;
 }
@@ -104,11 +105,35 @@ export const ConversationMessageItem = React.memo(function ConversationMessageIt
   );
 
   if (message.role === "user") {
+    const sourceScope = message.sourceScope ?? [];
+    const hasSourceScope = sourceScope.length > 0;
     return (
       <div className="flex flex-col items-end gap-1.5">
         {renderUserAttachments?.(message)}
-        {message.content && (
+        {(message.content || hasSourceScope) && (
           <div className="max-w-[85%] whitespace-pre-wrap rounded-lg rounded-tr-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground">
+            {hasSourceScope && (
+              <>
+                <span
+                  role="list"
+                  aria-label={t("selectedSourceScope")}
+                  title={t("sourceScopeHint")}
+                  className="inline-flex max-w-full flex-wrap gap-1 align-middle"
+                >
+                  {sourceScope.map((source) => (
+                    <span
+                      role="listitem"
+                      key={source.id}
+                      title={source.name}
+                      className="max-w-full break-words rounded border border-primary-foreground/25 bg-primary-foreground/10 px-1.5 py-0.5 text-xs"
+                    >
+                      @{source.name}
+                    </span>
+                  ))}
+                </span>
+                {message.content ? " " : null}
+              </>
+            )}
             {message.content}
           </div>
         )}

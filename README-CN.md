@@ -218,6 +218,8 @@ PDF 在 MinerU 配置完整时优先使用 MinerU；未配置或解析失败时�
 
 默认 Agent 会检索绑定的知识来源、流式生成回答，并附上可点击引用。同一套对话能力也通过 OpenAI 兼容接口开放。
 
+通过 `@` 选择信源，可以缩小某个问题的知识检索范围。每个问题选择的信源标签会保留在对话历史中，点击“重试”时会复用该问题保存的范围。标签表示选定的检索范围，回答中的引用表示实际使用的证据。详见[对话历史中的信源范围](docs/chat-source-scope.md)。
+
 <p align="center">
   <img src="docs/assets/readme/product-chat.png" alt="带原文引用的 Agent 回答" width="940" />
 </p>
