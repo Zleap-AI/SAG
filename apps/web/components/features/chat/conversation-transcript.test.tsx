@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 describe("conversation source scope", () => {
-  it("shows accessible source badges alongside the question during streaming", async () => {
+  it("shows accessible source tags inside the question bubble during streaming and history", async () => {
     const messages: ConversationTranscriptMessage[] = [
       { id: "user", role: "user", content: "Question", sourceScope: [
         { id: "source-1", name: "資料庫" }, { id: "source-2", name: "A very long source name" },
@@ -39,25 +39,28 @@ describe("conversation source scope", () => {
     await act(async () => root.render(<ConversationTranscript
       messages={messages} live={{ messageId: "assistant", streaming: true, steps: [] }}
     />));
-    const badges = container.querySelector('ul[aria-label="Selected sources for this question"]')!;
-    expect([...badges.querySelectorAll("li")].map((item) => item.textContent)).toEqual([
+    const badges = container.querySelector('[role="list"][aria-label="Selected sources for this question"]')!;
+    expect([...badges.querySelectorAll('[role="listitem"]')].map((item) => item.textContent)).toEqual([
       "@資料庫", "@A very long source name",
     ]);
     expect(badges.getAttribute("title")).toContain("Selected search scope");
-    expect(badges.querySelectorAll("li")[1].getAttribute("title")).toBe("A very long source name");
+    expect(badges.querySelectorAll('[role="listitem"]')[1].getAttribute("title")).toBe("A very long source name");
+    const bubble = badges.closest("div")!;
+    expect(bubble.classList.contains("bg-primary")).toBe(true);
+    expect(bubble.textContent).toBe("@資料庫@A very long source name Question");
 
     await act(async () => root.render(<ConversationTranscript messages={messages} />));
-    expect(container.querySelector("li")?.textContent).toBe("@資料庫");
+    expect(container.querySelector('[role="listitem"]')?.textContent).toBe("@資料庫");
   });
 
-  it("labels a recorded default scope without inventing scope for legacy messages", async () => {
+  it("leaves default and legacy questions free of scope labels", async () => {
     await act(async () => root.render(<ConversationTranscript messages={[
       { id: "default", role: "user", content: "Default", sourceScope: [] },
       { id: "legacy", role: "user", content: "Legacy", sourceScope: null },
       { id: "absent", role: "user", content: "Old client" },
     ]} />));
-    expect(container.textContent?.match(/Default source scope/g)).toHaveLength(1);
-    expect(container.querySelector("ul")).toBeNull();
+    expect(container.textContent).toBe("DefaultLegacyOld client");
+    expect(container.querySelector('[role="list"]')).toBeNull();
   });
 
   it("does not label default retrieval sources or citations as explicit selection", async () => {
@@ -69,7 +72,7 @@ describe("conversation source scope", () => {
         },
       }] },
     ]} />));
-    expect(container.querySelector("ul")).toBeNull();
+    expect(container.querySelector('[role="list"]')).toBeNull();
     expect(container.textContent).not.toContain("@Default retrieval source");
   });
 });

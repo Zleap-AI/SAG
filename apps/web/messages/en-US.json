@@ -999,7 +999,6 @@
     "knowledgeScope": "@ Knowledge scope{query} (↑↓ to select · Enter to confirm)",
     "selectedSourceScope": "Selected sources for this question",
     "sourceScopeHint": "Selected search scope; evidence used is shown in the response’s references.",
-    "defaultSourceScope": "Default source scope",
     "querySuffix": ": {query}",
     "noMatchingSources": "No matching sources",
     "removeSource": "Remove {name}",

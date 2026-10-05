@@ -105,32 +105,35 @@ export const ConversationMessageItem = React.memo(function ConversationMessageIt
   );
 
   if (message.role === "user") {
+    const sourceScope = message.sourceScope ?? [];
+    const hasSourceScope = sourceScope.length > 0;
     return (
       <div className="flex flex-col items-end gap-1.5">
         {renderUserAttachments?.(message)}
-        {message.sourceScope != null && (
-          message.sourceScope.length > 0 ? (
-            <ul
-              aria-label={t("selectedSourceScope")}
-              title={t("sourceScopeHint")}
-              className="flex max-w-[85%] flex-wrap justify-end gap-1"
-            >
-              {message.sourceScope.map((source) => (
-                <li
-                  key={source.id}
-                  title={source.name}
-                  className="max-w-full truncate rounded-md border bg-muted/50 px-2 py-0.5 text-xs text-muted-foreground"
-                >
-                  @{source.name}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <span className="text-[11px] text-muted-foreground">{t("defaultSourceScope")}</span>
-          )
-        )}
-        {message.content && (
+        {(message.content || hasSourceScope) && (
           <div className="max-w-[85%] whitespace-pre-wrap rounded-lg rounded-tr-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground">
+            {hasSourceScope && (
+              <>
+                <span
+                  role="list"
+                  aria-label={t("selectedSourceScope")}
+                  title={t("sourceScopeHint")}
+                  className="inline-flex max-w-full flex-wrap gap-1 align-middle"
+                >
+                  {sourceScope.map((source) => (
+                    <span
+                      role="listitem"
+                      key={source.id}
+                      title={source.name}
+                      className="max-w-full break-words rounded border border-primary-foreground/25 bg-primary-foreground/10 px-1.5 py-0.5 text-xs"
+                    >
+                      @{source.name}
+                    </span>
+                  ))}
+                </span>
+                {message.content ? " " : null}
+              </>
+            )}
             {message.content}
           </div>
         )}

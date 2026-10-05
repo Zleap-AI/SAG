@@ -1,10 +1,11 @@
 # Source scope in chat history
 
 Select one or more sources with `@` in the chat composer to limit that question's
-knowledge search. The sent question shows `@SourceName` badges during generation
-and after reopening or reloading the conversation. Questions sent without an
-explicit selection show **Default source scope**, which uses the Agent's existing
-default or bound sources. The composer keeps its existing selection behavior.
+knowledge search. The sent question shows `@SourceName` tags inside its message
+bubble, before the question text, during generation and after reopening or
+reloading the conversation. Questions sent without an explicit selection have no
+scope label and use the Agent's existing default or bound sources. The composer
+keeps its existing selection behavior.
 Document uploads that select a source in the composer use the same badges.
 
 Badges describe the requested search scope. They do not assert that the Agent
