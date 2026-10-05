@@ -409,6 +409,11 @@ export interface MessageError {
   [key: string]: unknown;
 }
 
+export interface MessageSourceScope {
+  id: string;
+  name: string;
+}
+
 export interface Message {
   id: string;
   thread_id: string;
@@ -416,6 +421,8 @@ export interface Message {
   content: string;
   citations: Citation[];
   attachments?: MessageAttachment[];
+  /** Explicit source snapshots; [] means default, null/absent means legacy unknown. */
+  source_scope?: MessageSourceScope[] | null;
   steps?: MessageStep[];
   prompt_preview?: string;
   status?: MessageStatus;

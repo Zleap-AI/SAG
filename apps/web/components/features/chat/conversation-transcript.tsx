@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useTranslations } from "next-intl";
 
-import type { Citation } from "@/lib/types";
+import type { Citation, MessageSourceScope } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { MarkdownContent } from "@/components/features/markdown-content";
 import {
@@ -18,6 +18,7 @@ export interface ConversationTranscriptMessage {
   content: string;
   citations?: Citation[];
   steps?: AgentActivityStep[];
+  sourceScope?: MessageSourceScope[] | null;
   /** 失败/取消气泡的错误说明；有值时以警示样式显示在正文下方。 */
   errorMessage?: string;
 }
@@ -107,6 +108,27 @@ export const ConversationMessageItem = React.memo(function ConversationMessageIt
     return (
       <div className="flex flex-col items-end gap-1.5">
         {renderUserAttachments?.(message)}
+        {message.sourceScope != null && (
+          message.sourceScope.length > 0 ? (
+            <ul
+              aria-label={t("selectedSourceScope")}
+              title={t("sourceScopeHint")}
+              className="flex max-w-[85%] flex-wrap justify-end gap-1"
+            >
+              {message.sourceScope.map((source) => (
+                <li
+                  key={source.id}
+                  title={source.name}
+                  className="max-w-full truncate rounded-md border bg-muted/50 px-2 py-0.5 text-xs text-muted-foreground"
+                >
+                  @{source.name}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <span className="text-[11px] text-muted-foreground">{t("defaultSourceScope")}</span>
+          )
+        )}
         {message.content && (
           <div className="max-w-[85%] whitespace-pre-wrap rounded-lg rounded-tr-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground">
             {message.content}

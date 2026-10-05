@@ -79,6 +79,7 @@ _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
     "threads": {"archived": "BOOLEAN NOT NULL DEFAULT FALSE"},
     "messages": {
         "attachments_json": "JSON",
+        "source_scope_json": "JSON",
         "steps_json": "JSON",
         "prompt_preview": "TEXT NOT NULL DEFAULT ''",
         "status": "VARCHAR(16) NOT NULL DEFAULT 'ok'",
