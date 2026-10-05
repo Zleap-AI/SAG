@@ -222,6 +222,8 @@ Search globally or restrict the query to selected sources. Every result can open
 
 The default Agent searches the bound knowledge sources, streams the answer, and attaches clickable citations. The same conversation path is also available through an OpenAI-compatible endpoint.
 
+Use **New conversation** in the sidebar to open a blank draft from any page. The draft stays selected when returning to chat, even while an older conversation finishes generating. Existing conversations remain in history; a new thread is saved when you send the first question.
+
 <p align="center">
   <img src="docs/assets/readme/product-chat.png" alt="Agent answer with source citations" width="940" />
 </p>

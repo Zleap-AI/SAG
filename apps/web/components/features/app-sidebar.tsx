@@ -24,7 +24,7 @@ import {
   workspaceSectionFromPathname,
 } from "@/lib/workspace";
 import { useApp } from "@/components/features/app-shell";
-import { useConversationIndex } from "@/components/features/chat/conversation-provider";
+import { useConversationIndex, useConversationRuntime } from "@/components/features/chat/conversation-provider";
 import { WorkspaceSectionIcon } from "@/components/features/workspace-section-icon";
 import { DesktopUpdateIndicator } from "@/components/features/desktop-update-indicator";
 import { AppVersionBadge } from "@/components/features/app-version-badge";
@@ -155,6 +155,7 @@ export function AppSidebar({ contained = false }: { contained?: boolean }) {
     collapseThreads,
     timezone,
   } = useApp();
+  const conversationRuntime = useConversationRuntime();
   const conversationIndex = useConversationIndex();
   const runningThreads = React.useMemo(
     () =>
@@ -243,7 +244,7 @@ export function AppSidebar({ contained = false }: { contained?: boolean }) {
                 <button
                   type="button"
                   onClick={() => {
-                    window.dispatchEvent(new Event("sag:new-chat"));
+                    conversationRuntime.createDraft({ activate: true });
                     router.push("/chat");
                   }}
                   aria-label={t("newChat")}
