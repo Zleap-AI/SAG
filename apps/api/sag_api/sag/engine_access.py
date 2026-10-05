@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -27,10 +28,38 @@ class EngineAccess:
 
     # --- 引擎槽与运行时 ---
 
+    def _shared_slot(self, source_config_id: str, source: Any = None) -> Any:
+        """Reuse compatible initialized storage for a cold read scope.
+
+        Source filters remain the reader's responsibility. Do not create a slot
+        alias: mutations must still provision their own source engine normally.
+        """
+        manager = self._manager
+        existing = manager._slots.get(source_config_id)
+        if existing is not None and not existing.closing:
+            return None
+        wanted = manager._config_for(source)
+        for slot in manager._slots.values():
+            if slot.closing:
+                continue
+            actual = slot.engine._config
+            if (actual.relational, actual.vector, actual.embedding) == (
+                wanted.relational, wanted.vector, wanted.embedding,
+            ):
+                slot.last_used = time.monotonic()
+                return slot
+        return None
+
     async def slot(self, source_config_id: str, source: Any = None) -> Any:
+        shared = self._shared_slot(source_config_id, source)
+        if shared is not None:
+            return shared
         return await self._manager._slot(source_config_id, source)
 
     async def relational_session_factory(self, source_config_id: str, source: Any = None) -> Any:
+        shared = self._shared_slot(source_config_id, source)
+        if shared is not None:
+            return shared.engine.resources.relational.session_factory()
         return await self._manager._relational_session_factory(source_config_id, source)
 
     async def ensure_read_runtime(self, sources_by_config: dict[str, Any]) -> None:
