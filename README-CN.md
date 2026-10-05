@@ -62,7 +62,7 @@ SAG 不是传统 RAG 与 GraphRAG 的融合，而是一套替代二者的原创�
 | 能力 | 解决的问题 |
 | --- | --- |
 | 知识导入 | 文件与网页信源、文档解析、分块、向量化、事件/实体抽取、后台处理 |
-| 检索 | 全局或指定信源检索，支持快速（`vector`）与精确（`multi`）两种模式 |
+| 检索 | 跨信源或指定信源检索，支持快速（`vector`）、快速（`multi_es_fast`）与精确（`multi`）模式 |
 | 原文溯源 | 每条检索结果和引用都能打开对应的原文块 |
 | 知识图谱 | 查看事件、实体及其可查询的关联关系 |
 | Agent 对话 | 基于指定信源进行多轮问答，并提供可点击引用 |
@@ -192,7 +192,13 @@ docker compose up -d --build
 
 Docker Compose 或 `.env` 中的 `SAG_LLM_*` 用于提供首次启动时的模型默认值。管理员在 Web 设置页保存模型配置后，后续抽取和生成任务会直接使用已持久化的设置，无需重启服务。
 
-如需由部署环境强制统一配置，请设置 `SAG_LOCK_LLM_CONFIG=true`。SAG 会在设置页明确显示生成模型字段已锁定，并持续使用 `SAG_LLM_*` 的值。此时请修改 Docker Compose 或 `.env`，再重启 API 容器使改动生效。API Key 始终由部署环境管理，Settings API 不会返回密钥明文。
+如需由部署环境强制统一配置，请设置 `SAG_LOCK_LLM_CONFIG=true`。SAG 会在设置页明确显示生成模型字段已锁定，并持续使用 `SAG_LLM_*` 的值。此时请修改 Docker Compose 或 `.env`，再重新创建 API 容器使改动生效。API Key 始终由部署环境管理，Settings API 不会返回密钥明文。
+
+如需分别配置聊天和查询端点，可以在同一模型设置页启用 **Chatbot LLM** 或 **Query embedding**。两者均为可选配置，文档抽取和索引仍使用原始连接。查询向量沿用原始模型与向量维度。部署设置、凭据存储和恢复方法详见[可选 Chatbot 连接](docs/chatbot-connections.md)。
+
+选择 **OpenAI 兼容**，再为原始生成模型或可选 Chatbot LLM 选择 **Responses API** 格式，即可使用 OpenAI 兼容、Azure 或 Bedrock Responses 端点。端点配置、推理控制、认证和验证方法详见[Responses API 设置](docs/responses-api.md)。
+
+保存前，可以点击**测试**检查尚未保存的原始或可选模型连接。成功时显示绿色勾和模型名称或向量维度，失败时显示红色错误；测试不会保存草稿。可选连接保存成功后用于后续操作，已经开始的操作继续使用各自保存的配置快照。后台处理文档时，查询可以复用已初始化的兼容引擎，减少等待。运行细节详见[可选 Chatbot 连接](docs/chatbot-connections.md)。
 
 ### 导入知识
 
@@ -204,11 +210,13 @@ Docker Compose 或 `.env` 中的 `SAG_LLM_*` 用于提供首次启动时的模�
 
 PDF 在 MinerU 配置完整时优先使用 MinerU；未配置或解析失败时自动回退本地 MarkItDown。其他 Office 和文本格式默认使用 MarkItDown。
 
+PDF 解析也支持自托管 MinerU 4.x V1 API（`mineru-kit api-server`）。参照 [`.env.example`](.env.example)，配置 `SAG_MINERU_PROVIDER=self_hosted`、`SAG_MINERU_BASE_URL`，并将 `SAG_DOCUMENT_PARSER` 设为 `auto` 或 `mineru`。本机或内网地址还需显式设置 `SAG_MINERU_ALLOW_PRIVATE_BASE_URL=true`。修改部署配置后重新创建 API 容器。此前在界面保存的解析器/MinerU 配置会覆盖环境默认值；请通过鉴权 `PUT /api/v1/system/model-config` 更新已保存的值，并在导入 PDF 前核对实际生效配置。
+
 也可以在设置页把解析方式切换为 **AnyDoc**（或设置 `SAG_DOCUMENT_PARSER=anydoc`）：docx/pptx/epub/pdf/csv 在本机由 [AnyDoc](https://github.com/firecrawl/anydoc) 转换，文件不上传、不调用托管 OCR；xls/xlsx 沿用本机 MarkItDown 转换，以保留引擎的 Excel 记录组和检索切片，并记录实际解析器。仅 AnyDoc 明确不支持的文件回退 MarkItDown，其他转换错误直接报告失败。CSV 先按 SAG 的编码识别规范成 UTF-8 再交给 AnyDoc，避免非 UTF-8 中文出现乱码。扫描版或图文混排 PDF 会被整体提示需要 OCR（保留页码），此时请用已配置的 MinerU 重新处理；该路径不缓存部分文本。`auto` 默认规则保持不变。
 
 ### 检索并核对原文
 
-可以跨全部信源检索，也可以只搜索指定信源。每一条结果都能在右侧打开对应原文块，让 Agent 使用前的召回质量可以被直接核验。
+可以跨信源检索，也可以只搜索指定信源。未显式选择信源时，全局检索和默认 Agent 的知识检索默认最多使用 16 个候选信源；可通过 `@` 指定需要检索的信源。每一条结果都能在右侧打开对应原文块，让 Agent 使用前的召回质量可以被直接核验。
 
 <p align="center">
   <img src="docs/assets/readme/product-search.png" alt="SAG 检索结果与原文溯源" width="940" />
@@ -216,7 +224,7 @@ PDF 在 MinerU 配置完整时优先使用 MinerU；未配置或解析失败时�
 
 ### 进行带引用的问答
 
-默认 Agent 会检索绑定的知识来源、流式生成回答，并附上可点击引用。同一套对话能力也通过 OpenAI 兼容接口开放。
+Agent 会在本轮知识范围内检索、流式生成回答，并附上可点击引用。同一套对话能力也通过 OpenAI 兼容接口开放。
 
 通过 `@` 选择信源，可以缩小某个问题的知识检索范围。每个问题选择的信源标签会保留在对话历史中，点击“重试”时会复用该问题保存的范围。标签表示选定的检索范围，回答中的引用表示实际使用的证据。详见[对话历史中的信源范围](docs/chat-source-scope.md)。
 
@@ -439,20 +447,23 @@ Electron 客户端将同一套 Next.js 应用与本地 FastAPI 后端一起打�
 安装默认的零基础设施版本：
 
 ```bash
-pip install zleap-sag
+pip install zleap-sag==0.13.0
 ```
 
-运行完整的导入 → 抽取 → 检索流程：
+准备已有的 `knowledge.md` 和可用的模型凭据后，运行完整的导入 → 抽取 → 检索流程：
 
 ```python
 import asyncio
+from pathlib import Path
 
 from zleap.sag import DataEngine, EngineConfig
 from zleap.sag.config import EmbeddingConfig, LLMConfig
+from zleap.sag.pipeline import SearchOptions, SearchRequest, SearchScope
 
 
 async def main() -> None:
     config = EngineConfig(
+        storage_mode="normal",
         llm=LLMConfig(
             api_key="sk-...",
             base_url="https://your-openai-compatible-host/v1",
@@ -464,18 +475,19 @@ async def main() -> None:
     )
 
     # 一个 DataEngine 实例对应一个逻辑信源。
-    async with DataEngine(config) as engine:
-        ingest = await engine.ingest("knowledge.md")
-        extract = await engine.extract()
-        result = await engine.search(
-            "SAG 为什么适合多跳检索？",
-            strategy="multi",
-            top_k=5,
+    async with DataEngine(config, data_source_id="knowledge-demo") as engine:
+        chunks = await engine.ingest(Path("knowledge.md"))
+        events = await engine.extract(chunks)
+        request = SearchRequest(
+            query="SAG 为什么适合多跳检索？",
+            scope=SearchScope(data_source_ids=(chunks.data_source_id,)),
+            options=SearchOptions(strategy="full_expand", top_k=5, return_type="chunk"),
         )
+        result = await engine.search(request)
 
-        print(ingest.chunk_count, extract.event_count)
-        for section in result.sections:
-            print(section.get("content", "")[:200])
+        print(chunks.chunk_count, events.event_count)
+        for hit in result.chunks:
+            print(hit.content[:200])
 
 
 asyncio.run(main())
@@ -489,12 +501,13 @@ asyncio.run(main())
 
 | 方式 | 创建方法 | 适用场景 |
 | --- | --- | --- |
-| 参数注入 | `EngineConfig(llm=..., embedding=...)` | Python 库、Notebook、显式应用装配 |
+| 参数注入 | `EngineConfig(storage_mode="normal", llm=..., embedding=...)` | Python 库、Notebook、显式应用装配 |
 | 环境变量 | `EngineConfig.from_env()` 或 `from_env(env_file=".env")` | 容器与 12-factor 服务 |
 
 最小环境变量配置：
 
 ```bash
+export SAG_STORAGE_MODE=normal
 export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://your-openai-compatible-host/v1
 export LLM_MODEL=qwen3.6-flash
@@ -515,22 +528,24 @@ config = EngineConfig.from_env()
 | --- | --- |
 | `await engine.start()` | 初始化连接；本地 SQLite/LanceDB 会自动创建结构 |
 | `await engine.aclose()` | 关闭引擎资源；使用 `async with` 时自动执行 |
-| `await engine.chunk(source)` | 解析并分块路径或原始字符串，但不写入数据库 |
-| `await engine.ingest(path, ...)` | 解析单个文档、分块、向量化并持久化 chunks/vectors |
-| `await engine.extract(...)` | 为当前信源抽取并保存 event-entity 索引 |
-| `await engine.search(query, strategy=..., top_k=...)` | 返回带 `sections` 和耗时/统计信息的 `SearchResult` |
+| `await engine.parse(source, options=None)` | 将 `FileSource`、`TextSource` 等 `SourceInput` 解析为 `ParsedSource`，但不写入数据库 |
+| `await engine.chunk(parsed, options=None)` | 将 `ParsedSource` 分块为 `ChunkSet`，但不写入数据库 |
+| `await engine.ingest(source, ...)` | 解析、分块、向量化并持久化路径、文本或 `SourceInput`，返回 `ChunkSetRef` |
+| `await engine.extract(target, options=None)` | 从 `ChunkSetRef` 或 `PersistedChunkSelector` 抽取并保存事件/实体，返回 `EventSetRef` |
+| `await engine.search(request)` | 使用包含问题、范围、选项的显式 `SearchRequest` 检索，返回带 `chunks`、`events`、`stats` 的 `SearchResult` |
 | `await engine.init_schema()` | 幂等初始化生产数据库结构；默认本地后端不需要调用 |
 
-类型化结果位于 `zleap.sag.results`：`ChunkResult`、`IngestResult`、`ExtractResult`、`SearchResult`。所有引擎异常都继承 `SagError`，应用边界只需捕获一个基础类型。
+流水线请求和结果类型位于 `zleap.sag.pipeline`：`ParsedSource`、`ChunkSet`、`ChunkSetRef`、`EventSetRef`、`SearchRequest`、`SearchResult`。所有引擎异常都继承 `zleap.sag.exceptions` 中的 `SagError`，应用边界只需捕获一个基础类型。
 
 #### 检索模式
 
-| 界面名称 | Python strategy | 代码实现 |
+| 界面名称 | 应用/API 策略 | 代码实现 |
 | --- | --- | --- |
-| 快速（默认） | `vector` | 基于语义相似度直接召回，响应更快 |
+| 快速（vector） | `vector` | 基于语义相似度直接召回，响应更快 |
+| 快速（multi_es-fast） | `multi_es_fast` | BM25 实体召回与事件多跳检索，跳过 LLM 精排 |
 | 精确 | `multi` | 结合实体关系与 LLM 精排，结果更完整 |
 
-界面只提供**快速**和**精确**两种检索模式。精确模式映射到 SAG 的 `multi` 策略，不会运行一套独立的 GraphRAG。
+这里列出的是应用/API 策略名称；应用将 `multi` 映射到 Python 引擎的 `full_expand`，将 `multi_es_fast` 映射到 `pruned_expand_rff`。可用性取决于存储能力：`multi_es_fast` 需要词法检索支持。
 
 #### 存储后端
 
@@ -541,7 +556,7 @@ config = EngineConfig.from_env()
 | 生产拆分 | MySQL/PostgreSQL/OceanBase | Elasticsearch | `zleap-sag[mysql]`、`[postgres]`、`[es]` |
 | 单数据库 | OceanBase 4.3.3+ | OceanBase vector | `zleap-sag[mysql]` |
 
-只需修改 `EngineConfig` 即可切换后端，导入、抽取和检索代码保持不变。当前引擎连接是进程级全局资源，因此一个进程只使用一份 `EngineConfig`。
+只需修改 `EngineConfig` 即可切换后端，导入、抽取和检索代码保持不变。每个 `DataEngine` 实例拥有自己的连接和资源，请通过 `async with` 或 `aclose()` 关闭。
 
 完整配置、可选依赖、示例和更新记录见 [`zleap-sag` 包说明](https://pypi.org/project/zleap-sag/)。
 
