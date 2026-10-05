@@ -98,10 +98,32 @@ Each request/agent operation captures immutable settings. Search reader entry
 points also capture settings for standalone calls. Nested and concurrent tool
 retrieval shares the active snapshot. A successful save affects subsequent
 operations without changing an in-flight tool loop or rebuilding document engines.
+Optional UI saves publish after the database commit without waiting for extraction.
+Changing environment settings requires restart. UI updates are process-local;
+use one API process for this configuration workflow.
 Durable extraction/indexing adapters retain their original clients. Query clients
 close when the operation ends, including failures and cancellation. Keyless query
 embeddings use a native SDK adapter with ordinary request options, upstream text
 truncation, and SDK timeout/retry configuration; SDK methods are never replaced.
+
+For a cold query source, native read access can reuse an initialized engine with
+matching relational, vector and original embedding configurations. This avoids
+source provisioning behind extraction's lifecycle lock. Source filters still
+control evidence, events and citations. Warm sources use their existing engines;
+incompatible configurations and cold startup use normal provisioning. Writes and
+document processing retain their source engines. This needs no adapter installer,
+alternate bootstrap or additional configuration.
+
+Immediate configuration publication does not guarantee immediate execution.
+Engine query embedding and LLM-backed retrieval can still wait for the engine's
+shared model governor slots. Separate endpoints can also share provider capacity.
+Explicit multi-persona source-engine paths, database latency and provider outages
+can still exhaust the tool budget.
+
+Optional model Tests use the original controls' button wording, green success
+checkmark and red failure icon. Success identifies the tested LLM provider/model
+or validated embedding dimensions. Retrying clears the preceding result while
+the unsaved draft is tested; tests never persist configuration.
 
 Invalid enabled settings, malformed persisted configuration, or undecryptable UI
 keys fail startup before background queues start. Restore the original encryption
@@ -126,6 +148,7 @@ From `apps/api`, with the normal development/test dependencies installed:
 
 ```sh
 pytest tests/chatbot
+pytest tests/test_engine_access.py
 python tests/chatbot/smoke.py disabled
 python tests/chatbot/smoke.py query
 ruff check sag_api tests/chatbot
@@ -144,6 +167,16 @@ npm run build
 The smoke checks use isolated temporary storage and mocked HTTP providers through
 real SDK transports. They do not validate a live external service. Test deployment
 credentials/endpoints with the UI Tests before enabling them.
+
+The contention tests exercise a complete `search_context` tool call during blocked
+document extraction, source isolation, optional query connections enabled/disabled,
+live saves and retained in-flight snapshots. They default to SQLite/LanceDB. To
+exercise PostgreSQL/pgvector, use a disposable database with the vector extension
+and set `SAG_CHATBOT_TEST_POSTGRES_URL` to its SQLAlchemy
+PostgreSQL URL, then run `pytest tests/chatbot/test_retrieval_contention.py`.
+The tests create durable engine data; never use a serving database. Model transports
+remain mocked. No data migration is required; normal image rollback restores the
+preceding behavior.
 
 After updating zleap-sag, run the feature tests and affected generation, agent,
 retrieval, settings, and document-processing regressions. Review adapter registry
