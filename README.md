@@ -222,7 +222,7 @@ Search globally or restrict the query to selected sources. Every result can open
 
 The default Agent searches the bound knowledge sources, streams the answer, and attaches clickable citations. The same conversation path is also available through an OpenAI-compatible endpoint.
 
-Select sources with `@` to narrow a question's knowledge scope. Each question keeps its selected-source badges in conversation history, and Retry reuses that saved scope. See [source scope in chat history](docs/chat-source-scope.md).
+Select sources with `@` to narrow a question's knowledge scope. Each question keeps its selected-source badges in conversation history, and Retry reuses that saved scope. The badges show the selected search scope; the answer's citations show the evidence actually used. See [source scope in chat history](docs/chat-source-scope.md).
 
 <p align="center">
   <img src="docs/assets/readme/product-chat.png" alt="Agent answer with source citations" width="940" />
