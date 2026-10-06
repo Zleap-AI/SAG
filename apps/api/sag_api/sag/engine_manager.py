@@ -41,7 +41,7 @@ from sag_api.sag.dto import (
 )
 from sag_api.sag.engine_access import EngineAccess
 from sag_api.sag.errors import map_sag_errors
-from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
+from sag_api.sag.incremental_processor import IncrementalDocumentProcessor, ProgressCallback
 from sag_api.sag.search_reader import SearchReader
 from sag_api.sag.universe_cursor import (
     decode_universe_cursor,
@@ -750,6 +750,7 @@ class EngineManager:
         *,
         source: Source | None = None,
         on_stage: StageCallback | None = None,
+        on_progress: ProgressCallback | None = None,
         checkpoint: ProcessCheckpoint | None = None,
         on_checkpoint: CheckpointCallback | None = None,
         should_pause: PauseCheck | None = None,
@@ -809,6 +810,7 @@ class EngineManager:
                                 on_checkpoint=on_checkpoint or ignore_checkpoint,
                                 should_pause=effective_should_pause,
                                 on_stage=on_stage,
+                                on_progress=on_progress,
                                 original_path=original_path,
                             )
                     return await processor.process(
@@ -817,6 +819,7 @@ class EngineManager:
                         on_checkpoint=on_checkpoint or ignore_checkpoint,
                         should_pause=effective_should_pause,
                         on_stage=on_stage,
+                        on_progress=on_progress,
                         original_path=original_path,
                     )
             except _DocumentAdmissionYielded:

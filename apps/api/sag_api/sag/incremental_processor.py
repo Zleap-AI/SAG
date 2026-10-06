@@ -45,6 +45,7 @@ from collections.abc import Awaitable, Callable
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from zleap.sag import DataEngine
 from zleap.sag.pipeline import (
@@ -70,6 +71,7 @@ from sag_api.sag.dto import ProcessCheckpoint, ProcessOutcome
 CheckpointCallback = Callable[[ProcessCheckpoint], Awaitable[None]]
 PauseCheck = Callable[[], Awaitable[bool]]
 StageCallback = Callable[[str], Awaitable[None]]
+ProgressCallback = Callable[[int, int], Awaitable[None]]
 
 log = get_logger("sag.incremental")
 
@@ -120,8 +122,9 @@ _UNTRUSTED_DOCUMENT_CONTENT_GUARDS = {
     ),
 }
 
-# 进度观察节流:避免把 zleap 的每个 progress 事件都转换成一次 DB 断点写入。
-_PROGRESS_COMMIT_EVERY = 5
+# zleap 0.13.0 exposes the batch callback on the extractor, not engine.extract.
+# Serialize calls sharing that extractor while its callback is temporarily set.
+_EXTRACTION_PROGRESS_LOCKS: WeakKeyDictionary[Any, asyncio.Lock] = WeakKeyDictionary()
 
 
 class IncrementalDocumentProcessor:
@@ -162,6 +165,7 @@ class IncrementalDocumentProcessor:
         on_checkpoint: CheckpointCallback,
         should_pause: PauseCheck,
         on_stage: StageCallback | None = None,
+        on_progress: ProgressCallback | None = None,
         original_path: str | Path | None = None,
     ) -> ProcessOutcome:
         current = checkpoint.model_copy(deep=True)
@@ -179,7 +183,7 @@ class IncrementalDocumentProcessor:
         # 阶段 2:整批抽取(0.8.2 批次粒度;REQ-3 落地前不逐块断点)
         if on_stage:
             await on_stage("extracting")
-        cancelled, events = await self._extract(current, chunk_set, should_pause, on_checkpoint)
+        cancelled, events = await self._extract(current, chunk_set, should_pause, on_progress)
         paused = cancelled or bool(current.processed_chunk_ids) and len(current.processed_chunk_ids) < len(
             current.chunk_ids
         )
@@ -281,7 +285,7 @@ class IncrementalDocumentProcessor:
         current: ProcessCheckpoint,
         chunk_set: ChunkSetRef,
         should_pause: PauseCheck,
-        on_checkpoint: CheckpointCallback,
+        on_progress: ProgressCallback | None,
     ) -> tuple[bool, Any]:
         """整批抽取;暂停由 CancellationToken + 后台轮询驱动,进度经 observer 透出。"""
         prompt_language = getattr(getattr(self._engine.resources, "prompts", None), "language", None)
@@ -314,28 +318,56 @@ class IncrementalDocumentProcessor:
                 await asyncio.sleep(1.0)
 
         poller = asyncio.create_task(poll_pause())
-        last_committed_progress = -1
+
+        async def report_progress(completed: int, total: int) -> None:
+            if on_progress is None:
+                return
+            try:
+                await on_progress(completed, total)
+            except Exception as exc:  # noqa: BLE001 - display writes must not fail extraction
+                log.warning("抽取进度更新失败 error_type=%s", type(exc).__name__)
 
         async def observer(event: StageEvent) -> None:
-            nonlocal last_committed_progress
             if event.stage != StageName.EXTRACT or event.type != StageEventType.PROGRESS:
                 return
-            completed = event.completed or 0
-            total = event.total or len(chunk_set.chunk_ids)
-            if completed < last_committed_progress:
-                return
-            current.processed_chunk_ids = list(chunk_set.chunk_ids[:completed])
-            if total and (completed % _PROGRESS_COMMIT_EVERY == 0 or completed >= total):
-                last_committed_progress = completed
-                await on_checkpoint(current.model_copy(deep=True))
+            # Stage progress is also display-only: completed chunks are not durable
+            # until engine.extract returns after the atomic batch commit.
+            await report_progress(event.completed or 0, event.total or len(chunk_set.chunk_ids))
+
+        async def extract() -> Any:
+            return await self._engine.extract(
+                chunk_set, options, observer=observer, cancellation=cancellation,
+            )
 
         try:
-            events = await self._engine.extract(
-                chunk_set,
-                options,
-                observer=observer,
-                cancellation=cancellation,
-            )
+            extractor = getattr(self._engine, "_extractor", None)
+            if extractor is None or not hasattr(extractor, "_on_progress"):
+                # Custom adapters may provide public stage progress instead.
+                events = await extract()
+            else:
+                lock = _EXTRACTION_PROGRESS_LOCKS.setdefault(extractor, asyncio.Lock())
+                # Observe cooperative pause while waiting without interrupting
+                # engine.extract's atomic commit once extraction has started.
+                while not cancellation.is_cancelled:
+                    try:
+                        async with asyncio.timeout(0.1):
+                            await lock.acquire()
+                        break
+                    except TimeoutError:
+                        continue
+                else:
+                    return True, None
+                try:
+                    if cancellation.is_cancelled:
+                        return True, None
+                    previous = extractor._on_progress
+                    extractor._on_progress = report_progress
+                    try:
+                        events = await extract()
+                    finally:
+                        extractor._on_progress = previous
+                finally:
+                    lock.release()
         except PipelineCancelledError:
             log.info("抽取已取消 source_config_id=%s", self._source_config_id)
             return True, None

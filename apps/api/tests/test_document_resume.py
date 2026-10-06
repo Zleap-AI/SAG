@@ -253,29 +253,33 @@ async def test_extract_guidance_matches_english_engine_prompt_language():
 
 
 @pytest.mark.asyncio
-async def test_progress_observer_updates_checkpoint():
-    """0.8.2:EXTRACT 的 PROGRESS 事件映射为断点进度(节流写入)。"""
+async def test_progress_observer_reports_display_without_updating_checkpoint():
+    """Stage progress must not invent durable results or a paused outcome."""
     from zleap.sag.pipeline.events import StageEvent, StageEventType, StageName
 
     from sag_api.sag.dto import ProcessCheckpoint
 
-    received: list[StageEvent] = []
+    progress: list[tuple[int, int]] = []
+    snapshots: list[ProcessCheckpoint] = []
 
     async def extract(chunk_set, options, *, observer, cancellation):
         await observer(
             StageEvent(run_id="r", stage=StageName.EXTRACT, type=StageEventType.PROGRESS, completed=1, total=2)
         )
+        assert snapshots == []
         await observer(
             StageEvent(run_id="r", stage=StageName.EXTRACT, type=StageEventType.PROGRESS, completed=2, total=2)
         )
-        received.extend([])
+        assert snapshots == []
         return _event_ref()
 
     processor = await _processor_with_fake_engine(extract=extract)
-    snapshots: list[ProcessCheckpoint] = []
 
     async def on_checkpoint(value):
         snapshots.append(value.model_copy(deep=True))
+
+    async def on_progress(completed, total):
+        progress.append((completed, total))
 
     outcome = await processor.process(
         None,
@@ -287,13 +291,14 @@ async def test_progress_observer_updates_checkpoint():
             source_version="sv-1",
         ),
         on_checkpoint=on_checkpoint,
+        on_progress=on_progress,
         should_pause=_return_false,
     )
 
-    # 完成事件 + 最终落盘断点
-    progress_snapshots = [s for s in snapshots if len(s.processed_chunk_ids) == 2]
-    assert progress_snapshots, "PROGRESS 完成事件应触发断点写入"
+    assert progress == [(1, 2), (2, 2)]
+    assert len(snapshots) == 1
     assert outcome.processed_chunk_ids == ["c1", "c2"]
+    assert outcome.paused is False
 
 
 @pytest.mark.asyncio

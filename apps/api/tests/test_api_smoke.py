@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import uuid
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -89,12 +90,16 @@ async def test_end_to_end_offline():
 
 
 @pytest.mark.asyncio
-async def test_folder_import_upload_logs_batch_document_and_request_ids(caplog):
+async def test_folder_import_upload_logs_batch_document_and_request_ids(caplog, monkeypatch):
     from sag_api.main import app
 
     batch_id = "018f5f7e-89ab-7def-8123-0123456789a0"
+    dispatch = AsyncMock()
     transport = httpx.ASGITransport(app=app)
     async with app.router.lifespan_context(app):
+        # This contract covers upload acceptance and logs, not document processing.
+        # Keep real ingest from racing with the shared database's fixture cleanup.
+        monkeypatch.setattr(app.state.job_queue, "enqueue_durably", dispatch)
         caplog.set_level(logging.INFO, logger="sag.documents")
         documents_log = logging.getLogger("sag.documents")
         documents_log.addHandler(caplog.handler)
@@ -119,6 +124,7 @@ async def test_folder_import_upload_logs_batch_document_and_request_ids(caplog):
             )
 
     assert uploaded.status_code == 201
+    dispatch.assert_awaited_once()
     request_id = uploaded.headers["X-Request-Id"]
     document_id = uploaded.json()["id"]
     messages = [record.getMessage() for record in caplog.records if record.name == "sag.documents"]
@@ -172,7 +178,7 @@ async def test_folder_import_upload_rejects_malformed_batch_before_document_pers
 
 
 @pytest.mark.asyncio
-async def test_folder_import_upload_strips_client_paths_from_logs_and_document_name(caplog):
+async def test_folder_import_upload_strips_client_paths_from_logs_and_document_name(caplog, monkeypatch):
     from sag_api.main import app
 
     batch_id = "018f5f7e-89ab-7def-8123-0123456789a0"
@@ -180,8 +186,10 @@ async def test_folder_import_upload_strips_client_paths_from_logs_and_document_n
         ("/private/client-folder/posix.md", "posix.md"),
         ("C:\\private\\client-folder\\windows.md", "windows.md"),
     ]
+    dispatch = AsyncMock()
     transport = httpx.ASGITransport(app=app)
     async with app.router.lifespan_context(app):
+        monkeypatch.setattr(app.state.job_queue, "enqueue_durably", dispatch)
         caplog.set_level(logging.INFO, logger="sag.documents")
         documents_log = logging.getLogger("sag.documents")
         documents_log.addHandler(caplog.handler)
@@ -212,6 +220,7 @@ async def test_folder_import_upload_strips_client_paths_from_logs_and_document_n
             listed = await client.get(f"/api/v1/sources/{source_id}/documents", headers=headers)
 
     assert listed.status_code == 200
+    assert dispatch.await_count == len(uploaded_files)
     assert {document["filename"] for document in listed.json()} == {"posix.md", "windows.md"}
     messages = [record.getMessage() for record in caplog.records if record.name == "sag.documents"]
     documents_log.removeHandler(caplog.handler)
