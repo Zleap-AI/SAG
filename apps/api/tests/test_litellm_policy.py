@@ -1,13 +1,111 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
+import httpx
 import litellm
 import pytest
 
 from sag_api.core.config import Settings
 from sag_api.core.litellm_policy import install_litellm_policy, uninstall_litellm_policy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "call_kind",
+    ["generation", "stream", "tool_none", "tool_required", "extraction", "extraction_stream"],
+)
+async def test_deepseek_flash_sends_non_thinking_http_request(
+    monkeypatch: pytest.MonkeyPatch, call_kind: str
+) -> None:
+    """Inspect serialized HTTP after real generation/dependency and LiteLLM routing."""
+    from zleap.sag.core.ai.factory import create_llm_client
+    from zleap.sag.core.ai.models import LLMMessage
+
+    from sag_agent import AgentMessage, CancellationToken, ModelRequest
+    from sag_api.generation.llm import LLMClient
+    from sag_api.sag.config_builder import build_engine_config
+
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        body = json.loads(request.content)
+        response = {
+            "id": "deepseek-policy-test",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "deepseek-flash",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        }
+        if body.get("stream"):
+            response["object"] = "chat.completion.chunk"
+            response["choices"] = [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}]
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=f"data: {json.dumps(response)}\n\ndata: [DONE]\n\n",
+            )
+        return httpx.Response(200, json=response)
+
+    async def send(_self: httpx.AsyncClient, request: httpx.Request, **_kwargs: Any) -> httpx.Response:
+        response = respond(request)
+        response.request = request
+        return response
+
+    # LiteLLM can select either HTTPX or aiohttp transports; intercept the
+    # fully serialized request before either transport can access the network.
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    configured = Settings(
+        _env_file=None,
+        llm_provider="openai",
+        llm_base_url="https://api.deepseek.com",
+        llm_model="deepseek-flash",
+        llm_api_key="deepseek-policy-test-key",
+        llm_extra_body=None,
+        llm_max_retries=0,
+    )
+    client = LLMClient(configured)
+    messages = [{"role": "user", "content": "hello"}]
+    if call_kind == "generation":
+        assert await client.complete(messages) == "ok"
+    elif call_kind == "stream":
+        assert "".join([part async for part in client.stream_complete(messages)]) == "ok"
+    elif call_kind.startswith("tool_"):
+        request = ModelRequest(
+            messages=(AgentMessage(role="user", content="hello"),),
+            tools=({"type": "function", "function": {"name": "search_context", "parameters": {"type": "object"}}},),
+            tool_choice=call_kind.removeprefix("tool_"),
+            turn=1,
+        )
+        chunks = [chunk async for chunk in client.stream_turn(request, CancellationToken())]
+        assert "".join(chunk.text_delta or "" for chunk in chunks) == "ok"
+    else:
+        engine = build_engine_config(configured)
+        extraction_client = await create_llm_client(scenario="extract", model_config=engine.llm.model_dump())
+        handle = install_litellm_policy(configured)
+        try:
+            extraction_messages = [LLMMessage(role="user", content="hello")]
+            if call_kind == "extraction":
+                result = await extraction_client.chat(extraction_messages)
+                assert result.content == "ok"
+            else:
+                parts = [part async for part in extraction_client.chat_stream(extraction_messages)]
+                assert "".join(part[0] for part in parts) == "ok"
+        finally:
+            uninstall_litellm_policy(handle)
+
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://api.deepseek.com/chat/completions"
+    body = json.loads(requests[0].content)
+    assert body["model"] == "deepseek-flash"
+    assert body.get("thinking") == {"type": "disabled"}
+    assert "reasoning_effort" not in body
+    assert "enable_thinking" not in body
+    if call_kind.startswith("tool_"):
+        assert body["tool_choice"] == call_kind.removeprefix("tool_")
 
 
 class GatewayError(RuntimeError):

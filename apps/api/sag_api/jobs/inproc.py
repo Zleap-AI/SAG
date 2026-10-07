@@ -72,7 +72,23 @@ async def _mark_document_waiting_retry(session, job) -> None:
     if document is None:
         return
     document.status = DocumentStatus.PENDING
+    document.processing_stage = "waiting_retry"
+    document.processing_run_id = None
     document.error = None
+
+
+async def _mark_document_queued(session, job) -> None:
+    """A released worker no longer owns a live processing snapshot."""
+    if job.type != JobType.PROCESS_DOCUMENT or not job.document_id:
+        return
+    await session.execute(
+        update(Document)
+        .where(
+            Document.id == job.document_id,
+            Document.status.in_([DocumentStatus.PENDING, DocumentStatus.LOADING, DocumentStatus.EXTRACTING]),
+        )
+        .values(processing_stage="queued", processing_run_id=None)
+    )
 
 
 async def _mark_reprocess_failed(session, document_id: str, message: str) -> None:
@@ -767,6 +783,7 @@ class InProcessAsyncQueue(JobQueue):
                     for job in rows:
                         if job.status == JobStatus.RUNNING:
                             job.status = JobStatus.QUEUED
+                            await _mark_document_queued(session, job)
 
                     transition_documents = list(
                         (
@@ -1016,6 +1033,7 @@ class InProcessAsyncQueue(JobQueue):
                         )
                     )
                     if yielded_update.rowcount:
+                        await _mark_document_queued(session, job)
                         log.info(
                             "任务临时让行 job=%s reason=%s",
                             job_id,

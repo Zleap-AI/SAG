@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import case, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
@@ -20,6 +20,7 @@ from sag_api.core.db import SessionLocal
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
 from sag_api.core.errors import ApiError, NotFoundError
 from sag_api.core.logging import get_logger
+from sag_api.db.base import new_id
 from sag_api.db.models import Document, Job, Source
 from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs.control import JobPaused, JobYielded
@@ -274,51 +275,102 @@ async def _process_document_unlocked(
         await session.refresh(job, attribute_names=["payload"])
         return dict(job.payload or {})
 
-    async def on_stage(stage: str) -> None:
-        await session.refresh(document)
-        if document.status in _CONTROL_TRANSITION_STATES:
-            return
-        if stage == "loading":
-            document.status = DocumentStatus.LOADING
-            document.progress = max(document.progress, 5)
-            job.progress = document.progress / 100
-        elif stage == "extracting":
-            document.status = DocumentStatus.EXTRACTING
-            # The current extractor reruns the full batch on every resume.
-            document.progress = extraction_display_percent(0, len(checkpoint.chunk_ids), committed=False)
-            job.progress = document.progress / 100
-        await session.commit()
-
     document_id, job_id = document.id, job.id
+    run_id = new_id()
+    previous_run_id = document.processing_run_id
+    active_states = [DocumentStatus.PENDING, DocumentStatus.LOADING, DocumentStatus.EXTRACTING]
+
+    async def update_display(values: dict, *, condition=None, initialize: bool = False) -> bool:
+        # Display writes have their own transaction and must never poison the
+        # checkpoint session. Run identity also fences callbacks after resume.
+        try:
+            async with SessionLocal() as progress_session:
+                statement = update(Document).where(
+                    Document.id == document_id,
+                    Document.processing_run_id == (previous_run_id if initialize else run_id),
+                    Document.status.in_(active_states + ([DocumentStatus.FAILED] if initialize else [])),
+                )
+                if condition is not None:
+                    statement = statement.where(condition)
+                changed = await progress_session.execute(
+                    statement.values(**values).returning(Document.progress)
+                )
+                percent = changed.scalar_one_or_none()
+                if percent is None:
+                    return False
+                if "progress" in values:
+                    await progress_session.execute(
+                        update(Job).where(Job.id == job_id).values(progress=percent / 100)
+                    )
+                await progress_session.commit()
+                return True
+        except Exception as exc:  # noqa: BLE001 - display state is best effort
+            log.warning("文档处理状态更新失败 doc=%s error_type=%s", document_id, type(exc).__name__)
+            return False
+
+    display_initialized = await update_display(
+        {
+            "processing_run_id": run_id,
+            "processing_stage": "queued",
+            "processed_chunks": 0 if checkpoint.chunk_ids else None,
+            "total_chunks": len(checkpoint.chunk_ids) if checkpoint.chunk_ids else None,
+            "status": DocumentStatus.PENDING if document.status == DocumentStatus.FAILED else document.status,
+        },
+        initialize=True,
+    )
+
+    async def on_stage(stage: str) -> None:
+        stage = "parsing" if stage == "loading" else stage
+        if stage not in {"parsing", "chunking", "indexing", "waiting_extraction", "extracting", "finalizing"}:
+            return
+        values: dict = {"processing_stage": stage}
+        if stage in {"parsing", "chunking", "indexing"}:
+            values["status"] = DocumentStatus.LOADING
+            values["progress"] = case((Document.progress < 5, 5), else_=Document.progress)
+        else:
+            values["status"] = DocumentStatus.EXTRACTING
+            if stage == "waiting_extraction":
+                values.update(
+                    progress=extraction_display_percent(0, len(checkpoint.chunk_ids), committed=False),
+                    processed_chunks=0,
+                    total_chunks=len(checkpoint.chunk_ids),
+                )
+            elif stage == "extracting":
+                values["progress"] = case(
+                    (or_(Document.processed_chunks.is_(None), Document.processed_chunks == 0), 20),
+                    else_=Document.progress,
+                )
+        await update_display(values)
 
     async def on_progress(completed: int, total: int) -> None:
-        percent = extraction_display_percent(completed, total, committed=False)
-        # Use a separate transaction: a failed display write must not poison the
-        # worker session or modify its durable checkpoint and control payload.
-        async with SessionLocal() as progress_session:
-            changed = await progress_session.execute(
-                update(Document)
-                .where(
-                    Document.id == document_id,
-                    Document.status == DocumentStatus.EXTRACTING,
-                    Document.progress < percent,
-                )
-                .values(progress=percent)
-            )
-            if changed.rowcount != 1:
-                return
-            await progress_session.execute(update(Job).where(Job.id == job_id).values(progress=percent / 100))
-            await progress_session.commit()
+        if total <= 0 or completed < 0:
+            return
+        await update_display(
+            {
+                "processing_stage": "finalizing" if completed >= total else "extracting",
+                "processed_chunks": completed,
+                "total_chunks": total,
+                "progress": extraction_display_percent(completed, total, committed=False),
+            },
+            condition=(
+                (Document.status == DocumentStatus.EXTRACTING)
+                & or_(Document.processed_chunks.is_(None), Document.processed_chunks < completed)
+            ),
+        )
 
     async def on_parser_state(state: dict) -> None:
         await session.refresh(document)
-        if document.status in _CONTROL_TRANSITION_STATES:
+        if document.status in _CONTROL_TRANSITION_STATES | {DocumentStatus.PAUSED, DocumentStatus.READY}:
             return
-        document.status = DocumentStatus.LOADING
-        document.progress = max(document.progress, 10)
+        if display_initialized and document.processing_run_id != run_id:
+            return
+        await update_display({
+            "status": DocumentStatus.LOADING,
+            "processing_stage": "parsing",
+            "progress": case((Document.progress < 10, 10), else_=Document.progress),
+        })
         for field, value in _parser_state_values(state).items():
             setattr(document, field, value)
-        job.progress = document.progress / 100
         job.payload = {**(await refresh_payload()), "document_parser": state}
         await session.commit()
 
@@ -331,12 +383,16 @@ async def _process_document_unlocked(
         document.event_count = value.event_count
         document.sag_source_id = value.source_id
         document.token_usage = value.token_usage
-        if document.status == DocumentStatus.EXTRACTING:
+        if document.status == DocumentStatus.EXTRACTING and document.processing_run_id == run_id:
             total = len(value.chunk_ids)
             completed = len(value.processed_chunk_ids)
             document.progress = extraction_display_percent(completed, total, committed=True)
             job.progress = document.progress / 100
         await session.commit()
+        display_values = {"total_chunks": len(value.chunk_ids), "processed_chunks": len(value.processed_chunk_ids)}
+        if value.chunk_ids and len(value.processed_chunk_ids) >= len(value.chunk_ids):
+            display_values["processing_stage"] = "finalizing"
+        await update_display(display_values)
 
     async def should_pause() -> bool:
         nonlocal scheduler_yield_reason
@@ -509,6 +565,9 @@ async def _process_document_unlocked(
         )
         .values(
             status=DocumentStatus.READY,
+            processing_stage="ready",
+            processed_chunks=outcome.chunk_count,
+            total_chunks=outcome.chunk_count,
             chunk_count=outcome.chunk_count,
             event_count=outcome.event_count,
             sag_source_id=outcome.source_id,

@@ -298,8 +298,9 @@ async def test_task_persists_live_percent_without_payload_writes_and_starts_extr
             assert (await read())[1:3] == (20, 0.2)
             await on_progress(811, 2033)
             assert (await read())[1:4] == (52, 0.52, payload)
+            await on_progress(812, 2033)  # raw count advances within the same percentage
             last_updated = (await read())[4]
-            await on_progress(812, 2033)  # same integer percentage
+            await on_progress(812, 2033)  # same count does not write again
             await on_progress(800, 2033)  # an older concurrent callback
             assert (await read())[4] == last_updated
             if ending == "control_transition":

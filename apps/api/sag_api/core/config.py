@@ -212,7 +212,7 @@ class Settings(BaseSettings):
         return self
 
     # ── Embedding（OpenAI-compatible；仅 OpenAI provider 可复用生成配置）───────
-    embedding_model: str = "bge-large-en-v1.5"
+    embedding_model: str = "Qwen/Qwen3-Embedding-4B"
     embedding_base_url: str | None = "https://api.302ai.cn/v1"
     embedding_api_key: str | None = None
     # zleap-sag 0.13.0 起维度拆成两项独立语义（旧版共用一个 `dimensions` 字段）：

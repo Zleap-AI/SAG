@@ -106,6 +106,10 @@ export interface Doc {
   chunk_count: number;
   event_count: number;
   progress: number;
+  /** Current processing stage and observed chunk counts, separate from durable checkpoints. */
+  processing_stage?: string | null;
+  processed_chunks?: number | null;
+  total_chunks?: number | null;
   token_usage: number;
   error: string | null;
   /** 失败责任层（api / llm / engine / storage / network），仅失败时有值。 */

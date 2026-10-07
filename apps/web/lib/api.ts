@@ -45,6 +45,8 @@ import type {
   OctxTransfer,
 } from "./types";
 
+export type QuickSetupEmbeddingProvider = "302" | "zhipu" | "bailian";
+
 /** 浏览器通过局域网 IP 打开前端时，自动将 API 指向同主机 8000 端口。 */
 function resolveApiBase(): string {
   const configured = process.env.NEXT_PUBLIC_API_BASE;
@@ -697,12 +699,37 @@ export const api = {
     request<ModelProviderSpec[]>("/api/v1/system/model-providers"),
   modelSetupStatus: () =>
     request<ModelSetupStatus>("/api/v1/system/model-setup"),
-  quickSetup302: (apiKey: string) =>
+  quickSetup302: (
+    apiKey: string,
+    embedding?: { provider: QuickSetupEmbeddingProvider; apiKey: string },
+  ) =>
     request<{ config: ModelConfig; capabilities: Capabilities }>(
       "/api/v1/system/model-setup/302",
       {
         method: "POST",
-        body: JSON.stringify({ api_key: apiKey }),
+        body: JSON.stringify({
+          api_key: apiKey,
+          ...(embedding ? {
+            embedding_provider: embedding.provider,
+            embedding_api_key: embedding.apiKey,
+          } : {}),
+        }),
+      },
+    ),
+  quickSetupDeepSeek: (
+    apiKey: string,
+    embeddingApiKey: string,
+    embeddingProvider?: QuickSetupEmbeddingProvider,
+  ) =>
+    request<{ config: ModelConfig; capabilities: Capabilities }>(
+      "/api/v1/system/model-setup/deepseek",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          api_key: apiKey,
+          embedding_api_key: embeddingApiKey,
+          ...(embeddingProvider ? { embedding_provider: embeddingProvider } : {}),
+        }),
       },
     ),
   saveModelConfig: (b: ModelConfigPatch) =>

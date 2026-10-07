@@ -26,6 +26,7 @@ from sag_api.schemas.dsh_integration import (
     DshUploadCapability,
 )
 from sag_api.schemas.system import (
+    DeepSeekQuickModelSetupRequest,
     ModelConfigUpdate,
     QuickModelSetupRequest,
     SystemPreferencesUpdate,
@@ -351,12 +352,35 @@ async def quick_setup_302(
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """只接收一个 302.AI Key，写入生成、向量、MinerU 与检索预设。"""
+    """首次配置 302 生成、MinerU、检索预设和所选的向量连接。"""
     status = await settings_service.model_setup_status(session)
     if not status["required"]:
         raise ConflictError("模型配置已存在，请在设置中修改")
 
-    config = await settings_service.save_302_quick_setup(session, body.api_key)
+    config = await settings_service.save_302_quick_setup(
+        session, body.api_key, body.embedding_api_key or body.api_key, body.embedding_provider
+    )
+    await request.app.state.knowledge_runtime.apply_settings(settings, reset_engines=True)
+    return {"config": config, "capabilities": _capabilities(current=True)}
+
+
+@router.post("/model-setup/deepseek")
+async def quick_setup_deepseek(
+    body: DeepSeekQuickModelSetupRequest,
+    request: Request,
+    _user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """首次配置官方 DeepSeek 与独立的向量连接；保留解析设置。"""
+    status = await settings_service.model_setup_status(session)
+    if not status["required"]:
+        raise ConflictError("模型配置已存在，请在设置中修改")
+    if settings.lock_llm_config:
+        raise ConflictError("生成模型配置已锁定，请通过部署环境配置")
+
+    config = await settings_service.save_deepseek_quick_setup(
+        session, body.api_key, body.embedding_api_key, body.embedding_provider
+    )
     await request.app.state.knowledge_runtime.apply_settings(settings, reset_engines=True)
     return {"config": config, "capabilities": _capabilities(current=True)}
 

@@ -127,6 +127,15 @@ _UNTRUSTED_DOCUMENT_CONTENT_GUARDS = {
 _EXTRACTION_PROGRESS_LOCKS: WeakKeyDictionary[Any, asyncio.Lock] = WeakKeyDictionary()
 
 
+async def _report_stage(callback: StageCallback | None, stage: str) -> None:
+    """Stage labels are best-effort display state, never durable checkpoints."""
+    if callback is not None:
+        try:
+            await callback(stage)
+        except Exception as exc:  # noqa: BLE001 - display failures must not abort the pipeline
+            log.warning("处理阶段更新失败 error_type=%s", type(exc).__name__)
+
+
 class IncrementalDocumentProcessor:
     def __init__(
         self,
@@ -174,21 +183,19 @@ class IncrementalDocumentProcessor:
         if not current.chunk_ids:
             if path is None:
                 raise RuntimeError("文档尚未切片，无法从断点继续")
-            if on_stage:
-                await on_stage("loading")
-            await self._ingest(current, path, on_checkpoint, original_path=original_path)
+            await _report_stage(on_stage, "loading")
+            await self._ingest(current, path, on_checkpoint, on_stage=on_stage, original_path=original_path)
 
         chunk_set = self._chunk_set_ref(current)
 
         # 阶段 2:整批抽取(0.8.2 批次粒度;REQ-3 落地前不逐块断点)
-        if on_stage:
-            await on_stage("extracting")
-        cancelled, events = await self._extract(current, chunk_set, should_pause, on_progress)
+        cancelled, events = await self._extract(current, chunk_set, should_pause, on_progress, on_stage)
         paused = cancelled or bool(current.processed_chunk_ids) and len(current.processed_chunk_ids) < len(
             current.chunk_ids
         )
 
         if not cancelled and events is not None:
+            await _report_stage(on_stage, "finalizing")
             current.event_ids = list(events.event_ids)
             current.event_count = events.event_count
             current.processed_chunk_ids = list(chunk_set.chunk_ids)
@@ -212,6 +219,7 @@ class IncrementalDocumentProcessor:
         path: str | Path,
         on_checkpoint: CheckpointCallback,
         *,
+        on_stage: StageCallback | None = None,
         original_path: str | Path | None = None,
     ) -> None:
         """Parse → Chunk → Index;把 ChunkSetRef 的定位信息固化进断点。"""
@@ -232,6 +240,11 @@ class IncrementalDocumentProcessor:
                 descriptor=descriptor,
                 format_hint="markdown",
             )
+        async def observer(event: StageEvent) -> None:
+            stages = {StageName.PARSE: "parsing", StageName.CHUNK: "chunking", StageName.INDEX: "indexing"}
+            if event.type == StageEventType.STARTED and event.stage in stages:
+                await _report_stage(on_stage, stages[event.stage])
+
         chunk_set = await self._engine.ingest(
             source,
             descriptor=descriptor,
@@ -241,6 +254,7 @@ class IncrementalDocumentProcessor:
                 max_tokens=self._chunk_max_tokens,
             ),
             index_options=IndexOptions(),
+            observer=observer,
         )
         current.source_id = chunk_set.source_id
         current.chunk_ids = list(chunk_set.chunk_ids)
@@ -286,6 +300,7 @@ class IncrementalDocumentProcessor:
         chunk_set: ChunkSetRef,
         should_pause: PauseCheck,
         on_progress: ProgressCallback | None,
+        on_stage: StageCallback | None = None,
     ) -> tuple[bool, Any]:
         """整批抽取;暂停由 CancellationToken + 后台轮询驱动,进度经 observer 透出。"""
         prompt_language = getattr(getattr(self._engine.resources, "prompts", None), "language", None)
@@ -328,7 +343,14 @@ class IncrementalDocumentProcessor:
                 log.warning("抽取进度更新失败 error_type=%s", type(exc).__name__)
 
         async def observer(event: StageEvent) -> None:
-            if event.stage != StageName.EXTRACT or event.type != StageEventType.PROGRESS:
+            if event.stage != StageName.EXTRACT:
+                return
+            if event.type == StageEventType.STARTED:
+                # The engine may also wait for its mutation capacity after our
+                # extractor lock. Its public event marks actual stage execution.
+                await _report_stage(on_stage, "extracting")
+                return
+            if event.type != StageEventType.PROGRESS:
                 return
             # Stage progress is also display-only: completed chunks are not durable
             # until engine.extract returns after the atomic batch commit.
@@ -340,6 +362,7 @@ class IncrementalDocumentProcessor:
             )
 
         try:
+            await _report_stage(on_stage, "waiting_extraction")
             extractor = getattr(self._engine, "_extractor", None)
             if extractor is None or not hasattr(extractor, "_on_progress"):
                 # Custom adapters may provide public stage progress instead.

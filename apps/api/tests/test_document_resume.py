@@ -111,7 +111,7 @@ async def test_ingest_builds_generation_checkpoint_and_outcome():
 
     captured: dict = {}
 
-    async def ingest(path, *, descriptor, chunk_options, index_options):
+    async def ingest(path, *, descriptor, chunk_options, index_options, observer):
         captured["path"] = path
         captured["chunk_options"] = chunk_options
         captured["index_options"] = index_options
@@ -382,7 +382,7 @@ async def test_ingest_without_generation_continues_non_durable_extract():
 
     captured: dict = {}
 
-    async def ingest(path, *, descriptor, chunk_options, index_options):
+    async def ingest(path, *, descriptor, chunk_options, index_options, observer):
         return _chunk_set_ref(chunk_ids=("c1",), generation_id=None)
 
     async def extract(chunk_set, options, *, observer, cancellation):
