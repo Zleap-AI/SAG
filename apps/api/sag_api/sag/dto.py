@@ -8,6 +8,15 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+def extraction_display_percent(completed: int, total: int, *, committed: bool) -> int:
+    """Map extraction to the final 80%, reserving 100% for a committed batch."""
+    if total <= 0:
+        return 20
+    if committed and completed >= total:
+        return 100
+    return min(99, 20 + round(80 * max(0, completed) / total))
+
+
 class RetrievedSection(BaseModel):
     """一个检索到的段落（用于问答上下文与引用）。"""
 

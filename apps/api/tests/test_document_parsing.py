@@ -517,6 +517,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch, extensi
             *,
             source,
             on_stage,
+            on_progress,
             checkpoint,
             on_checkpoint,
             should_pause,

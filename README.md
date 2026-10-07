@@ -204,6 +204,10 @@ Use **Test** to check an unsaved original or optional model connection before sa
 
 Create a source and add Markdown, text, PDF, Office, or other supported documents. SAG normalizes documents to Markdown, then runs chunking, embedding, event extraction, and entity extraction in the background.
 
+Document progress reserves the first 20% for parsing, chunking, and embedding. Extraction starts at 20%; completing half the chunks shows 60%. Progress is capped at 99% until the entire batch has been saved successfully, then reaches 100%.
+
+Failed or paused documents retain their last percentage. Resuming reuses the stored chunks and embeddings, but reruns extraction for the entire batch and restarts extraction progress at 20%.
+
 <p align="center">
   <img src="docs/assets/readme/product-import.png" alt="Import a document into SAG" width="940" />
 </p>

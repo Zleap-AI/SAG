@@ -37,7 +37,7 @@ from sag_api.sag.document_vector_identity import (
     record_document_vector_identity,
     refresh_source_vector_identity,
 )
-from sag_api.sag.dto import ProcessCheckpoint
+from sag_api.sag.dto import ProcessCheckpoint, extraction_display_percent
 from sag_api.sag.octx_vector_protocol import configured_embedding_identity
 from sag_api.services.source_operation_service import (
     acquire_operation_lease,
@@ -284,11 +284,31 @@ async def _process_document_unlocked(
             job.progress = document.progress / 100
         elif stage == "extracting":
             document.status = DocumentStatus.EXTRACTING
-            completed = len(checkpoint.processed_chunk_ids)
-            total = len(checkpoint.chunk_ids)
-            document.progress = 20 + round(80 * completed / total) if total else 20
+            # The current extractor reruns the full batch on every resume.
+            document.progress = extraction_display_percent(0, len(checkpoint.chunk_ids), committed=False)
             job.progress = document.progress / 100
         await session.commit()
+
+    document_id, job_id = document.id, job.id
+
+    async def on_progress(completed: int, total: int) -> None:
+        percent = extraction_display_percent(completed, total, committed=False)
+        # Use a separate transaction: a failed display write must not poison the
+        # worker session or modify its durable checkpoint and control payload.
+        async with SessionLocal() as progress_session:
+            changed = await progress_session.execute(
+                update(Document)
+                .where(
+                    Document.id == document_id,
+                    Document.status == DocumentStatus.EXTRACTING,
+                    Document.progress < percent,
+                )
+                .values(progress=percent)
+            )
+            if changed.rowcount != 1:
+                return
+            await progress_session.execute(update(Job).where(Job.id == job_id).values(progress=percent / 100))
+            await progress_session.commit()
 
     async def on_parser_state(state: dict) -> None:
         await session.refresh(document)
@@ -311,10 +331,10 @@ async def _process_document_unlocked(
         document.event_count = value.event_count
         document.sag_source_id = value.source_id
         document.token_usage = value.token_usage
-        if document.status not in _CONTROL_TRANSITION_STATES:
+        if document.status == DocumentStatus.EXTRACTING:
             total = len(value.chunk_ids)
             completed = len(value.processed_chunk_ids)
-            document.progress = 20 + round(80 * completed / total) if total else 20
+            document.progress = extraction_display_percent(completed, total, committed=True)
             job.progress = document.progress / 100
         await session.commit()
 
@@ -411,6 +431,7 @@ async def _process_document_unlocked(
             str(prepared.path) if prepared is not None else None,
             source=source,
             on_stage=on_stage,
+            on_progress=on_progress,
             checkpoint=checkpoint,
             on_checkpoint=on_checkpoint,
             should_pause=should_pause,

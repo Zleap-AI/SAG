@@ -204,6 +204,10 @@ Docker Compose 或 `.env` 中的 `SAG_LLM_*` 用于提供首次启动时的模�
 
 创建信源后，可以添加 Markdown、文本、PDF、Office 等支持的文档。SAG 会先将文档规范化为 Markdown，再在后台完成分块、向量化、事件抽取和实体抽取。
 
+文档进度的前 20% 预留给解析、分块和向量化。抽取从 20% 开始，完成一半分块时显示 60%；整批保存成功前，进度最高为 99%，成功后到 100%。
+
+失败或暂停的文档保留最后进度。恢复时复用已入库的分块和向量，但会整批重新抽取，抽取进度重新从 20% 开始。
+
 <p align="center">
   <img src="docs/assets/readme/product-import.png" alt="向 SAG 导入文档" width="940" />
 </p>
