@@ -360,9 +360,16 @@ async def test_concurrent_pending_deletes_share_one_completed_job(tmp_path):
         await session.commit()
         source_id, document_id = source.id, document.id
 
+    both_read = asyncio.Barrier(2)
+
     async def remove():
         async with SessionLocal() as session:
             source = await session.get(Source, source_id)
+            # Exercise two requests that read the pending document before either
+            # commits deletion. A request starting after deletion correctly gets 404.
+            pending = await session.get(Document, document_id)
+            assert pending is not None
+            await both_read.wait()
             return await delete_document(
                 session,
                 source,

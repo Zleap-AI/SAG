@@ -21,10 +21,9 @@ zleap 职责(0.8.2 已内置,不再由 SAG 实现):实体数契约
   **0.13.0 已提供能力**（``ExtractionOptions.on_contract_violation="drop_event"``
   与越界整数引用修复），但 SAG 保持默认 ``raise``：全丢事件会“成功”并可能用空快照
   替换来源原有事项，属静默丢数据，应由用户显式选择而非升级时替其决定。
-- REQ-3（逐块断点）：0.8.2 一次 extract 覆盖全部 chunks（单代提交），SAG 不再逐块
-  持久化断点；暂停/取消后恢复会整批重跑（LLM 成本回归）。
-  **0.13.0 已提供**（``process_source()`` 逐 Chunk 检查点 + ``extraction_progress``），
-  但采纳它需要换成调用方自有 id 与可重放的内联正文，是一次驱动层重写，已单独立项。
+- REQ-3（逐块断点）：任务处理器通过请求独立的适配器保存成功 Chunk 结果，
+  恢复时复用（包含空结果），仍保留原有 ingest 和整批提交边界。结果存放在应用数据库
+  独立行中；Job.payload 只保存运行标识、指纹、固定时钟与 Chunk 定位信息。
 - REQ-4/5（schema 强化与 SQLite int64 防护）：0.7.1 的
   ``_strengthen_event_entity_schema`` / ``_install_sqlite_integer_guard``
   monkeypatch 目标在 0.8.2 已不可达，shim 删除。
@@ -66,6 +65,7 @@ from zleap.sag.pipeline.errors import PipelineCancelledError
 from zleap.sag.pipeline.events import StageEvent, StageEventType, StageName
 
 from sag_api.core.logging import get_logger
+from sag_api.sag.document_extraction import DocumentExtractionStore, checkpointed_engine
 from sag_api.sag.dto import ProcessCheckpoint, ProcessOutcome
 
 CheckpointCallback = Callable[[ProcessCheckpoint], Awaitable[None]]
@@ -167,6 +167,7 @@ class IncrementalDocumentProcessor:
         on_stage: StageCallback | None = None,
         on_progress: ProgressCallback | None = None,
         original_path: str | Path | None = None,
+        extraction_store: DocumentExtractionStore | None = None,
     ) -> ProcessOutcome:
         current = checkpoint.model_copy(deep=True)
 
@@ -180,18 +181,23 @@ class IncrementalDocumentProcessor:
 
         chunk_set = self._chunk_set_ref(current)
 
-        # 阶段 2:整批抽取(0.8.2 批次粒度;REQ-3 落地前不逐块断点)
+        # 阶段 2:逐块检查点，全部成功后整批提交。
         if on_stage:
             await on_stage("extracting")
-        cancelled, events = await self._extract(current, chunk_set, should_pause, on_progress)
-        paused = cancelled or bool(current.processed_chunk_ids) and len(current.processed_chunk_ids) < len(
-            current.chunk_ids
+        cancelled, events = await self._extract(
+            current, chunk_set, should_pause, on_progress, on_checkpoint, extraction_store,
         )
+        paused = cancelled
 
         if not cancelled and events is not None:
             current.event_ids = list(events.event_ids)
             current.event_count = events.event_count
             current.processed_chunk_ids = list(chunk_set.chunk_ids)
+            current.extraction_committed = True
+            await on_checkpoint(current.model_copy(deep=True))
+        elif extraction_store is not None and current.extraction_id:
+            saved = await extraction_store.load(current)
+            current.processed_chunk_ids = [cid for cid in current.chunk_ids if cid in saved]
             await on_checkpoint(current.model_copy(deep=True))
 
         return ProcessOutcome(
@@ -286,6 +292,8 @@ class IncrementalDocumentProcessor:
         chunk_set: ChunkSetRef,
         should_pause: PauseCheck,
         on_progress: ProgressCallback | None,
+        on_checkpoint: CheckpointCallback,
+        extraction_store: DocumentExtractionStore | None,
     ) -> tuple[bool, Any]:
         """整批抽取;暂停由 CancellationToken + 后台轮询驱动,进度经 observer 透出。"""
         prompt_language = getattr(getattr(self._engine.resources, "prompts", None), "language", None)
@@ -335,13 +343,25 @@ class IncrementalDocumentProcessor:
             await report_progress(event.completed or 0, event.total or len(chunk_set.chunk_ids))
 
         async def extract() -> Any:
+            if extraction_store is not None:
+                request_engine, wrapper = checkpointed_engine(
+                    self._engine, extraction_store, current, on_checkpoint, report_progress,
+                )
+                try:
+                    return await request_engine.extract(
+                        chunk_set, options, observer=observer, cancellation=cancellation,
+                    )
+                except Exception as exc:
+                    if wrapper.failure is not None:
+                        raise wrapper.failure from exc
+                    raise
             return await self._engine.extract(
                 chunk_set, options, observer=observer, cancellation=cancellation,
             )
 
         try:
             extractor = getattr(self._engine, "_extractor", None)
-            if extractor is None or not hasattr(extractor, "_on_progress"):
+            if extraction_store is not None or extractor is None or not hasattr(extractor, "_on_progress"):
                 # Custom adapters may provide public stage progress instead.
                 events = await extract()
             else:
@@ -385,5 +405,7 @@ class IncrementalDocumentProcessor:
         # 0.8.2 统计含 zero_event_chunks(整批抽取下语义与 0.7.1 的逐块 eventless 对齐)
         zero_chunks = stats.get("zero_event_chunks", [])
         if isinstance(zero_chunks, (list, tuple)):
-            current.eventless_chunk_ids = [str(item) for item in zero_chunks]
+            current.eventless_chunk_ids = [
+                item["chunk_id"] if isinstance(item, dict) else str(item) for item in zero_chunks
+            ]
         return False, events

@@ -470,7 +470,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch, extensi
         event_count=0,
         config={"octx_vector_identity_state": "mixed"},
     )
-    job = SimpleNamespace(id="job-1", document_id="doc-1", progress=0.0, payload={})
+    job = SimpleNamespace(started_at=None, id="job-1", document_id="doc-1", progress=0.0, payload={})
 
     class FakeSession:
         async def get(self, model, _id):
@@ -524,7 +524,9 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch, extensi
             max_concurrency,
             document_title,
             original_path,
+            extraction_store,
         ):
+            assert extraction_store.document_id == document.id
             assert original_path == document.storage_path
             self.seen_path = path
             assert max_concurrency == tasks.settings.document_extract_concurrency
@@ -625,7 +627,7 @@ async def test_document_job_persists_successful_mineru_outcome(
         sag_source_id=None,
     )
     source = SimpleNamespace(id="source-1", sag_source_config_id="sag-source-1")
-    job = SimpleNamespace(id="job-mineru", document_id=document.id, progress=0.0, payload={})
+    job = SimpleNamespace(started_at=None, id="job-mineru", document_id=document.id, progress=0.0, payload={})
 
     class FakeSession:
         async def get(self, model, _id):
@@ -705,7 +707,7 @@ async def test_document_job_persists_mineru_markitdown_fallback(monkeypatch, cap
         sag_source_id=None,
     )
     source = SimpleNamespace(id="source-1", sag_source_config_id="sag-source-1")
-    job = SimpleNamespace(id="job-fallback", document_id=document.id, progress=0.0, payload={})
+    job = SimpleNamespace(started_at=None, id="job-fallback", document_id=document.id, progress=0.0, payload={})
     raw_reason = "MinerU failed with sk-secret123 at https://files.example/result?token=signed-value"
 
     class FakeSession:
@@ -813,6 +815,7 @@ async def test_document_job_redacts_parser_failure_from_public_error(
     )
     source = SimpleNamespace(id="source-1", sag_source_config_id="sag-source-1")
     job = SimpleNamespace(
+        started_at=None,
         id="job-parser-failed",
         document_id=document.id,
         progress=0.0,
@@ -831,7 +834,7 @@ async def test_document_job_redacts_parser_failure_from_public_error(
 
         async def execute(self, statement):
             values = {
-                column.key: bound.value for column, bound in statement._values.items()
+                column.key: getattr(bound, "value", None) for column, bound in statement._values.items()
             }
             if "error" in values:
                 document.error = values["error"]
@@ -903,6 +906,7 @@ async def test_document_job_preserves_engine_error_before_first_checkpoint(
     )
     source = SimpleNamespace(id="source-1", sag_source_config_id="sag-source-1")
     job = SimpleNamespace(
+        started_at=None,
         id="job-engine-failed",
         document_id=document.id,
         progress=0.0,
@@ -921,7 +925,7 @@ async def test_document_job_preserves_engine_error_before_first_checkpoint(
 
         async def execute(self, statement):
             values = {
-                column.key: bound.value for column, bound in statement._values.items()
+                column.key: getattr(bound, "value", None) for column, bound in statement._values.items()
             }
             if "error" in values:
                 document.error = values["error"]
@@ -982,6 +986,7 @@ async def test_document_job_preserves_engine_error_on_resumed_checkpoint(
     )
     source = SimpleNamespace(id="source-1", sag_source_config_id="sag-source-1")
     job = SimpleNamespace(
+        started_at=None,
         id="job-resumed-engine-failed",
         document_id=document.id,
         progress=0.2,
@@ -1005,7 +1010,7 @@ async def test_document_job_preserves_engine_error_on_resumed_checkpoint(
 
         async def execute(self, statement):
             values = {
-                column.key: bound.value for column, bound in statement._values.items()
+                column.key: getattr(bound, "value", None) for column, bound in statement._values.items()
             }
             if "error" in values:
                 document.error = values["error"]
@@ -1752,6 +1757,7 @@ def _document_job_fixture(*, document_overrides=None):
     document = SimpleNamespace(**fields)
     source = SimpleNamespace(id="source-1", sag_source_config_id="sag-source-1")
     job = SimpleNamespace(
+        started_at=None,
         id="job-anydoc", document_id=document.id, progress=0.0, payload={}
     )
 
@@ -1891,6 +1897,7 @@ async def test_document_job_persists_plain_anydoc_failure_status(monkeypatch):
     )
     source = SimpleNamespace(id="source-1", sag_source_config_id="sag-source-1")
     job = SimpleNamespace(
+        started_at=None,
         id="job-anydoc-failed", document_id=document.id, progress=0.0, payload={}
     )
 
@@ -1906,7 +1913,8 @@ async def test_document_job_persists_plain_anydoc_failure_status(monkeypatch):
 
         async def execute(self, statement):
             for column, bound in statement._values.items():
-                setattr(document, column.key, bound.value)
+                if hasattr(bound, "value"):
+                    setattr(document, column.key, bound.value)
             return SimpleNamespace(rowcount=1)
 
     async def fake_prepare(path, settings, *, state=None, on_state=None, should_pause=None):
@@ -2088,7 +2096,8 @@ async def test_document_job_keeps_control_transition_state_during_parser_clear(
     original_execute = session.execute
 
     async def pause_on_execute(statement):
-        document.status = DocumentStatus.PAUSED
+        if statement.table.name == "documents" and any(column.key == "status" for column in statement._values):
+            document.status = DocumentStatus.PAUSED
         return await original_execute(statement)
 
     session.execute = pause_on_execute

@@ -12,13 +12,13 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
-from sag_api.core.errors import ApiError, NotFoundError
+from sag_api.core.errors import ApiError, ConflictError, NotFoundError
 from sag_api.core.logging import get_logger
 from sag_api.db.models import Document, Job, Source
 from sag_api.enums import DocumentStatus, JobStatus, JobType
@@ -33,6 +33,7 @@ from sag_api.jobs.octx_tasks import (
 from sag_api.jobs.scheduling import SOURCE_MAINTENANCE
 from sag_api.parsing import ParsePaused, prepare_document
 from sag_api.sag import EngineManager
+from sag_api.sag.document_extraction import DocumentExtractionStore, _drain
 from sag_api.sag.document_vector_identity import (
     record_document_vector_identity,
     refresh_source_vector_identity,
@@ -249,18 +250,24 @@ async def process_document(session: AsyncSession, job: Job, *, engine_manager: E
     if document is None:
         raise NotFoundError("文档不存在")
     async with acquire_source_processing_lease(SessionLocal, document.source_id, job.id):
-        await _process_document_unlocked(
-            session,
-            job,
-            engine_manager=engine_manager,
-            job_queue=job_queue,
-        )
+        try:
+            await _process_document_unlocked(
+                session,
+                job,
+                engine_manager=engine_manager,
+                job_queue=job_queue,
+            )
+        except BaseException:
+            # Release callback/control fences before the lease cleanup opens its
+            # separate write transaction, including yield, pause and cancellation.
+            await _drain(session.rollback())
+            raise
 
 
 async def _process_document_unlocked(
     session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None
 ) -> None:
-    """解析、入库并按 chunk 并发抽取；每个 chunk 完成即保存断点。"""
+    """解析、入库并抽取；成功 Chunk 结果先保存，完成后整批提交。"""
     document = await session.get(Document, job.document_id) if job.document_id else None
     if document is None:
         raise NotFoundError("文档不存在")
@@ -268,6 +275,23 @@ async def _process_document_unlocked(
     if source is None:
         raise NotFoundError("信源不存在")
     checkpoint = ProcessCheckpoint.from_payload(job.payload)
+    extraction_store = DocumentExtractionStore(SessionLocal, document.id, job.id, job.started_at)
+    await extraction_store.fence(session, document=True)
+    if document.status == DocumentStatus.READY and checkpoint.extraction_committed:
+        if (
+            checkpoint.source_id != document.sag_source_id
+            or len(checkpoint.chunk_ids) != document.chunk_count
+            or checkpoint.event_count != document.event_count
+            or set(checkpoint.processed_chunk_ids) != set(checkpoint.chunk_ids)
+        ):
+            raise ConflictError("已完成文档与抽取断点不一致，请检查任务后重试")
+        await session.commit()
+        if job_queue is not None:
+            from sag_api.services.universe_service import schedule_universe_refresh
+
+            await schedule_universe_refresh(session, job_queue, source_id=document.source_id,
+                                            reason="document_processed")
+        return
     scheduler_yield_reason: str | None = None
 
     async def refresh_payload() -> dict:
@@ -275,8 +299,10 @@ async def _process_document_unlocked(
         return dict(job.payload or {})
 
     async def on_stage(stage: str) -> None:
+        await extraction_store.fence(session, document=True)
         await session.refresh(document)
         if document.status in _CONTROL_TRANSITION_STATES:
+            await session.commit()
             return
         if stage == "loading":
             document.status = DocumentStatus.LOADING
@@ -284,8 +310,9 @@ async def _process_document_unlocked(
             job.progress = document.progress / 100
         elif stage == "extracting":
             document.status = DocumentStatus.EXTRACTING
-            # The current extractor reruns the full batch on every resume.
-            document.progress = extraction_display_percent(0, len(checkpoint.chunk_ids), committed=False)
+            document.progress = extraction_display_percent(
+                len(checkpoint.processed_chunk_ids), len(checkpoint.chunk_ids), committed=False,
+            )
             job.progress = document.progress / 100
         await session.commit()
 
@@ -296,6 +323,7 @@ async def _process_document_unlocked(
         # Use a separate transaction: a failed display write must not poison the
         # worker session or modify its durable checkpoint and control payload.
         async with SessionLocal() as progress_session:
+            await extraction_store.fence(progress_session, document=True)
             changed = await progress_session.execute(
                 update(Document)
                 .where(
@@ -311,8 +339,10 @@ async def _process_document_unlocked(
             await progress_session.commit()
 
     async def on_parser_state(state: dict) -> None:
+        await extraction_store.fence(session, document=True)
         await session.refresh(document)
         if document.status in _CONTROL_TRANSITION_STATES:
+            await session.commit()
             return
         document.status = DocumentStatus.LOADING
         document.progress = max(document.progress, 10)
@@ -324,6 +354,7 @@ async def _process_document_unlocked(
 
     async def on_checkpoint(value: ProcessCheckpoint) -> None:
         nonlocal checkpoint
+        await extraction_store.fence(session, document=True)
         checkpoint = value
         await session.refresh(document)
         job.payload = value.merge_payload(await refresh_payload())
@@ -334,7 +365,9 @@ async def _process_document_unlocked(
         if document.status == DocumentStatus.EXTRACTING:
             total = len(value.chunk_ids)
             completed = len(value.processed_chunk_ids)
-            document.progress = extraction_display_percent(completed, total, committed=True)
+            document.progress = extraction_display_percent(
+                completed, total, committed=value.extraction_committed or not value.extraction_id,
+            )
             job.progress = document.progress / 100
         await session.commit()
 
@@ -359,6 +392,7 @@ async def _process_document_unlocked(
 
     async def _pause_or_yield() -> None:
         """把当前文档落到 PAUSED 或让行，供解析/抽取两个阶段共用。"""
+        await extraction_store.fence(session, document=True)
         await session.refresh(document)
         if scheduler_yield_reason == SOURCE_MAINTENANCE and document.status not in _CONTROL_TRANSITION_STATES:
             raise JobYielded(SOURCE_MAINTENANCE)
@@ -394,7 +428,8 @@ async def _process_document_unlocked(
                 setattr(document, field, value)
         if document.error is not None:
             document.error = None
-        await session.commit()
+    # Release the initial claim fence even when a control transition won.
+    await session.commit()
 
     try:
         prepared = None
@@ -438,12 +473,14 @@ async def _process_document_unlocked(
             max_concurrency=settings.document_extract_concurrency,
             document_title=Path(document.filename).stem.strip(),
             original_path=document.storage_path if prepared is not None else None,
+            extraction_store=extraction_store,
         )
         if outcome.paused:
             await _pause_or_yield()
     except (JobPaused, JobYielded):
         raise
     except Exception as e:  # noqa: BLE001 - 记录到文档后再上抛给 worker
+        await extraction_store.fence(session, document=True)
         await session.refresh(document)
         if document.status in _CONTROL_TRANSITION_STATES or document.status == DocumentStatus.PAUSED:
             await _yield_after_document_transition_lost(session, document)
@@ -488,6 +525,7 @@ async def _process_document_unlocked(
         await session.commit()
         raise
 
+    await extraction_store.fence(session, document=True)
     await session.refresh(document)
     if document.status in _DELETE_CONTROL_STATES:
         raise JobPaused()
@@ -592,11 +630,20 @@ async def _delete_document_task_unlocked(
     }
     if document.sag_source_id:
         derived_source_ids.add(document.sag_source_id)
+    publications: dict[str, list[dict[str, list[str]]]] = {}
+    for payload in (await session.scalars(select(Job.payload).where(
+        Job.document_id == document.id, Job.type == JobType.PROCESS_DOCUMENT,
+    ))).all():
+        checkpoint = ProcessCheckpoint.from_payload(payload)
+        if checkpoint.source_id and checkpoint.extraction_publication:
+            publications.setdefault(checkpoint.source_id, []).append(checkpoint.extraction_publication)
+            derived_source_ids.add(checkpoint.source_id)
     for derived_source_id in sorted(derived_source_ids):
         await engine_manager.delete_document_data(
             source.sag_source_config_id,
             derived_source_id,
             source=source,
+            **({"publications": publications[derived_source_id]} if derived_source_id in publications else {}),
         )
     path = document.storage_path
     job.payload = {**(job.payload or {}), "target_document_id": document.id}

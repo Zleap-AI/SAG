@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sag_api.core.config import settings
 from sag_api.core.errors import ServiceUnavailableError, UpstreamError
 from sag_api.core.logging import get_logger
-from sag_api.db.models import Document
+from sag_api.db.models import Document, DocumentExtractionCheckpoint
 from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs.control import JobDeleted, JobPaused, JobYielded
 from sag_api.jobs.queue import JobQueue
@@ -33,6 +33,7 @@ from sag_api.jobs.scheduling import (
 from sag_api.jobs.source_maintenance import SourceMaintenanceState
 from sag_api.jobs.tasks import TASK_HANDLERS
 from sag_api.sag import EngineManager
+from sag_api.sag.dto import ProcessCheckpoint, extraction_display_percent
 
 log = get_logger("jobs")
 
@@ -70,6 +71,8 @@ async def _mark_document_waiting_retry(session, job) -> None:
         return
     document = await session.get(Document, job.document_id)
     if document is None:
+        return
+    if document.status == DocumentStatus.READY and ProcessCheckpoint.from_payload(job.payload).extraction_committed:
         return
     document.status = DocumentStatus.PENDING
     document.error = None
@@ -764,9 +767,39 @@ class InProcessAsyncQueue(JobQueue):
                             and job.status in {JobStatus.QUEUED, JobStatus.RUNNING}
                         ):
                             self.begin_source_maintenance(job.source_id, job.id)
-                    for job in rows:
+                    paused_jobs = (await session.scalars(select(Job).where(
+                        Job.type == JobType.PROCESS_DOCUMENT, Job.status == JobStatus.PAUSED,
+                    ))).all()
+                    for job in [*rows, *paused_jobs]:
                         if job.status == JobStatus.RUNNING:
                             job.status = JobStatus.QUEUED
+
+                        if (
+                            job.type == JobType.PROCESS_DOCUMENT and job.document_id
+                            and job.status in {JobStatus.QUEUED, JobStatus.PAUSED}
+                        ):
+                            checkpoint = ProcessCheckpoint.from_payload(job.payload)
+                            if checkpoint.extraction_id:
+                                saved_ids = set(await session.scalars(select(
+                                    DocumentExtractionCheckpoint.chunk_id,
+                                ).where(
+                                    DocumentExtractionCheckpoint.document_id == job.document_id,
+                                    DocumentExtractionCheckpoint.extraction_id == checkpoint.extraction_id,
+                                    DocumentExtractionCheckpoint.fingerprint == checkpoint.extraction_fingerprint,
+                                )))
+                                checkpoint.processed_chunk_ids = [
+                                    cid for cid in checkpoint.chunk_ids if cid in saved_ids
+                                ]
+                                job.payload = checkpoint.merge_payload(job.payload)
+                                document = await session.get(Document, job.document_id)
+                                if document is not None and document.status in {
+                                    DocumentStatus.EXTRACTING, DocumentStatus.PAUSING, DocumentStatus.PAUSED,
+                                }:
+                                    document.progress = extraction_display_percent(
+                                        len(checkpoint.processed_chunk_ids), len(checkpoint.chunk_ids),
+                                        committed=checkpoint.extraction_committed,
+                                    )
+                                    job.progress = document.progress / 100
 
                     transition_documents = list(
                         (

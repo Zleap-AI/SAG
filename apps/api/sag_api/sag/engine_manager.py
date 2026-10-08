@@ -28,6 +28,7 @@ from sag_api.enums import (
 )
 from sag_api.sag.config_builder import build_engine_config
 from sag_api.sag.content_reader import ContentReader
+from sag_api.sag.document_extraction import DocumentExtractionStore
 from sag_api.sag.dto import (
     EntityInfo,
     ProcessCheckpoint,
@@ -703,6 +704,7 @@ class EngineManager:
         document_source_id: str,
         *,
         source: Source | None = None,
+        publications: list[dict[str, list[str]]] | None = None,
     ) -> None:
         """删除一篇文档的块、事件、关系及孤立实体派生数据。"""
         from sag_api.sag.document_cleanup import delete_document_records
@@ -727,6 +729,15 @@ class EngineManager:
                             session_factory=slot.engine.resources.relational.session_factory(),
                             vector_store=slot.engine.resources.vector,
                         )
+                        if publications:
+                            from sag_api.sag.document_extraction import cleanup_extraction_publication
+
+                            for identities in publications:
+                                await cleanup_extraction_publication(
+                                    identities,
+                                    session_factory=slot.engine.resources.relational.session_factory(),
+                                    vector_store=slot.engine.resources.vector,
+                                )
                 finally:
                     async with slot.state_lock:
                         if slot.maintenance_requests == 0:
@@ -757,8 +768,9 @@ class EngineManager:
         max_concurrency: int | None = None,
         document_title: str | None = None,
         original_path: str | None = None,
+        extraction_store: DocumentExtractionStore | None = None,
     ) -> ProcessOutcome:
-        """独立处理一篇文档；同源文档可并行，chunk 完成即保存断点。"""
+        """独立处理文档；任务提供 extraction_store 时复用成功 Chunk 的检查点。"""
 
         async def ignore_checkpoint(_checkpoint: ProcessCheckpoint) -> None:
             return None
@@ -812,6 +824,7 @@ class EngineManager:
                                 on_stage=on_stage,
                                 on_progress=on_progress,
                                 original_path=original_path,
+                                extraction_store=extraction_store,
                             )
                     return await processor.process(
                         path,
@@ -821,6 +834,7 @@ class EngineManager:
                         on_stage=on_stage,
                         on_progress=on_progress,
                         original_path=original_path,
+                        extraction_store=extraction_store,
                     )
             except _DocumentAdmissionYielded:
                 return paused_outcome()

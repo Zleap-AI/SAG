@@ -2,6 +2,7 @@
 
 from sag_api.db.models.agent import Agent, AgentBinding, Message, Thread
 from sag_api.db.models.document import Document
+from sag_api.db.models.document_extraction import DocumentExtractionCheckpoint
 from sag_api.db.models.job import Job
 from sag_api.db.models.octx import (
     OctxAsset,
@@ -27,6 +28,7 @@ __all__ = [
     "Agent",
     "AgentBinding",
     "Document",
+    "DocumentExtractionCheckpoint",
     "Job",
     "Message",
     "OctxAsset",

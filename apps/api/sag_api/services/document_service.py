@@ -6,12 +6,12 @@ import os
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.errors import ConflictError, NotFoundError
 from sag_api.db.base import new_id
-from sag_api.db.models import Document, Job, Source
+from sag_api.db.models import Document, DocumentExtractionCheckpoint, Job, Source
 from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs import JobQueue
 from sag_api.jobs.scheduling import DELETE_PRIORITY, RESUME_PRIORITY, set_scheduler
@@ -269,6 +269,9 @@ async def reprocess_document(
         raise ConflictError("文档状态已变化，请刷新后重试")
     await session.refresh(document)
     if restart_from_scratch:
+        await session.execute(delete(DocumentExtractionCheckpoint).where(
+            DocumentExtractionCheckpoint.document_id == document.id,
+        ))
         await _refresh_source_counts(session, source)
         await refresh_source_vector_identity(session, source)
     payload = dict(latest.payload or {}) if latest is not None and not restart_from_scratch else {}
@@ -443,7 +446,7 @@ async def _raise_document_control_conflict(
 
 
 async def pause_document(session: AsyncSession, source: Source, document_id: str) -> Job:
-    """协作式暂停：已开始的分块跑完并保存断点，不再领取新分块。"""
+    """协作式暂停：保留成功分块检查点，取消尚未完成的生成。"""
     document = await get_document(session, source, document_id)
     if document.status in {DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED}:
         raise ConflictError("文档正在删除或删除失败，无法停止抽取")
@@ -518,7 +521,7 @@ async def resume_document(
     *,
     job_queue: JobQueue,
 ) -> Job:
-    """把暂停任务原样重新入队，处理器会跳过断点中已完成的分块。"""
+    """原样重新入队；处理器复用数据库中已保存的成功分块结果。"""
     document = await get_document(session, source, document_id)
     if document.status in {DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED}:
         raise ConflictError("文档正在删除或删除失败，无法继续")

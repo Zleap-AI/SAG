@@ -240,6 +240,14 @@ class ProcessCheckpoint(BaseModel):
     generation_id: str | None = None
     chunk_version: str | None = None
     source_version: str | None = None
+    # Chunk results live in document_extraction_checkpoints, never in Job.payload.
+    extraction_id: str | None = None
+    extraction_fingerprint: str | None = None
+    extraction_fingerprint_version: int = 1
+    extraction_reference_time: str | None = None
+    extraction_committed: bool = False
+    # Publication IDs survive relation rollback until recovery/deletion finishes.
+    extraction_publication: dict[str, list[str]] = Field(default_factory=dict)
     event_entity_quality: EventEntityQuality = Field(
         default_factory=EventEntityQuality
     )
