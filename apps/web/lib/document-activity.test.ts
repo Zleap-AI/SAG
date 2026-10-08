@@ -7,7 +7,6 @@ import {
   beginDocumentMutation,
   deriveDocumentActivity,
   documentActivityLabelKey,
-  documentActivityShowsProgress,
   failedPollingDeadline,
   isCurrentDocumentSource,
   isLatestDocumentRefresh,
@@ -447,12 +446,4 @@ describe("document activity", () => {
     expect(documentActivityLabelKey("extracting")).toBe("extracting");
   });
 
-  it("shows progress for every non-terminal processing outcome including failure", () => {
-    expect(documentActivityShowsProgress("pending")).toBe(true);
-    expect(documentActivityShowsProgress("extracting")).toBe(true);
-    expect(documentActivityShowsProgress("failed")).toBe(true);
-    expect(documentActivityShowsProgress("paused")).toBe(true);
-    expect(documentActivityShowsProgress("ready")).toBe(false);
-    expect(documentActivityShowsProgress("deleting")).toBe(false);
-  });
 });

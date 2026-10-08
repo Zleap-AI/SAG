@@ -128,6 +128,7 @@ async def create_document_from_upload(
         size_bytes=len(data),
         storage_path=storage_path,
         status=DocumentStatus.PENDING,
+        processing_stage="queued",
     )
     session.add(document)
     await session.execute(update(Source).where(Source.id == source.id).values(document_count=Source.document_count + 1))
@@ -229,11 +230,15 @@ async def reprocess_document(
 
     values: dict = {
         "status": DocumentStatus.PENDING,
+        "processing_stage": "queued",
+        "processing_run_id": None,
         "error": None,
     }
     if restart_from_scratch:
         values.update(
             progress=0,
+            processed_chunks=None,
+            total_chunks=None,
             chunk_count=0,
             event_count=0,
             token_usage=0,
@@ -567,7 +572,10 @@ async def resume_document(
         document,
         job,
         expected_document_status=DocumentStatus.PAUSED,
-        document_values={"status": resumed_status, "error": None},
+        document_values={
+            "status": resumed_status, "error": None,
+            "processing_stage": "queued", "processing_run_id": None,
+        },
         expected_job_status=JobStatus.PAUSED,
         job_values={
             "payload": resumed_payload,

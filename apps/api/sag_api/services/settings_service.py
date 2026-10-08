@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sag_api.core.config import Settings
 from sag_api.core.config import settings as _settings
+from sag_api.core.embedding_presets import QUICK_SETUP_EMBEDDINGS, EmbeddingSetupProvider
 from sag_api.core.errors import ConfigurationError, ConflictError
 from sag_api.core.logging import get_logger
 from sag_api.core.model_providers import get_model_provider
@@ -94,9 +95,6 @@ QUICK_SETUP_302 = {
     "llm_context_window": _OPENAI_COMPATIBLE.default_context_window,
     "llm_timeout_ms": 60_000,
     "llm_max_retries": 2,
-    "embedding_model": "Qwen/Qwen3-Embedding-4B",
-    "embedding_base_url": "https://api.302ai.cn/v1",
-    "embedding_dimensions": 1024,
     "document_parser": "auto",
     "mineru_provider": "302",
     "mineru_base_url": "https://api.302ai.cn",
@@ -108,6 +106,17 @@ QUICK_SETUP_302 = {
     "search_strategy": "multi_es_fast",
     "search_top_k": 8,
     "sag_language": "zh",
+}
+
+QUICK_SETUP_DEEPSEEK = {
+    "llm_provider": _OPENAI_COMPATIBLE.id,
+    "llm_base_url": "https://api.deepseek.com",
+    "llm_model": "deepseek-flash",
+    "llm_temperature": 0.3,
+    "llm_max_tokens": 20_000,
+    "llm_context_window": 1_000_000,
+    "llm_timeout_ms": 60_000,
+    "llm_max_retries": 2,
 }
 
 _LEGACY_302_BASE_URLS = {
@@ -432,15 +441,39 @@ async def save_model_config(session: AsyncSession, patch: dict) -> dict:
     return effective_model_config()
 
 
-async def save_302_quick_setup(session: AsyncSession, api_key: str) -> dict:
-    """用单个 302.AI Key 写入生成、向量、MinerU 与快速检索预设。"""
+async def save_302_quick_setup(
+    session: AsyncSession,
+    api_key: str,
+    embedding_api_key: str,
+    embedding_provider: EmbeddingSetupProvider = "302",
+) -> dict:
+    """Apply 302 generation/parser defaults with the selected embedding connection."""
     return await save_model_config(
         session,
         {
             **QUICK_SETUP_302,
+            **QUICK_SETUP_EMBEDDINGS[embedding_provider],
             "llm_api_key": api_key,
-            "embedding_api_key": api_key,
+            "embedding_api_key": embedding_api_key,
             "mineru_api_key": api_key,
+        },
+    )
+
+
+async def save_deepseek_quick_setup(
+    session: AsyncSession,
+    api_key: str,
+    embedding_api_key: str,
+    embedding_provider: EmbeddingSetupProvider = "302",
+) -> dict:
+    """Apply official DeepSeek generation with independent embedding credentials."""
+    return await save_model_config(
+        session,
+        {
+            **QUICK_SETUP_DEEPSEEK,
+            **QUICK_SETUP_EMBEDDINGS[embedding_provider],
+            "llm_api_key": api_key,
+            "embedding_api_key": embedding_api_key,
         },
     )
 

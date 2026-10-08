@@ -20,6 +20,7 @@ from sag_api.core.chatbot_config import (
     error,
 )
 from sag_api.core.config import settings
+from sag_api.core.embedding_policy import with_embedding_batch_limit
 from sag_api.core.errors import ConfigurationError, ForbiddenError, UpstreamError
 from sag_api.db.models import Setting
 
@@ -134,9 +135,10 @@ class Snapshot:
                     timeout=self.stock.embedding_timeout,
                 )
                 if connection.api_key:
-                    self.adapters[kind] = OpenAIEmbeddingAdapter(config=config)
+                    adapter = OpenAIEmbeddingAdapter(config=config)
                 else:
-                    self.adapters[kind] = KeylessEmbeddingAdapter(config)
+                    adapter = KeylessEmbeddingAdapter(config)
+                self.adapters[kind] = with_embedding_batch_limit(adapter, config)
         return self.adapters[kind]
 
     async def close(self):
@@ -464,7 +466,11 @@ def install_query_adapters():
 
     registry.register("llm", "openai", lambda **kwargs: ScopedAdapter(defaults.OpenAILLMAdapter(**kwargs), "llm"))
     registry.register(
-        "embedding", "openai", lambda **kwargs: ScopedAdapter(defaults.OpenAIEmbeddingAdapter(**kwargs), "embedding")
+        "embedding",
+        "openai",
+        lambda **kwargs: ScopedAdapter(
+            with_embedding_batch_limit(defaults.OpenAIEmbeddingAdapter(**kwargs), kwargs.get("config")), "embedding"
+        ),
     )
     _adapters_installed = True
 

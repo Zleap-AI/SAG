@@ -62,6 +62,10 @@ _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
     "agents": {"is_default": "BOOLEAN NOT NULL DEFAULT FALSE"},
     "documents": {
         "progress": "INTEGER NOT NULL DEFAULT 0",
+        "processing_stage": "VARCHAR(32)",
+        "processed_chunks": "INTEGER",
+        "total_chunks": "INTEGER",
+        "processing_run_id": "VARCHAR(32)",
         "token_usage": "BIGINT NOT NULL DEFAULT 0",
         "error_layer": "VARCHAR(16)",
         "error_stage": "VARCHAR(16)",

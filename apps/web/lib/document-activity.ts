@@ -67,10 +67,6 @@ export function documentActivityLabelKey(
   return phase === "waiting-retry" ? "waitingRetry" : phase;
 }
 
-export function documentActivityShowsProgress(phase: DocumentActivityPhase) {
-  return phase !== "ready" && phase !== "deleting" && phase !== "delete_failed";
-}
-
 export function beginDocumentMutation(
   document: Doc,
   action: DocumentAction,

@@ -43,14 +43,14 @@ export function DocStatusBadge({ status }: { status: DocumentStatus }) {
   return <DocumentActivityBadge phase={status} />;
 }
 
-export function DocumentActivityBadge({ phase }: { phase: DocumentActivityPhase }) {
+export function DocumentActivityBadge({ phase, label }: { phase: DocumentActivityPhase; label?: string }) {
   const t = useTranslations("DocumentStatus");
   const c = MAP[phase] ?? MAP.pending;
   const Icon = c.icon;
   return (
     <Badge variant={c.variant}>
       <Icon className={cn("size-3", c.spin && "animate-spin")} />
-      {t(documentActivityLabelKey(phase))}
+      {label ?? t(documentActivityLabelKey(phase))}
     </Badge>
   );
 }

@@ -182,15 +182,19 @@ No API key, Python runtime, Node runtime, or external database is required to bo
 On first launch:
 
 1. Enter your name to create or restore the local identity.
-2. Use the 302.AI quick setup, or open **Settings → Models** and configure any OpenAI-compatible LLM and embedding endpoint.
+2. Choose 302.AI or DeepSeek quick setup, or open **Settings → Models** to configure your model connections.
 3. Create a source, upload documents, and wait until their status is **Ready**.
 4. Search, open the original source, or start a cited conversation.
+
+DeepSeek uses Flash in non-thinking mode. Either setup supports embeddings from 302.AI, Zhipu, or Alibaba Cloud Bailian; enter a separate Key when using a different provider.
 
 The UI and services still start without model credentials. Embeddings are required for indexing/vector retrieval; the LLM is required for event extraction, query understanding, and generated answers.
 
 #### Model settings precedence
 
 `SAG_LLM_*` values in Docker Compose or `.env` provide the initial model configuration. After an administrator saves model settings in the web UI, the persisted Settings value is used for subsequent extraction and generation jobs without a restart.
+
+The default embedding model is `Qwen/Qwen3-Embedding-4B`. When upgrading an existing BGE index, retain `SAG_EMBEDDING_MODEL=bge-large-en-v1.5`. To switch models, wait for existing indexed documents to finish deleting, change the model, then import them again.
 
 To make the deployment configuration mandatory, set `SAG_LOCK_LLM_CONFIG=true`. SAG then shows the generation fields as locked in Settings and continues to use the `SAG_LLM_*` values. Change Docker Compose or `.env` and recreate the API container to update a locked configuration. API keys remain deployment-managed and are never returned by the Settings API.
 
@@ -204,9 +208,7 @@ Use **Test** to check an unsaved original or optional model connection before sa
 
 Create a source and add Markdown, text, PDF, Office, or other supported documents. SAG normalizes documents to Markdown, then runs chunking, embedding, event extraction, and entity extraction in the background.
 
-Document progress reserves the first 20% for parsing, chunking, and embedding. Extraction starts at 20%; completing half the chunks shows 60%. Progress is capped at 99% until the entire batch has been saved successfully, then reaches 100%.
-
-Failed or paused documents retain their last percentage. Resuming reuses the stored chunks and embeddings, but reruns extraction for the entire batch and restarts extraction progress at 20%.
+File uploads show actual transfer progress. The document list and details show the current processing stage and available chunk counts (for example, “Processed 810 / 2,033 chunks”), without an overall processing percentage. A document is ready to search when its status becomes **Ready**.
 
 <p align="center">
   <img src="docs/assets/readme/product-import.png" alt="Import a document into SAG" width="940" />
@@ -472,7 +474,7 @@ async def main() -> None:
             model="qwen3.6-flash",
         ),
         # When api_key/base_url are omitted, embedding reuses the LLM endpoint.
-        embedding=EmbeddingConfig(model="bge-large-en-v1.5"),
+        embedding=EmbeddingConfig(model="Qwen/Qwen3-Embedding-4B"),
         language="en",
     )
 
@@ -513,7 +515,7 @@ export SAG_STORAGE_MODE=normal
 export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://your-openai-compatible-host/v1
 export LLM_MODEL=qwen3.6-flash
-export EMBEDDING_MODEL=bge-large-en-v1.5
+export EMBEDDING_MODEL=Qwen/Qwen3-Embedding-4B
 ```
 
 ```python

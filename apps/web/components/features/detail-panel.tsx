@@ -25,7 +25,8 @@ import { cleanCitationText, stripCitationTransportTokens } from "@/lib/citation-
 import { cn } from "@/lib/utils";
 import { ChunkedMarkdown, ChunkedRawText } from "@/components/features/markdown-content";
 import { useApp } from "@/components/features/app-shell";
-import { DocStatusBadge } from "@/components/features/status-badge";
+import { DocumentProcessingBadge, DocumentProcessingProgress } from "@/components/features/document-processing-progress";
+import { useDocumentDetail } from "@/components/features/use-document-detail";
 import { Button } from "@/components/ui/button";
 import type { ImperativePanelHandle } from "react-resizable-panels";
 
@@ -644,29 +645,10 @@ export function DocumentDetailContent({
 }) {
   const locale = useLocale();
   const t = useTranslations("DetailPanel");
-  const tRef = React.useRef(t);
-  tRef.current = t;
-  const [doc, setDoc] = React.useState<Doc | null>(null);
-  const [error, setError] = React.useState("");
+  const { doc, error } = useDocumentDetail(sourceId, documentId);
   const { timezone } = useApp();
-  // 切换选中文档时不清空旧 doc，避免整块塌陷到 Skeleton 再撑回来造成的侧栏抖动。
-  // 只有首次加载（无历史 doc）才展示 Skeleton；切换视为"刷新"，旧内容原地保留，
-  // 直到新数据到位再整体替换。DocumentPreview 用 key={doc.id} 强制子树重置。
-  // dep 只依赖 id —— t 是 next-intl 每次渲染的新引用，若加入 dep 会让同一文档被
-  // 反复重新 fetch，触发下游 remount 表现为"每次点击都闪一下"。
-  React.useEffect(() => {
-    let alive = true;
-    setError("");
-    api
-      .getDocument(sourceId, documentId)
-      .then((d) => alive && setDoc(d))
-      .catch((e) => alive && setError(e instanceof ApiError ? e.message : tRef.current("document.loadFailed")));
-    return () => {
-      alive = false;
-    };
-  }, [documentId, sourceId]);
 
-  if (error) {
+  if (error && !doc) {
     return <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>;
   }
   if (!doc) {
@@ -696,7 +678,7 @@ export function DocumentDetailContent({
               compact ? "text-[11px]" : "text-xs",
             )}
           >
-            <DocStatusBadge status={doc.status} />
+            <DocumentProcessingBadge document={doc} />
             {parser && (
               <span
                 className="max-w-full truncate"
@@ -707,7 +689,6 @@ export function DocumentDetailContent({
               </span>
             )}
             <span>
-              {Math.min(100, Math.max(0, Math.round(doc.progress)))}% ·{" "}
               {t("document.tokens", { count: formatTokenCount(doc.token_usage, locale) })}
             </span>
             <span>·</span>
@@ -719,6 +700,8 @@ export function DocumentDetailContent({
             <span>·</span>
             <span>{relativeTime(doc.created_at, timezone, locale)}</span>
           </div>
+          <DocumentProcessingProgress document={doc} detail compact={compact} />
+          {error && <p className="text-xs text-destructive" role="status">{error}</p>}
           {doc.error && (
             <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {doc.error}

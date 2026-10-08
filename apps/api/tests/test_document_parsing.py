@@ -25,6 +25,12 @@ from sag_api.parsing.service import PreparedDocument
 from sag_api.sag.dto import ProcessCheckpoint, ProcessOutcome
 
 
+def _document(**fields):
+    """Keep task doubles aligned with the nullable processing snapshot contract."""
+    return SimpleNamespace(processing_run_id=None, processing_stage=None,
+                           processed_chunks=None, total_chunks=None, **fields)
+
+
 def _settings(**overrides: Any) -> Settings:
     return Settings(
         _env_file=None,
@@ -449,7 +455,7 @@ async def test_document_job_sends_parsed_markdown_to_engine(monkeypatch, extensi
     from sag_api.enums import DocumentStatus
     from sag_api.jobs import tasks
 
-    document = SimpleNamespace(
+    document = _document(
         id="doc-1",
         source_id="source-1",
         filename=f"original.{extension}",
@@ -611,7 +617,7 @@ async def test_document_job_persists_successful_mineru_outcome(
     from sag_api.enums import DocumentStatus
     from sag_api.jobs import tasks
 
-    document = SimpleNamespace(
+    document = _document(
         id="doc-mineru",
         source_id="source-1",
         filename="paper.pdf",
@@ -691,7 +697,7 @@ async def test_document_job_persists_mineru_markitdown_fallback(monkeypatch, cap
     from sag_api.enums import DocumentStatus
     from sag_api.jobs import tasks
 
-    document = SimpleNamespace(
+    document = _document(
         id="doc-fallback",
         source_id="source-1",
         filename="paper.pdf",
@@ -798,7 +804,7 @@ async def test_document_job_redacts_parser_failure_from_public_error(
         "Parser failed with Bearer secret-token and sk-secret123 at "
         "https://files.example/result?token=signed-value " + "detail " * 100
     )
-    document = SimpleNamespace(
+    document = _document(
         id="doc-parser-failed",
         source_id="source-1",
         filename="paper.pdf",
@@ -888,7 +894,7 @@ async def test_document_job_preserves_engine_error_before_first_checkpoint(
     from sag_api.jobs import tasks
 
     raw_reason = "engine extraction failed before checkpoint " + "diagnostic " * 40
-    document = SimpleNamespace(
+    document = _document(
         id="doc-engine-failed",
         source_id="source-1",
         filename="paper.pdf",
@@ -967,7 +973,7 @@ async def test_document_job_preserves_engine_error_on_resumed_checkpoint(
     from sag_api.jobs import tasks
 
     raw_reason = "resumed engine extraction failed " + "checkpoint diagnostic " * 30
-    document = SimpleNamespace(
+    document = _document(
         id="doc-resumed-engine-failed",
         source_id="source-1",
         filename="paper.pdf",
@@ -1749,7 +1755,7 @@ def _document_job_fixture(*, document_overrides=None):
         "sag_source_id": None,
     }
     fields.update(document_overrides or {})
-    document = SimpleNamespace(**fields)
+    document = _document(**fields)
     source = SimpleNamespace(id="source-1", sag_source_config_id="sag-source-1")
     job = SimpleNamespace(
         id="job-anydoc", document_id=document.id, progress=0.0, payload={}
@@ -1876,7 +1882,7 @@ async def test_document_job_persists_plain_anydoc_failure_status(monkeypatch):
     from sag_api.enums import DocumentStatus
     from sag_api.jobs import tasks
 
-    document = SimpleNamespace(
+    document = _document(
         id="doc-anydoc-failed",
         source_id="source-1",
         filename="scanned.pdf",

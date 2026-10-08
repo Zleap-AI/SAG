@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 
 import { api, ApiError } from "@/lib/api";
 import { getDiagnosticsStore } from "@/lib/diagnostics";
+import { notifyDocumentChanged } from "@/lib/document-events";
 import {
   beginDocumentMutation,
   deriveDocumentActivity,
@@ -299,6 +300,7 @@ export function useSourceContent(sourceId: string, active = true) {
       }
       if (!isCurrentDocumentSource(mutationSourceId, sourceIdRef.current)) return false;
       await refresh({ background: true });
+      notifyDocumentChanged(mutationSourceId, document.id);
       return true;
     } catch (reason) {
       if (!isCurrentDocumentSource(mutationSourceId, sourceIdRef.current)) return false;
@@ -308,6 +310,7 @@ export function useSourceContent(sourceId: string, active = true) {
         return next;
       });
       await refresh({ background: true });
+      notifyDocumentChanged(mutationSourceId, document.id);
       throw reason;
     }
   }, [refresh, sourceId]);

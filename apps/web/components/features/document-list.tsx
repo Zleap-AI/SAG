@@ -9,7 +9,6 @@ import { ApiError } from "@/lib/api";
 import { getDiagnosticsStore } from "@/lib/diagnostics";
 import {
   deriveDocumentActivity,
-  documentActivityShowsProgress,
   type DocumentAction,
   type DocumentActivity,
 } from "@/lib/document-activity";
@@ -19,7 +18,7 @@ import { hasRecordedTokenUsage } from "@/lib/document-metadata";
 import { documentParserStatus } from "@/lib/document-parser-status";
 import { useDetailPanel } from "@/components/features/detail-panel";
 import { useApp } from "@/components/features/app-shell";
-import { DocumentActivityBadge } from "@/components/features/status-badge";
+import { DocumentProcessingBadge, DocumentProcessingProgress } from "@/components/features/document-processing-progress";
 import { Button } from "@/components/ui/button";
 import { useOctxExports } from "@/components/features/octx-export-provider";
 
@@ -167,7 +166,6 @@ export function DocumentList({
       <div className="space-y-0.5">
         {documents.map((document) => {
           const activity = activities[document.id] ?? deriveDocumentActivity(document);
-          const showProgress = documentActivityShowsProgress(activity.phase);
           const parser = documentParserStatus(document);
           return (
             <div
@@ -191,8 +189,6 @@ export function DocumentList({
                     <span>{formatBytes(document.size_bytes, locale)}</span>
                     <span>·</span>
                     <span>{relativeTime(document.created_at, timezone, locale)}</span>
-                    <span>·</span>
-                    <span>{activity.progress}%</span>
                     {hasRecordedTokenUsage(document.token_usage) && (
                       <>
                         <span>·</span>
@@ -214,16 +210,9 @@ export function DocumentList({
                       {activity.error}
                     </p>
                   )}
-                  {showProgress && (
-                    <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full rounded-full bg-primary/60 transition-[width] duration-300"
-                        style={{ width: `${activity.progress}%` }}
-                      />
-                    </div>
-                  )}
+                  <DocumentProcessingProgress document={document} activity={activity} compact />
                 </div>
-                <DocumentActivityBadge phase={activity.phase} />
+                <DocumentProcessingBadge document={document} activity={activity} />
               </button>
               {actions(document, activity, true)}
             </div>
@@ -237,7 +226,6 @@ export function DocumentList({
     <div className="overflow-hidden rounded-lg border bg-card">
       {documents.map((document, index) => {
         const activity = activities[document.id] ?? deriveDocumentActivity(document);
-        const showProgress = documentActivityShowsProgress(activity.phase);
         const parser = documentParserStatus(document);
         return (
           <div
@@ -274,13 +262,9 @@ export function DocumentList({
                     </span>
                   </>
                 )}
-                <span>·</span>
-                <span>
-                  {activity.progress}%
-                  {hasRecordedTokenUsage(document.token_usage) && (
-                    <> · {t("tokens", { count: formatTokenCount(document.token_usage, locale) })}</>
-                  )}
-                </span>
+                {hasRecordedTokenUsage(document.token_usage) && (
+                  <><span>·</span><span>{t("tokens", { count: formatTokenCount(document.token_usage, locale) })}</span></>
+                )}
                 {activity.error && (
                   <>
                     <span>·</span>
@@ -299,16 +283,9 @@ export function DocumentList({
                   {parser.progressKey ? ` · ${t(`parser.${parser.progressKey}`)}` : ""}
                 </div>
               )}
-              {showProgress && (
-                <div className="mt-1.5 h-1 w-full max-w-56 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full rounded-full bg-primary/60 transition-[width] duration-300"
-                    style={{ width: `${activity.progress}%` }}
-                  />
-                </div>
-              )}
+              <DocumentProcessingProgress document={document} activity={activity} />
             </button>
-            <DocumentActivityBadge phase={activity.phase} />
+            <DocumentProcessingBadge document={document} activity={activity} />
             {actions(document, activity)}
           </div>
         );

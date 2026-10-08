@@ -182,15 +182,19 @@ docker compose up -d --build
 首次使用：
 
 1. 填写名字，创建或恢复本地身份。
-2. 使用 302.AI 快速配置，或进入 **设置 → 模型**，填写任意 OpenAI 兼容的 LLM 与 Embedding 接口。
+2. 选择 302.AI 或 DeepSeek 快速配置，也可进入 **设置 → 模型**自行配置模型连接。
 3. 创建信源并上传文档，等待状态变为**就绪**。
 4. 开始检索、打开原文，或直接进行带引用的对话。
+
+DeepSeek 使用 Flash 非思考模式。两种快速配置均可选择 302.AI、智谱或阿里云百炼的向量服务，使用不同厂商时需分别填写 Key。
 
 没有模型密钥时，界面和服务仍可启动。Embedding 用于索引与向量检索；LLM 用于事件抽取、查询理解和生成回答。
 
 #### 模型配置优先级
 
 Docker Compose 或 `.env` 中的 `SAG_LLM_*` 用于提供首次启动时的模型默认值。管理员在 Web 设置页保存模型配置后，后续抽取和生成任务会直接使用已持久化的设置，无需重启服务。
+
+默认向量模型为 `Qwen/Qwen3-Embedding-4B`。升级已有 BGE 索引时，请保留 `SAG_EMBEDDING_MODEL=bge-large-en-v1.5`；如需切换模型，请先完成已有索引文档的删除，再更换模型并重新导入。
 
 如需由部署环境强制统一配置，请设置 `SAG_LOCK_LLM_CONFIG=true`。SAG 会在设置页明确显示生成模型字段已锁定，并持续使用 `SAG_LLM_*` 的值。此时请修改 Docker Compose 或 `.env`，再重新创建 API 容器使改动生效。API Key 始终由部署环境管理，Settings API 不会返回密钥明文。
 
@@ -204,9 +208,7 @@ Docker Compose 或 `.env` 中的 `SAG_LLM_*` 用于提供首次启动时的模�
 
 创建信源后，可以添加 Markdown、文本、PDF、Office 等支持的文档。SAG 会先将文档规范化为 Markdown，再在后台完成分块、向量化、事件抽取和实体抽取。
 
-文档进度的前 20% 预留给解析、分块和向量化。抽取从 20% 开始，完成一半分块时显示 60%；整批保存成功前，进度最高为 99%，成功后到 100%。
-
-失败或暂停的文档保留最后进度。恢复时复用已入库的分块和向量，但会整批重新抽取，抽取进度重新从 20% 开始。
+上传时显示真实传输进度。后台处理时，文档列表和详情显示当前阶段与可用的分块计数（例如“已处理 810 / 2,033 个分块”），不显示整体百分比。文档变为**就绪**后即可检索。
 
 <p align="center">
   <img src="docs/assets/readme/product-import.png" alt="向 SAG 导入文档" width="940" />
@@ -474,7 +476,7 @@ async def main() -> None:
             model="qwen3.6-flash",
         ),
         # 不填写 api_key/base_url 时，Embedding 会复用 LLM 接口。
-        embedding=EmbeddingConfig(model="bge-large-en-v1.5"),
+        embedding=EmbeddingConfig(model="Qwen/Qwen3-Embedding-4B"),
         language="zh",
     )
 
@@ -515,7 +517,7 @@ export SAG_STORAGE_MODE=normal
 export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://your-openai-compatible-host/v1
 export LLM_MODEL=qwen3.6-flash
-export EMBEDDING_MODEL=bge-large-en-v1.5
+export EMBEDDING_MODEL=Qwen/Qwen3-Embedding-4B
 ```
 
 ```python

@@ -16,7 +16,7 @@ from typing import Any
 from sag_api.core.config import Settings
 
 _COMPLETION_CALL_TYPES = {"completion", "acompletion"}
-_DEEPSEEK_V4_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro"}
+_DEEPSEEK_THINKING_SWITCH_MODELS = {"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"}
 
 
 @dataclass(frozen=True)
@@ -141,9 +141,9 @@ def _is_openai_route(model: str, settings: Settings) -> bool:
     return settings.llm_provider == "openai"
 
 
-def _is_deepseek_v4(model: str) -> bool:
+def _has_deepseek_thinking_switch(model: str) -> bool:
     model_id = model.rsplit("/", 1)[-1].casefold()
-    return model_id in _DEEPSEEK_V4_MODELS
+    return model_id in _DEEPSEEK_THINKING_SWITCH_MODELS
 
 
 def _with_allowed_openai_param(request: dict[str, Any], name: str) -> None:
@@ -203,7 +203,7 @@ def apply_litellm_completion_policy(
         if normalized.get("stream"):
             normalized["stream_options"] = {**(normalized.get("stream_options") or {}), "include_usage": True}
         return normalized
-    if _is_deepseek_v4(model):
+    if _has_deepseek_thinking_switch(model):
         extra_body = dict(normalized.get("extra_body") or {})
         extra_body["thinking"] = {"type": "disabled"}
         normalized["extra_body"] = extra_body

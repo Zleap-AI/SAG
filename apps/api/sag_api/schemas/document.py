@@ -35,6 +35,9 @@ class DocumentOut(BaseModel):
     chunk_count: int
     event_count: int
     progress: int
+    processing_stage: str | None = None
+    processed_chunks: int | None = None
+    total_chunks: int | None = None
     token_usage: int
     error: str | None
     error_layer: str | None = None

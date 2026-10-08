@@ -3,8 +3,9 @@ from __future__ import annotations
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
+from sag_api.core.embedding_presets import EmbeddingSetupProvider
 from sag_api.core.model_providers import ModelProviderId
 from sag_api.core.responses import ResponsesProviderId
 from sag_api.enums import SearchStrategy
@@ -12,14 +13,28 @@ from sag_api.enums import SearchStrategy
 
 class QuickModelSetupRequest(BaseModel):
     api_key: str = Field(min_length=1, max_length=500)
+    embedding_provider: EmbeddingSetupProvider = "302"
+    embedding_api_key: str | None = Field(default=None, min_length=1, max_length=500)
 
-    @field_validator("api_key")
+    @field_validator("api_key", "embedding_api_key")
     @classmethod
-    def normalize_api_key(cls, value: str) -> str:
+    def normalize_api_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         value = value.strip()
         if not value:
             raise ValueError("API Key 不能为空")
         return value
+
+    @model_validator(mode="after")
+    def require_embedding_key(self) -> QuickModelSetupRequest:
+        if self.embedding_provider != "302" and not self.embedding_api_key:
+            raise ValueError("请为所选向量服务填写独立 API Key")
+        return self
+
+
+class DeepSeekQuickModelSetupRequest(QuickModelSetupRequest):
+    embedding_api_key: str = Field(min_length=1, max_length=500)
 
 
 class SystemPreferencesUpdate(BaseModel):

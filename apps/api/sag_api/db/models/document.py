@@ -26,6 +26,11 @@ class Document(IDMixin, TimestampMixin, Base):
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     event_count: Mapped[int] = mapped_column(Integer, default=0)
     progress: Mapped[int] = mapped_column(Integer, default=0)
+    # Display-only facts for the current execution, separate from durable checkpoints.
+    processing_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    processed_chunks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_chunks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    processing_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     token_usage: Mapped[int] = mapped_column(BigInteger, default=0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 失败归属：责任层（api/engine/llm/store）与链路环节（parse/chunk/extract/...），
