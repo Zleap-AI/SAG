@@ -3473,8 +3473,8 @@ requires-dist = [
     { name = "trafilatura", specifier = ">=1.8" },
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
-    { name = "zleap-sag", specifier = "==0.13.0" },
-    { name = "zleap-sag", extras = ["postgres"], marker = "extra == 'postgres'", specifier = "==0.13.0" },
+    { name = "zleap-sag", specifier = "==0.14.0" },
+    { name = "zleap-sag", extras = ["postgres"], marker = "extra == 'postgres'", specifier = "==0.14.0" },
 ]
 provides-extras = ["postgres", "dev", "desktop"]
 
@@ -4177,7 +4177,7 @@ wheels = [
 
 [[package]]
 name = "zleap-sag"
-version = "0.13.0"
+version = "0.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -4197,9 +4197,9 @@ dependencies = [
     { name = "tokenizers" },
     { name = "tzdata" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bf/69/fbc8a16f141380d03bb754399fca03b6ed9d0f1dd2c54a329f0f249b1d7d/zleap_sag-0.13.0.tar.gz", hash = "sha256:17f915fb5c2ee9baee44048d03f5eb6937138e73c2c88e062f39111f4ab9519b", size = 3846713, upload-time = "2026-09-17T09:10:17.211Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d6/bd/c37d052e0e27f6702d2c962082f6c309b059b193a79de4d9101c5a9cba90/zleap_sag-0.14.0.tar.gz", hash = "sha256:8e9ec0fe84c2cb96fbf42d57850960ea4f8d291dab56ba17534ad60fdc29b7c8", size = 3881145, upload-time = "2026-10-08T12:06:59.618Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9f/1e/948587e74ddb5fc3ee9f8e0af6876ab389f48882b357e481c506fb62d12c/zleap_sag-0.13.0-py3-none-any.whl", hash = "sha256:2beee6f89a66af20adda6c3e96321a99113de6f682d2f2a023d6f50297bd41a9", size = 3304995, upload-time = "2026-09-17T09:10:15.272Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/30/6640fc52677eeaf0a74abe13b2374a475eb94448932cf2bf6e85e29f8606/zleap_sag-0.14.0-py3-none-any.whl", hash = "sha256:c58d12f1af0c07010a966da16112337ce92734b164832af7a708f049ad7bc429", size = 3327527, upload-time = "2026-10-08T12:06:57.419Z" },
 ]
 
 [package.optional-dependencies]

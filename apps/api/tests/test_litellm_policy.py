@@ -283,3 +283,69 @@ async def test_explicit_mode_does_not_auto_downgrade(
     finally:
         uninstall_litellm_policy(handle)
     assert calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("contract", ["minimal", "rich"])
+async def test_engine_extraction_sends_required_fields_through_app_policy(monkeypatch, contract):
+    """Exercise the installed engine and SAG request policy together for #206."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import zleap.sag
+    from zleap.sag.core.adapters.defaults import OpenAILLMAdapter
+    from zleap.sag.modules.extract.config import ExtractConfig, ExtractionWritePlan
+    from zleap.sag.modules.extract.processor import EventProcessor
+    from zleap.sag.pipeline import RelatedEventContextOptions
+
+    from sag_api.sag.config_builder import build_engine_config
+
+    requests = []
+
+    async def send(_self, request, **_kwargs):
+        body = json.loads(request.content)
+        requests.append(body)
+        schema = body["response_format"]["json_schema"]["schema"]
+        for definition in [schema, *schema["$defs"].values()]:
+            assert set(definition["required"]) == set(definition["properties"])
+        event = {
+            "title": "Acme 融资", "content": "Acme 完成融资。",
+            "entities": [{"type": "organization", "name": "Acme", "description": "融资方"}],
+        }
+        if contract == "rich":
+            event.update(reason="文档描述融资事项。", references=[1])
+        # Local defaults remain valid even if a compatible provider omits them.
+        payload = {"type": "response", "data": {"items": [event]}}
+        return httpx.Response(200, request=request, json={
+            "id": "schema-test", "object": "chat.completion", "created": 1, "model": "gpt-6-luna",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": json.dumps(payload)},
+                         "finish_reason": "stop"}],
+        })
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    configured = Settings(
+        _env_file=None, llm_provider="openai", llm_model="gpt-6-luna",
+        llm_api_key="schema-test-key", llm_base_url="https://gateway.example/v1",
+        llm_structured_output_mode="json_schema", llm_max_retries=0, llm_temperature=1,
+    )
+    processor = EventProcessor(
+        llm_client=OpenAILLMAdapter(scenario="extract", config=build_engine_config(configured).llm),
+        embedding=object(), session_factory=object(), repositories=object(),
+        prompt_manager=SimpleNamespace(prompts_dir=Path(zleap.sag.__file__).parent / "prompts", language="zh"),
+        config=ExtractConfig(
+            storage_mode="normal", write_plan=ExtractionWritePlan.from_storage_mode("normal"),
+            data_source_id="ds", source_type="ARTICLE", source_id="source", source_version="v1",
+            chunk_ids=("chunk",), related_events=RelatedEventContextOptions(enabled=False),
+            contract=contract, max_retries=0,
+        ),
+    )
+    await processor.initialize([SimpleNamespace(type="organization", name="Organization", description="Organization")])
+    handle = install_litellm_policy(configured)
+    try:
+        result = await processor.process([SimpleNamespace(content="Acme 完成融资。")], {}, "ARTICLE")
+    finally:
+        uninstall_litellm_policy(handle)
+
+    assert len(requests) == 1
+    assert result["data"]["items"][0]["children"] == []
+    assert result["data"]["items"][0]["is_valid"] is True
