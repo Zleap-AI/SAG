@@ -19,14 +19,15 @@ from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
 @pytest.mark.asyncio
 @pytest.mark.parametrize("chunk_mode", ["standard", "heading_strict"])
 @pytest.mark.parametrize("cached", [False, True])
-async def test_prepared_spreadsheet_reaches_parser_with_original_records(tmp_path, cached, chunk_mode):
+@pytest.mark.parametrize("amounts", [(10, 20), (100, -20), (10.5, -20.25)])
+async def test_prepared_spreadsheet_reaches_parser_with_original_records(tmp_path, cached, chunk_mode, amounts):
     original = tmp_path / "costs.XLSX"
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "成本"
     for row in [
-        ("产品A", None), ("项目", "金额"), ("材料", 10), ("以上成本合计", 10),
-        ("产品B", None), ("项目", "金额"), ("材料", 20), ("以上成本合计", 20),
+        ("产品A", None), ("项目", "金额"), ("材料", amounts[0]), ("以上成本合计", amounts[0]),
+        ("产品B", None), ("项目", "金额"), ("材料", amounts[1]), ("以上成本合计", amounts[1]),
     ]:
         sheet.append(row)
     workbook.save(original)
@@ -61,6 +62,8 @@ async def test_prepared_spreadsheet_reaches_parser_with_original_records(tmp_pat
     groups = parsed_documents[0].table_structure.groups
     assert [g.metadata["identity_value"] for g in groups] == ["产品A", "产品B"]
     assert [(g.cell_range.row_start, g.cell_range.row_end) for g in groups] == [(1, 4), (5, 8)]
+    # General-format numbers must reach the engine's record groups without losing zeroes (#217).
+    assert [g.metadata["display_rows"][2][1] for g in groups] == [str(amount) for amount in amounts]
 
 
 @pytest.mark.asyncio
