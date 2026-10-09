@@ -48,4 +48,4 @@ jobs:
           pnpm run pack
       # Configure the Zleap-AI/SAG trusted publisher in npm before creating a release tag.
       - name: Publish with npm trusted publishing
-        run: npm publish artifacts/zleap-ai-dsh-sag-*.tgz --access public --provenance
+        run: npm publish ./artifacts/zleap-ai-dsh-sag-*.tgz --access public --provenance
