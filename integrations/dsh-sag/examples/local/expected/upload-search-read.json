@@ -1,0 +1,78 @@
+{
+  "tools": [
+    "sag_status",
+    "sag_list_sources",
+    "sag_create_source",
+    "sag_search",
+    "sag_read",
+    "sag_list_documents",
+    "sag_get_document",
+    "sag_reprocess_document",
+    "sag_delete_document",
+    "sag_upload_file",
+    "sag_ingest_text"
+  ],
+  "sources": {
+    "sources": [{
+      "id": "source-1",
+      "name": "个人知识库",
+      "description": "本地 fixture",
+      "status": "active",
+      "documentCount": 1,
+      "chunkCount": 1
+    }]
+  },
+  "status": {
+    "status": "ready",
+    "name": "SAG 知识库",
+    "sourceCount": 1,
+    "capabilities": [
+      "sources.list",
+      "sources.create",
+      "knowledge.search",
+      "knowledge.read",
+      "documents.list",
+      "documents.get",
+      "documents.upload",
+      "documents.ingest",
+      "documents.reprocess",
+      "documents.delete"
+    ]
+  },
+  "upload": {
+    "accepted": true,
+    "documentId": "document-1",
+    "sourceId": "source-1",
+    "status": "pending"
+  },
+  "document": {
+    "id": "document-1",
+    "sourceId": "source-1",
+    "filename": "uploaded.md",
+    "status": "ready",
+    "progress": 100,
+    "chunkCount": 1,
+    "error": null,
+    "errorLayer": null,
+    "errorStage": null
+  },
+  "search": {
+    "query": "hello SAG",
+    "evidences": [{
+      "evidenceRef": "eyJ2IjoxLCJzb3VyY2VJZCI6InNvdXJjZS0xIiwiY2h1bmtJZCI6ImNodW5rLTEifQ",
+      "sourceId": "source-1",
+      "sourceName": "个人知识库",
+      "chunkId": "chunk-1",
+      "title": "Uploaded",
+      "excerpt": "# Uploaded\n\nhello SAG",
+      "score": 0.99,
+      "rank": 1
+    }]
+  },
+  "read": {
+    "title": "source-1/chunk-1",
+    "content": "# Uploaded\n\nhello SAG",
+    "offset": 0,
+    "totalChars": 21
+  }
+}

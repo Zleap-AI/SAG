@@ -1,0 +1,15 @@
+node_modules/
+lib/
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.tgz
+artifacts/
+.DS_Store
+
+# Local design, implementation-plan, and generated architecture material.
+docs/*
+!docs/releasing.md
+!docs/usage.md
+!docs/usage.zh.md

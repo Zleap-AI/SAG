@@ -1,0 +1,80 @@
+name: dsh-sag CI
+
+on:
+  pull_request:
+    paths:
+      - integrations/dsh-sag/**
+      - apps/api/**
+      - .github/workflows/dsh-sag-*.yml
+  push:
+    branches: [main, dev]
+    paths:
+      - integrations/dsh-sag/**
+      - apps/api/**
+      - .github/workflows/dsh-sag-*.yml
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dsh-sag-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: dsh 0.2.0-rc.2 and zleap-sag 0.14.0
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: integrations/dsh-sag
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.7.0
+          run_install: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install locked dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          python -m pip install uv==0.10.8
+          uv sync --project python/runtime --frozen
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+      - run: pnpm run test
+      - run: pnpm run test:python
+      - name: Verify independent release boundary
+        run: |
+          node --test scripts/tests/release.test.mjs
+          node scripts/check-release.mjs
+      - name: Install exact host
+        run: |
+          npm install --prefix "$RUNNER_TEMP/dsh-host" --no-audit --no-fund @deepseek-ai/dsh@0.2.0-rc.2
+          echo "DSH_BIN=$RUNNER_TEMP/dsh-host/node_modules/.bin/dsh" >> "$GITHUB_ENV"
+      - name: Verify clean package installation and Web startup
+        run: pnpm run check:pack
+      - name: Verify real SAG upload, processing, retrieval and restart
+        run: |
+          uv sync --project ../../apps/api --frozen --extra dev
+          pnpm run build
+          node scripts/run-live-sag.mjs --evidence "$RUNNER_TEMP/dsh-sag-acceptance"
+      - name: Keep acceptance results and process logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dsh-sag-acceptance-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/dsh-sag-acceptance/*.log
+            ${{ runner.temp }}/dsh-sag-acceptance/live-summary.json
+            ${{ runner.temp }}/dsh-sag-acceptance/registered-tools.json
+            ${{ runner.temp }}/dsh-sag-acceptance/after-api-restart.json

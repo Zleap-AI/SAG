@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dsh-sag-runtime"
+version = "0.1.0"
+description = "Managed zleap-sag sidecar for the dsh-sag plugin"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.5,<3",
+  "zleap-sag==0.14.0",
+]
+
+[project.scripts]
+dsh-sag-runtime = "dsh_sag_runtime.__main__:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dsh_sag_runtime"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

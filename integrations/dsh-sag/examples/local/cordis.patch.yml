@@ -1,0 +1,9 @@
+- insert:
+    - id: dsh-sag
+      name: '@zleap-ai/dsh-sag'
+      config:
+        pythonCommand: python3
+        envFile: ./sag.env
+        namespaces:
+          - id: product-docs
+            label: 产品文档
