@@ -1,0 +1,5 @@
+- insert:
+    - id: dsh-sag
+      name: '@zleap-ai/dsh-sag'
+      config:
+        mode: local

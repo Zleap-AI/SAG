@@ -1,0 +1,31 @@
+{
+  "name": "dsh-sag-workspace",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "pnpm --filter @zleap-ai/dsh-sag build",
+    "typecheck": "pnpm --filter @zleap-ai/dsh-sag typecheck",
+    "lint": "eslint packages/dsh-sag/src --max-warnings=0",
+    "test": "vitest run",
+    "test:python": "uv run --project python/runtime pytest python/runtime/tests -q",
+    "check:pack": "node scripts/check-pack.mjs",
+    "setup:runtime": "node scripts/setup-runtime.mjs",
+    "dsh-sag": "node packages/dsh-sag/lib/cli.js",
+    "pack": "node scripts/pack.mjs",
+    "check:release": "node scripts/check-release.mjs",
+    "test:release": "node --test scripts/tests/release.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "esbuild": "0.28.2",
+    "eslint": "^9.34.0",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.41.0",
+    "vitest": "^3.2.4"
+  }
+}

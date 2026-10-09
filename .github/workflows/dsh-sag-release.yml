@@ -1,0 +1,51 @@
+name: dsh-sag npm Release
+
+on:
+  push:
+    tags: ['dsh-sag-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dsh-sag-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository == 'Zleap-AI/SAG'
+    uses: ./.github/workflows/dsh-sag-ci.yml
+
+  publish:
+    if: github.repository == 'Zleap-AI/SAG'
+    needs: [verify]
+    runs-on: ubuntu-24.04
+    environment: dsh-sag-npm
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: integrations/dsh-sag
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.7.0
+          run_install: false
+      - name: Require matching plugin tag on main
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          node scripts/check-release.mjs "$GITHUB_REF_NAME"
+      - name: Build npm archive
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run pack
+      # Configure the Zleap-AI/SAG trusted publisher in npm before creating a release tag.
+      - name: Publish with npm trusted publishing
+        run: npm publish artifacts/zleap-ai-dsh-sag-*.tgz --access public --provenance

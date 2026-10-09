@@ -316,6 +316,20 @@ cp -r "$SKILL_SRC/skill" ~/.codex/skills/sag-knowledge
   <img src="docs/assets/readme/product-mcp.png" alt="SAG 知识库 MCP 集成设置" width="940" />
 </p>
 
+### 在 DeepSeek Harness 中使用 SAG
+
+通过 `dsh-sag` 将 SAG 知识库接入 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)。当前插件 **dsh-sag 0.2.0** 支持 **DeepSeek Harness 0.2.0-rc.2**。
+
+启动 SAG，待 dsh-sag 0.2.0 发布到 npm 后安装并运行插件：
+
+```sh
+dsh plugin --profile web add @zleap-ai/dsh-sag@0.2.0
+dsh plugin --profile web exec dsh-sag doctor
+dsh --profile web
+```
+
+在 dsh 中说：“在 SAG 中查找上传限制，并给出原文依据。”连接方式和插件能力详见[插件使用指南](integrations/dsh-sag/docs/usage.zh.md)。
+
 ### 作为模型被调用（OpenAI 兼容）
 
 SAG 暴露一个 OpenAI Chat Completions 端点，检索与引用行为和站内对话一致：
@@ -407,6 +421,7 @@ apps/
     │   └── tools/          内置工具与远端 MCP Agent 工具
     └── sag_agent/          与框架无关的 Agent Runtime Core
 deploy/                     部署初始化资源
+integrations/dsh-sag/       独立发布的 DeepSeek Harness 插件及 embedded 运行时
 docs/assets/readme/         README 配图与示意图
 ```
 

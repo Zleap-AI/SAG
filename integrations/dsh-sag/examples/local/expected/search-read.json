@@ -1,0 +1,20 @@
+{
+  "tools": ["sag_search", "sag_read"],
+  "search": {
+    "query": "DW-2412P30 上传限制",
+    "evidences": [{
+      "evidenceRef": "eyJjIjoiY2h1bmstMSIsIm4iOiJwcm9kdWN0LWRvY3MiLCJzIjoibWFudWFsIiwidiI6MX0",
+      "namespaceId": "product-docs",
+      "sourceId": "manual",
+      "title": "上传说明",
+      "excerpt": "DW-2412P30 单文件上传上限为 100 MiB。",
+      "score": 0.98
+    }]
+  },
+  "read": {
+    "title": "上传说明",
+    "content": "DW-2412P30 单文件上传上限为 100 MiB。",
+    "offset": 0,
+    "totalChars": 28
+  }
+}

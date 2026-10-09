@@ -316,6 +316,20 @@ If you can't install the CLI, open **Settings → Integrations → Knowledge MCP
   <img src="docs/assets/readme/product-mcp.png" alt="SAG Knowledge MCP integration settings" width="940" />
 </p>
 
+### Use SAG in DeepSeek Harness
+
+Connect your SAG knowledge base to [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) with `dsh-sag`. The current plugin, **dsh-sag 0.2.0**, supports **DeepSeek Harness 0.2.0-rc.2**.
+
+Start SAG. After dsh-sag 0.2.0 is published to npm, install and run the plugin:
+
+```sh
+dsh plugin --profile web add @zleap-ai/dsh-sag@0.2.0
+dsh plugin --profile web exec dsh-sag doctor
+dsh --profile web
+```
+
+Ask dsh: “Search SAG for the upload limit and cite the original text.” See the [plugin usage guide](integrations/dsh-sag/docs/usage.md) for connection options and supported capabilities.
+
 ### Use SAG as a model (OpenAI-compatible)
 
 SAG exposes an OpenAI Chat Completions endpoint with the same retrieval and citation behavior as the built-in chat:
@@ -405,6 +419,7 @@ apps/
     │   └── tools/          Built-in and remote MCP Agent tools
     └── sag_agent/          Framework-independent Agent runtime core
 deploy/                     Deployment initialization assets
+integrations/dsh-sag/       Independently published DeepSeek Harness plugin and embedded runtime
 docs/assets/readme/         README screenshots and diagrams
 ```
 
