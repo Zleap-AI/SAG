@@ -262,6 +262,9 @@ Switch a source from list view to graph view to inspect the events, entities, an
 
 ### MCP guide
 
+To give SAG's assistant optional web search and page fetching without a Parallel
+account or API key, use the [Parallel Search MCP example](examples/parallel-search/README.md).
+
 The recommended path is two steps: **CLI** mounts the MCP, **Skill** teaches the Agent how to explore it. Together they give you a complete knowledge retrieval setup with zero hand-edited config.
 
 #### Step 1: mount MCP with the CLI

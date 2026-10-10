@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "parallel-search": {
+      "url": "https://search.parallel.ai/mcp",
+      "headers": {
+        "User-Agent": "SAG/parallel-search-example"
+      }
+    }
+  }
+}
