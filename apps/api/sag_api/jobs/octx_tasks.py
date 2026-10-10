@@ -36,8 +36,11 @@ async def _record_transfer_error(
     transfer = await session.get(OctxTransfer, transfer_id)
     if transfer is None:
         return
-    retryable = bool(getattr(error, "retryable", False))
-    if retryable:
+    cancelled = transfer.cancellation_requested or transfer.status is OctxTransferStatus.CANCELLED
+    retryable = not cancelled and bool(getattr(error, "retryable", False))
+    if cancelled:
+        transfer.status = OctxTransferStatus.CANCELLED
+    elif retryable:
         transfer.status = retry_status
     elif transfer.status not in {
         OctxTransferStatus.READY,
@@ -69,7 +72,7 @@ async def _record_transfer_error(
     append_octx_trace(
         transfer,
         stage=trace_stage,
-        state="retrying" if retryable else "failed",
+        state="cancelled" if cancelled else "retrying" if retryable else "failed",
         details={
             "job_id": job_id,
             "source_id": transfer.target_source_id,

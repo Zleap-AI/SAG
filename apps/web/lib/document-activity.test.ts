@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import type { BackgroundJob, Doc } from "./types";
-import enMessages from "../messages/en-US.json";
-import zhMessages from "../messages/zh-CN.json";
 import {
   beginDocumentMutation,
   deriveDocumentActivity,
@@ -25,6 +23,7 @@ function document(overrides: Partial<Doc> = {}): Doc {
     content_type: "application/pdf",
     size_bytes: 1_024,
     status: "failed",
+    has_publication: false,
     chunk_count: 10,
     event_count: 4,
     progress: 52,
@@ -54,9 +53,10 @@ function job(overrides: Partial<BackgroundJob> = {}): BackgroundJob {
 }
 
 describe("document activity", () => {
-  it("describes deletion as immediate removal with automatic background cleanup", () => {
-    expect(zhMessages.DocumentList.deleting).toBe("文档已移除，后台清理将自动完成");
-    expect(enMessages.DocumentList.deleting).toBe("Document removed; background cleanup will finish automatically");
+  it("offers manual continuation without polling a paused cleanup receipt", () => {
+    expect(deriveDocumentActivity(document({ status: "deleting", deletion_job: job({ type: "delete_document", status: "paused" }) }))).toMatchObject({
+      phase: "delete-paused", busy: false, canDelete: true, poll: false,
+    });
   });
   it("keeps a failed checkpoint visible while requeueing", () => {
     const doc = document();

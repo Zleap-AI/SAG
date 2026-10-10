@@ -142,7 +142,7 @@ async def create_export_transfer(
     ready, excluded = _export_document_state(list(documents))
     if not ready:
         raise ConflictError(
-            "OCTX source has no READY documents to export",
+            "OCTX source has no published documents to export",
             code=ErrorCode.OCTX_SOURCE_NOT_EXPORTABLE,
             layer=ErrorLayer.API,
             stage=ErrorStage.OCTX_EXPORT,
@@ -330,9 +330,9 @@ async def create_document_export_transfer(
     document = await session.get(Document, document_id)
     if document is None or document.source_id != source_id or not document.is_active:
         raise NotFoundError("document not found")
-    if document.status is not DocumentStatus.READY or not document.sag_source_id:
+    if not document.has_publication:
         raise ConflictError(
-            "only READY documents can be exported as OCTX",
+            "only published documents can be exported as OCTX",
             code=ErrorCode.OCTX_SOURCE_NOT_EXPORTABLE,
             layer=ErrorLayer.API,
             stage=ErrorStage.OCTX_EXPORT,
@@ -354,7 +354,7 @@ async def create_document_export_transfer(
         {
             "id": document.id,
             "article_id": str(document.sag_source_id),
-            "status": document.status.value,
+            "status": DocumentStatus.READY.value,
         }
     ]
     content_revision = binding.content_revision if binding is not None else 0
@@ -551,12 +551,12 @@ async def execute_export(
         not selected_document_ids
         or len(selected_documents) != len(selected_document_ids)
         or any(
-            document.status is not DocumentStatus.READY
+            not document.has_publication
             or str(document.sag_source_id or "") != selected_article_ids[index]
             for index, document in enumerate(selected_documents)
         )
     ):
-        raise ConflictError("OCTX frozen READY selection changed and is no longer exportable")
+        raise ConflictError("OCTX frozen publication selection changed and is no longer exportable")
 
     transition_transfer(transfer, OctxTransferStatus.EXPORTING)
     transfer.progress = 0.1

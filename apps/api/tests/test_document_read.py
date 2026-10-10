@@ -1,4 +1,4 @@
-"""按行阅读（REST `/read` 与 MCP `read`）：PDF / Office 读解析后的 Markdown，文本类仍读原文件。"""
+"""按行阅读（REST `/read` 与 MCP `read`）：统一读取当前发布正文；OCTX 可读安装中的发布工件。"""
 
 import asyncio
 import uuid
@@ -104,10 +104,10 @@ async def test_read_returns_parsed_markdown_for_binary_documents(tmp_path):
             assert docx_resp.status_code == 200, docx_resp.text
             assert docx_resp.json()["lines"] == ["DOCX 解析正文\n"]
 
-            # 文本类保持原行为：读原文件而不是入库 Markdown。
+            # 文本同样读发布正文，避免候选原文件覆盖旧版证据。
             txt_resp = await rest_read("txt")
             assert txt_resp.status_code == 200, txt_resp.text
-            assert txt_resp.json()["lines"] == ["原文第一行\n", "原文第二行\n"]
+            assert txt_resp.json()["lines"] == ["规范化后的文本\n"]
 
             pending_resp = await rest_read("pending")
             assert pending_resp.status_code == 404
@@ -132,8 +132,8 @@ async def test_read_returns_parsed_markdown_for_binary_documents(tmp_path):
                     assert "PK" not in docx_text
 
                     txt_text = await mcp_read("txt")
-                    assert "原文第一行" in txt_text
-                    assert "规范化后的文本" not in txt_text
+                    assert "规范化后的文本" in txt_text
+                    assert "原文第一行" not in txt_text
 
                     pending_text = await mcp_read("pending")
                     assert "尚无可读文本" in pending_text
@@ -181,6 +181,7 @@ async def octx_read_context(tmp_path):
         status=DocumentStatus.READY,
         sag_source_id="octx-article",
         octx_installation_id="installation",
+        control_revision=1,
         is_active=True,
     )
     try:

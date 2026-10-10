@@ -7,8 +7,10 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from document_requests import document_request
 
 from sag_api.enums import DocumentStatus
+from tests.document_requests import UncommittedDocumentManager, controller_processing_identity, processing_parameters
 
 
 @pytest.mark.asyncio
@@ -46,467 +48,117 @@ async def test_public_document_reads_hide_logically_deleted_rows(hidden_status):
             await get_public_document(session, source, document.id)
 
 
+@pytest.mark.parametrize("language", ["zh", "en"])
+@pytest.mark.parametrize(("entities", "expected"), [(0, 1), (8, 8), (99, 20)])
+async def test_public_request_preserves_contract_guidance_and_bounded_options(tmp_path, language, entities, expected):
+    from document_requests import document_request
 
-@pytest.mark.asyncio
-async def _processor_with_fake_engine(
-    *,
-    ingest=None,
-    extract=None,
-    max_concurrency=30,
-    chunk_mode="standard",
-    document_title="doc",
-    language="zh",
-    max_entities_per_event=20,
-):
     from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
 
-    engine = SimpleNamespace(
-        ingest=ingest,
-        extract=extract,
-        resources=SimpleNamespace(prompts=SimpleNamespace(language=language)),
-    )
+    markdown = tmp_path / "config.md"
+    markdown.write_text("# Test\nA documented knowledge fact.")
     processor = IncrementalDocumentProcessor(
-        engine,
+        SimpleNamespace(resources=SimpleNamespace(prompts=SimpleNamespace(language=language))),
         "source-config",
-        max_concurrency=max_concurrency,
+        max_concurrency=30,
         chunk_max_tokens=1000,
-        chunk_mode=chunk_mode,
-        document_title=document_title,
-        max_entities_per_event=max_entities_per_event,
+        chunk_mode="heading_strict",
+        document_title="Document title",
+        max_entities_per_event=entities,
     )
-    return processor
-
-
-def _chunk_set_ref(*, chunk_ids=("c1", "c2"), generation_id="gen-1"):
-    from zleap.sag.pipeline import ChunkSetRef, SourceType, WriteStatus
-
-    return ChunkSetRef(
-        data_source_id="source-config",
-        source_type=SourceType.ARTICLE,
-        source_id="article-1",
-        source_version="sv-1",
-        chunk_version="cv-1",
-        generation_id=generation_id,
-        chunk_ids=tuple(chunk_ids),
-        client_key_to_chunk_id={},
-        relation_status=WriteStatus.SUCCEEDED,
-        vector_status=WriteStatus.SUCCEEDED,
+    request = await processor.build_request(
+        markdown,
+        context=document_request("source-config").context,
+        input_id="input-config",
     )
-
-
-def _event_ref(*, event_ids=("e1",), stats=None, zero_chunks=()):
-    from types import SimpleNamespace
-
-    return SimpleNamespace(
-        event_ids=tuple(event_ids),
-        event_count=len(event_ids),
-        stats=dict(stats or {"zero_event_chunks": list(zero_chunks)}),
-    )
-
-
-@pytest.mark.asyncio
-async def test_ingest_builds_generation_checkpoint_and_outcome():
-    """0.8.2:ingest 返回的 ChunkSetRef 定位信息(generation/version)固化进断点。"""
-    from sag_api.sag.dto import ProcessCheckpoint, ProcessOutcome
-
-    captured: dict = {}
-
-    async def ingest(path, *, descriptor, chunk_options, index_options, observer):
-        captured["path"] = path
-        captured["chunk_options"] = chunk_options
-        captured["index_options"] = index_options
-        assert descriptor.title == "doc"
-        return _chunk_set_ref()
-
-    async def extract(chunk_set, options, *, observer, cancellation):
-        captured["extract_chunk_ids"] = chunk_set.chunk_ids
-        captured["options"] = options
-        return _event_ref()
-
-    processor = await _processor_with_fake_engine(ingest=ingest, extract=extract)
-    snapshots: list[ProcessCheckpoint] = []
-
-    async def on_checkpoint(value):
-        snapshots.append(value.model_copy(deep=True))
-
-    outcome = await processor.process(
-        "/tmp/doc.md",
-        checkpoint=ProcessCheckpoint(),
-        on_checkpoint=on_checkpoint,
-        should_pause=_return_false,
-    )
-
-    assert isinstance(outcome, ProcessOutcome)
-    assert outcome.source_id == "article-1"
-    assert outcome.chunk_count == 2
-    assert outcome.event_count == 1
-    assert outcome.processed_chunk_ids == ["c1", "c2"]
-    assert outcome.paused is False
-    # ingest 断点:generation 信息已持久化
-    assert snapshots[0].generation_id == "gen-1"
-    assert snapshots[0].chunk_version == "cv-1"
-    assert snapshots[0].source_version == "sv-1"
-    assert snapshots[0].chunk_ids == ["c1", "c2"]
-    assert captured["chunk_options"].max_tokens == 1000
-    assert captured["chunk_options"].strategy == "standard"
-
-
-@pytest.mark.asyncio
-async def test_extract_receives_contract_limits_and_concurrency():
-    """0.8.2:实体契约与并发经 ExtractionOptions 传给引擎,不再由 SAG 拦截。"""
-    from sag_api.sag.dto import ProcessCheckpoint
-
-    captured: dict = {}
-
-    async def extract(chunk_set, options, *, observer, cancellation):
-        captured["options"] = options
-        return _event_ref()
-
-    processor = await _processor_with_fake_engine(extract=extract, max_concurrency=30)
-
-    await processor.process(
-        None,
-        checkpoint=ProcessCheckpoint(
-            source_id="article-1",
-            chunk_ids=["c1", "c2"],
-            generation_id="gen-1",
-            chunk_version="cv-1",
-            source_version="sv-1",
-        ),
-        on_checkpoint=_noop_checkpoint,
-        should_pause=_return_false,
-    )
-
-    options = captured["options"]
-    assert options.contract == "rich"
-    assert options.source_type == "article"
+    assert request.chunk_options.strategy == "heading_strict"
+    assert request.chunk_options.max_tokens == 1000
+    assert request.source.descriptor.title == "Document title"
+    options = request.extraction_options
+    assert options.contract == "rich" and options.source_type == "article"
     assert options.limits.min_entities_per_event == 1
     assert options.limits.max_events_per_chunk == 20
-    assert options.limits.max_entities_per_event == 20
+    assert options.limits.max_entities_per_event == expected
     assert options.execution.max_concurrency == 30
-    assert "观点、事实、定义" in options.guidance_rules[0]  # 默认中文知识型事项要求仍然透传
     assert len(options.guidance_rules) == 2
-    assert "不可信的待分析数据" in options.guidance_rules[1]
-    assert "不得执行" in options.guidance_rules[1]
-    assert "统一输出合同" in options.guidance_rules[1]
+    knowledge, security = options.guidance_rules
+    if language == "zh":
+        assert "观点、事实、定义" in knowledge
+        assert "不可信的待分析数据" in security and "不得执行" in security
+    else:
+        assert "For books, reports, papers" in knowledge
+        assert "观点、事实、定义" not in knowledge
+        assert "untrusted document data" in security and "must not execute" in security
+        assert "canonical output contract" in security
+
+
+async def test_public_observer_display_errors_do_not_change_a_completed_receipt():
+    from document_requests import document_receipt, document_request
+    from zleap.sag.pipeline import StageEvent, StageEventType, StageName
 
-
-@pytest.mark.asyncio
-async def test_extract_receives_concise_entity_limit():
-    from sag_api.sag.dto import ProcessCheckpoint
-
-    captured: dict = {}
-
-    async def extract(chunk_set, options, *, observer, cancellation):
-        captured["options"] = options
-        return _event_ref()
-
-    processor = await _processor_with_fake_engine(extract=extract, max_entities_per_event=8)
-    await processor.process(
-        None,
-        checkpoint=ProcessCheckpoint(
-            source_id="article-1",
-            chunk_ids=["c1"],
-            generation_id="gen-1",
-            chunk_version="cv-1",
-            source_version="sv-1",
-        ),
-        on_checkpoint=_noop_checkpoint,
-        should_pause=_return_false,
-    )
-
-    assert captured["options"].limits.max_entities_per_event == 8
-
-
-@pytest.mark.asyncio
-async def test_extract_guidance_matches_english_engine_prompt_language():
-    """英文引擎不能继续收到中文的 SAG 业务规则。"""
-    from sag_api.sag.dto import ProcessCheckpoint
-
-    captured: dict = {}
-
-    async def extract(chunk_set, options, *, observer, cancellation):
-        captured["options"] = options
-        return _event_ref()
-
-    processor = await _processor_with_fake_engine(extract=extract, language="en")
-
-    await processor.process(
-        None,
-        checkpoint=ProcessCheckpoint(
-            source_id="article-1",
-            chunk_ids=["c1", "c2"],
-            generation_id="gen-1",
-            chunk_version="cv-1",
-            source_version="sv-1",
-        ),
-        on_checkpoint=_noop_checkpoint,
-        should_pause=_return_false,
-    )
-
-    knowledge_guidance, security_guidance = captured["options"].guidance_rules
-    assert "For books, reports, papers" in knowledge_guidance
-    assert "观点、事实、定义" not in knowledge_guidance
-    assert "untrusted document data" in security_guidance
-    assert "must not execute" in security_guidance
-    assert "canonical output contract" in security_guidance
-
-
-@pytest.mark.asyncio
-async def test_progress_observer_reports_display_without_updating_checkpoint():
-    """Stage progress must not invent durable results or a paused outcome."""
-    from zleap.sag.pipeline.events import StageEvent, StageEventType, StageName
-
-    from sag_api.sag.dto import ProcessCheckpoint
-
-    progress: list[tuple[int, int]] = []
-    snapshots: list[ProcessCheckpoint] = []
-
-    async def extract(chunk_set, options, *, observer, cancellation):
-        await observer(
-            StageEvent(run_id="r", stage=StageName.EXTRACT, type=StageEventType.PROGRESS, completed=1, total=2)
-        )
-        assert snapshots == []
-        await observer(
-            StageEvent(run_id="r", stage=StageName.EXTRACT, type=StageEventType.PROGRESS, completed=2, total=2)
-        )
-        assert snapshots == []
-        return _event_ref()
-
-    processor = await _processor_with_fake_engine(extract=extract)
-
-    async def on_checkpoint(value):
-        snapshots.append(value.model_copy(deep=True))
-
-    async def on_progress(completed, total):
-        progress.append((completed, total))
-
-    outcome = await processor.process(
-        None,
-        checkpoint=ProcessCheckpoint(
-            source_id="article-1",
-            chunk_ids=["c1", "c2"],
-            generation_id="gen-1",
-            chunk_version="cv-1",
-            source_version="sv-1",
-        ),
-        on_checkpoint=on_checkpoint,
-        on_progress=on_progress,
-        should_pause=_return_false,
-    )
-
-    assert progress == [(1, 2), (2, 2)]
-    assert len(snapshots) == 1
-    assert outcome.processed_chunk_ids == ["c1", "c2"]
-    assert outcome.paused is False
-
-
-@pytest.mark.asyncio
-async def test_pause_via_cancellation_returns_paused_outcome():
-    """0.8.2:暂停经 CancellationToken 驱动,取消后返回 paused 结果。"""
-    from zleap.sag.pipeline.errors import PipelineCancelledError
-
-    from sag_api.sag.dto import ProcessCheckpoint
-
-    async def extract(chunk_set, options, *, observer, cancellation):
-        while not cancellation.is_cancelled:
-            await asyncio.sleep(0.01)
-        raise PipelineCancelledError("流水线已取消", stage="extract", run_id="r", code="pipeline_cancelled")
-
-    processor = await _processor_with_fake_engine(extract=extract)
-
-    async def should_pause():
-        return True
-
-    outcome = await processor.process(
-        None,
-        checkpoint=ProcessCheckpoint(
-            source_id="article-1",
-            chunk_ids=["c1", "c2"],
-            generation_id="gen-1",
-            chunk_version="cv-1",
-            source_version="sv-1",
-        ),
-        on_checkpoint=_append_checkpoint,
-        should_pause=should_pause,
-    )
-
-    assert outcome.paused is True
-    assert outcome.event_count == 0
-
-
-@pytest.mark.asyncio
-async def test_resume_skips_ingest_and_rebuilds_chunk_set():
-    """断点携带 generation 信息时,恢复路径不再重新 ingest。"""
-    from sag_api.sag.dto import ProcessCheckpoint
-
-    calls: list[str] = []
-
-    async def ingest(*_args, **_kwargs):
-        calls.append("ingest")
-        raise AssertionError("resume must not re-ingest")
-
-    captured: dict = {}
-
-    async def extract(chunk_set, options, *, observer, cancellation):
-        captured["chunk_set"] = chunk_set
-        return _event_ref(event_ids=("e1", "e2"), stats={})
-
-    processor = await _processor_with_fake_engine(ingest=ingest, extract=extract)
-
-    outcome = await processor.process(
-        None,
-        checkpoint=ProcessCheckpoint(
-            source_id="article-1",
-            chunk_ids=["c1", "c2"],
-            generation_id="gen-1",
-            chunk_version="cv-1",
-            source_version="sv-1",
-        ),
-        on_checkpoint=_noop_checkpoint,
-        should_pause=_return_false,
-    )
-
-    assert calls == []
-    assert captured["chunk_set"].data_source_id == "source-config"
-    assert captured["chunk_set"].source_id == "article-1"
-    assert captured["chunk_set"].chunk_ids == ("c1", "c2")
-    assert captured["chunk_set"].generation_id == "gen-1"
-    assert outcome.event_count == 2
-
-
-@pytest.mark.asyncio
-async def test_ingest_without_generation_continues_non_durable_extract():
-    """0.10.0 普通 ingest 的 generation_id=None 仍必须继续 Extract。"""
-    from sag_api.sag.dto import ProcessCheckpoint
-
-    captured: dict = {}
-
-    async def ingest(path, *, descriptor, chunk_options, index_options, observer):
-        return _chunk_set_ref(chunk_ids=("c1",), generation_id=None)
-
-    async def extract(chunk_set, options, *, observer, cancellation):
-        captured["chunk_set"] = chunk_set
-        return _event_ref(event_ids=("e1",), stats={})
-
-    processor = await _processor_with_fake_engine(ingest=ingest, extract=extract)
-    snapshots: list[ProcessCheckpoint] = []
-
-    async def on_checkpoint(value):
-        snapshots.append(value.model_copy(deep=True))
-
-    outcome = await processor.process(
-        "/tmp/fresh-upload.md",
-        checkpoint=ProcessCheckpoint(),
-        on_checkpoint=on_checkpoint,
-        should_pause=_return_false,
-    )
-
-    assert snapshots[0].generation_id is None
-    assert snapshots[0].chunk_version == "cv-1"
-    assert captured["chunk_set"].generation_id is None
-    assert captured["chunk_set"].chunk_version == "cv-1"
-    assert outcome.event_count == 1
-
-
-@pytest.mark.asyncio
-async def test_checkpoint_without_chunk_version_raises():
-    """真正缺少 chunk_version 的旧断点不能伪造 ChunkSetRef。"""
-    from sag_api.sag.dto import ProcessCheckpoint
-
-    async def extract(*_args, **_kwargs):
-        raise AssertionError("should not extract")
-
-    processor = await _processor_with_fake_engine(extract=extract)
-
-    with pytest.raises(RuntimeError, match="chunk_version"):
-        await processor.process(
-            None,
-            checkpoint=ProcessCheckpoint(source_id="article-1", chunk_ids=["c1"]),
-            on_checkpoint=_noop_checkpoint,
-            should_pause=_return_false,
-        )
-
-
-@pytest.mark.asyncio
-async def test_zero_event_chunks_mapped_from_stats():
-    """0.8.2:无事件分块经 stats.zero_event_chunks 映射,不再逐块计数。"""
-    from sag_api.sag.dto import ProcessCheckpoint
-
-    async def extract(chunk_set, options, *, observer, cancellation):
-        return _event_ref(event_ids=(), zero_chunks=["c2"])
-
-    processor = await _processor_with_fake_engine(extract=extract)
-
-    outcome = await processor.process(
-        None,
-        checkpoint=ProcessCheckpoint(
-            source_id="article-1",
-            chunk_ids=["c1", "c2"],
-            generation_id="gen-1",
-            chunk_version="cv-1",
-            source_version="sv-1",
-        ),
-        on_checkpoint=_noop_checkpoint,
-        should_pause=_return_false,
-    )
-
-    assert outcome.eventless_chunk_ids == ["c2"]
-    assert outcome.event_count == 0
-    assert outcome.paused is False
-
-
-@pytest.mark.asyncio
-async def test_extraction_batch_failure_propagates():
-    """zleap 批次失败必须上抛(带 layer/stage 由 EngineManager 翻译),不得吞掉。"""
-    from zleap.sag.pipeline.errors import PipelineError
-
-    from sag_api.sag.dto import ProcessCheckpoint
-
-    async def extract(chunk_set, options, *, observer, cancellation):
-        raise PipelineError("chunk 重试耗尽", stage="extract", code="chunk_retry_exhausted")
-
-    processor = await _processor_with_fake_engine(extract=extract)
-
-    with pytest.raises(PipelineError):
-        await processor.process(
-            None,
-            checkpoint=ProcessCheckpoint(
-                source_id="article-1",
-                chunk_ids=["c1"],
-                generation_id="gen-1",
-                chunk_version="cv-1",
-                source_version="sv-1",
-            ),
-            on_checkpoint=_append_checkpoint,
-            should_pause=_return_false,
-        )
-
-
-def test_event_entity_attempt_setting_is_bounded():
     from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
 
-    engine = SimpleNamespace()
-    low = IncrementalDocumentProcessor(engine, "c", max_concurrency=1, event_entity_attempts=0)
-    high = IncrementalDocumentProcessor(engine, "c", max_concurrency=1, event_entity_attempts=99)
-    assert low._event_entity_attempts == 1
-    assert high._event_entity_attempts == 3
+    request = document_request("source-config")
+    receipt = document_receipt(request, chunk_count=2, event_count=1)
+    progress = []
+
+    async def process_source(bound, *, observer, cancellation):
+        assert bound == request
+        for completed in (1, 2):
+            await observer(
+                StageEvent(
+                    run_id=bound.context.operation_id,
+                    stage=StageName.EXTRACT,
+                    type=StageEventType.PROGRESS,
+                    completed=completed,
+                    total=2,
+                )
+            )
+        await observer(
+            StageEvent(run_id=bound.context.operation_id, stage=StageName.EXTRACT, type=StageEventType.SUCCEEDED)
+        )
+        return receipt
+
+    async def display(completed, total):
+        progress.append((completed, total))
+        raise RuntimeError("display database unavailable")
+
+    async def stage(_stage):
+        raise RuntimeError("stage display unavailable")
+
+    async def never_pause():
+        return False
+
+    processor = IncrementalDocumentProcessor(
+        SimpleNamespace(process_source=process_source), "source-config", max_concurrency=1
+    )
+    result = await processor.process(request, should_pause=never_pause, on_progress=display, on_stage=stage)
+    assert result == receipt
+    assert progress == [(1, 2), (2, 2)]
 
 
-async def _return_false():
-    return False
+async def test_public_engine_failure_propagates_without_fabricating_a_checkpoint():
+    from document_requests import document_request
+    from zleap.sag.pipeline.errors import PipelineError
 
+    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
 
-async def _noop_checkpoint(_value):
-    return None
+    async def process_source(*args, **kwargs):
+        raise PipelineError("chunk retries exhausted", stage="extract", code="chunk_retry_exhausted")
 
+    async def never_pause():
+        return False
 
-async def _append_checkpoint(snapshots, value):
-    snapshots.append(value)
+    processor = IncrementalDocumentProcessor(
+        SimpleNamespace(process_source=process_source), "source-config", max_concurrency=1
+    )
+    with pytest.raises(PipelineError, match="chunk retries exhausted"):
+        await processor.process(document_request("source-config"), should_pause=never_pause)
 
 
 @pytest.mark.asyncio
-async def test_pause_and_resume_document_service():
+@pytest.mark.usefixtures("controller_identity")
+async def test_pause_and_resume_document_service(document_engine_manager):
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.db.models import Document, Job, Source
     from sag_api.enums import DocumentStatus, JobStatus, JobType
@@ -543,42 +195,31 @@ async def test_pause_and_resume_document_service():
             document_id=document.id,
             progress=0.52,
             payload={
-                "process_checkpoint": {
-                    "source_id": "engine-source",
-                    "chunk_ids": ["c1", "c2"],
-                    "processed_chunk_ids": ["c1"],
-                    "event_count": 1,
-                    "event_ids": ["e1"],
-                    "token_usage": 12_000,
-                    "generation_id": None,
-                    "chunk_version": "chunk-version-1",
-                    "source_version": "source-version-1",
-                }
+                "processing_identity": controller_processing_identity(document.storage_path),
+                "process_request": document_request(source.sag_source_config_id).model_dump(mode="json"),
             },
         )
         session.add(job)
         await session.commit()
 
         paused_job = await pause_document(session, source, document.id)
-        assert paused_job.status == JobStatus.PAUSED
+        assert paused_job.status == JobStatus.RUNNING
+        assert paused_job.payload["pause_requested"] is True
         await session.refresh(document)
         assert document.status == DocumentStatus.PAUSING
 
+        job.status = JobStatus.PAUSED
         document.status = DocumentStatus.PAUSED
         await session.commit()
 
         queue = FakeQueue()
         resumed_job = await resume_document(
-            session,
-            source,
-            document.id,
-            job_queue=queue,
+            session, source, document.id, job_queue=queue, engine_manager=document_engine_manager
         )
         assert resumed_job.status == JobStatus.QUEUED
         assert resumed_job.payload["resume_requested"] is True
         assert "pause_requested" not in resumed_job.payload
-        assert resumed_job.payload["process_checkpoint"]["generation_id"] is None
-        assert resumed_job.payload["process_checkpoint"]["chunk_version"] == "chunk-version-1"
+        assert resumed_job.payload["process_request"]["context"]["isolation"] == "input"
         assert resumed_job.payload["_scheduler"]["priority"] == 10
         assert document.status == DocumentStatus.EXTRACTING
         assert document.progress == 52 and document.token_usage == 12_000
@@ -609,7 +250,10 @@ async def test_pause_and_resume_document_service():
 
 
 @pytest.mark.asyncio
-async def test_resume_legacy_checkpoint_restarts_from_file_or_blocks_without_it(tmp_path):
+@pytest.mark.parametrize("chunk_version", [None, "legacy-version"])
+async def test_resume_legacy_checkpoint_requires_confirmation_and_preserves_original_task(
+    tmp_path, chunk_version, document_engine_manager
+):
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.core.errors import ConflictError
     from sag_api.db.models import Document, Job, Source
@@ -659,6 +303,7 @@ async def test_resume_legacy_checkpoint_restarts_from_file_or_blocks_without_it(
                     "process_checkpoint": {
                         "source_id": "legacy-source",
                         "chunk_ids": ["chunk-1"],
+                        **({"chunk_version": chunk_version} if chunk_version else {}),
                     }
                 },
             )
@@ -668,17 +313,32 @@ async def test_resume_legacy_checkpoint_restarts_from_file_or_blocks_without_it(
         await session.commit()
 
         queue = FakeQueue()
-        resumed = await resume_document(
-            session, source, documents[0].id, job_queue=queue
-        )
-        assert "process_checkpoint" not in resumed.payload
-        assert documents[0].status is DocumentStatus.PENDING
-        assert queue.ids == [jobs[0].id]
-
-        with pytest.raises(ConflictError, match="原文件"):
-            await resume_document(session, source, documents[1].id, job_queue=queue)
-        await session.refresh(jobs[1])
-        assert jobs[1].status is JobStatus.PAUSED
+        for document, job, expected_reason, has_confirmation in zip(
+            documents,
+            jobs,
+            ["legacy_checkpoint", "resume_input_unavailable"],
+            [True, False],
+            strict=True,
+        ):
+            original_payload = dict(job.payload)
+            with pytest.raises(ConflictError) as caught:
+                await resume_document(
+                    session, source, document.id, job_queue=queue, engine_manager=document_engine_manager
+                )
+            assert caught.value.code == "document_restart_required"
+            envelope = caught.value.to_envelope()["error"]
+            assert envelope["restart_reason"] == expected_reason
+            assert ("confirmation_token" in envelope) is has_confirmation
+            await session.refresh(job)
+            await session.refresh(document)
+            assert job.status is JobStatus.PAUSED
+            assert document.status is DocumentStatus.PAUSED
+            assert {
+                key: value for key, value in job.payload.items() if key != "restart_confirmation"
+            } == original_payload
+            if has_confirmation:
+                assert job.payload["restart_confirmation"]["control_revision"] == document.control_revision
+        assert queue.ids == []
 
 
 @pytest.mark.asyncio
@@ -838,7 +498,7 @@ async def test_concurrent_delete_requests_share_one_cleanup_job():
 
 
 @pytest.mark.asyncio
-async def test_pause_and_resume_only_control_process_jobs():
+async def test_pause_and_resume_only_control_process_jobs(document_engine_manager):
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.core.errors import ConflictError
     from sag_api.db.models import Document, Job, Source
@@ -890,7 +550,9 @@ async def test_pause_and_resume_only_control_process_jobs():
         with pytest.raises(ConflictError):
             await pause_document(session, source, deleting.id)
         with pytest.raises(ConflictError):
-            await resume_document(session, source, paused.id, job_queue=FakeQueue())
+            await resume_document(
+                session, source, paused.id, job_queue=FakeQueue(), engine_manager=document_engine_manager
+            )
 
         await session.refresh(running_delete)
         await session.refresh(paused_delete)
@@ -913,9 +575,12 @@ async def test_delete_document_job_removes_document_after_processing_stops(tmp_p
         def __init__(self):
             self.deleted: list[str] = []
 
-        async def delete_document_data(self, _config_id, document_source_id, *, source):
+        async def delete_data(self, request, *, source):
+            from tests.document_requests import deletion_receipt
+
             assert source.sag_source_config_id == "delete-worker-config"
-            self.deleted.append(document_source_id)
+            self.deleted.append(request.source_id)
+            return deletion_receipt(request)
 
     await init_db()
 
@@ -1001,13 +666,7 @@ async def test_delete_document_job_removes_document_after_processing_stops(tmp_p
         assert resumed.status == JobStatus.QUEUED
         assert resumed.payload["resume_requested"] is True
         assert resumed.payload["_scheduler"] == {"priority": 10}
-        universe_jobs = list(
-            (
-                await session.scalars(
-                    select(Job).where(Job.type == JobType.INDEX_UNIVERSE)
-                )
-            ).all()
-        )
+        universe_jobs = list((await session.scalars(select(Job).where(Job.type == JobType.INDEX_UNIVERSE))).all())
         assert universe_jobs == []
     assert engine.deleted == ["engine-document"]
     assert not path.exists()
@@ -1019,464 +678,7 @@ async def test_delete_document_job_removes_document_after_processing_stops(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_reprocess_ready_document_replaces_all_previous_derived_data():
-    from sag_api.core.db import SessionLocal, init_db
-    from sag_api.db.models import Document, Job, Source
-    from sag_api.enums import DocumentStatus, JobStatus, JobType
-    from sag_api.services.document_service import reprocess_document
-
-    class FakeQueue:
-        def __init__(self):
-            self.ids: list[str] = []
-            self.maintenance: list[tuple[str, str]] = []
-
-        async def enqueue(self, job_id: str):
-            self.ids.append(job_id)
-
-        def begin_source_maintenance(self, source_id: str, job_id: str):
-            self.maintenance.append((source_id, job_id))
-
-    class FakeEngineManager:
-        def __init__(self):
-            self.deleted: list[str] = []
-
-        async def delete_document_data(self, source_config_id, document_source_id, *, source):
-            raise AssertionError("reprocess request must not wait for engine cleanup")
-
-    await init_db()
-    async with SessionLocal() as session:
-        previous_identity = {
-            "provider": "openai-compatible",
-            "model": "text-embedding-v1",
-            "model_fingerprint": "sag-config:sha256:previous",
-            "dimensions": 1024,
-            "dtype": "float32",
-            "normalized": False,
-        }
-        source = Source(
-            name="replace-source",
-            sag_source_config_id="replace-source-config"[:36],
-            document_count=2,
-            chunk_count=99,
-            event_count=88,
-            config={
-                "octx_vector_identity_state": "known",
-                "octx_vector_identity": previous_identity,
-            },
-        )
-        session.add(source)
-        await session.flush()
-        document = Document(
-            source_id=source.id,
-            filename="book.txt",
-            content_type="text/plain",
-            size_bytes=100,
-            storage_path="/tmp/book.txt",
-            status=DocumentStatus.READY,
-            progress=100,
-            chunk_count=3,
-            event_count=2,
-            token_usage=500,
-            sag_source_id="engine-latest",
-            parser_provider="mineru",
-            mineru_provider="official",
-            mineru_model="pipeline",
-            parser_status="done",
-            fallback_from="mineru",
-            fallback_reason="previous fallback",
-            vector_identity=previous_identity,
-        )
-        other = Document(
-            source_id=source.id,
-            filename="other.md",
-            content_type="text/markdown",
-            size_bytes=10,
-            storage_path="/tmp/other.md",
-            status=DocumentStatus.READY,
-            progress=100,
-            chunk_count=4,
-            event_count=5,
-            sag_source_id="engine-other",
-        )
-        session.add_all([document, other])
-        await session.flush()
-        session.add_all(
-            [
-                Job(
-                    type=JobType.PROCESS_DOCUMENT,
-                    status=JobStatus.SUCCEEDED,
-                    source_id=source.id,
-                    document_id=document.id,
-                    payload={"process_checkpoint": {"source_id": "engine-old"}},
-                ),
-                Job(
-                    type=JobType.PROCESS_DOCUMENT,
-                    status=JobStatus.SUCCEEDED,
-                    source_id=source.id,
-                    document_id=document.id,
-                    payload={"process_checkpoint": {"source_id": "engine-latest"}},
-                ),
-            ]
-        )
-        await session.commit()
-
-        queue = FakeQueue()
-        engine = FakeEngineManager()
-        job = await reprocess_document(
-            session,
-            source,
-            document.id,
-            job_queue=queue,
-        )
-
-        assert engine.deleted == []
-        assert document.status == DocumentStatus.PENDING
-        assert document.progress == 0
-        assert document.chunk_count == 0 and document.event_count == 0
-        assert document.token_usage == 0 and document.sag_source_id is None
-        assert document.parser_provider is None
-        assert document.mineru_provider is None and document.mineru_model is None
-        assert document.parser_status is None
-        assert document.fallback_from is None and document.fallback_reason is None
-        assert document.vector_identity is None
-        assert source.document_count == 2
-        assert source.chunk_count == 4 and source.event_count == 5
-        assert source.config == {"octx_vector_identity_state": "mixed"}
-        assert job.type == JobType.REPROCESS_DOCUMENT
-        assert job.payload["target_document_id"] == document.id
-        assert set(job.payload["derived_source_ids"]) == {"engine-old", "engine-latest"}
-        assert job.payload["_scheduler"]["priority"] == 0
-        assert queue.ids == [job.id]
-        assert queue.maintenance == [(source.id, job.id)]
-
-        # Source rows are shared across this module's SQLite test database; do
-        # not leave a freshly reprocessed source that would make universe-cache
-        # contract tests correctly report their manifest as stale.
-        await session.delete(source)
-        await session.commit()
-
-
-@pytest.mark.asyncio
-async def test_reprocess_cleanup_job_deletes_old_data_before_queuing_processing():
-    from sqlalchemy import select
-
-    from sag_api.core.db import SessionLocal, init_db
-    from sag_api.db.models import Document, Job, Source
-    from sag_api.enums import DocumentStatus, JobStatus, JobType
-    from sag_api.jobs.tasks import reprocess_document_task
-
-    class FakeQueue:
-        def __init__(self):
-            self.ids: list[str] = []
-
-        async def enqueue(self, job_id: str):
-            self.ids.append(job_id)
-
-    class FakeEngineManager:
-        def __init__(self):
-            self.deleted: list[str] = []
-
-        async def delete_document_data(self, source_config_id, document_source_id, *, source):
-            assert source_config_id == source.sag_source_config_id
-            self.deleted.append(document_source_id)
-
-    await init_db()
-    async with SessionLocal() as session:
-        source = Source(name="reprocess-worker", sag_source_config_id="reprocess-config"[:36])
-        session.add(source)
-        await session.flush()
-        document = Document(
-            source_id=source.id,
-            filename="ready.md",
-            content_type="text/markdown",
-            size_bytes=10,
-            storage_path="/tmp/ready.md",
-            status=DocumentStatus.PENDING,
-        )
-        session.add(document)
-        await session.flush()
-        cleanup = Job(
-            type=JobType.REPROCESS_DOCUMENT,
-            source_id=source.id,
-            document_id=document.id,
-            status=JobStatus.RUNNING,
-            payload={
-                "target_document_id": document.id,
-                "derived_source_ids": ["engine-old", "engine-latest", "engine-old"],
-            },
-        )
-        session.add(cleanup)
-        await session.commit()
-
-        queue = FakeQueue()
-        engine = FakeEngineManager()
-        await reprocess_document_task(
-            session,
-            cleanup,
-            engine_manager=engine,
-            job_queue=queue,
-        )
-        await reprocess_document_task(
-            session,
-            cleanup,
-            engine_manager=engine,
-            job_queue=queue,
-        )
-
-        process_jobs = list(
-            (
-                await session.scalars(
-                    select(Job).where(
-                        Job.document_id == document.id,
-                        Job.type == JobType.PROCESS_DOCUMENT,
-                    )
-                )
-            ).all()
-        )
-        assert engine.deleted == ["engine-latest", "engine-old"]
-        assert len(process_jobs) == 1
-        assert process_jobs[0].status == JobStatus.QUEUED
-        assert process_jobs[0].payload == {}
-        assert cleanup.payload["cleanup_completed"] is True
-        assert queue.ids == [process_jobs[0].id, process_jobs[0].id]
-
-
-@pytest.mark.asyncio
-async def test_reprocess_cleanup_does_not_queue_processing_after_delete_request():
-    from sqlalchemy import select
-
-    from sag_api.core.db import SessionLocal, init_db
-    from sag_api.db.models import Document, Job, Source
-    from sag_api.enums import DocumentStatus, JobStatus, JobType
-    from sag_api.jobs.tasks import reprocess_document_task
-
-    class FakeQueue:
-        def __init__(self):
-            self.ids: list[str] = []
-
-        async def enqueue(self, job_id: str):
-            self.ids.append(job_id)
-
-    class FakeEngineManager:
-        def __init__(self):
-            self.deleted: list[str] = []
-
-        async def delete_document_data(self, _config_id, document_source_id, *, source):
-            assert source.sag_source_config_id
-            self.deleted.append(document_source_id)
-
-    await init_db()
-    async with SessionLocal() as session:
-        source = Source(
-            name="delete-during-reprocess-cleanup",
-            sag_source_config_id="delete-during-reprocess-cleanup-config"[:36],
-        )
-        session.add(source)
-        await session.flush()
-        document = Document(
-            source_id=source.id,
-            filename="deleting.md",
-            content_type="text/markdown",
-            size_bytes=10,
-            storage_path="/tmp/deleting.md",
-            status=DocumentStatus.DELETING,
-        )
-        session.add(document)
-        await session.flush()
-        cleanup = Job(
-            type=JobType.REPROCESS_DOCUMENT,
-            source_id=source.id,
-            document_id=document.id,
-            status=JobStatus.RUNNING,
-            payload={
-                "target_document_id": document.id,
-                "derived_source_ids": ["engine-old"],
-            },
-        )
-        session.add(cleanup)
-        await session.commit()
-
-        queue = FakeQueue()
-        engine = FakeEngineManager()
-        await reprocess_document_task(
-            session,
-            cleanup,
-            engine_manager=engine,
-            job_queue=queue,
-        )
-
-        process_jobs = list(
-            (
-                await session.scalars(
-                    select(Job).where(
-                        Job.document_id == document.id,
-                        Job.type == JobType.PROCESS_DOCUMENT,
-                    )
-                )
-            ).all()
-        )
-        assert engine.deleted == ["engine-old"]
-        assert process_jobs == []
-        assert cleanup.payload["cleanup_completed"] is True
-        assert queue.ids == []
-
-
-@pytest.mark.asyncio
-async def test_concurrent_reprocess_requests_share_one_cleanup_job():
-    from sqlalchemy import select
-
-    from sag_api.core.db import SessionLocal, init_db
-    from sag_api.db.models import Document, Job, Source
-    from sag_api.enums import DocumentStatus, JobStatus, JobType
-    from sag_api.services.document_service import reprocess_document
-
-    class FakeQueue:
-        def __init__(self):
-            self.ids: list[str] = []
-            self.maintenance: list[tuple[str, str]] = []
-
-        async def enqueue(self, job_id: str):
-            self.ids.append(job_id)
-
-        def begin_source_maintenance(self, source_id: str, job_id: str):
-            self.maintenance.append((source_id, job_id))
-
-    await init_db()
-    async with SessionLocal() as session:
-        source = Source(
-            name="concurrent-reprocess",
-            sag_source_config_id="concurrent-reprocess-config"[:36],
-        )
-        session.add(source)
-        await session.flush()
-        document = Document(
-            source_id=source.id,
-            filename="ready.md",
-            content_type="text/markdown",
-            size_bytes=10,
-            storage_path="/tmp/ready.md",
-            status=DocumentStatus.READY,
-            progress=100,
-            sag_source_id="engine-ready",
-        )
-        session.add(document)
-        await session.flush()
-        session.add(
-            Job(
-                type=JobType.PROCESS_DOCUMENT,
-                source_id=source.id,
-                document_id=document.id,
-                status=JobStatus.SUCCEEDED,
-                payload={"process_checkpoint": {"source_id": "engine-ready"}},
-            )
-        )
-        await session.commit()
-        source_id, document_id = source.id, document.id
-
-    queue = FakeQueue()
-
-    async def retry():
-        async with SessionLocal() as session:
-            source = await session.get(Source, source_id)
-            return await reprocess_document(
-                session,
-                source,
-                document_id,
-                job_queue=queue,
-            )
-
-    first, second = await asyncio.gather(retry(), retry())
-
-    async with SessionLocal() as session:
-        cleanup_jobs = list(
-            (
-                await session.scalars(
-                    select(Job).where(
-                        Job.document_id == document_id,
-                        Job.type == JobType.REPROCESS_DOCUMENT,
-                    )
-                )
-            ).all()
-        )
-        document = await session.get(Document, document_id)
-        assert document.status == DocumentStatus.PENDING
-    assert first.id == second.id
-    assert [job.id for job in cleanup_jobs] == [first.id]
-    assert queue.ids == [first.id]
-    assert queue.maintenance == [(source_id, first.id)]
-
-
-@pytest.mark.asyncio
-async def test_retrying_failed_reprocess_cleanup_stays_in_maintenance_flow():
-    from sag_api.core.db import SessionLocal, init_db
-    from sag_api.db.models import Document, Job, Source
-    from sag_api.enums import DocumentStatus, JobStatus, JobType
-    from sag_api.services.document_service import reprocess_document
-
-    class FakeQueue:
-        def __init__(self):
-            self.ids: list[str] = []
-            self.maintenance: list[tuple[str, str]] = []
-
-        async def enqueue(self, job_id: str):
-            self.ids.append(job_id)
-
-        def begin_source_maintenance(self, source_id: str, job_id: str):
-            self.maintenance.append((source_id, job_id))
-
-    await init_db()
-    async with SessionLocal() as session:
-        source = Source(
-            name="failed-reprocess-cleanup",
-            sag_source_config_id="failed-reprocess-cleanup-config"[:36],
-        )
-        session.add(source)
-        await session.flush()
-        document = Document(
-            source_id=source.id,
-            filename="failed.md",
-            content_type="text/markdown",
-            size_bytes=10,
-            storage_path="/tmp/failed.md",
-            status=DocumentStatus.FAILED,
-            error="cleanup failed",
-        )
-        session.add(document)
-        await session.flush()
-        failed_cleanup = Job(
-            type=JobType.REPROCESS_DOCUMENT,
-            source_id=source.id,
-            document_id=document.id,
-            status=JobStatus.FAILED,
-            payload={
-                "target_document_id": document.id,
-                "derived_source_ids": ["engine-old"],
-                "_scheduler": {"priority": 0},
-            },
-            error="cleanup failed",
-        )
-        session.add(failed_cleanup)
-        await session.commit()
-
-        queue = FakeQueue()
-        retried = await reprocess_document(
-            session,
-            source,
-            document.id,
-            job_queue=queue,
-        )
-
-        assert retried.type == JobType.REPROCESS_DOCUMENT
-        assert retried.status == JobStatus.QUEUED
-        assert retried.payload["derived_source_ids"] == ["engine-old"]
-        assert document.status == DocumentStatus.PENDING
-        assert document.error is None
-        assert queue.ids == [retried.id]
-        assert queue.maintenance == [(source.id, retried.id)]
-
-
-@pytest.mark.asyncio
-async def test_delete_after_reprocess_request_uses_maintenance_cleanup():
+async def test_delete_after_reprocess_request_uses_maintenance_cleanup(tmp_path, monkeypatch, document_engine_manager):
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.db.models import Document, Job, Source
     from sag_api.enums import DocumentStatus, JobStatus, JobType
@@ -1493,6 +695,11 @@ async def test_delete_after_reprocess_request_uses_maintenance_cleanup():
         def begin_source_maintenance(self, source_id: str, job_id: str):
             self.maintenance.append((source_id, job_id))
 
+    from sag_api.core.config import settings
+
+    raw = tmp_path / "ready.md"
+    raw.write_text("# Published content\nOld publication stays readable.\n")
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
     await init_db()
     async with SessionLocal() as session:
         source = Source(
@@ -1506,7 +713,7 @@ async def test_delete_after_reprocess_request_uses_maintenance_cleanup():
             filename="ready.md",
             content_type="text/markdown",
             size_bytes=10,
-            storage_path="/tmp/ready.md",
+            storage_path=str(raw),
             status=DocumentStatus.READY,
             progress=100,
             sag_source_id="engine-ready",
@@ -1526,10 +733,7 @@ async def test_delete_after_reprocess_request_uses_maintenance_cleanup():
 
         queue = FakeQueue()
         reprocess_job = await reprocess_document(
-            session,
-            source,
-            document.id,
-            job_queue=queue,
+            session, source, document.id, job_queue=queue, engine_manager=document_engine_manager
         )
         delete_job = await delete_document(
             session,
@@ -1540,14 +744,13 @@ async def test_delete_after_reprocess_request_uses_maintenance_cleanup():
 
         await session.refresh(document)
         assert document.status == DocumentStatus.DELETING
-        assert reprocess_job.status == JobStatus.QUEUED
+        await session.refresh(reprocess_job)
+        assert reprocess_job.status == JobStatus.PAUSED
         assert delete_job.type == JobType.DELETE_DOCUMENT
         assert delete_job.status == JobStatus.QUEUED
         assert await session.get(Document, document.id) is not None
-        assert queue.maintenance == [
-            (source.id, reprocess_job.id),
-            (source.id, delete_job.id),
-        ]
+        assert queue.maintenance == [(source.id, delete_job.id)]
+        assert delete_job.payload["derived_source_ids"] == ["engine-ready"]
 
 
 @pytest.mark.asyncio
@@ -1750,11 +953,7 @@ async def test_pause_cannot_overwrite_delete_that_commits_after_job_lookup(monke
         async def scalar_then_delete(statement, *args, **kwargs):
             nonlocal delete_injected
             result = await real_scalar(statement, *args, **kwargs)
-            if (
-                not delete_injected
-                and isinstance(result, Job)
-                and result.id == process_job_id
-            ):
+            if not delete_injected and isinstance(result, Job) and result.id == process_job_id:
                 delete_injected = True
                 await session.commit()
                 async with SessionLocal() as delete_session:
@@ -1777,7 +976,7 @@ async def test_pause_cannot_overwrite_delete_that_commits_after_job_lookup(monke
 
 
 @pytest.mark.asyncio
-async def test_resume_cannot_overwrite_delete_that_commits_after_job_lookup(monkeypatch):
+async def test_resume_cannot_overwrite_delete_that_commits_after_job_lookup(monkeypatch, document_engine_manager):
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.core.errors import ConflictError
     from sag_api.db.models import Document, Job, Source
@@ -1834,11 +1033,7 @@ async def test_resume_cannot_overwrite_delete_that_commits_after_job_lookup(monk
         async def scalar_then_delete(statement, *args, **kwargs):
             nonlocal delete_injected
             result = await real_scalar(statement, *args, **kwargs)
-            if (
-                not delete_injected
-                and isinstance(result, Job)
-                and result.id == process_job_id
-            ):
+            if not delete_injected and isinstance(result, Job) and result.id == process_job_id:
                 delete_injected = True
                 await session.commit()
                 async with SessionLocal() as delete_session:
@@ -1854,7 +1049,7 @@ async def test_resume_cannot_overwrite_delete_that_commits_after_job_lookup(monk
         monkeypatch.setattr(session, "scalar", scalar_then_delete)
 
         with pytest.raises(ConflictError, match="删除|状态"):
-            await resume_document(session, source, document_id, job_queue=queue)
+            await resume_document(session, source, document_id, job_queue=queue, engine_manager=document_engine_manager)
 
         await session.refresh(document)
         await session.refresh(process_job)
@@ -1906,11 +1101,13 @@ async def test_pause_rejects_ready_document_while_job_completion_is_committing()
 
 @pytest.mark.parametrize("engine_mode", ["complete", "paused", "error"])
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("controller_identity")
 async def test_process_exit_cannot_overwrite_concurrent_delete(
     monkeypatch,
     engine_mode,
 ):
-    from types import SimpleNamespace
+
+    from document_requests import document_receipt, document_request
 
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.db.models import Document, Job, Source
@@ -1919,16 +1116,14 @@ async def test_process_exit_cannot_overwrite_concurrent_delete(
     from sag_api.jobs.tasks import process_document
     from sag_api.services.document_service import delete_document
 
-    class FakeEngine:
-        async def process_document(self, *_args, **_kwargs):
+    class FakeEngine(UncommittedDocumentManager):
+        async def process_document(self, _source_id, request_factory, **_kwargs):
             if engine_mode == "error":
                 raise RuntimeError("inflight extraction failed")
-            return SimpleNamespace(
-                paused=engine_mode == "paused",
-                chunk_count=1,
-                event_count=1,
-                source_id="engine-exit-delete",
-                token_usage=50,
+            if engine_mode == "paused":
+                return None
+            return document_receipt(
+                await request_factory(None, *processing_parameters()), chunk_count=1, event_count=1, token_usage=50
             )
 
     class FakeQueue:
@@ -1965,11 +1160,10 @@ async def test_process_exit_cannot_overwrite_concurrent_delete(
             document_id=document.id,
             status=JobStatus.RUNNING,
             payload={
-                "process_checkpoint": {
-                    "source_id": "engine-exit-delete",
-                    "chunk_ids": ["chunk-1"],
-                    "processed_chunk_ids": [],
-                }
+                "processing_identity": controller_processing_identity(document.storage_path),
+                "process_request": document_request(
+                    source.sag_source_config_id, source_id="engine-exit-delete"
+                ).model_dump(mode="json"),
             },
         )
         session.add(process_job)
@@ -2010,7 +1204,7 @@ async def test_process_exit_cannot_overwrite_concurrent_delete(
 
 
 @pytest.mark.asyncio
-async def test_resume_uses_supervised_dispatch_after_persisting_queued_state():
+async def test_resume_uses_supervised_dispatch_after_persisting_queued_state(document_engine_manager):
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.db.models import Document, Job, Source
     from sag_api.enums import DocumentStatus, JobStatus, JobType
@@ -2055,10 +1249,7 @@ async def test_resume_uses_supervised_dispatch_after_persisting_queued_state():
 
         queue = DurableQueue()
         resumed = await resume_document(
-            session,
-            source,
-            document.id,
-            job_queue=queue,
+            session, source, document.id, job_queue=queue, engine_manager=document_engine_manager
         )
 
         assert resumed.status == JobStatus.QUEUED

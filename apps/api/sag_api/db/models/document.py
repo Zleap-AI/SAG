@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import JSON, BigInteger, Boolean, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, BigInteger, Boolean, ForeignKey, Index, Integer, String, Text, and_
 from sqlalchemy import Enum as SAEnum
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column
 
 from sag_api.db.base import Base, IDMixin, TimestampMixin
@@ -39,6 +40,10 @@ class Document(IDMixin, TimestampMixin, Base):
     error_stage: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # zleap-sag ingest 返回的 source_id（用于溯源）
     sag_source_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    published_operation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Zero is reserved for rows predating publication qualification. New controls
+    # bind this revision so a superseded candidate cannot switch publication.
+    control_revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     # OCTX 更新先写入影子 installation；最终切换时只暴露新文档版本。
     octx_installation_id: Mapped[str | None] = mapped_column(
         ForeignKey("octx_installations.id", ondelete="SET NULL"), nullable=True, index=True
@@ -59,3 +64,20 @@ class Document(IDMixin, TimestampMixin, Base):
         JSON,
         nullable=True,
     )
+
+    @hybrid_property
+    def has_publication(self) -> bool:
+        """A candidate's execution state does not revoke its prior publication."""
+        return bool(
+            self.is_active and self.control_revision > 0 and self.sag_source_id
+            and self.status not in {DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED}
+        )
+
+    @has_publication.inplace.expression
+    @classmethod
+    def _has_publication_expression(cls):
+        return and_(
+            cls.is_active.is_(True), cls.control_revision > 0,
+            cls.sag_source_id.is_not(None), cls.sag_source_id != "",
+            cls.status.not_in([DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED]),
+        )

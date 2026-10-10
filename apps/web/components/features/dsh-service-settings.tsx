@@ -28,6 +28,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { api, ApiError } from "@/lib/api";
+import { isSourceDeleting } from "@/lib/source-activity";
 import type { DshIntegrationDescriptor, Source } from "@/lib/types";
 
 const NO_DEFAULT_SOURCE_VALUE = "no-default-source";
@@ -72,7 +73,7 @@ export function DshServiceSettings() {
         api.listSources(),
       ]);
       setDescriptor(nextDescriptor);
-      setSources(nextSources);
+      setSources(nextSources.filter((source) => !isSourceDeleting(source)));
     } catch (loadError) {
       setError(loadError instanceof ApiError ? loadError.message : t("loadFailed"));
     }

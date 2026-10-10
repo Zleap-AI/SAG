@@ -33,7 +33,7 @@ export function ConfirmDialog({
   title: string;
   description: string;
   confirmLabel: string;
-  onConfirm: () => void | Promise<void>;
+  onConfirm: () => void | boolean | Promise<void | boolean>;
   destructive?: boolean;
 }) {
   const t = useTranslations("Common");
@@ -42,8 +42,8 @@ export function ConfirmDialog({
   async function confirm() {
     setBusy(true);
     try {
-      await onConfirm();
-      onOpenChange(false);
+      const applied = await onConfirm();
+      if (applied !== false) onOpenChange(false);
     } finally {
       setBusy(false);
     }

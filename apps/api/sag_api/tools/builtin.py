@@ -21,7 +21,11 @@ from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
 from sag_api.generation import build_citations
 from sag_api.sag import RetrievedSection
-from sag_api.services.retrieval_service import recall_event_scores, retrieve_relevant_sections
+from sag_api.services.retrieval_service import (
+    published_document_inputs,
+    recall_event_scores,
+    retrieve_relevant_sections,
+)
 from sag_api.tools.base import Tool, ToolContext, ToolMeta, ToolResult
 
 log = get_logger("tools.web_search")
@@ -108,6 +112,7 @@ async def _prioritize_event_evidence(
     events: list,
     sources_by_config: dict[str, Any],
     *,
+    source_ids_by_config: dict[str, tuple[str, ...]],
     limit: int,
 ) -> list[RetrievedSection]:
     """Put event-backed evidence first, then retain chunk-only fallbacks."""
@@ -118,6 +123,7 @@ async def _prioritize_event_evidence(
         if section.source_config_id and section.chunk_id
     }
     event_scores: dict[tuple[str, str], float] = {}
+    input_ids: dict[tuple[str, str], str] = {}
     ordered_keys: list[tuple[str, str]] = []
     for event in events:
         key = (
@@ -126,6 +132,10 @@ async def _prioritize_event_evidence(
         )
         if not all(key):
             continue
+        input_id = str(event.source_id or "")
+        if input_id not in source_ids_by_config.get(key[0], ()):
+            continue
+        input_ids[key] = input_id
         try:
             score = float(getattr(event, "score", 0.0) or 0.0)
         except (TypeError, ValueError):
@@ -148,6 +158,7 @@ async def _prioritize_event_evidence(
                 source_config_id,
                 chunk_id,
                 source=sources_by_config.get(source_config_id),
+                source_ids=(input_ids[key],),
             )
         except asyncio.CancelledError:
             raise
@@ -163,6 +174,7 @@ async def _prioritize_event_evidence(
             score=event_scores.get(key, 0.0),
             rank=chunk.rank,
             source_config_id=source_config_id,
+            source_id=input_ids[key],
         )
 
     if missing_keys:
@@ -241,12 +253,18 @@ class SearchContextTool(Tool):
                 limit=limit,
             ),
         )
-        sections = outcome.sections
+        published = await published_document_inputs(ctx.sources)
+        sections = [
+            section
+            for section in outcome.sections
+            if section.source_id in published.get(section.source_config_id or "", ())
+        ]
         graph_for_sections = getattr(ctx.engine_manager, "graph_for_sections", None)
         graph = (
             await graph_for_sections(
                 sections,
                 sources_by_config,
+                source_ids_by_config=published,
                 # graph_for_sections allocates the first event of each chunk
                 # before a second pass. Cover every returned section while
                 # retaining the existing minimum activation capacity.
@@ -263,8 +281,12 @@ class SearchContextTool(Tool):
                 sections,
                 list(graph.events),
                 sources_by_config,
+                source_ids_by_config=published,
                 limit=limit,
             )
+        if published != await published_document_inputs(ctx.sources):
+            sections = []
+            graph = None
         offset = max(0, ctx.citation_offset)
         citations = build_citations(sections, source_refs, list(graph.events) if graph is not None else None)
         for c in citations:
@@ -304,15 +326,12 @@ class GetEntityTool(Tool):
         name = (args.get("name") or "").strip()
         if not name or not ctx.sources:
             return ToolResult(content="（未找到该实体）")
-        lowered = name.lower()
+        from sag_api.services.insight_service import find_entity_context
+
         for source in ctx.sources:
-            scid = source.sag_source_config_id
-            entities = await ctx.engine_manager.list_entities(scid, source=source, limit=200)
-            match = next((e for e in entities if (e.name or "").lower() == lowered), None)
-            if match is None:
-                match = next((e for e in entities if lowered in (e.name or "").lower()), None)
-            if match is not None:
-                snippets = await ctx.engine_manager.entity_context(scid, match.id, source=source, limit=6)
+            found = await find_entity_context(ctx.engine_manager, source, name)
+            if found is not None:
+                match, snippets = found
                 body = "\n\n".join(snippets) if snippets else match.description or ""
                 return ToolResult(
                     content=f"实体「{match.name}」（{match.type}）：\n{body}".strip(),

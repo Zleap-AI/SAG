@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from sag_api.enums import ConnectorKind, SourceStatus, SourceType
+from sag_api.schemas.job import JobOut
 
 
 class ConnectorOut(BaseModel):
@@ -43,3 +44,4 @@ class SourceOut(BaseModel):
     event_count: int
     created_at: datetime
     updated_at: datetime
+    deletion_job: JobOut | None = None

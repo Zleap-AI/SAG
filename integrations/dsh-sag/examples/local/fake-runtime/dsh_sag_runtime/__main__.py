@@ -25,7 +25,7 @@ async def main():
             if method == "initialize":
                 await respond(request_id, {
                     "protocolVersion": "1.0",
-                    "engineVersion": "0.14.0",
+                    "engineVersion": "0.15.0",
                     "health": "available",
                     "evidenceRead": True,
                     "namespaces": ["product-docs"],

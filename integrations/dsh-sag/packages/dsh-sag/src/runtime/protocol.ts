@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer'
 import type { SagEvidenceRef, SagNamespaceId } from '../brand.ts'
 
 export const RPC_PROTOCOL_VERSION = '1.0' as const
-export const REQUIRED_ENGINE_VERSION = '0.14.0' as const
+export const REQUIRED_ENGINE_VERSION = '0.15.0' as const
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024
 
 export type RpcId = number

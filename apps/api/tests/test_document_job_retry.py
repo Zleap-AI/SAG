@@ -9,33 +9,123 @@ from sag_api.jobs.inproc import _mark_document_waiting_retry
 
 
 @pytest.mark.asyncio
-async def test_retry_marks_document_pending_without_resetting_checkpoint_metrics():
-    document = SimpleNamespace(
-        status=DocumentStatus.FAILED,
-        error="upstream timeout",
-        progress=64,
-        chunk_count=12,
-        event_count=7,
-        token_usage=9_000,
-        sag_source_id="derived-source",
+@pytest.mark.usefixtures("controller_identity")
+@pytest.mark.parametrize("retryable", [False, True])
+async def test_operation_failure_receipt_preserves_retry_policy_and_binding(tmp_path, monkeypatch, retryable):
+    from sqlalchemy import delete
+
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import JobStatus
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+    from tests.document_requests import (
+        DocumentRequestBuilder,
+        UncommittedDocumentManager,
+        document_receipt,
+        processing_parameters,
     )
 
-    class FakeSession:
-        async def get(self, _model, document_id):
-            assert document_id == "document-1"
-            return document
+    await init_db()
+    raw = tmp_path / "receipt.md"
+    raw.write_text("# Document\nA documented fact.\n")
+    async with SessionLocal() as session:
+        source = Source(name="receipt-retry", sag_source_config_id=uuid4().hex)
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id, filename=raw.name, storage_path=str(raw),
+            content_type="text/markdown", size_bytes=raw.stat().st_size, status=DocumentStatus.PENDING,
+        )
+        session.add(document)
+        await session.flush()
+        job = Job(
+            type=JobType.PROCESS_DOCUMENT, status=JobStatus.QUEUED,
+            source_id=source.id, document_id=document.id, payload={"control_revision": document.control_revision},
+        )
+        session.add(job)
+        await session.commit()
+        source_id, document_id, job_id = source.id, document.id, job.id
 
-    job = SimpleNamespace(document_id="document-1", type=JobType.PROCESS_DOCUMENT)
+    class ReceiptManager(UncommittedDocumentManager):
+        def __init__(self):
+            self.requests = []
 
-    await _mark_document_waiting_retry(FakeSession(), job)
+        async def process_document(self, range_id, request_factory, **kwargs):
+            request = await request_factory(DocumentRequestBuilder(range_id), *processing_parameters())
+            self.requests.append(request.model_dump(mode="json"))
+            receipt = document_receipt(request)
+            if len(self.requests) == 1:
+                return receipt.model_copy(update={
+                    "status": "failed", "checkpoint": "indexed", "retryable": retryable,
+                    "failure_code": "dependency_unavailable", "failure_message": "temporary vector outage",
+                    "result": None,
+                })
+            return receipt
 
-    assert document.status == DocumentStatus.PENDING
-    assert document.error is None
-    assert document.progress == 64
-    assert document.chunk_count == 12
-    assert document.event_count == 7
-    assert document.token_usage == 9_000
-    assert document.sag_source_id == "derived-source"
+    manager = ReceiptManager()
+    queue = InProcessAsyncQueue(SessionLocal, manager, concurrency=1)
+    scheduled = []
+    monkeypatch.setattr(queue, "_schedule_retry", lambda job_id, _delay: scheduled.append(job_id))
+    try:
+        await queue._run_job(job_id)
+        async with SessionLocal() as session:
+            job = await session.get(Job, job_id)
+            document = await session.get(Document, document_id)
+            assert job.status == (JobStatus.QUEUED if retryable else JobStatus.FAILED)
+            assert document.status == (DocumentStatus.PENDING if retryable else DocumentStatus.FAILED)
+            assert job.payload["process_request"] == manager.requests[0]
+            assert "temporary vector outage" in job.error
+            assert scheduled == ([job_id] if retryable else [])
+        if retryable:
+            await queue._run_job(job_id)
+            assert manager.requests[1] == manager.requests[0]
+            async with SessionLocal() as session:
+                job = await session.get(Job, job_id)
+                document = await session.get(Document, document_id)
+                assert job.status == JobStatus.SUCCEEDED and document.status == DocumentStatus.READY
+                assert document.published_operation_id == manager.requests[0]["context"]["operation_id"]
+    finally:
+        await queue.stop()
+        async with SessionLocal() as session:
+            await session.execute(delete(Source).where(Source.id == source_id))
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_retry_marks_document_pending_without_resetting_checkpoint_metrics():
+    from sqlalchemy import delete
+
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+
+    await init_db()
+    async with SessionLocal() as session:
+        source = Source(name="owned-retry-metrics", sag_source_config_id=uuid4().hex)
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id, filename="retry.md", storage_path="/retry.md",
+            status=DocumentStatus.FAILED, error="upstream timeout", progress=64,
+            chunk_count=12, event_count=7, token_usage=9_000, sag_source_id="derived-source",
+        )
+        session.add(document)
+        await session.flush()
+        job = Job(type=JobType.PROCESS_DOCUMENT, document_id=document.id, payload={"control_revision": 1})
+        session.add(job)
+        await session.commit()
+        try:
+            await _mark_document_waiting_retry(session, job)
+            await session.commit()
+            await session.refresh(document)
+            assert document.status == DocumentStatus.PENDING
+            assert document.error is None
+            assert document.progress == 64
+            assert document.chunk_count == 12 and document.event_count == 7
+            assert document.token_usage == 9_000 and document.sag_source_id == "derived-source"
+        finally:
+            await session.execute(delete(Source).where(Source.id == source.id))
+            await session.execute(delete(Job).where(Job.id == job.id))
+            await session.commit()
 
 
 @pytest.mark.asyncio
@@ -256,7 +346,7 @@ async def test_job_yielded_signal_cannot_undo_a_concurrent_pause(monkeypatch):
     queue = InProcessAsyncQueue(SessionLocal, engine_manager=None, concurrency=1)
     running = asyncio.create_task(queue._run_job(job_id))
     await asyncio.wait_for(entered.wait(), timeout=1)
-    paused_payload = {"checkpoint_version": 11}
+    paused_payload = {"checkpoint_version": 11, "control_revision": 1}
     async with SessionLocal() as session:
         await session.execute(
             update(Job)
@@ -572,7 +662,7 @@ async def test_delete_job_stops_retrying_and_remains_hidden_on_terminal_failure(
     from sag_api.enums import JobStatus
     from sag_api.jobs.inproc import InProcessAsyncQueue
     from sag_api.jobs.tasks import TASK_HANDLERS
-    from sag_api.services.document_service import list_documents
+    from sag_api.services.document_service import get_public_document, list_documents
 
     await init_db()
     initial_attempts = (
@@ -640,28 +730,34 @@ async def test_delete_job_stops_retrying_and_remains_hidden_on_terminal_failure(
             assert failed_job.error == message
             assert hidden_document.status == DocumentStatus.DELETE_FAILED
             assert hidden_document.error == message
-            assert document_id not in {
-                document.id for document in visible_documents
-            }
+            assert [document.id for document in visible_documents] == [document_id]
+            from sag_api.core.errors import NotFoundError
+
+            with pytest.raises(NotFoundError):
+                await get_public_document(session, await session.get(Source, source_id), document_id)
             assert scheduled == []
     finally:
         await queue.stop()
 
 
 @pytest.mark.asyncio
-async def test_reprocess_failure_cannot_override_concurrent_delete(monkeypatch):
+@pytest.mark.parametrize("retryable", [False, True])
+async def test_replacement_failure_cannot_override_concurrent_delete(monkeypatch, retryable):
+    from sqlalchemy import delete
+
     from sag_api.core.db import SessionLocal, init_db
+    from sag_api.core.errors import NotFoundError, ServiceUnavailableError
     from sag_api.db.models import Document, Job, Source
     from sag_api.enums import JobStatus
     from sag_api.jobs.inproc import InProcessAsyncQueue
     from sag_api.jobs.tasks import TASK_HANDLERS
-    from sag_api.services.document_service import delete_document
+    from sag_api.services.document_service import delete_document, get_public_document
 
     await init_db()
     async with SessionLocal() as session:
         source = Source(
-            name="delete-wins-reprocess-failure",
-            sag_source_config_id=(f"delete-wins-reprocess-{uuid4().hex}")[:36],
+            name="delete-wins-replacement-failure",
+            sag_source_config_id=(f"delete-wins-candidate-{uuid4().hex}")[:36],
         )
         session.add(source)
         await session.flush()
@@ -671,56 +767,65 @@ async def test_reprocess_failure_cannot_override_concurrent_delete(monkeypatch):
             content_type="text/markdown",
             size_bytes=10,
             storage_path="/tmp/ready.md",
-            status=DocumentStatus.READY,
+            status=DocumentStatus.EXTRACTING,
             sag_source_id="old-derived-source",
         )
         session.add(document)
         await session.flush()
-        reprocess = Job(
-            type=JobType.REPROCESS_DOCUMENT,
+        candidate = Job(
+            type=JobType.PROCESS_DOCUMENT,
             status=JobStatus.QUEUED,
             source_id=source.id,
             document_id=document.id,
-            payload={"derived_source_ids": ["old-derived-source"]},
+            payload={"control_revision": document.control_revision},
         )
-        session.add(reprocess)
+        session.add(candidate)
         await session.commit()
-        source_id, document_id, reprocess_id = source.id, document.id, reprocess.id
+        source_id, document_id, candidate_id = source.id, document.id, candidate.id
 
     entered = asyncio.Event()
     fail_now = asyncio.Event()
 
-    async def failing_reprocess(*_args, **_kwargs):
+    async def failing_candidate(*_args, **_kwargs):
         entered.set()
         await fail_now.wait()
-        raise ValueError("invalid reprocess payload")
+        if retryable:
+            raise ServiceUnavailableError("late retryable failure")
+        raise ValueError("invalid candidate payload")
 
-    monkeypatch.setitem(
-        TASK_HANDLERS,
-        JobType.REPROCESS_DOCUMENT,
-        failing_reprocess,
-    )
+    monkeypatch.setitem(TASK_HANDLERS, JobType.PROCESS_DOCUMENT, failing_candidate)
     queue = InProcessAsyncQueue(SessionLocal, engine_manager=None, concurrency=1)
-    running = asyncio.create_task(queue._run_job(reprocess_id))
-    await asyncio.wait_for(entered.wait(), timeout=1)
+    scheduled = []
+    monkeypatch.setattr(queue, "_schedule_retry", lambda job_id, _delay: scheduled.append(job_id))
+    running = asyncio.create_task(queue._run_job(candidate_id))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        async with SessionLocal() as session:
+            source = await session.get(Source, source_id)
+            delete_job = await delete_document(session, source, document_id, job_queue=None)
+            assert delete_job.status == JobStatus.QUEUED
+            deleting = await session.get(Document, document_id, populate_existing=True)
+            assert deleting.control_revision == 2
+            with pytest.raises(NotFoundError):
+                await get_public_document(session, source, document_id)
 
-    async with SessionLocal() as session:
-        source = await session.get(Source, source_id)
-        delete_job = await delete_document(
-            session,
-            source,
-            document_id,
-            job_queue=None,
-        )
-        assert delete_job.status == JobStatus.QUEUED
-
-    fail_now.set()
-    await asyncio.wait_for(running, timeout=1)
-
-    async with SessionLocal() as session:
-        failed_reprocess = await session.get(Job, reprocess_id)
-        deleting = await session.get(Document, document_id)
-        assert failed_reprocess.status == JobStatus.FAILED
-        assert deleting.status == DocumentStatus.DELETING
-        assert deleting.error is None
-    await queue.stop()
+        fail_now.set()
+        await asyncio.wait_for(running, timeout=1)
+        async with SessionLocal() as session:
+            retired_candidate = await session.get(Job, candidate_id)
+            deleting = await session.get(Document, document_id)
+            assert retired_candidate.status == JobStatus.FAILED
+            assert retired_candidate.error == ("late retryable failure" if retryable else "invalid candidate payload")
+            assert deleting.status == DocumentStatus.DELETING
+            assert deleting.error is None
+            assert deleting.sag_source_id == "old-derived-source"
+            with pytest.raises(NotFoundError):
+                await get_public_document(session, await session.get(Source, source_id), document_id)
+            assert scheduled == []
+    finally:
+        fail_now.set()
+        await asyncio.gather(running, return_exceptions=True)
+        await queue.stop()
+        async with SessionLocal() as session:
+            await session.execute(delete(Source).where(Source.id == source_id))
+            await session.commit()

@@ -93,6 +93,35 @@ describe("unauthorized request ownership", () => {
   });
 });
 
+describe("document restart confirmation", () => {
+  it("retains the server reason and opaque confirmation token", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: {
+        code: "document_restart_required", message: "Confirm processing again",
+        restart_reason: "resume_configuration_changed", confirmation_token: "confirmed-target-token",
+      },
+    }), { status: 409 })));
+    await expect(api.resumeDocument("source-1", "doc-1")).rejects.toMatchObject({
+      code: "document_restart_required", restartReason: "resume_configuration_changed",
+      confirmationToken: "confirmed-target-token",
+    });
+  });
+
+  it("sends the exact confirmation token to the existing reprocess endpoint", async () => {
+    let requestBody: BodyInit | null | undefined;
+    vi.stubGlobal("fetch", async (_url: string, options: RequestInit) => {
+      requestBody = options.body;
+      return new Response('{"id":"replacement-job"}', {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    });
+    const job = await api.reprocessDocument("source-1", "doc-1", "confirmed-target-token");
+    expect(job.id).toBe("replacement-job");
+    expect(typeof requestBody).toBe("string");
+    expect(JSON.parse(String(requestBody))).toEqual({ confirmation_token: "confirmed-target-token" });
+  });
+});
+
 describe("uploadDocumentWithProgress", () => {
   it("returns the document and request ID while sending the supplied folder import batch ID", async () => {
     vi.stubGlobal("XMLHttpRequest", FakeXMLHttpRequest);

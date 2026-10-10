@@ -30,8 +30,8 @@ class FakeEmbedding:
 
 
 @pytest.mark.asyncio
-async def test_real_014_storage_search_read_and_shutdown(monkeypatch, tmp_path) -> None:
-    assert importlib.metadata.version("zleap-sag") == "0.14.0"
+async def test_real_015_storage_search_read_and_shutdown(monkeypatch, tmp_path) -> None:
+    assert importlib.metadata.version("zleap-sag") == "0.15.0"
 
     async def get_embedding(_self):
         return FakeEmbedding()

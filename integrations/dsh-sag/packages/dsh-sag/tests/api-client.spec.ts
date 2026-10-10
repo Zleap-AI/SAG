@@ -105,9 +105,11 @@ describe('SagApiClient', () => {
     const calls: Array<{ url: string; init: RequestInit }> = []
     const fetch = vi.fn<typeof globalThis.fetch>(async (input, init = {}) => {
       calls.push({ url: String(input), init })
-      if (init.method === 'DELETE') return json({ detail: '文档已删除' })
+      if (init.method === 'DELETE') return json({
+        id: 'delete-1', type: 'delete_document', status: 'queued', source_id: 'source-1', document_id: 'doc-1', progress: 0, attempts: 0, error: null,
+      }, 202)
       if (String(input).endsWith('/reprocess')) return json({
-        id: 'job-1', type: 'reprocess_document', status: 'queued', source_id: null, document_id: null, progress: 0.25, attempts: 2, error: null,
+        id: 'job-1', type: 'process_document', status: 'queued', source_id: null, document_id: null, progress: 0.25, attempts: 2, error: null,
       })
       if (String(input).endsWith('/ingest')) return json({ id: 'doc-text', status: 'pending' })
       if (init.method === 'POST') return json({ id: 'doc-file', status: 'pending' }, 201)
@@ -126,9 +128,11 @@ describe('SagApiClient', () => {
     await client.uploadFile({ sourceId: 'source-1', filename: 'note.md', contentType: 'text/markdown', bytes: new Uint8Array([65, 66]) }, signal)
     await client.ingestText({ sourceId: 'source-1', title: 'Note', text: 'Body' }, signal)
     await expect(client.reprocessDocument('source-1', 'doc-1', signal)).resolves.toEqual({
-      id: 'job-1', type: 'reprocess_document', status: 'queued', sourceId: null, documentId: null, progress: 0.25, attempts: 2, error: null,
+      id: 'job-1', type: 'process_document', status: 'queued', sourceId: null, documentId: null, progress: 0.25, attempts: 2, error: null,
     })
-    await client.deleteDocument('source-1', 'doc-1', signal)
+    await expect(client.deleteDocument('source-1', 'doc-1', signal)).resolves.toEqual({
+      id: 'delete-1', type: 'delete_document', status: 'queued', sourceId: 'source-1', documentId: 'doc-1', progress: 0, attempts: 0, error: null,
+    })
 
     expect(calls.map(call => call.url)).toEqual([
       'http://127.0.0.1:8000/api/v1/sources/source-1/documents',
@@ -163,14 +167,25 @@ describe('SagApiClient', () => {
     expect(String(error)).not.toContain(descriptor.accessToken)
   })
 
-  it('rejects a nullable job id and non-real job enum values', async () => {
+  it('rejects malformed processing jobs and the retired reprocess job type', async () => {
     for (const payload of [
-      { id: null, type: 'reprocess_document', status: 'queued', source_id: null, document_id: null, progress: 0, attempts: 0, error: null },
+      { id: null, type: 'process_document', status: 'queued', source_id: null, document_id: null, progress: 0, attempts: 0, error: null },
       { id: 'job-1', type: 'reprocess', status: 'pending', source_id: null, document_id: null, progress: 0, attempts: 0, error: null },
-      { id: 'job-1', type: 'process_document', status: 'queued', source_id: null, document_id: null, progress: 0, attempts: 0, error: null },
+      { id: 'job-1', type: 'reprocess_document', status: 'queued', source_id: null, document_id: null, progress: 0, attempts: 0, error: null },
     ]) {
       const client = new SagApiClient(descriptor, vi.fn<typeof globalThis.fetch>(async () => json(payload)))
       await expect(client.reprocessDocument('source-1', 'doc-1', new AbortController().signal)).rejects.toThrow(/job/)
+    }
+  })
+
+  it('rejects a deletion response without a delete_document job', async () => {
+    for (const payload of [
+      { detail: '文档已删除' },
+      { id: null, type: 'delete_document', status: 'queued', source_id: 'source-1', document_id: 'doc-1', progress: 0, attempts: 0, error: null },
+      { id: 'job-1', type: 'process_document', status: 'queued', source_id: 'source-1', document_id: 'doc-1', progress: 0, attempts: 0, error: null },
+    ]) {
+      const client = new SagApiClient(descriptor, async () => json(payload, 202))
+      await expect(client.deleteDocument('source-1', 'doc-1', new AbortController().signal)).rejects.toThrow(/job/)
     }
   })
 

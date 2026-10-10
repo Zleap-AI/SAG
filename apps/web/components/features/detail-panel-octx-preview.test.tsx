@@ -14,6 +14,7 @@ const importedPdf: Doc = {
   content_type: "application/pdf",
   size_bytes: 123,
   status: "ready",
+  has_publication: true,
   chunk_count: 3,
   event_count: 2,
   progress: 100,

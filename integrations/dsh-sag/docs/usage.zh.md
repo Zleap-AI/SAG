@@ -82,7 +82,7 @@ dsh 会使用已注册的工具执行这些任务。删除文档时会请求用�
 
 ## embedded 模式
 
-高级部署可以让 dsh 管理 Python 侧车，运行精确版本 `zleap-sag==0.14.0`。该模式只为已配置的 namespace 注册 `sag_search` 和 `sag_read`。
+高级部署可以让 dsh 管理 Python 侧车，运行精确版本 `zleap-sag==0.15.0`。该模式只为已配置的 namespace 注册 `sag_search` 和 `sag_read`。
 
 参阅 [embedded 指南](../packages/dsh-sag/docs/embedded.md)，准备 Python 3.11+、uv、引擎环境和 namespace 配置。
 

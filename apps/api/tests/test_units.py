@@ -274,6 +274,28 @@ def test_litellm_policy_preserves_explicit_reasoning_and_allowed_params():
     assert request["allowed_openai_params"] == ["seed", "reasoning_effort"]
 
 
+def test_plain_policy_uses_request_local_settings():
+    """Limiting the request context to Responses sends live options to ordinary models."""
+    from sag_api.generation.responses.routing import request_settings
+    from sag_api.services.chatbot_service import SettingsView
+
+    stock = Settings(
+        _env_file=None, llm_provider="openai", llm_model="plain-test",
+        llm_extra_body={"marker": "old", "enable_thinking": False},
+    )
+    frozen = stock.model_copy(deep=True)
+    stock.llm_extra_body = {"marker": "new", "enable_thinking": True}
+    token = request_settings.set(frozen)
+    try:
+        request = apply_litellm_completion_policy(
+            SettingsView(stock), {"model": "openai/plain-test", "messages": []},
+        )
+        assert request["extra_body"] == {"marker": "old", "enable_thinking": False}
+        assert request["reasoning_effort"] == "none"
+    finally:
+        request_settings.reset(token)
+
+
 @pytest.mark.parametrize("tool_choice", ["none", "required", None])
 @pytest.mark.parametrize(
     ("base_url", "model"),
@@ -403,6 +425,7 @@ def test_document_output_redacts_database_details():
         "content_type": "text/markdown",
         "size_bytes": 12,
         "status": DocumentStatus.FAILED,
+        "has_publication": False,
         "chunk_count": 0,
         "event_count": 0,
         "progress": 5,
@@ -441,6 +464,7 @@ def test_document_output_marks_octx_documents_without_original_files():
         "content_type": "application/pdf",
         "size_bytes": 12,
         "status": DocumentStatus.READY,
+        "has_publication": True,
         "chunk_count": 1,
         "event_count": 1,
         "progress": 100,
@@ -812,14 +836,13 @@ def test_agent_name_is_injected_into_prompt():
     assert "sag" not in system.lower()
 
 
-def test_document_delete_keeps_v1_success_contract():
+def test_document_delete_exposes_the_durable_cleanup_job_contract():
     from sag_api.main import app
 
     operation = app.openapi()["paths"][
         "/api/v1/sources/{source_id}/documents/{document_id}"
     ]["delete"]
 
-    assert "200" in operation["responses"]
-    assert "202" not in operation["responses"]
-    schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
-    assert schema["$ref"].endswith("/Ok")
+    assert "202" in operation["responses"]
+    schema = operation["responses"]["202"]["content"]["application/json"]["schema"]
+    assert schema["$ref"].endswith("/JobOut")

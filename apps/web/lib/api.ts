@@ -79,12 +79,17 @@ export class ApiError extends Error {
   stage?: string;
   /** 是否可安全重试。 */
   retryable?: boolean;
+  restartReason?: string;
+  confirmationToken?: string;
   constructor(
     status: number,
     code: string,
     message: string,
     requestId?: string,
-    dimensions?: { layer?: string; stage?: string; retryable?: boolean },
+    dimensions?: {
+      layer?: string; stage?: string; retryable?: boolean;
+      restartReason?: string; confirmationToken?: string;
+    },
   ) {
     super(message);
     this.status = status;
@@ -93,6 +98,8 @@ export class ApiError extends Error {
     this.layer = dimensions?.layer;
     this.stage = dimensions?.stage;
     this.retryable = dimensions?.retryable;
+    this.restartReason = dimensions?.restartReason;
+    this.confirmationToken = dimensions?.confirmationToken;
   }
 }
 
@@ -513,6 +520,8 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
     let layer: string | undefined;
     let stage: string | undefined;
     let retryable: boolean | undefined;
+    let restartReason: string | undefined;
+    let confirmationToken: string | undefined;
     try {
       const j = await res.json();
       if (j?.error) {
@@ -521,6 +530,8 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
         layer = j.error.layer ?? undefined;
         stage = j.error.stage ?? undefined;
         retryable = typeof j.error.retryable === "boolean" ? j.error.retryable : undefined;
+        restartReason = typeof j.error.restart_reason === "string" ? j.error.restart_reason : undefined;
+        confirmationToken = typeof j.error.confirmation_token === "string" ? j.error.confirmation_token : undefined;
       } else if (j?.detail) {
         message =
           typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
@@ -547,7 +558,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
       code,
       serverErrorMessage(code, message, res.status),
       requestId,
-      { layer, stage, retryable },
+      { layer, stage, retryable, restartReason, confirmationToken },
     );
   }
 
@@ -775,7 +786,7 @@ export const api = {
       body: JSON.stringify(b),
     }),
   deleteSource: (id: string) =>
-    request<{ ok: boolean }>(`/api/v1/sources/${id}`, { method: "DELETE" }),
+    request<BackgroundJob>(`/api/v1/sources/${id}`, { method: "DELETE" }),
   syncSource: (id: string) =>
     request<{ id: string; type: string }>(`/api/v1/sources/${id}/sync`, {
       method: "POST",
@@ -847,9 +858,10 @@ export const api = {
       body: fd,
     });
   },
-  reprocessDocument: (sid: string, did: string) =>
+  reprocessDocument: (sid: string, did: string, confirmationToken?: string) =>
     request<BackgroundJob>(`/api/v1/sources/${sid}/documents/${did}/reprocess`, {
       method: "POST",
+      body: confirmationToken === undefined ? undefined : JSON.stringify({ confirmation_token: confirmationToken }),
     }),
   pauseDocument: (sid: string, did: string) =>
     request<BackgroundJob>(`/api/v1/sources/${sid}/documents/${did}/pause`, {
@@ -860,7 +872,7 @@ export const api = {
       method: "POST",
     }),
   deleteDocument: (sid: string, did: string) =>
-    request<{ ok: boolean; detail: string }>(`/api/v1/sources/${sid}/documents/${did}`, { method: "DELETE" }),
+    request<BackgroundJob>(`/api/v1/sources/${sid}/documents/${did}`, { method: "DELETE" }),
 
   // Agent
   listAgents: () => request<Agent[]>("/api/v1/agents"),

@@ -26,7 +26,9 @@ from sag_agent import (
     ToolResult as RuntimeToolResult,
 )
 from sag_api.sag import SourceGraphInfo
+from sag_api.services.retrieval_service import published_document_inputs
 from sag_api.tools import ToolContext as HostToolContext
+from sag_api.tools import ToolResult as HostToolResult
 
 _KNOWLEDGE_TOOLS = ["search_context", "get_entity"]
 _WEB_TOOLS = ["web_search", "open_webpage"]
@@ -345,6 +347,31 @@ def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict])
         context.cancellation.raise_if_cancelled()
         host_context.citation_offset = len(citations)
         result = await host_tool.invoke(dict(arguments), host_context)
+        sections = result.data.get("sections")
+        graph = result.data.get("_graph")
+        if host_tool.meta.name == "search_context" and isinstance(sections, list) and sections:
+            sources_by_config = {source.sag_source_config_id: source for source in host_context.sources}
+            published = await published_document_inputs(host_context.sources)
+            current = all(
+                section.source_id in published.get(section.source_config_id or "", ()) for section in sections
+            ) and all(
+                item.source_id in published.get(item.source_config_id, ()) for item in (graph.events if graph else ())
+            )
+            if current and "_graph" not in result.data:
+                graph_for_sections = getattr(host_context.engine_manager, "graph_for_sections", None)
+                if callable(graph_for_sections):
+                    graph = await graph_for_sections(
+                        sections,
+                        sources_by_config,
+                        source_ids_by_config=published,
+                        event_limit=max(12, len(sections)),
+                        entity_limit=36,
+                    )
+                    current = published == await published_document_inputs(host_context.sources)
+            if not current:
+                result = HostToolResult(content="（无相关资料）", data={"section_count": 0})
+                sections = []
+                graph = None
         citations.extend(result.citations)
         count = int(result.data.get("section_count") or len(result.citations) or 0)
         raw_external_references = result.data.get("external_references")
@@ -383,20 +410,7 @@ def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict])
         if external_references:
             details["external_references"] = external_references[:6]
             artifacts["external_references"] = external_references
-        sections = result.data.get("sections")
         if host_tool.meta.name == "search_context" and isinstance(sections, list) and sections:
-            sources_by_config = {source.sag_source_config_id: source for source in host_context.sources}
-            graph_resolved = "_graph" in result.data
-            graph = result.data.get("_graph")
-            if not graph_resolved:
-                graph_for_sections = getattr(host_context.engine_manager, "graph_for_sections", None)
-                if callable(graph_for_sections):
-                    graph = await graph_for_sections(
-                        sections,
-                        sources_by_config,
-                        event_limit=max(12, len(sections)),
-                        entity_limit=36,
-                    )
             graph = graph or SourceGraphInfo()
             event_nodes = []
             for item in graph.events:

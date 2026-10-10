@@ -15,12 +15,55 @@ from sag_api.schemas.insight import (
     GraphRelationOut,
     SourceGraphOut,
 )
+from sag_api.services.retrieval_service import published_document_inputs
 
 
 async def list_entities(
     engine_manager: EngineManager, source: Source, *, types: list[str] | None = None, limit: int = 100
 ) -> list[EntityInfo]:
-    return await engine_manager.list_entities(source.sag_source_config_id, source=source, types=types, limit=limit)
+    published = await published_document_inputs([source])
+    input_ids = published.get(source.sag_source_config_id, ())
+    if not input_ids:
+        return []
+    rows = await engine_manager.list_entities(
+        source.sag_source_config_id,
+        source_ids=input_ids,
+        source=source,
+        types=types,
+        limit=limit,
+    )
+    return rows if published == await published_document_inputs([source]) else []
+
+
+async def find_entity_context(
+    engine_manager: EngineManager,
+    source: Source,
+    name: str,
+) -> tuple[EntityInfo, list[str]] | None:
+    published = await published_document_inputs([source])
+    input_ids = published.get(source.sag_source_config_id, ())
+    if not input_ids:
+        return None
+    entities = await engine_manager.list_entities(
+        source.sag_source_config_id,
+        source_ids=input_ids,
+        source=source,
+        limit=200,
+    )
+    lowered = name.strip().lower()
+    match = next((entity for entity in entities if (entity.name or "").lower() == lowered), None)
+    if match is None:
+        match = next((entity for entity in entities if lowered in (entity.name or "").lower()), None)
+    if match is None:
+        return None
+    snippets = await engine_manager.entity_context(
+        source.sag_source_config_id,
+        match.id,
+        source_ids=input_ids,
+        source=source,
+        limit=6,
+    )
+    return (match, snippets) if published == await published_document_inputs([source]) else None
 
 
 async def get_source_graph(
@@ -39,7 +82,7 @@ async def get_source_graph(
         if document_ids is not None
         else None
     )
-    document_scope = [Document.source_id == source.id]
+    document_scope = [Document.source_id == source.id, Document.has_publication]
     if scoped_document_ids is not None:
         document_scope.append(Document.id.in_(scoped_document_ids))
 
@@ -148,20 +191,10 @@ async def get_source_graph(
         )
 
     counts = GraphCountsOut(
-        documents=(
-            scoped_document_count
-            if scoped_document_ids is not None
-            else max(source.document_count, scoped_document_count, len(document_nodes))
-        ),
-        # Document checkpoints advance while extraction is still running;
-        # Source.event_count is committed only after the whole document. Use
-        # the strongest available total so a live graph reports 3 / 73 rather
-        # than claiming its current three-node slice is the entire dataset.
-        events=(
-            max(scoped_event_count, len(event_nodes))
-            if scoped_document_ids is not None
-            else max(source.event_count, scoped_event_count, len(event_nodes))
-        ),
+        documents=scoped_document_count,
+        # The graph denominator follows this same qualified publication scope,
+        # including published versions of paused candidates and truncated slices.
+        events=max(scoped_event_count, len(event_nodes)),
         entities=max(graph.total_entities, len(entity_nodes)),
         shown_documents=len(document_nodes),
         shown_events=len(event_nodes),

@@ -4,6 +4,7 @@ import {
   type CreateSourceRequest,
   type SagApiClient,
   type SagChunk,
+  type SagDeleteJob,
   type SagDocument,
   type SagFileUpload,
   type SagReprocessJob,
@@ -49,7 +50,7 @@ export interface SagGateway {
   uploadFile(request: SagFileUpload, signal: AbortSignal): Promise<SagDocument>
   ingestText(request: SagTextIngest, signal: AbortSignal): Promise<SagDocument>
   reprocessDocument(sourceId: string, documentId: string, signal: AbortSignal): Promise<SagReprocessJob>
-  deleteDocument(sourceId: string, documentId: string, signal: AbortSignal): Promise<unknown>
+  deleteDocument(sourceId: string, documentId: string, signal: AbortSignal): Promise<SagDeleteJob>
 }
 
 /** Adapt the SAG REST client to stable camel-case domain operations. */

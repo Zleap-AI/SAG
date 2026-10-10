@@ -5,21 +5,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.connectors import registry
-from sag_api.core.db import SessionLocal, get_session
+from sag_api.core.db import get_session
 from sag_api.core.deps import (
     get_current_user,
     get_current_user_or_connector,
     get_engine_manager,
     get_job_queue,
 )
-from sag_api.db.models import User
+from sag_api.db.models import Job, Source, User
+from sag_api.enums import JobType
 from sag_api.jobs import JobQueue
 from sag_api.mcp.server import MCP_TOOL_DETAILS, MCP_TOOL_NAMES
 from sag_api.sag import EngineManager
-from sag_api.schemas.common import Ok
 from sag_api.schemas.job import JobOut
 from sag_api.schemas.source import ConnectorOut, SourceCreate, SourceOut, SourceUpdate
-from sag_api.services.source_operation_service import acquire_source_exclusive_lease
 from sag_api.services.source_service import (
     create_source,
     delete_source,
@@ -30,6 +29,17 @@ from sag_api.services.source_service import (
 )
 
 router = APIRouter(prefix="/sources", tags=["sources"])
+
+
+async def _source_outputs(session: AsyncSession, sources: list[Source]) -> list[SourceOut]:
+    """Management keeps hidden sources with their persisted manual-recovery action."""
+    jobs = await session.scalars(select(Job).where(
+        Job.type == JobType.DELETE_SOURCE, Job.source_id.in_([source.id for source in sources]),
+    ).order_by(Job.created_at, Job.id))
+    by_source = {job.source_id: job for job in jobs}
+    return [SourceOut.model_validate(source).model_copy(update={
+        "deletion_job": JobOut.model_validate(by_source[source.id]) if source.id in by_source else None,
+    }) for source in sources]
 
 
 # 注意：静态路由须在 /{source_id} 之前声明
@@ -43,7 +53,7 @@ async def list_(
     _user: User = Depends(get_current_user_or_connector),
     session: AsyncSession = Depends(get_session),
 ) -> list[SourceOut]:
-    return [SourceOut.model_validate(s) for s in await list_sources(session)]
+    return await _source_outputs(session, await list_sources(session))
 
 
 @router.post("", response_model=SourceOut, status_code=201)
@@ -63,7 +73,7 @@ async def get_(
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> SourceOut:
-    return SourceOut.model_validate(await get_source(session, source_id))
+    return (await _source_outputs(session, [await get_source(session, source_id)]))[0]
 
 
 @router.patch("/{source_id}", response_model=SourceOut)
@@ -77,31 +87,17 @@ async def update_(
     return SourceOut.model_validate(await update_source(session, source_id, body, job_queue=job_queue))
 
 
-@router.delete("/{source_id}", response_model=Ok)
+@router.delete("/{source_id}", response_model=JobOut, status_code=202)
 async def delete_(
     source_id: str,
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-    engine_manager: EngineManager = Depends(get_engine_manager),
     job_queue: JobQueue = Depends(get_job_queue),
-) -> Ok:
+) -> JobOut:
     from sag_api.core.config import settings
 
-    # 先请求在途处理任务尽快让路：解析/抽取会在下一个安全检查点释放处理租约，
-    # 使独占租约的 drain 能在 HTTP 窗口内完成，而非被动等待任务自然结束。
-    job_queue.request_source_stop(source_id)
-    try:
-        async with acquire_source_exclusive_lease(SessionLocal, source_id, "source-delete"):
-            await delete_source(
-                session,
-                source_id,
-                engine_manager=engine_manager,
-                upload_dir=settings.upload_dir,
-                job_queue=job_queue,
-            )
-    finally:
-        job_queue.clear_source_stop(source_id)
-    return Ok(detail="信源已删除")
+    job = await delete_source(session, source_id, upload_dir=settings.upload_dir, job_queue=job_queue)
+    return JobOut.model_validate(job)
 
 
 @router.get("/{source_id}/chunks/{chunk_id}")
@@ -116,7 +112,11 @@ async def get_chunk(
     from sag_api.core.errors import NotFoundError
 
     source = await get_source(session, source_id)
-    chunk = await engine_manager.get_chunk(source.sag_source_config_id, chunk_id, source=source)
+    if await session.scalar(select(Source.is_deleting).where(Source.id == source.id)) is not False:
+        raise NotFoundError("原文分块不存在")
+    from sag_api.services.retrieval_service import get_published_chunk
+
+    chunk = await get_published_chunk(engine_manager, source, chunk_id)
     if chunk is None:
         from datetime import UTC, datetime
 
@@ -142,7 +142,7 @@ async def get_chunk(
             chunk = await engine_manager.get_chunk(installation.sag_source_config_id, chunk_id, source=None)
             if chunk is not None:
                 break
-    if chunk is None:
+    if chunk is None or await session.scalar(select(Source.is_deleting).where(Source.id == source.id)) is not False:
         raise NotFoundError("原文分块不存在")
     return {**chunk.model_dump(), "source_id": source.id, "source_name": source.name}
 

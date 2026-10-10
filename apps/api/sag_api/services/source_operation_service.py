@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -31,10 +32,7 @@ async def _acquire_one(
             update(OctxOperationLease)
             .where(
                 OctxOperationLease.resource_key == resource_key,
-                or_(
-                    OctxOperationLease.owner_token == owner,
-                    OctxOperationLease.expires_at <= _now(),
-                ),
+                OctxOperationLease.expires_at <= _now(),
             )
             .values(owner_token=owner, expires_at=expires_at, heartbeat_at=_now())
         )
@@ -57,17 +55,18 @@ async def _acquire_one(
             return False
 
 
-async def _release_owned(session_factory: async_sessionmaker, resource_keys: Sequence[str], owner: str) -> None:
+async def _release_owned(session_factory: async_sessionmaker, resource_keys: Sequence[str], owner: str) -> int:
     if not resource_keys:
-        return
+        return 0
     async with session_factory() as session:
-        await session.execute(
+        released = await session.execute(
             delete(OctxOperationLease).where(
                 OctxOperationLease.resource_key.in_(resource_keys),
                 OctxOperationLease.owner_token == owner,
             )
         )
         await session.commit()
+        return int(released.rowcount or 0)
 
 
 async def _heartbeat(
@@ -99,7 +98,12 @@ async def _heartbeat(
             )
             await session.commit()
             if renewed.rowcount != len(resource_keys):
-                return
+                raise ConflictError(
+                    "operation lease ownership lost",
+                    layer=ErrorLayer.STORE,
+                    stage=ErrorStage.OCTX_RESOLVE,
+                    retryable=False,
+                )
 
 
 @asynccontextmanager
@@ -110,20 +114,23 @@ async def acquire_operation_lease(
     *,
     ttl_seconds: int = 60,
     heartbeat_seconds: int = 10,
-) -> AsyncIterator[None]:
+) -> AsyncIterator[asyncio.Event]:
     keys = tuple(sorted(set(resource_keys)))
     if not keys or not owner:
         raise ValueError("OCTX operation lease requires resources and owner")
     if ttl_seconds <= 0 or heartbeat_seconds <= 0 or heartbeat_seconds >= ttl_seconds:
         raise ValueError("OCTX lease heartbeat must be positive and shorter than ttl")
 
+    owner_token = f"{owner}:{new_id()}"
+    lost = asyncio.Event()
+    body_failed = False
     acquired: list[str] = []
     try:
         for key in keys:
             if not await _acquire_one(
                 session_factory,
                 key,
-                owner,
+                owner_token,
                 _now() + timedelta(seconds=ttl_seconds),
             ):
                 raise ConflictError(
@@ -139,20 +146,39 @@ async def acquire_operation_lease(
             _heartbeat(
                 session_factory,
                 keys,
-                owner,
+                owner_token,
                 ttl_seconds,
                 heartbeat_seconds,
                 stop,
             ),
             name=f"octx-lease-{owner}",
         )
+
+        def heartbeat_finished(task: asyncio.Task) -> None:
+            if not task.cancelled() and task.exception() is not None:
+                lost.set()
+
+        heartbeat.add_done_callback(heartbeat_finished)
         try:
-            yield
+            yield lost
         finally:
             stop.set()
-            await heartbeat
+            if sys.exc_info()[0] is not None:
+                await asyncio.gather(heartbeat, return_exceptions=True)
+            else:
+                await heartbeat
+    except BaseException:
+        body_failed = True
+        raise
     finally:
-        await _release_owned(session_factory, acquired, owner)
+        released = await _release_owned(session_factory, acquired, owner_token)
+        if not body_failed and released != len(acquired):
+            raise ConflictError(
+                "operation lease ownership lost",
+                layer=ErrorLayer.STORE,
+                stage=ErrorStage.OCTX_RESOLVE,
+                retryable=False,
+            )
 
 
 _DOCUMENT_DELETE_OWNER_PREFIX = "document-delete:"
@@ -209,7 +235,7 @@ async def source_document_mutation(
         yield
     finally:
         if not bypassed:
-            await lease.__aexit__(None, None, None)
+            await lease.__aexit__(*sys.exc_info())
 
 
 @asynccontextmanager
@@ -288,8 +314,8 @@ async def acquire_source_processing_lease(
     *,
     admission_timeout_seconds: float = 1,
     delete_wait_timeout_seconds: float = 120,
-) -> AsyncIterator[None]:
-    """Register one shared processor while briefly crossing the source gate.
+) -> AsyncIterator[asyncio.Event]:
+    """Admit one processor per business source, briefly crossing its mutation gate.
 
     A document uploaded right after a deletion is queued as pending while the
     delete cleanup drains; this admission therefore waits for a document-delete
@@ -297,11 +323,6 @@ async def acquire_source_processing_lease(
     normal fail-fast admission so transfers are never blocked for long.
     """
     owner = f"document:{job_id}"
-    processing = acquire_operation_lease(
-        session_factory,
-        [_processing_resource(source_id, job_id)],
-        owner=owner,
-    )
     started_at = time.monotonic()
     deadline = started_at + admission_timeout_seconds
     delete_deadline = started_at + delete_wait_timeout_seconds
@@ -312,14 +333,16 @@ async def acquire_source_processing_lease(
                 [f"source:{source_id}"],
                 owner=f"processor-admission:{job_id}",
             ):
-                await processing.__aenter__()
+                processing = acquire_operation_lease(
+                    session_factory,
+                    [_processing_resource(source_id, job_id), _processing_resource(source_id, "serial")],
+                    owner=owner,
+                )
+                lost = await processing.__aenter__()
             break
         except ConflictError:
             active_owner = await _active_lease_owner(session_factory, f"source:{source_id}")
-            deleting = bool(
-                active_owner is not None
-                and active_owner.startswith(_DOCUMENT_DELETE_OWNER_PREFIX)
-            )
+            deleting = bool(active_owner is not None and active_owner.startswith(_DOCUMENT_DELETE_OWNER_PREFIX))
             if deleting and time.monotonic() < delete_deadline:
                 await asyncio.sleep(0.05)
                 continue
@@ -327,9 +350,9 @@ async def acquire_source_processing_lease(
                 raise
             await asyncio.sleep(0.02)
     try:
-        yield
+        yield lost
     finally:
-        await processing.__aexit__(None, None, None)
+        await processing.__aexit__(*sys.exc_info())
 
 
 @asynccontextmanager

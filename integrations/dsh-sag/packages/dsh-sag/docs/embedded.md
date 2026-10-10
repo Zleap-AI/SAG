@@ -1,6 +1,6 @@
 # dsh-sag embedded 模式
 
-embedded 模式面向需要由 DeepSeek Harness 0.2.0-rc.2 直接启动 `zleap-sag==0.14.0` 引擎的高级部署。普通本机 SAG 用户不需要此模式。插件与 Python 侧车均要求精确的引擎版本；其他版本会在初始化前失败。
+embedded 模式面向需要由 DeepSeek Harness 0.2.0-rc.2 直接启动 `zleap-sag==0.15.0` 引擎的高级部署。普通本机 SAG 用户不需要此模式。插件与 Python 侧车均要求精确的引擎版本；其他版本会在初始化前失败。
 
 ## 准备运行时
 
@@ -19,7 +19,7 @@ node scripts/setup-runtime.mjs --python python3 --target "$HOME/.local/share/dsh
 dsh plugin --profile web exec node node_modules/@zleap-ai/dsh-sag/scripts/setup-runtime.mjs --python python3 --target "$HOME/.local/share/dsh-sag"
 ```
 
-命令会在目标目录的 `dsh-sag-runtime-0.14.0` 中创建固定版本的 Python 环境，并输出解释器路径。旧 `dsh-sag-runtime-0.1.0` 目录继续保留，升级不会重装旧侧车使用的解释器。
+命令会在目标目录的 `dsh-sag-runtime-0.15.0` 中创建固定版本的 Python 环境，并输出解释器路径。旧 `dsh-sag-runtime-0.1.0` 目录继续保留，升级不会重装旧侧车使用的解释器。
 
 ## 配置
 
@@ -38,12 +38,12 @@ EMBEDDING_REQUEST_DIMENSIONS=none
 
 上例适用于返回固定 1024 维向量、请求不接受 `dimensions` 参数的模型。请按实际模型调整维度与端点。Embedding 没有单独设置 `EMBEDDING_API_KEY` / `EMBEDDING_BASE_URL` 时沿用 `OPENAI_*`。
 
-从 0.10.0 升级时，删除环境文件及侧车进程环境中的旧 `EMBEDDING_DIMENSIONS`：即使其值为空，0.14.0 也会拒绝启动并提示新配置名称。`EMBEDDING_SCHEMA_DIMENSIONS` 决定向量库 schema 与返回向量校验；`EMBEDDING_REQUEST_DIMENSIONS` 只控制请求中的 `dimensions` 参数，两项独立。需要保留旧版显式 `EMBEDDING_DIMENSIONS=N` 的组合行为时，将两项都设为 `N`；固定维度模型通常只设置 schema，并将 request 设为 `none` 或省略。旧版未配置维度的部署可继续省略两项，两项默认均为未设置。不要在已有存储上更改模型或向量维度。
+从 0.10.0 升级时，删除环境文件及侧车进程环境中的旧 `EMBEDDING_DIMENSIONS`：即使其值为空，0.15.0 也会拒绝启动并提示新配置名称。`EMBEDDING_SCHEMA_DIMENSIONS` 决定向量库 schema 与返回向量校验；`EMBEDDING_REQUEST_DIMENSIONS` 只控制请求中的 `dimensions` 参数，两项独立。需要保留旧版显式 `EMBEDDING_DIMENSIONS=N` 的组合行为时，将两项都设为 `N`；固定维度模型通常只设置 schema，并将 request 设为 `none` 或省略。旧版未配置维度的部署可继续省略两项，两项默认均为未设置。不要在已有存储上更改模型或向量维度。
 
 以下三个环境变量分别表示 Python 解释器、SAG 环境文件和允许使用的 namespace：
 
 ```sh
-export DSH_SAG_PYTHON="$HOME/.local/share/dsh-sag/dsh-sag-runtime-0.14.0/bin/python"
+export DSH_SAG_PYTHON="$HOME/.local/share/dsh-sag/dsh-sag-runtime-0.15.0/bin/python"
 export DSH_SAG_ENV_FILE=/etc/dsh-sag/sag.env
 export DSH_SAG_NAMESPACES='[{"id":"product-docs","label":"产品文档"}]'
 ```

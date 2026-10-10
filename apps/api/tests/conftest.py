@@ -6,6 +6,28 @@ import tempfile
 
 import pytest
 
+pytest_plugins = ["tests.publication_records", "tests.document_requests"]
+
+
+@pytest.fixture
+async def document_engine_manager(tmp_path):
+    """Real offline effective configuration for document control service tests."""
+    from uuid import uuid4
+
+    from sag_api.core.config import Settings
+    from sag_api.sag import EngineManager
+
+    manager = EngineManager(Settings(
+        _env_file=None, data_dir=str(tmp_path / "document-engine"),
+        llm_model="model-a", llm_api_key="test-key", llm_base_url="https://models.example/v1",
+        embedding_model="text-embedding-3-small", embedding_schema_dimensions=2,
+    ))
+    try:
+        await manager.provision(uuid4().hex)
+        yield manager
+    finally:
+        await manager.aclose_all()
+
 _TMP = tempfile.mkdtemp(prefix="sag-test-")
 os.environ.setdefault("SAG_DATABASE_URL", f"sqlite+aiosqlite:///{_TMP}/sag.db?timeout=30")
 os.environ.setdefault("SAG_DATA_DIR", f"{_TMP}/sag")
@@ -71,13 +93,14 @@ def _isolate_app_lifespan_from_storage_upgrade_probe(monkeypatch: pytest.MonkeyP
 @pytest.fixture(autouse=True)
 async def _isolate_persisted_jobs():
     """A test must not recover queued jobs created by an earlier app lifespan."""
+    from sag_api.core.db import SessionLocal, engine
+
     yield
     if "sag_api.core.db" not in sys.modules:
         return
 
     from sqlalchemy import delete, inspect
 
-    from sag_api.core.db import SessionLocal, engine
     from sag_api.db.models import Document, Job
     from sag_api.enums import DocumentStatus
 

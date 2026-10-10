@@ -1,4 +1,7 @@
 import pytest
+from document_requests import DocumentRequestBuilder, document_receipt, document_request
+
+from tests.document_requests import UncommittedDocumentManager, controller_processing_identity, processing_parameters
 
 
 def _queued_job_id(item) -> str:
@@ -110,7 +113,7 @@ async def test_normal_jobs_keep_fifo_order_without_scheduler_metadata():
 
 
 @pytest.mark.asyncio
-async def test_recovery_preserves_delete_priority_over_normal_jobs():
+async def test_recovery_requires_manual_action_for_document_processing_and_deletion():
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.db.models import Job
     from sag_api.enums import JobStatus, JobType
@@ -134,7 +137,10 @@ async def test_recovery_preserves_delete_priority_over_normal_jobs():
     recovered_ids: list[str] = []
     while not queue._queue.empty():
         recovered_ids.append(_queued_job_id(await queue._queue.get()))
-    assert recovered_ids.index(delete_id) < recovered_ids.index(normal_id)
+    assert recovered_ids == []
+    async with SessionLocal() as session:
+        assert (await session.get(Job, delete_id)).status == JobStatus.PAUSED
+        assert (await session.get(Job, normal_id)).status == JobStatus.PAUSED
 
 
 @pytest.mark.asyncio
@@ -194,14 +200,12 @@ async def test_recovery_deduplicates_legacy_active_document_jobs():
                 )
             ).all()
         )
-    active = [job for job in recovered if job.status == JobStatus.QUEUED]
+    active = [job for job in recovered if job.status == JobStatus.PAUSED]
     superseded = [job for job in recovered if job.status == JobStatus.FAILED]
     assert len(active) == 1
-    assert recovered_ids == [active[0].id]
+    assert recovered_ids == []
     assert len(superseded) == 2
-    assert {
-        (job.payload or {}).get("superseded_by_job_id") for job in superseded
-    } == {active[0].id}
+    assert {(job.payload or {}).get("superseded_by_job_id") for job in superseded} == {active[0].id}
 
 
 @pytest.mark.asyncio
@@ -420,10 +424,10 @@ async def test_recovery_reconciles_orphaned_pausing_and_deleting_documents():
         assert recovered_delete.status == DocumentStatus.DELETING
         assert recovered_delete.error is None
         assert recovered_delete_job is not None
-        assert recovered_delete_job.status == JobStatus.QUEUED
+        assert recovered_delete_job.status == JobStatus.PAUSED
         assert recovered_delete_job.payload["target_document_id"] == deleting_id
-    await asyncio.wait_for(engine.waiting.wait(), timeout=1)
-    assert queue.source_maintenance_requested(recovered_delete.source_id) is True
+    assert not engine.waiting.is_set()
+    assert queue.source_maintenance_requested(recovered_delete.source_id) is False
     engine.release.set()
     await queue.stop()
 
@@ -475,11 +479,12 @@ async def test_recovery_unblocks_source_job_when_delete_job_no_longer_exists():
     recovered_ids: list[str] = []
     while not queue._queue.empty():
         recovered_ids.append(_queued_job_id(await queue._queue.get()))
-    assert process_id in recovered_ids
+    assert recovered_ids == []
     async with SessionLocal() as session:
         recovered = await session.get(Job, process_id)
-        assert recovered.payload.get("_scheduler") == {"priority": 10}
-        assert recovered.payload["resume_requested"] is True
+        assert recovered.status == JobStatus.PAUSED
+        assert recovered.payload["_scheduler"]["blocked_reason"] == "manual_recovery"
+        assert not recovered.payload.get("resume_requested")
 
 
 @pytest.mark.asyncio
@@ -515,7 +520,7 @@ async def test_new_process_job_is_blocked_while_source_maintenance_is_active():
 
 
 @pytest.mark.asyncio
-async def test_user_can_resume_job_after_source_maintenance_has_finished():
+async def test_user_can_resume_job_after_source_maintenance_has_finished(document_engine_manager):
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.db.models import Document, Job, Source
     from sag_api.enums import DocumentStatus, JobStatus, JobType
@@ -560,10 +565,7 @@ async def test_user_can_resume_job_after_source_maintenance_has_finished():
 
         queue = FakeQueue()
         resumed = await resume_document(
-            session,
-            source,
-            document.id,
-            job_queue=queue,
+            session, source, document.id, job_queue=queue, engine_manager=document_engine_manager
         )
 
         assert resumed.status == JobStatus.QUEUED
@@ -578,18 +580,11 @@ async def test_scheduler_yield_keeps_document_extracting(monkeypatch):
     from sag_api.enums import DocumentStatus, JobStatus, JobType
     from sag_api.jobs.control import JobYielded
     from sag_api.jobs.inproc import InProcessAsyncQueue
-    from sag_api.sag.dto import ProcessOutcome
 
-    class YieldingEngine:
+    class YieldingEngine(UncommittedDocumentManager):
         async def process_document(self, _config_id, _path, **kwargs):
             assert await kwargs["should_pause"]() is True
-            return ProcessOutcome(
-                source_id="engine-document",
-                chunk_ids=["chunk-1", "chunk-2"],
-                processed_chunk_ids=["chunk-1"],
-                chunk_count=2,
-                paused=True,
-            )
+            return None
 
     await init_db()
     async with SessionLocal() as session:
@@ -616,11 +611,9 @@ async def test_scheduler_yield_keeps_document_extracting(monkeypatch):
             source_id=source.id,
             document_id=document.id,
             payload={
-                "process_checkpoint": {
-                    "source_id": "engine-document",
-                    "chunk_ids": ["chunk-1", "chunk-2"],
-                    "processed_chunk_ids": ["chunk-1"],
-                }
+                "process_request": document_request(
+                    source.sag_source_config_id, source_id="engine-document"
+                ).model_dump(mode="json")
             },
         )
         session.add(job)
@@ -653,7 +646,7 @@ async def test_delete_failure_releases_source_maintenance_and_retries_cleanup():
     from sag_api.jobs.inproc import InProcessAsyncQueue
 
     class FailingDeleteEngine:
-        async def delete_document_data(self, *_args, **_kwargs):
+        async def delete_data(self, *_args, **_kwargs):
             raise RuntimeError("cleanup failed")
 
     await init_db()
@@ -722,7 +715,8 @@ async def test_delete_failure_releases_source_maintenance_and_retries_cleanup():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("protected_status", ["deleting", "delete_failed"])
-async def test_delete_control_state_checkpoint_does_not_advance_visible_progress(
+@pytest.mark.usefixtures("controller_identity")
+async def test_delete_control_state_late_receipt_does_not_advance_visible_progress(
     protected_status,
 ):
     from sag_api.core.db import SessionLocal, init_db
@@ -730,21 +724,13 @@ async def test_delete_control_state_checkpoint_does_not_advance_visible_progress
     from sag_api.enums import DocumentStatus, JobStatus, JobType
     from sag_api.jobs.control import JobPaused
     from sag_api.jobs.tasks import process_document
-    from sag_api.sag.dto import ProcessCheckpoint, ProcessOutcome
 
-    class LateCheckpointEngine:
-        async def process_document(self, _config_id, _path, **kwargs):
-            await kwargs["on_checkpoint"](
-                ProcessCheckpoint(
-                    source_id="engine-delete",
-                    chunk_ids=["chunk-1", "chunk-2"],
-                    processed_chunk_ids=["chunk-1", "chunk-2"],
-                    event_count=2,
-                    event_ids=["event-1", "event-2"],
-                    token_usage=500,
-                )
-            )
-            return ProcessOutcome(paused=True)
+    class LateReceiptEngine(UncommittedDocumentManager):
+        async def process_document(self, _config_id, request_factory, **kwargs):
+            request = await request_factory(None, *processing_parameters())
+            await kwargs["on_stage"]("extracting")
+            await kwargs["on_progress"](2, 2)
+            return document_receipt(request, chunk_count=2, event_count=2, token_usage=500)
 
     await init_db()
     async with SessionLocal() as session:
@@ -771,32 +757,30 @@ async def test_delete_control_state_checkpoint_does_not_advance_visible_progress
             source_id=source.id,
             document_id=document.id,
             payload={
-                "process_checkpoint": {
-                    "source_id": "engine-delete",
-                    "chunk_ids": ["chunk-1", "chunk-2"],
-                    "processed_chunk_ids": ["chunk-1"],
-                }
+                "processing_identity": controller_processing_identity(document.storage_path),
+                "process_request": document_request(source.sag_source_config_id, source_id="engine-delete").model_dump(
+                    mode="json"
+                ),
             },
         )
         session.add(job)
         await session.commit()
 
         with pytest.raises(JobPaused):
-            await process_document(session, job, engine_manager=LateCheckpointEngine())
+            await process_document(session, job, engine_manager=LateReceiptEngine())
 
         await session.refresh(document)
         await session.refresh(job)
         assert document.status == DocumentStatus(protected_status)
         assert document.progress == 52
-        assert document.sag_source_id == "engine-delete"
-        assert job.payload["process_checkpoint"]["processed_chunk_ids"] == [
-            "chunk-1",
-            "chunk-2",
-        ]
+        assert document.sag_source_id is None
+        assert job.payload["process_request"]["source"]["descriptor"]["source_id"] == "engine-delete"
+        assert "process_checkpoint" not in job.payload
 
 
 @pytest.mark.asyncio
-async def test_deleting_one_active_document_temporarily_yields_and_resumes_its_peer(tmp_path):
+@pytest.mark.usefixtures("controller_identity")
+async def test_deleting_active_document_keeps_its_queued_peer_outside_cleanup(tmp_path, monkeypatch):
     import asyncio
 
     from sqlalchemy import select
@@ -805,64 +789,40 @@ async def test_deleting_one_active_document_temporarily_yields_and_resumes_its_p
     from sag_api.db.models import Document, Job, Source
     from sag_api.enums import DocumentStatus, JobStatus
     from sag_api.jobs.inproc import InProcessAsyncQueue
-    from sag_api.sag.dto import ProcessOutcome
     from sag_api.services.document_service import create_document_from_upload, delete_document
 
-    class CoordinatedEngine:
+    async def skip_unrelated_projection(*args, **kwargs):
+        return []
+
+    # This document-only manager cannot rebuild global users' Universe views.
+    # Keep real document admission/leases/SQL; projection scheduling has its own tests.
+    monkeypatch.setattr("sag_api.services.universe_service.schedule_universe_refresh", skip_unrelated_projection)
+
+    class CoordinatedEngine(UncommittedDocumentManager):
         def __init__(self):
             self.started_titles: set[str] = set()
             self.returned_titles: set[str] = set()
-            self.both_started = asyncio.Event()
+            self.first_started = asyncio.Event()
             self.processors_idle = asyncio.Event()
             self.release_initial_batch = asyncio.Event()
             self.cleanup_started = asyncio.Event()
             self.release_cleanup = asyncio.Event()
             self.deleted: list[str] = []
+            self.requests = {}
 
-        async def process_document(self, _config_id, _path, **kwargs):
+        async def process_document(self, config_id, request_factory, **kwargs):
             title = kwargs["document_title"]
-            checkpoint = kwargs["checkpoint"].model_copy(deep=True)
-            if not checkpoint.chunk_ids:
-                checkpoint.source_id = f"engine-{title}"
-                checkpoint.chunk_ids = [f"{title}-chunk-1", f"{title}-chunk-2"]
-                await kwargs["on_checkpoint"](checkpoint.model_copy(deep=True))
+            request = await request_factory(DocumentRequestBuilder(config_id), *processing_parameters())
+            self.requests[title] = request
             await kwargs["on_stage"]("extracting")
             self.started_titles.add(title)
-            if self.started_titles.issuperset({"a", "b"}):
-                self.both_started.set()
+            self.first_started.set()
             await self.release_initial_batch.wait()
-
-            if await kwargs["should_pause"]():
-                self.returned_titles.add(title)
-                if self.returned_titles.issuperset({"a", "b"}):
-                    self.processors_idle.set()
-                return ProcessOutcome(
-                    source_id=checkpoint.source_id,
-                    chunk_ids=checkpoint.chunk_ids,
-                    processed_chunk_ids=checkpoint.processed_chunk_ids,
-                    chunk_count=len(checkpoint.chunk_ids),
-                    event_count=checkpoint.event_count,
-                    token_usage=checkpoint.token_usage,
-                    paused=True,
-                )
-
-            checkpoint.processed_chunk_ids = list(checkpoint.chunk_ids)
-            checkpoint.event_ids = [f"{title}-event-1", f"{title}-event-2"]
-            checkpoint.event_count = 2
-            checkpoint.token_usage = 200
-            await kwargs["on_checkpoint"](checkpoint.model_copy(deep=True))
             self.returned_titles.add(title)
-            if self.returned_titles.issuperset({"a", "b"}):
-                self.processors_idle.set()
-            return ProcessOutcome(
-                source_id=checkpoint.source_id,
-                chunk_ids=checkpoint.chunk_ids,
-                processed_chunk_ids=checkpoint.processed_chunk_ids,
-                chunk_count=2,
-                event_count=2,
-                event_ids=checkpoint.event_ids,
-                token_usage=200,
-            )
+            self.processors_idle.set()
+            if await kwargs["should_pause"]():
+                return None
+            return document_receipt(request, chunk_count=2, event_count=2, token_usage=200)
 
         async def begin_document_maintenance(self, *_args, **_kwargs):
             await self.processors_idle.wait()
@@ -870,19 +830,25 @@ async def test_deleting_one_active_document_temporarily_yields_and_resumes_its_p
         async def end_document_maintenance(self, *_args, **_kwargs):
             return None
 
-        async def delete_document_data(self, _config_id, document_source_id, *, source):
+        async def delete_data(self, request, *, source):
+            from tests.document_requests import deletion_receipt
+
             assert source.sag_source_config_id
-            self.deleted.append(document_source_id)
+            self.deleted.append(request.source_id)
             self.cleanup_started.set()
             await self.release_cleanup.wait()
+            return deletion_receipt(request)
 
     await init_db()
+    from uuid import uuid4
+
+    source_id = uuid4().hex
     engine = CoordinatedEngine()
     queue = InProcessAsyncQueue(SessionLocal, engine, concurrency=2)
     await queue.start()
     try:
         async with SessionLocal() as session:
-            source = Source(name="concurrent-delete", sag_source_config_id="concurrent-config"[:36])
+            source = Source(id=source_id, name="concurrent-delete", sag_source_config_id="concurrent-config"[:36])
             session.add(source)
             await session.commit()
             document_a, process_a = await create_document_from_upload(
@@ -894,6 +860,9 @@ async def test_deleting_one_active_document_temporarily_yields_and_resumes_its_p
                 upload_dir=str(tmp_path),
                 job_queue=queue,
             )
+            # This scenario requires A already running before its queued peer
+            # exists; serial admission does not promise which simultaneous worker wins.
+            await asyncio.wait_for(engine.first_started.wait(), timeout=2)
             document_b, process_b = await create_document_from_upload(
                 session,
                 source,
@@ -906,7 +875,8 @@ async def test_deleting_one_active_document_temporarily_yields_and_resumes_its_p
             source_id, document_a_id, document_b_id = source.id, document_a.id, document_b.id
             process_a_id, process_b_id = process_a.id, process_b.id
 
-        await asyncio.wait_for(engine.both_started.wait(), timeout=2)
+        await asyncio.wait_for(engine.first_started.wait(), timeout=2)
+        assert engine.started_titles == {"a"}
         async with SessionLocal() as session:
             source = await session.get(Source, source_id)
             await delete_document(
@@ -937,15 +907,16 @@ async def test_deleting_one_active_document_temporarily_yields_and_resumes_its_p
         for _ in range(200):
             async with SessionLocal() as session:
                 yielding_document = await session.get(Document, document_b_id)
-                yielding_job = await session.scalar(
-                    select(Job).where(Job.document_id == document_b_id)
-                )
-                if yielding_job.status == JobStatus.QUEUED:
+                yielding_job = await session.scalar(select(Job).where(Job.document_id == document_b_id))
+                if (
+                    yielding_job.status == JobStatus.QUEUED
+                    and (yielding_job.payload.get("_scheduler") or {}).get("blocked_reason") == "source_maintenance"
+                ):
                     break
             await asyncio.sleep(0.01)
         else:
             pytest.fail("document B did not yield while document A was being deleted")
-        assert yielding_document.status == DocumentStatus.EXTRACTING
+        assert yielding_document.status == DocumentStatus.PENDING
         assert yielding_job.payload["_scheduler"]["blocked_reason"] == "source_maintenance"
 
         engine.release_cleanup.set()
@@ -953,9 +924,7 @@ async def test_deleting_one_active_document_temporarily_yields_and_resumes_its_p
             async with SessionLocal() as session:
                 deleted_document = await session.get(Document, document_a_id)
                 resumed_document = await session.get(Document, document_b_id)
-                resumed_job = await session.scalar(
-                    select(Job).where(Job.document_id == document_b_id)
-                )
+                resumed_job = await session.scalar(select(Job).where(Job.document_id == document_b_id))
                 if (
                     deleted_document is None
                     and resumed_document.status == DocumentStatus.READY
@@ -974,7 +943,7 @@ async def test_deleting_one_active_document_temporarily_yields_and_resumes_its_p
             assert source.event_count == 2
             assert resumed_job.status == JobStatus.SUCCEEDED
             assert resumed_job.attempts == 1
-        assert engine.deleted == ["engine-a"]
+        assert engine.deleted == [engine.requests["a"].source.descriptor.source_id]
     finally:
         engine.release_initial_batch.set()
         engine.release_cleanup.set()
@@ -996,3 +965,90 @@ async def test_deleting_one_active_document_temporarily_yields_and_resumes_its_p
                 if "database is locked" not in str(error).lower() or attempt == 4:
                     raise
                 await asyncio.sleep(0.05 * (2**attempt))
+
+
+@pytest.mark.asyncio
+async def test_delete_admission_contention_keeps_maintenance_and_attempt_budget(tmp_path):
+    """A transient admission owner must not let peer work bypass queued cleanup."""
+    from sqlalchemy import delete
+
+    from sag_api.core.db import SessionLocal, init_db
+    from sag_api.db.models import Document, Job, Source
+    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.jobs.inproc import InProcessAsyncQueue
+    from sag_api.services.source_operation_service import acquire_operation_lease
+
+    class CleanupEngine:
+        async def begin_document_maintenance(self, *_args, **_kwargs):
+            pass
+
+        async def end_document_maintenance(self, *_args, **_kwargs):
+            pass
+
+        async def delete_data(self, request, **_kwargs):
+            from tests.document_requests import deletion_receipt
+
+            return deletion_receipt(request)
+
+    await init_db()
+    queue = InProcessAsyncQueue(SessionLocal, CleanupEngine(), concurrency=1)
+    await queue.start()
+    async with SessionLocal() as session:
+        source = Source(name="delete-admission-contention", sag_source_config_id=tmp_path.name)
+        session.add(source)
+        await session.flush()
+        document = Document(
+            source_id=source.id,
+            filename="deleted.md",
+            storage_path=str(tmp_path / "deleted.md"),
+            status=DocumentStatus.DELETING,
+        )
+        session.add(document)
+        await session.flush()
+        job = Job(
+            type=JobType.DELETE_DOCUMENT,
+            status=JobStatus.QUEUED,
+            source_id=source.id,
+            document_id=document.id,
+        )
+        session.add(job)
+        await session.commit()
+        source_id, job_id, document_id = source.id, job.id, document.id
+    try:
+        async with acquire_operation_lease(
+            SessionLocal,
+            [f"source:{source_id}"],
+            owner="processor-admission:peer",
+        ):
+            await queue.enqueue(job_id)
+
+            async def yielded():
+                async with SessionLocal() as session:
+                    current = await session.get(Job, job_id)
+                    return current.started_at is not None and current.status == JobStatus.QUEUED
+
+            await _wait_until(yielded)
+            async with SessionLocal() as session:
+                current = await session.get(Job, job_id)
+                current_document = await session.get(Document, document_id)
+                assert current.attempts == 0
+                assert current.error is None
+                assert current_document.status == DocumentStatus.DELETING
+                first_admission = current.started_at
+            assert queue.source_maintenance_requested(source_id)
+
+            async def admitted_again():
+                async with SessionLocal() as session:
+                    current = await session.get(Job, job_id)
+                    return current.status == JobStatus.QUEUED and current.started_at != first_admission
+
+            await _wait_until(admitted_again)
+            async with SessionLocal() as session:
+                current = await session.get(Job, job_id)
+                assert current.attempts == 0 and current.error is None
+            assert queue.source_maintenance_requested(source_id)
+    finally:
+        await queue.stop()
+        async with SessionLocal() as session:
+            await session.execute(delete(Source).where(Source.id == source_id))
+            await session.commit()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -8,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from tests.document_requests import UncommittedDocumentManager, controller_processing_identity, processing_parameters
 
 
 @pytest.fixture
@@ -96,10 +99,9 @@ async def test_database_lease_is_exclusive_sorted_and_released(octx_sessions):
                 .scalars()
                 .all()
             )
-            assert [(row.resource_key, row.owner_token) for row in rows] == [
-                ("asset:asset-a", "owner-a"),
-                ("source:source-a", "owner-a"),
-            ]
+            assert [row.resource_key for row in rows] == ["asset:asset-a", "source:source-a"]
+            assert len({row.owner_token for row in rows}) == 1
+            assert rows[0].owner_token.startswith("owner-a:")
 
         with pytest.raises(ConflictError):
             async with acquire_operation_lease(
@@ -119,6 +121,49 @@ async def test_database_lease_is_exclusive_sorted_and_released(octx_sessions):
         heartbeat_seconds=10,
     ):
         pass
+
+
+@pytest.mark.asyncio
+async def test_same_job_cannot_reenter_a_live_database_lease(octx_sessions):
+    from sag_api.core.errors import ConflictError
+    from sag_api.services.source_operation_service import acquire_operation_lease
+
+    async with acquire_operation_lease(octx_sessions, ["source:same-job"], owner="document:job"):
+        with pytest.raises(ConflictError):
+            async with acquire_operation_lease(octx_sessions, ["source:same-job"], owner="document:job"):
+                pytest.fail("a second invocation bypassed the same-job lease")
+
+
+@pytest.mark.asyncio
+async def test_stale_release_preserves_same_job_successor_and_reports_loss(octx_sessions):
+    from sqlalchemy import update
+
+    from sag_api.core.errors import ConflictError
+    from sag_api.db.models import OctxOperationLease
+    from sag_api.services.source_operation_service import acquire_operation_lease
+
+    key = "source:lease-replacement"
+    old = acquire_operation_lease(octx_sessions, [key], owner="document:job")
+    await old.__aenter__()
+    async with octx_sessions() as session:
+        await session.execute(
+            update(OctxOperationLease)
+            .where(OctxOperationLease.resource_key == key)
+            .values(
+                expires_at=datetime.now(UTC) - timedelta(seconds=1),
+            )
+        )
+        await session.commit()
+    successor = acquire_operation_lease(octx_sessions, [key], owner="document:job")
+    await successor.__aenter__()
+    try:
+        with pytest.raises(ConflictError, match="lost"):
+            await old.__aexit__(None, None, None)
+        async with octx_sessions() as session:
+            row = await session.scalar(select(OctxOperationLease).where(OctxOperationLease.resource_key == key))
+            assert row is not None and row.owner_token.startswith("document:job:")
+    finally:
+        await successor.__aexit__(None, None, None)
 
 
 @pytest.mark.asyncio
@@ -209,15 +254,9 @@ async def test_upload_and_delete_flow_works_while_delete_cleanup_runs(octx_sessi
             ["source:source-busy-delete"],
             owner="document-delete:job-a",
         ):
-            async with source_document_mutation(
-                octx_sessions, source.id, "document-delete"
-            ):
-                delete_job = await delete_document(
-                    session, source, ready_document.id, job_queue=queue
-                )
-            async with source_document_mutation(
-                octx_sessions, source.id, "document-upload"
-            ):
+            async with source_document_mutation(octx_sessions, source.id, "document-delete"):
+                delete_job = await delete_document(session, source, ready_document.id, job_queue=queue)
+            async with source_document_mutation(octx_sessions, source.id, "document-upload"):
                 uploaded, process_job = await create_document_from_upload(
                     session,
                     source,
@@ -325,10 +364,10 @@ async def test_processor_admission_does_not_wait_for_octx_export(octx_sessions):
 
 
 @pytest.mark.asyncio
-async def test_source_exclusive_lease_drains_processors_without_serializing_them(
+async def test_source_exclusive_lease_drains_serial_processor_and_closes_admission(
     octx_sessions,
 ):
-    """Long document work may overlap, while export closes admission and drains it."""
+    """Export drains the active processor and prevents another admission."""
     import asyncio
 
     from sag_api.core.errors import ConflictError
@@ -338,7 +377,6 @@ async def test_source_exclusive_lease_drains_processors_without_serializing_them
     )
 
     first_entered = asyncio.Event()
-    second_entered = asyncio.Event()
     release_processors = asyncio.Event()
     exclusive_entered = asyncio.Event()
 
@@ -348,8 +386,10 @@ async def test_source_exclusive_lease_drains_processors_without_serializing_them
             await release_processors.wait()
 
     first = asyncio.create_task(processor("job-a", first_entered))
-    second = asyncio.create_task(processor("job-b", second_entered))
-    await asyncio.gather(first_entered.wait(), second_entered.wait())
+    await asyncio.wait_for(first_entered.wait(), 2)
+    with pytest.raises(ConflictError):
+        async with acquire_source_processing_lease(octx_sessions, "source-a", "job-b", admission_timeout_seconds=0):
+            pytest.fail("a second processor bypassed serial admission")
 
     async def exclusive() -> None:
         async with acquire_source_exclusive_lease(
@@ -374,7 +414,7 @@ async def test_source_exclusive_lease_drains_processors_without_serializing_them
             pass
 
     release_processors.set()
-    await asyncio.gather(first, second, export)
+    await asyncio.gather(first, export)
     assert exclusive_entered.is_set() is True
 
 
@@ -585,7 +625,9 @@ async def test_confirmed_update_is_bound_to_transfer_source_and_revision(octx_se
 
 
 @pytest.mark.asyncio
-async def test_document_content_mutations_advance_octx_binding_revision(octx_sessions, tmp_path):
+async def test_document_content_mutations_advance_octx_binding_revision(
+    octx_sessions, tmp_path, document_engine_manager
+):
     """Missing a revision hook would let a preflight decision overwrite later local edits."""
     from sag_api.db.models import (
         OctxAsset,
@@ -654,10 +696,7 @@ async def test_document_content_mutations_advance_octx_binding_revision(octx_ses
         first_job.status = JobStatus.SUCCEEDED
         await session.commit()
         await reprocess_document(
-            session,
-            source,
-            document.id,
-            job_queue=Queue(),
+            session, source, document.id, job_queue=Queue(), engine_manager=document_engine_manager
         )
         await session.refresh(binding)
         assert binding.content_revision == 4
@@ -673,8 +712,11 @@ async def test_document_content_mutations_advance_octx_binding_revision(octx_ses
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("controller_identity")
 async def test_successful_document_processing_advances_binding_revision(octx_sessions, monkeypatch):
     """Finishing extraction changes searchable content and must invalidate prior decisions."""
+    from document_requests import document_receipt, document_request
+
     from sag_api.db.models import (
         Document,
         Job,
@@ -691,7 +733,6 @@ async def test_successful_document_processing_advances_binding_revision(octx_ses
         OctxReleaseOrigin,
     )
     from sag_api.jobs import tasks
-    from sag_api.sag.dto import ProcessOutcome
 
     lease_held = False
 
@@ -702,14 +743,15 @@ async def test_successful_document_processing_advances_binding_revision(octx_ses
         assert job_id == "job-d"
         lease_held = True
         try:
-            yield
+            yield asyncio.Event()
         finally:
             lease_held = False
 
-    class Engine:
-        async def process_document(self, *_args, **_kwargs):
+    class Engine(UncommittedDocumentManager):
+        async def process_document(self, _source_id, request_factory, **_kwargs):
             assert lease_held is True
-            return ProcessOutcome(source_id="article-d", chunk_count=2, event_count=3, token_usage=5)
+            request = await request_factory(None, *processing_parameters())
+            return document_receipt(request, chunk_count=2, event_count=3, token_usage=5)
 
     asset_id = "0191f6a0-0000-7000-8000-000000000004"
     async with octx_sessions() as session:
@@ -747,15 +789,12 @@ async def test_successful_document_processing_advances_binding_revision(octx_ses
             source_id=source.id,
             document_id=document.id,
             payload={
-                "process_checkpoint": {
-                    "source_id": "article-d",
-                    "chunk_ids": ["chunk-d"],
-                    "processed_chunk_ids": [],
-                    "event_count": 0,
-                    "event_ids": [],
-                    "eventless_chunk_ids": [],
-                    "token_usage": 0,
-                }
+                "processing_identity": controller_processing_identity(document.storage_path),
+                "process_request": document_request(
+                    source.sag_source_config_id,
+                    source_id="article-d",
+                ).model_dump(mode="json"),
+                "control_revision": 1,
             },
         )
         session.add_all([binding, document, job])

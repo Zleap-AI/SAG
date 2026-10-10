@@ -59,7 +59,7 @@ def test_rerank_accepts_split_evidence_for_contiguous_chinese_query():
 
 
 @pytest.mark.asyncio
-async def test_contiguous_and_spaced_chinese_queries_return_same_core_evidence():
+async def test_contiguous_and_spaced_chinese_queries_return_same_core_evidence(published_inputs):
     from uuid import uuid4
 
     from sag_api.core.db import SessionLocal, init_db
@@ -107,6 +107,7 @@ async def test_contiguous_and_spaced_chinese_queries_return_same_core_evidence()
         )
         session.add(source)
         await session.commit()
+        await published_inputs(source.id, 'article-meat', 'article-soup')
 
         contiguous = await retrieve_relevant_sections(engine, [source], "肉类清汤", top_k=8)
         spaced = await retrieve_relevant_sections(engine, [source], "肉类 清汤", top_k=8)
@@ -119,7 +120,7 @@ async def test_contiguous_and_spaced_chinese_queries_return_same_core_evidence()
 
 
 @pytest.mark.asyncio
-async def test_glued_alnum_query_recalls_distant_terms_from_the_same_document():
+async def test_glued_alnum_query_recalls_distant_terms_from_the_same_document(published_inputs):
     from uuid import uuid4
 
     from sag_api.core.db import SessionLocal, init_db
@@ -160,6 +161,7 @@ async def test_glued_alnum_query_recalls_distant_terms_from_the_same_document():
         )
         session.add(source)
         await session.commit()
+        await published_inputs(source.id, 'article-ai-2028')
 
         outcome = await retrieve_relevant_sections(
             LexicalEngine(),
@@ -175,7 +177,7 @@ async def test_glued_alnum_query_recalls_distant_terms_from_the_same_document():
 
 
 @pytest.mark.asyncio
-async def test_exact_glued_token_ranks_above_expansion_only_match():
+async def test_exact_glued_token_ranks_above_expansion_only_match(published_inputs):
     from uuid import uuid4
 
     from sag_api.core.db import SessionLocal, init_db
@@ -216,6 +218,7 @@ async def test_exact_glued_token_ranks_above_expansion_only_match():
         )
         session.add(source)
         await session.commit()
+        await published_inputs(source.id, 'article-expansion', 'article-exact')
 
         outcome = await retrieve_relevant_sections(
             LexicalEngine(),
@@ -231,7 +234,7 @@ async def test_exact_glued_token_ranks_above_expansion_only_match():
 
 
 @pytest.mark.asyncio
-async def test_natural_chinese_question_recalls_trailing_topic_term():
+async def test_natural_chinese_question_recalls_trailing_topic_term(published_inputs):
     from uuid import uuid4
 
     from sag_api.core.db import SessionLocal, init_db
@@ -263,6 +266,7 @@ async def test_natural_chinese_question_recalls_trailing_topic_term():
         )
         session.add(source)
         await session.commit()
+        await published_inputs(source.id, 'article-soup')
 
         outcome = await retrieve_relevant_sections(
             LexicalEngine(),
@@ -276,7 +280,7 @@ async def test_natural_chinese_question_recalls_trailing_topic_term():
 
 
 @pytest.mark.asyncio
-async def test_lexical_recall_is_bounded_to_four_terms_per_source(monkeypatch):
+async def test_lexical_recall_is_bounded_to_four_terms_per_source(monkeypatch, published_inputs):
     from uuid import uuid4
 
     from sag_api.core.db import SessionLocal, init_db
@@ -317,6 +321,8 @@ async def test_lexical_recall_is_bounded_to_four_terms_per_source(monkeypatch):
         ]
         session.add_all(sources)
         await session.commit()
+        for source in sources:
+            await published_inputs(source.id, "bounded-document")
 
         outcome = await retrieval_service.retrieve_relevant_sections(
             engine,
@@ -364,7 +370,7 @@ async def test_total_latency_includes_query_analysis(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tokenizer_failure_preserves_semantic_retrieval(monkeypatch):
+async def test_tokenizer_failure_preserves_semantic_retrieval(monkeypatch, published_inputs):
     from uuid import uuid4
 
     from sag_api.core.db import SessionLocal, init_db
@@ -377,7 +383,10 @@ async def test_tokenizer_failure_preserves_semantic_retrieval(monkeypatch):
         async def search_many(self, _targets, query, **_kwargs):
             return SearchOutcome(
                 query=query,
-                sections=[section("semantic", "烹饪说明", "肉类需要炖煮，清汤需要控温。", 0.9)],
+                sections=[RetrievedSection(
+                    chunk_id="semantic", heading="烹饪说明", content="肉类需要炖煮，清汤需要控温。",
+                    score=0.9, source_config_id=_targets[0][0], source_id="semantic-document",
+                )],
                 stats={},
             )
 
@@ -396,13 +405,14 @@ async def test_tokenizer_failure_preserves_semantic_retrieval(monkeypatch):
         )
         session.add(source)
         await session.commit()
+        await published_inputs(source.id, 'semantic-document')
         outcome = await retrieve_relevant_sections(SemanticEngine(), [source], "肉类清汤")
 
     assert [item.chunk_id for item in outcome.sections] == ["semantic"]
     assert outcome.stats["chinese_segmentation_used"] is False
 
 
-def test_fallback_answer_cites_only_selected_sections():
+def test_fallback_answer_cites_only_selected_sections(published_inputs):
     selected = [
         section("one", "公益行动", "张杰为乡村儿童建设音乐教室。", 0.9),
         section("two", "赈灾捐助", "团队向受灾地区捐赠物资。", 0.8),
@@ -530,7 +540,7 @@ async def test_retrieval_excludes_logically_deleted_document_before_physical_cle
 
 
 @pytest.mark.asyncio
-async def test_lexical_retrieval_keeps_visible_peer_during_logical_delete():
+async def test_lexical_retrieval_keeps_visible_peer_during_logical_delete(published_inputs):
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.db.models import Document, Source
     from sag_api.enums import DocumentStatus
@@ -541,11 +551,13 @@ async def test_lexical_retrieval_keeps_visible_peer_during_logical_delete():
         async def search_many(self, _targets, query, **_kwargs):
             return SearchOutcome(query=query, sections=[], stats={})
 
-        async def grep_chunks(self, *_args, **_kwargs):
-            return [
+        async def grep_chunks(self, *_args, source_ids, **_kwargs):
+            assert source_ids == ("engine-visible",)
+            rows = [
                 {"chunk_id": "hidden", "heading": "目标主题", "snippet": "隐藏", "source_id": "engine-hidden"},
                 {"chunk_id": "visible", "heading": "目标主题", "snippet": "保留", "source_id": "engine-visible"},
             ]
+            return [row for row in rows if row["source_id"] in source_ids]
 
     await init_db()
     async with SessionLocal() as session:
@@ -564,22 +576,23 @@ async def test_lexical_retrieval_keeps_visible_peer_during_logical_delete():
             )
         )
         await session.commit()
+        await published_inputs(source.id, 'engine-visible')
         outcome = await retrieve_relevant_sections(FakeEngine(), [source], "目标主题")
 
     assert [item.chunk_id for item in outcome.sections] == ["visible"]
 
 
 @pytest.mark.asyncio
-async def test_event_recall_excludes_events_from_logically_deleted_document():
+async def test_event_recall_excludes_events_from_logically_deleted_document(published_inputs):
     from sag_api.core.db import SessionLocal, init_db
-    from sag_api.db.models import Document, Job, Source
-    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
     from sag_api.services.retrieval_service import recall_event_scores
 
     class FakeEngine:
-        async def search_event_scores(self, *_args, **_kwargs):
+        async def search_event_scores(self, *_args, source_ids_by_config, **_kwargs):
+            assert source_ids_by_config == {"event-config": ("engine-visible",)}
             return {
-                ("event-config", "hidden-event"): 0.99,
                 ("event-config", "visible-event"): 0.9,
             }
 
@@ -598,17 +611,8 @@ async def test_event_recall_excludes_events_from_logically_deleted_document():
             sag_source_id="engine-hidden",
         )
         session.add(document)
-        await session.flush()
-        session.add(
-            Job(
-                type=JobType.PROCESS_DOCUMENT,
-                status=JobStatus.SUCCEEDED,
-                source_id=source.id,
-                document_id=document.id,
-                payload={"process_checkpoint": {"event_ids": ["hidden-event"]}},
-            )
-        )
         await session.commit()
+        await published_inputs(source.id, 'engine-visible')
         scores = await recall_event_scores(
             FakeEngine(),
             "目标主题",
@@ -660,8 +664,6 @@ async def test_delete_failed_source_is_filtered_before_vector_top_k():
         await session.commit()
 
         class VisibilityAwareFakeEngine:
-            supports_document_source_exclusions = True
-
             async def search_many(
                 self,
                 _targets,
@@ -669,7 +671,7 @@ async def test_delete_failed_source_is_filtered_before_vector_top_k():
                 *,
                 strategy=None,
                 top_k=None,
-                exclude_source_ids_by_config=None,
+                source_ids_by_config=None,
             ):
                 del strategy
                 rows = [
@@ -693,10 +695,8 @@ async def test_delete_failed_source_is_filtered_before_vector_top_k():
                         source_config_id=config_id,
                     )
                 )
-                excluded = set(
-                    (exclude_source_ids_by_config or {}).get(config_id, ())
-                )
-                rows = [row for row in rows if row.source_id not in excluded]
+                assert source_ids_by_config == {config_id: ("engine-visible-peer",)}
+                rows = [row for row in rows if row.source_id in source_ids_by_config[config_id]]
                 return SearchOutcome(
                     query=query,
                     sections=rows[: int(top_k or 8)],

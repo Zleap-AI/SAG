@@ -1,8 +1,8 @@
 """EngineManager —— 管理 zleap-sag `DataEngine` 的生命周期与调用。
 
-每个信源（source_config_id）对应一个 `DataEngine` 实例（引擎「一实例一源」的语义）。
+SAG 为每个业务信源缓存一个 `DataEngine`，向引擎传入通用存储范围标识。
 引擎按需构造并缓存；每源一把锁串行化该源上的读写。生命周期读写闸门允许
-已构造引擎跨源并发；文档处理使用独立 loader/extractor 同源并发。创建、逐出或
+已构造引擎跨源并发；文档处理使用公开持久操作与请求级控制。创建、逐出或
 关闭引擎时会等待所有在途操作结束。
 """
 
@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from zleap.sag import DataEngine
+from zleap.sag import DataEngine, EngineConfig
+from zleap.sag.operations import DeleteDataSourceRequest, DeleteSourceRequest, OperationResult, ProcessSourceRequest
 
 from sag_api.core.config import Settings
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
@@ -30,8 +31,6 @@ from sag_api.sag.config_builder import build_engine_config
 from sag_api.sag.content_reader import ContentReader
 from sag_api.sag.dto import (
     EntityInfo,
-    ProcessCheckpoint,
-    ProcessOutcome,
     RetrievedSection,
     SearchOutcome,
     SourceGraphInfo,
@@ -55,7 +54,7 @@ if TYPE_CHECKING:
 log = get_logger("sag")
 
 StageCallback = Callable[[str], Awaitable[None]]
-CheckpointCallback = Callable[[ProcessCheckpoint], Awaitable[None]]
+RequestFactory = Callable[[IncrementalDocumentProcessor, EngineConfig, Settings], Awaitable[ProcessSourceRequest]]
 PauseCheck = Callable[[], Awaitable[bool]]
 
 _SQLITE_LOCK_RETRIES = 4
@@ -99,6 +98,7 @@ def _decode_universe_cursor(value: str, secret: str) -> dict[str, Any]:
 @dataclass
 class _Slot:
     engine: DataEngine
+    config: EngineConfig
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     idle: asyncio.Event = field(default_factory=asyncio.Event)
@@ -157,8 +157,6 @@ class _EngineLifecycleGate:
 
 
 class EngineManager:
-    supports_document_source_exclusions = True
-
     def __init__(self, settings: Settings):
         from sag_api.services.chatbot_service import install_query_adapters
 
@@ -397,6 +395,22 @@ class EngineManager:
             overrides = source.config.get("engine")
         return build_engine_config(self._settings, overrides=overrides)
 
+    async def document_processing_identity(
+        self,
+        source_config_id: str,
+        path: str,
+        *,
+        source: Source | None = None,
+    ) -> dict[str, str]:
+        """Read the effective target for business confirmation without engine admission."""
+        from sag_api.sag.document_identity import document_processing_identity
+
+        settings = self._settings.model_copy(deep=True)
+        overrides = (source.config or {}).get("engine") if source is not None else None
+        with map_sag_errors(stage=ErrorStage.CONFIG):
+            config = build_engine_config(settings, overrides=overrides)
+            return await document_processing_identity(config, settings, source_config_id, path)
+
     async def _ensure_engine_schema(self, engine: DataEngine) -> None:
         if self._schema_ready:
             return
@@ -516,7 +530,7 @@ class EngineManager:
                                 source_config_id,
                             )
                         raise
-                    slot = _Slot(engine=engine)
+                    slot = _Slot(engine=engine, config=config)
                     self._slots[source_config_id] = slot
                     await self._evict_lru(keep=source_config_id)
         return slot
@@ -592,7 +606,7 @@ class EngineManager:
         *,
         should_pause: PauseCheck | None = None,
     ):
-        """取得共享资源但不串行化文档处理；独立 loader/extractor 隔离可变状态。"""
+        """取得共享资源；业务调度拥有排队策略，持久操作隔离可变状态。"""
         while True:
             slot = await self._slot(source_config_id, source)
             # Maintenance waiters must not hold the global lifecycle read gate;
@@ -697,15 +711,14 @@ class EngineManager:
             if slot.maintenance_requests == 0 and not slot.closing:
                 slot.concurrent_allowed.set()
 
-    async def delete_document_data(
+    async def delete_data(
         self,
-        source_config_id: str,
-        document_source_id: str,
+        request: DeleteSourceRequest | DeleteDataSourceRequest,
         *,
         source: Source | None = None,
-    ) -> None:
-        """删除一篇文档的块、事件、关系及孤立实体派生数据。"""
-        from sag_api.sag.document_cleanup import delete_document_records
+    ) -> OperationResult:
+        """Drain the existing runtime, then forward its bound public delete request."""
+        source_config_id = request.data_source_id
 
         while True:
             slot = await self._slot(source_config_id, source)
@@ -721,12 +734,10 @@ class EngineManager:
                         slot.concurrent_allowed.clear()
                     await slot.idle.wait()
                     with map_sag_errors(stage=ErrorStage.PERSIST):
-                        deleted = await delete_document_records(
-                            source_config_id,
-                            document_source_id,
-                            session_factory=slot.engine.resources.relational.session_factory(),
-                            vector_store=slot.engine.resources.vector,
-                        )
+                        if isinstance(request, DeleteSourceRequest):
+                            result = await slot.engine.delete_source(request)
+                        else:
+                            result = await slot.engine.delete_data_source(request)
                 finally:
                     async with slot.state_lock:
                         if slot.maintenance_requests == 0:
@@ -734,96 +745,67 @@ class EngineManager:
                     slot.lock.release()
                 break
         log.info(
-            "文档派生数据已清理 source_config_id=%s document_source_id=%s chunks=%d events=%d relations=%d entities=%d",
+            "删除操作返回 source_config_id=%s operation=%s status=%s checkpoint=%s",
             source_config_id,
-            document_source_id,
-            len(deleted.chunk_ids),
-            len(deleted.event_ids),
-            len(deleted.relation_ids),
-            len(deleted.entity_ids),
+            result.operation_type,
+            result.status,
+            result.checkpoint,
         )
+        return result
 
     async def process_document(
         self,
         source_config_id: str,
-        path: str | None,
+        request_factory: RequestFactory,
         *,
         source: Source | None = None,
         on_stage: StageCallback | None = None,
         on_progress: ProgressCallback | None = None,
-        checkpoint: ProcessCheckpoint | None = None,
-        on_checkpoint: CheckpointCallback | None = None,
         should_pause: PauseCheck | None = None,
-        max_concurrency: int | None = None,
         document_title: str | None = None,
-        original_path: str | None = None,
-    ) -> ProcessOutcome:
-        """独立处理一篇文档；同源文档可并行，chunk 完成即保存断点。"""
-
-        async def ignore_checkpoint(_checkpoint: ProcessCheckpoint) -> None:
-            return None
+    ) -> OperationResult | None:
+        """Own runtime admission; the caller binds and persists the public request."""
 
         async def never_pause() -> bool:
             return False
 
-        effective_checkpoint = checkpoint or ProcessCheckpoint()
         effective_should_pause = should_pause or never_pause
-
-        def paused_outcome() -> ProcessOutcome:
-            return ProcessOutcome(
-                source_id=effective_checkpoint.source_id,
-                chunk_count=len(effective_checkpoint.chunk_ids),
-                event_count=effective_checkpoint.event_count,
-                chunk_ids=list(effective_checkpoint.chunk_ids),
-                event_ids=list(effective_checkpoint.event_ids),
-                processed_chunk_ids=list(effective_checkpoint.processed_chunk_ids),
-                eventless_chunk_ids=list(effective_checkpoint.eventless_chunk_ids),
-                token_usage=effective_checkpoint.token_usage,
-                paused=True,
-            )
 
         with map_sag_errors(stage=ErrorStage.EXTRACT):
             if await effective_should_pause():
-                return paused_outcome()
+                return None
             try:
                 async with self.use_concurrently(
                     source_config_id,
                     source,
                     should_pause=effective_should_pause,
                 ) as engine:
-                    processor = IncrementalDocumentProcessor(
-                        engine,
-                        source_config_id,
-                        max_concurrency=max_concurrency or self._settings.document_extract_concurrency,
-                        chunk_max_tokens=self._settings.document_chunk_max_tokens,
-                        chunk_mode=self._settings.document_chunk_mode,
-                        document_title=document_title,
-                        max_entities_per_event=(8 if self._settings.document_extraction_profile == "concise" else 20),
-                        enable_strict_filtering=self._settings.document_strict_filtering,
-                        event_entity_attempts=self._settings.document_event_entity_attempts,
-                    )
-                    if self._settings.sag_relational_provider in (None, "sqlite"):
-                        async with self._sqlite_document_mutation_lock:
-                            return await processor.process(
-                                path,
-                                checkpoint=effective_checkpoint,
-                                on_checkpoint=on_checkpoint or ignore_checkpoint,
-                                should_pause=effective_should_pause,
-                                on_stage=on_stage,
-                                on_progress=on_progress,
-                                original_path=original_path,
-                            )
-                    return await processor.process(
-                        path,
-                        checkpoint=effective_checkpoint,
-                        on_checkpoint=on_checkpoint or ignore_checkpoint,
-                        should_pause=effective_should_pause,
-                        on_stage=on_stage,
-                        on_progress=on_progress,
-                        original_path=original_path,
-                    )
+                    from sag_api.generation.responses.routing import request_settings
+
+                    frozen = self._settings.model_copy(deep=True)
+                    config = self._slots[source_config_id].config.model_copy(deep=True)
+                    token = request_settings.set(frozen)
+                    try:
+                        processor = IncrementalDocumentProcessor(
+                            engine,
+                            source_config_id,
+                            max_concurrency=frozen.document_extract_concurrency,
+                            chunk_max_tokens=frozen.document_chunk_max_tokens,
+                            chunk_mode=frozen.document_chunk_mode,
+                            document_title=document_title,
+                            max_entities_per_event=(8 if frozen.document_extraction_profile == "concise" else 20),
+                        )
+                        request = await request_factory(processor, config, frozen)
+                        return await processor.process(
+                            request,
+                            should_pause=effective_should_pause,
+                            on_stage=on_stage,
+                            on_progress=on_progress,
+                        )
+                    finally:
+                        request_settings.reset(token)
             except _DocumentAdmissionYielded:
-                return paused_outcome()
+                return None
 
     async def _search_raw(
         self,
@@ -833,6 +815,7 @@ class EngineManager:
         source: Source | None,
         strategy: str,
         top_k: int,
+        source_ids: tuple[str, ...] | None = None,
         include_ranked_candidates: bool = False,
     ) -> SearchOutcome:
         return await self._search._search_raw(
@@ -841,6 +824,7 @@ class EngineManager:
             source=source,
             strategy=strategy,
             top_k=top_k,
+            source_ids=source_ids,
             include_ranked_candidates=include_ranked_candidates,
         )
 
@@ -852,6 +836,7 @@ class EngineManager:
         source: Source | None = None,
         strategy: str | None = None,
         top_k: int | None = None,
+        source_ids: tuple[str, ...] | None = None,
         include_ranked_candidates: bool = False,
     ) -> SearchOutcome:
         return await self._search.search(
@@ -860,6 +845,7 @@ class EngineManager:
             source=source,
             strategy=strategy,
             top_k=top_k,
+            source_ids=source_ids,
             include_ranked_candidates=include_ranked_candidates,
         )
 
@@ -870,7 +856,7 @@ class EngineManager:
         *,
         strategy: str | None = None,
         top_k: int | None = None,
-        exclude_source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
+        source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
         include_ranked_candidates: bool = False,
     ) -> SearchOutcome:
         return await self._search.search_many(
@@ -878,7 +864,7 @@ class EngineManager:
             query,
             strategy=strategy,
             top_k=top_k,
-            exclude_source_ids_by_config=exclude_source_ids_by_config,
+            source_ids_by_config=source_ids_by_config,
             include_ranked_candidates=include_ranked_candidates,
         )
 
@@ -889,14 +875,14 @@ class EngineManager:
         *,
         top_k: int,
         requested_sources: int,
-        exclude_source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
+        source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
     ) -> SearchOutcome:
         return await self._search._search_chunk_vectors(
             targets,
             query,
             top_k=top_k,
             requested_sources=requested_sources,
-            exclude_source_ids_by_config=exclude_source_ids_by_config,
+            source_ids_by_config=source_ids_by_config,
         )
 
     async def search_event_scores(
@@ -905,19 +891,27 @@ class EngineManager:
         sources_by_config: dict[str, Source | None],
         *,
         limit: int | None = None,
+        source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
     ) -> dict[tuple[str, str], float]:
-        return await self._search.search_event_scores(query, sources_by_config, limit=limit)
+        return await self._search.search_event_scores(
+            query, sources_by_config, limit=limit, source_ids_by_config=source_ids_by_config
+        )
 
     async def universe_overview_stats(
         self,
         source_config_id: str,
         *,
+        source_ids: tuple[str, ...],
         source: Source | None = None,
         bucket_count: int = 8,
         category_limit: int = 8,
     ) -> UniverseSourceStatsInfo:
         return await self._universe.universe_overview_stats(
-            source_config_id, source=source, bucket_count=bucket_count, category_limit=category_limit
+            source_config_id,
+            source_ids=source_ids,
+            source=source,
+            bucket_count=bucket_count,
+            category_limit=category_limit,
         )
 
     async def _universe_entity_event_counts(
@@ -926,10 +920,11 @@ class EngineManager:
         source_config_id: str,
         entity_ids: list[str],
         *,
+        source_ids: tuple[str, ...],
         as_of_db: datetime,
     ) -> dict[str, int]:
         return await self._universe._universe_entity_event_counts(
-            session, source_config_id, entity_ids, as_of_db=as_of_db
+            session, source_config_id, entity_ids, source_ids=source_ids, as_of_db=as_of_db
         )
 
     async def _universe_event_bundles(
@@ -938,17 +933,19 @@ class EngineManager:
         source_config_id: str,
         events: list[dict[str, Any]],
         *,
+        source_ids: tuple[str, ...],
         as_of_db: datetime,
         entity_limit: int,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         return await self._universe._universe_event_bundles(
-            session, source_config_id, events, as_of_db=as_of_db, entity_limit=entity_limit
+            session, source_config_id, events, source_ids=source_ids, as_of_db=as_of_db, entity_limit=entity_limit
         )
 
     async def universe_timeline(
         self,
         source_config_id: str,
         *,
+        source_ids: tuple[str, ...],
         source_revision: str,
         source: Source | None = None,
         limit: int = 6,
@@ -959,6 +956,7 @@ class EngineManager:
     ) -> UniverseTimelineInfo:
         return await self._universe.universe_timeline(
             source_config_id,
+            source_ids=source_ids,
             source_revision=source_revision,
             source=source,
             limit=limit,
@@ -974,6 +972,7 @@ class EngineManager:
         node_kind: str,
         node_id: str,
         *,
+        source_ids: tuple[str, ...],
         source_revision: str,
         source: Source | None = None,
         limit: int = 4,
@@ -986,6 +985,7 @@ class EngineManager:
             source_config_id,
             node_kind,
             node_id,
+            source_ids=source_ids,
             source_revision=source_revision,
             source=source,
             limit=limit,
@@ -1001,15 +1001,19 @@ class EngineManager:
         node_kind: str,
         node_id: str,
         *,
+        source_ids: tuple[str, ...],
         source: Source | None = None,
     ) -> dict[str, Any] | None:
-        return await self._universe.universe_node_detail(source_config_id, node_kind, node_id, source=source)
+        return await self._universe.universe_node_detail(
+            source_config_id, node_kind, node_id, source_ids=source_ids, source=source
+        )
 
     async def graph_for_sections(
         self,
         sections: list[RetrievedSection],
         sources_by_config: dict[str, Source | None],
         *,
+        source_ids_by_config: dict[str, tuple[str, ...]],
         event_limit: int = 50,
         entity_limit: int = 48,
         edge_limit: int = 96,
@@ -1018,6 +1022,7 @@ class EngineManager:
         return await self._content.graph_for_sections(
             sections,
             sources_by_config,
+            source_ids_by_config=source_ids_by_config,
             event_limit=event_limit,
             entity_limit=entity_limit,
             edge_limit=edge_limit,
@@ -1028,11 +1033,14 @@ class EngineManager:
         self,
         source_config_id: str,
         *,
+        source_ids: tuple[str, ...],
         source: Source | None = None,
         types: list[str] | None = None,
         limit: int = 100,
     ) -> list[EntityInfo]:
-        return await self._content.list_entities(source_config_id, source=source, types=types, limit=limit)
+        return await self._content.list_entities(
+            source_config_id, source_ids=source_ids, source=source, types=types, limit=limit
+        )
 
     async def source_graph(
         self,
@@ -1058,10 +1066,13 @@ class EngineManager:
         source_config_id: str,
         entity_id: str,
         *,
+        source_ids: tuple[str, ...],
         source: Source | None = None,
         limit: int = 20,
     ) -> list[str]:
-        return await self._content.entity_context(source_config_id, entity_id, source=source, limit=limit)
+        return await self._content.entity_context(
+            source_config_id, entity_id, source_ids=source_ids, source=source, limit=limit
+        )
 
     async def list_chunk_headings(
         self,
@@ -1091,10 +1102,10 @@ class EngineManager:
         *,
         source: Source | None = None,
         limit: int = 20,
-        exclude_source_ids: tuple[str, ...] = (),
+        source_ids: tuple[str, ...] | None = None,
     ) -> list[dict]:
         return await self._content.grep_chunks(
-            source_config_id, pattern, source=source, limit=limit, exclude_source_ids=exclude_source_ids
+            source_config_id, pattern, source=source, limit=limit, source_ids=source_ids
         )
 
     async def get_chunk(
@@ -1102,9 +1113,10 @@ class EngineManager:
         source_config_id: str,
         chunk_id: str,
         *,
+        source_ids: tuple[str, ...] | None = None,
         source: Source | None = None,
     ):
-        return await self._content.get_chunk(source_config_id, chunk_id, source=source)
+        return await self._content.get_chunk(source_config_id, chunk_id, source_ids=source_ids, source=source)
 
     async def release(self, source_config_id: str) -> None:
         """关闭并移除某源的引擎槽（信源删除时调用；幂等）。"""
@@ -1122,17 +1134,29 @@ class EngineManager:
                     log.warning("释放引擎失败 %s: %s", source_config_id, e)
 
     async def aclose_all(self) -> None:
-        # 先标记并摘除，阻止新请求拿到即将关闭的槽；逐槽等待在途操作完成。
         async with self._create_lock:
             async with self._lifecycle_gate.write():
-                slots = list(self._slots.items())
-                for _, slot in slots:
-                    slot.closing = True
-                self._slots.clear()
-                for scid, slot in slots:
-                    try:
-                        await slot.idle.wait()
-                        async with slot.lock:
-                            await slot.engine.aclose()
-                    except Exception as e:  # noqa: BLE001
-                        log.warning("关闭引擎失败 %s: %s", scid, e)
+                await self._close_all_slots()
+
+    async def apply_settings(self, settings: Any, *, reset_engines: bool) -> None:
+        """Publish runtime settings and reset slots in the same admission barrier."""
+        async with self._create_lock:
+            async with self._lifecycle_gate.write():
+                for field_name in settings.__class__.model_fields:
+                    setattr(self._settings, field_name, getattr(settings, field_name))
+                if reset_engines:
+                    await self._close_all_slots()
+
+    async def _close_all_slots(self) -> None:
+        # Caller owns the create lock and lifecycle writer; don't acquire them twice.
+        slots = list(self._slots.items())
+        for _, slot in slots:
+            slot.closing = True
+        self._slots.clear()
+        for scid, slot in slots:
+            try:
+                await slot.idle.wait()
+                async with slot.lock:
+                    await slot.engine.aclose()
+            except Exception as e:  # noqa: BLE001
+                log.warning("关闭引擎失败 %s: %s", scid, e)

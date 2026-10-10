@@ -13,7 +13,7 @@ MODE_STRATEGY = {"fast": "vector", "precise": "full_expand"}
 
 
 class SearchAdapter:
-    """Map the stable sidecar request into zleap-sag 0.14.0 search types."""
+    """Map the stable sidecar request into zleap-sag 0.15.0 search types."""
 
     def __init__(
         self,

@@ -96,15 +96,17 @@ class StubWebSearchTool(Tool):
 
 
 @pytest.mark.asyncio
-async def test_search_tool_prefers_exact_body_window_over_semantic_boilerplate():
+async def test_search_tool_prefers_exact_body_window_over_semantic_boilerplate(publication_source):
     from sag_api.core.db import init_db
 
     await init_db()
+
     class HybridEngine:
         graph_calls = 0
 
-        async def search_many(self, targets, query, *, strategy=None, top_k=None):
+        async def search_many(self, targets, query, *, strategy=None, top_k=None, source_ids_by_config=None):
             assert strategy == "vector"
+            assert source_ids_by_config == {"sc-1": ("document-1",)}
             return SearchOutcome(
                 query=query,
                 sections=[
@@ -114,28 +116,32 @@ async def test_search_tool_prefers_exact_body_window_over_semantic_boilerplate()
                         content="新浪首页 阅读排行榜 评论排行榜",
                         score=0.64,
                         source_config_id="sc-1",
+                        source_id="document-1",
                     )
                 ],
             )
 
-        async def grep_chunks(self, source_config_id, pattern, *, source=None, limit=20):
+        async def grep_chunks(self, source_config_id, pattern, *, source=None, limit=20, source_ids=None):
+            assert source_ids == ("document-1",)
             assert pattern == "林俊杰"
             return [
                 {
                     "chunk_id": "body",
                     "heading": "林俊杰官宣恋情",
                     "snippet": "12月29日晚林俊杰官宣恋情，与女友七七相差21岁。",
+                    "source_id": "document-1",
                 }
             ]
 
         async def graph_for_sections(self, sections, sources_by_config, **kwargs):
             self.graph_calls += 1
             assert kwargs["event_limit"] == max(12, len(sections))
-            assert sources_by_config["sc-1"].id == "source-1"
+            assert sources_by_config["sc-1"].id == source.id
             return SimpleNamespace(
                 events=[
                     SimpleNamespace(
                         id="event-1",
+                        source_id="document-1",
                         source_config_id="sc-1",
                         chunk_id=sections[0].chunk_id,
                         title="林俊杰官宣恋情",
@@ -150,7 +156,7 @@ async def test_search_tool_prefers_exact_body_window_over_semantic_boilerplate()
             )
 
     engine = HybridEngine()
-    source = SimpleNamespace(id="source-1", name="娱乐新闻", sag_source_config_id="sc-1"[:36])
+    source = await publication_source("娱乐新闻", "sc-1", "document-1")
     host_context = ToolContext(engine_manager=engine, sources=[source])
     result = await SearchContextTool().invoke(
         {"query": "关于林俊杰最新动态 2024 2025", "top_k": 4},
@@ -183,11 +189,9 @@ async def test_search_tool_prefers_exact_body_window_over_semantic_boilerplate()
 
     assert adapter_engine.graph_calls == 1
     assert collected_citations[0]["event_refs"][0]["id"] == "event-1"
-    assert runtime_result.details["sources"] == [{"id": "source-1", "name": "娱乐新闻"}]
+    assert runtime_result.details["sources"] == [{"id": source.id, "name": "娱乐新闻"}]
     assert runtime_result.artifacts["citations"][0]["event_refs"][0]["summary"] == ("林俊杰于 12 月 29 日公开恋情。")
-    assert runtime_result.artifacts["citations"][0]["event_refs"][0]["content"].startswith(
-        "12 月 29 日"
-    )
+    assert runtime_result.artifacts["citations"][0]["event_refs"][0]["content"].startswith("12 月 29 日")
     assert runtime_result.details["matches"][0]["event_refs"][0]["category"] == "娱乐"
 
 
@@ -213,16 +217,18 @@ async def test_web_search_trace_uses_internet_scope_instead_of_mounted_knowledge
 
 
 @pytest.mark.asyncio
-async def test_search_tool_graph_capacity_covers_every_returned_section():
+async def test_search_tool_graph_capacity_covers_every_returned_section(publication_source):
     from sag_api.core.db import init_db
 
     await init_db()
+
     class ManySectionEngine:
         graph_calls = 0
         event_limit = 0
 
-        async def search_many(self, targets, query, *, strategy=None, top_k=None):
+        async def search_many(self, targets, query, *, strategy=None, top_k=None, source_ids_by_config=None):
             source_config_id = targets[0][0]
+            assert source_ids_by_config == {"sc-1": ("document-1",)}
             return SearchOutcome(
                 query=query,
                 sections=[
@@ -232,6 +238,7 @@ async def test_search_tool_graph_capacity_covers_every_returned_section():
                         content=f"共同主题的可核验证据 {index}",
                         score=1.0 - index / 100,
                         source_config_id=source_config_id,
+                        source_id="document-1",
                     )
                     for index in range(20)
                 ],
@@ -256,7 +263,7 @@ async def test_search_tool_graph_capacity_covers_every_returned_section():
             )
 
     engine = ManySectionEngine()
-    source = SimpleNamespace(id="source-1", name="测试资料", sag_source_config_id="sc-1"[:36])
+    source = await publication_source("测试资料", "sc-1", "document-1")
     result = await SearchContextTool().invoke(
         {"query": "共同主题", "top_k": 20},
         ToolContext(engine_manager=engine, sources=[source]),
@@ -269,15 +276,17 @@ async def test_search_tool_graph_capacity_covers_every_returned_section():
 
 
 @pytest.mark.asyncio
-async def test_search_tool_reuses_direct_event_recall_and_loads_traceable_evidence():
+async def test_search_tool_reuses_direct_event_recall_and_loads_traceable_evidence(publication_source):
     from sag_api.core.db import init_db
 
     await init_db()
+
     class SparseEventEngine:
         event_score_calls = 0
         chunk_reads: list[tuple[str, str]] = []
 
-        async def search_many(self, targets, query, *, strategy=None, top_k=None):
+        async def search_many(self, targets, query, *, strategy=None, top_k=None, source_ids_by_config=None):
+            assert source_ids_by_config == {"sc-1": ("document-1",)}
             return SearchOutcome(
                 query=query,
                 sections=[
@@ -287,14 +296,16 @@ async def test_search_tool_reuses_direct_event_recall_and_loads_traceable_eviden
                         content="帝国发展相关的背景资料，但这个分块本身没有抽取事项。",
                         score=0.81,
                         source_config_id=targets[0][0],
+                        source_id="document-1",
                     )
                 ],
             )
 
-        async def search_event_scores(self, query, sources_by_config, *, limit=None):
+        async def search_event_scores(self, query, sources_by_config, *, limit=None, source_ids_by_config=None):
+            assert source_ids_by_config == {"sc-1": ("document-1",)}
             self.event_score_calls += 1
             assert query == "帝国发展"
-            assert sources_by_config["sc-1"].id == "source-1"
+            assert sources_by_config["sc-1"].id == source.id
             assert limit == 2
             return {("sc-1", "event-direct"): 0.97}
 
@@ -315,9 +326,10 @@ async def test_search_tool_reuses_direct_event_recall_and_loads_traceable_eviden
                 ]
             )
 
-        async def get_chunk(self, source_config_id, chunk_id, *, source=None):
+        async def get_chunk(self, source_config_id, chunk_id, *, source=None, source_ids=None):
             self.chunk_reads.append((source_config_id, chunk_id))
-            assert source.id == "source-1"
+            assert source.id == host_source.id
+            assert source_ids == ("document-1",)
             return SimpleNamespace(
                 chunk_id=chunk_id,
                 heading="历史",
@@ -326,7 +338,8 @@ async def test_search_tool_reuses_direct_event_recall_and_loads_traceable_eviden
             )
 
     engine = SparseEventEngine()
-    source = SimpleNamespace(id="source-1", name="人类简史", sag_source_config_id="sc-1"[:36])
+    source = await publication_source("人类简史", "sc-1", "document-1")
+    host_source = source
     result = await SearchContextTool().invoke(
         {"query": "帝国发展", "top_k": 2},
         ToolContext(engine_manager=engine, sources=[source]),
@@ -337,7 +350,7 @@ async def test_search_tool_reuses_direct_event_recall_and_loads_traceable_eviden
     assert result.data["event_candidates"] == 1
     assert result.data["event_count"] == 1
     assert result.citations[0]["chunk_id"] == "event-chunk"
-    assert result.citations[0]["source_id"] == "source-1"
+    assert result.citations[0]["source_id"] == source.id
     assert result.citations[0]["event_refs"] == [
         {
             "id": "event-direct",

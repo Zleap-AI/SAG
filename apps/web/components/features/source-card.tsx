@@ -6,7 +6,6 @@ import { Download, FileText, Network, Puzzle, Trash2 } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import { toast } from "sonner";
 
-import { api, ApiError } from "@/lib/api";
 import type { Source } from "@/lib/types";
 import { relativeTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
@@ -16,6 +15,7 @@ import { useOctxExports } from "@/components/features/octx-export-provider";
 import { useApp } from "@/components/features/app-shell";
 import { SourceIdCopy } from "@/components/features/source-id-copy";
 import { Spinner } from "@/components/ui/spinner";
+import { SourceDeletionStatus, useSourceDeletion } from "./source-deletion";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 export function SourceCard({ source, onChanged }: { source: Source; onChanged?: () => void }) {
@@ -23,16 +23,7 @@ export function SourceCard({ source, onChanged }: { source: Source; onChanged?: 
   const locale = useLocale();
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   const { timezone } = useApp();
-
-  async function deleteSource() {
-    try {
-      await api.deleteSource(source.id);
-      toast.success(t("deleted"));
-      onChanged?.();
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : t("deleteFailed"));
-    }
-  }
+  const deletion = useSourceDeletion(source, onChanged);
 
   const { startExport, isSourceExporting } = useOctxExports();
   const exportRunning = isSourceExporting(source.id);
@@ -41,22 +32,22 @@ export function SourceCard({ source, onChanged }: { source: Source; onChanged?: 
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
       event.stopPropagation();
-      if (exportRunning) return;
+      if (exportRunning || deletion.active) return;
       toast.message(t("exporting"));
       void startExport(source.id, source.name);
     },
-    [exportRunning, source.id, source.name, startExport, t],
+    [deletion.active, exportRunning, source.id, source.name, startExport, t],
   );
 
   return (
     <div className="group/source relative flex h-full min-w-0 flex-col rounded-lg border bg-card p-5 shadow-soft transition-all duration-150 ease-smooth hover:border-foreground/15 hover:shadow-lift">
-      <Link
+      {!deletion.active && <Link
         href={`/knowledge/${source.id}`}
         className="absolute inset-0 z-0 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-label={source.name}
       >
         <span className="sr-only">{source.name}</span>
-      </Link>
+      </Link>}
 
       <div className="pointer-events-none relative z-10 flex h-full min-w-0 flex-col">
         <div className="flex min-w-0 items-start justify-between gap-3 pr-28">
@@ -71,6 +62,7 @@ export function SourceCard({ source, onChanged }: { source: Source; onChanged?: 
           sourceId={source.id}
           className="pointer-events-auto mb-3"
         />
+        <SourceDeletionStatus deletion={deletion} />
         <div className="mt-auto flex flex-wrap items-center gap-x-4 gap-y-2 border-t pt-3 text-xs tabular-nums text-muted-foreground">
           <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap">
             <FileText className="size-3.5 shrink-0" />
@@ -100,7 +92,7 @@ export function SourceCard({ source, onChanged }: { source: Source; onChanged?: 
               aria-label={t("export")}
               title={t("export")}
               onClick={handleExport}
-              disabled={exportRunning}
+              disabled={exportRunning || deletion.active}
               className="bg-background/95 text-muted-foreground shadow-soft backdrop-blur-sm hover:text-foreground"
             >
               {exportRunning ? <Spinner className="size-4" /> : <Download className="size-4" />}
@@ -108,13 +100,13 @@ export function SourceCard({ source, onChanged }: { source: Source; onChanged?: 
           </TooltipTrigger>
           <TooltipContent side="bottom">{t("export")}</TooltipContent>
         </Tooltip>
-        <EditSourceDialog
+        {!deletion.active && <EditSourceDialog
           source={source}
           onUpdated={onChanged}
           tooltipSide="bottom"
           buttonClassName="bg-background/95 shadow-soft backdrop-blur-sm"
-        />
-        <Tooltip>
+        />}
+        {!deletion.active && <Tooltip>
           <TooltipTrigger asChild>
             <Button
               type="button"
@@ -129,7 +121,7 @@ export function SourceCard({ source, onChanged }: { source: Source; onChanged?: 
             </Button>
           </TooltipTrigger>
           <TooltipContent side="bottom">{t("delete")}</TooltipContent>
-        </Tooltip>
+        </Tooltip>}
       </div>
 
       <ConfirmDialog
@@ -138,7 +130,7 @@ export function SourceCard({ source, onChanged }: { source: Source; onChanged?: 
         title={t("delete")}
         description={t("deleteDescription", { name: source.name })}
         confirmLabel={t("delete")}
-        onConfirm={deleteSource}
+        onConfirm={deletion.submit}
       />
     </div>
   );

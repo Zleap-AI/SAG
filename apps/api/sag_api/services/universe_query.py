@@ -40,16 +40,17 @@ from sag_api.db.models import (
 )
 from sag_api.enums import JobStatus, JobType
 from sag_api.sag import EngineManager
+from sag_api.services.retrieval_service import published_document_inputs
 
 _GOLDEN_ANGLE = math.pi * (3 - math.sqrt(5))
 log = get_logger("services.universe")
 
 
-async def _source_graph_revision(
+async def _source_graph_state(
     *,
     user_id: str,
     source_id: str,
-) -> str:
+) -> tuple[str, tuple[str, ...]]:
     """Read a graph fence in a fresh short transaction, bypassing ORM identity caches."""
     async with SessionLocal() as revision_session:
         source_state = (
@@ -58,7 +59,7 @@ async def _source_graph_revision(
                     Source.updated_at,
                     Source.event_count,
                     Source.chunk_count,
-                ).where(Source.id == source_id)
+                ).where(Source.id == source_id, Source.is_deleting.is_(False))
             )
         ).one_or_none()
         if source_state is None:
@@ -78,6 +79,19 @@ async def _source_graph_revision(
                 UniverseDirtySource.source_id == source_id,
             )
         )
+        input_ids = tuple(
+            (
+                await revision_session.scalars(
+                    select(Document.sag_source_id)
+                    .where(
+                        Document.source_id == source_id,
+                        Document.has_publication,
+                    )
+                    .distinct()
+                    .order_by(Document.sag_source_id)
+                )
+            ).all()
+        )
     raw = "|".join(
         [
             str(overview_id or "none"),
@@ -85,9 +99,10 @@ async def _source_graph_revision(
             source_state.updated_at.isoformat(),
             str(int(source_state.event_count or 0)),
             str(int(source_state.chunk_count or 0)),
+            json.dumps(input_ids),
         ]
     )
-    return hashlib.blake2b(raw.encode("utf-8"), digest_size=12).hexdigest()
+    return hashlib.blake2b(raw.encode("utf-8"), digest_size=12).hexdigest(), input_ids
 
 
 def _stable_unit(value: str) -> float:
@@ -137,7 +152,7 @@ async def overview_is_stale(
     if count or overview is None:
         return bool(count)
 
-    source_count = await session.scalar(select(func.count(Source.id)))
+    source_count = await session.scalar(select(func.count(Source.id)).where(Source.is_deleting.is_(False)))
     if int(overview.source_count or 0) != int(source_count or 0):
         return True
     undercounted_sources = await session.scalar(
@@ -146,6 +161,7 @@ async def overview_is_stale(
         .where(
             UniversePartition.overview_id == overview.id,
             UniversePartition.kind == "source",
+            Source.is_deleting.is_(False),
             UniversePartition.event_count < Source.event_count,
         )
     )
@@ -170,7 +186,7 @@ async def universe_manifest(
 ) -> dict[str, Any]:
     overview = await active_overview(session, user_id)
     stale = await overview_is_stale(session, user_id, overview)
-    if overview is None:
+    if overview is None or int(overview.schema_version or 1) < 4:
         rebuilding = await universe_rebuild_is_pending(session, user_id)
         latest_failed = await session.scalar(
             select(UniverseOverview.id)
@@ -186,7 +202,7 @@ async def universe_manifest(
                 select(
                     func.count(Source.id),
                     func.coalesce(func.sum(Source.event_count), 0),
-                )
+                ).where(Source.is_deleting.is_(False))
             )
         ).one()
         source_count = int(source_count or 0)
@@ -195,6 +211,7 @@ async def universe_manifest(
             (
                 await session.execute(
                     select(Source)
+                    .where(Source.is_deleting.is_(False))
                     .order_by(Source.event_count.desc(), Source.created_at, Source.id)
                     .limit(settings.universe_manifest_source_limit)
                 )
@@ -280,20 +297,33 @@ async def universe_manifest(
             },
             "policy": _universe_policy(),
         }
+    partition_scope = (
+        UniversePartition.overview_id == overview.id,
+        UniversePartition.kind == "source",
+        Source.is_deleting.is_(False),
+    )
     partitions = list(
         (
             await session.execute(
                 select(UniversePartition)
-                .where(
-                    UniversePartition.overview_id == overview.id,
-                    UniversePartition.kind == "source",
-                )
+                .join(Source, Source.id == UniversePartition.source_id)
+                .where(*partition_scope)
                 .order_by(UniversePartition.importance.desc(), UniversePartition.source_id)
                 .limit(settings.universe_manifest_source_limit)
             )
         ).scalars()
     )
-    stale = stale or int(overview.schema_version or 1) < 3
+    counts = (
+        await session.execute(
+            select(
+                func.count(UniversePartition.id),
+                func.coalesce(func.sum(UniversePartition.event_count), 0),
+                func.coalesce(func.sum(UniversePartition.entity_count), 0),
+                func.coalesce(func.sum(UniversePartition.node_count), 0),
+                func.coalesce(func.sum(UniversePartition.relation_count), 0),
+            ).join(Source, Source.id == UniversePartition.source_id).where(*partition_scope)
+        )
+    ).one()
     rebuilding = stale and await universe_rebuild_is_pending(session, user_id)
     return {
         "version": overview.id,
@@ -303,12 +333,12 @@ async def universe_manifest(
         "bounds": overview.bounds or {},
         "partitions": partitions,
         "counts": {
-            "sources": overview.source_count,
+            "sources": counts[0],
             "partitions": len(partitions),
-            "events": overview.event_count,
-            "entities": overview.entity_count,
-            "nodes": overview.node_count,
-            "relations": overview.relation_count,
+            "events": counts[1],
+            "entities": counts[2],
+            "nodes": counts[3],
+            "relations": counts[4],
         },
         "policy": _universe_policy(),
     }
@@ -332,7 +362,7 @@ async def universe_expand(
     source = await session.get(Source, source_id)
     if source is None:
         raise NotFoundError("信息源不存在")
-    source_revision = await _source_graph_revision(
+    source_revision, input_ids = await _source_graph_state(
         user_id=user_id,
         source_id=source.id,
     )
@@ -348,6 +378,7 @@ async def universe_expand(
                 cursor=cursor,
                 snapshot_id=snapshot_id,
                 source_revision=source_revision,
+                source_ids=input_ids,
                 after=after,
                 before=before,
             )
@@ -364,7 +395,7 @@ async def universe_expand(
         raise ValidationError("无效或不匹配的知识宇宙游标") from error
     if expansion is None:
         raise NotFoundError("知识星点已不存在")
-    committed_revision = await _source_graph_revision(
+    committed_revision, _ = await _source_graph_state(
         user_id=user_id,
         source_id=source.id,
     )
@@ -464,7 +495,7 @@ async def universe_timeline(
     source = await session.get(Source, source_id)
     if source is None:
         raise NotFoundError("信息源不存在")
-    source_revision = await _source_graph_revision(
+    source_revision, input_ids = await _source_graph_state(
         user_id=user_id,
         source_id=source.id,
     )
@@ -479,6 +510,7 @@ async def universe_timeline(
                 cursor=cursor,
                 snapshot_id=snapshot_id,
                 source_revision=source_revision,
+                source_ids=input_ids,
             )
     except TimeoutError as error:
         raise ServiceUnavailableError("知识时间轴查询超时，请稍后重试") from error
@@ -491,7 +523,7 @@ async def universe_timeline(
         raise ValidationError("无效或不匹配的知识时间轴游标") from error
     except TypeError as error:
         raise ValidationError("无效或不匹配的知识时间轴游标") from error
-    committed_revision = await _source_graph_revision(
+    committed_revision, _ = await _source_graph_state(
         user_id=user_id,
         source_id=source.id,
     )
@@ -571,6 +603,8 @@ async def universe_node_detail(
     source = await session.get(Source, source_id)
     if source is None:
         raise NotFoundError("信息源不存在")
+    published = await published_document_inputs([source])
+    input_ids = published.get(source.sag_source_config_id, ())
     try:
         async with asyncio.timeout(8.0):
             detail = await engine_manager.universe_node_detail(
@@ -578,6 +612,7 @@ async def universe_node_detail(
                 node_kind,
                 node_id,
                 source=source,
+                source_ids=input_ids,
             )
     except TimeoutError as error:
         raise ServiceUnavailableError("知识星点读取超时，请稍后重试") from error
@@ -587,13 +622,20 @@ async def universe_node_detail(
     evidence = None
     chunk_id = detail.get("chunk_id")
     if chunk_id:
-        chunk = await engine_manager.get_chunk(source.sag_source_config_id, chunk_id, source=source)
+        source_ref_id = detail.get("source_ref_id")
+        chunk = await engine_manager.get_chunk(
+            source.sag_source_config_id,
+            chunk_id,
+            source=source,
+            source_ids=(source_ref_id,) if source_ref_id in input_ids else (),
+        )
         if chunk is not None:
             source_ref_id = detail.get("source_ref_id")
             document = await session.scalar(
                 select(Document).where(
                     Document.source_id == source.id,
                     Document.sag_source_id == source_ref_id,
+                    Document.has_publication,
                 )
             )
             evidence = {
@@ -606,6 +648,8 @@ async def universe_node_detail(
                 "content": chunk.content,
             }
 
+    if published != await published_document_inputs([source]):
+        raise ConflictError("知识图谱数据已更新，请重新读取", code=ErrorCode.SNAPSHOT_CHANGED)
     return {
         "id": node_id,
         "kind": node_kind,

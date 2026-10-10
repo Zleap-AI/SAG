@@ -9,7 +9,7 @@ description = "Managed zleap-sag sidecar for the dsh-sag plugin"
 requires-python = ">=3.11"
 dependencies = [
   "pydantic>=2.5,<3",
-  "zleap-sag==0.14.0",
+  "zleap-sag==0.15.0",
 ]
 
 [project.scripts]

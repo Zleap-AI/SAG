@@ -64,13 +64,15 @@ async def test_pending_fast_delete_falls_back_when_process_is_claimed_mid_reques
             process_job.id,
         )
 
-        real_scalars = session.scalars
-        scalars_calls = 0
+        from sqlalchemy.sql.dml import Update
 
-        async def scalars_then_claim(statement, *args, **kwargs):
-            nonlocal scalars_calls
-            scalars_calls += 1
-            if scalars_calls == 3:
+        real_execute = session.execute
+        injected = False
+
+        async def fence_then_claim(statement, *args, **kwargs):
+            nonlocal injected
+            if isinstance(statement, Update) and statement.table.name == "jobs" and not injected:
+                injected = True
                 await session.commit()
                 async with SessionLocal() as worker_session:
                     await worker_session.execute(
@@ -86,9 +88,9 @@ async def test_pending_fast_delete_falls_back_when_process_is_claimed_mid_reques
                         )
                     )
                     await worker_session.commit()
-            return await real_scalars(statement, *args, **kwargs)
+            return await real_execute(statement, *args, **kwargs)
 
-        monkeypatch.setattr(session, "scalars", scalars_then_claim)
+        monkeypatch.setattr(session, "execute", fence_then_claim)
         queue = QueueSpy()
         delete_job = await delete_document(
             session,
@@ -534,71 +536,6 @@ async def test_delete_waits_for_source_idle_outside_the_worker_queue():
 
 
 @pytest.mark.asyncio
-async def test_reprocess_cleanup_waits_for_source_idle_outside_the_worker_queue():
-    from sag_api.core.db import SessionLocal, init_db
-    from sag_api.db.models import Document, Job, Source
-    from sag_api.enums import DocumentStatus, JobStatus, JobType
-    from sag_api.jobs.inproc import InProcessAsyncQueue
-    from sag_api.jobs.scheduling import DELETE_WAITING_SOURCE, get_blocked_reason
-
-    class CoordinatedEngine:
-        def __init__(self):
-            self.waiting = asyncio.Event()
-            self.idle = asyncio.Event()
-
-        async def begin_document_maintenance(self, *_args, **_kwargs):
-            self.waiting.set()
-            await self.idle.wait()
-
-        async def end_document_maintenance(self, *_args, **_kwargs):
-            return None
-
-    await init_db()
-    async with SessionLocal() as session:
-        source = Source(name="park-reprocess", sag_source_config_id="park-reprocess-config"[:36])
-        session.add(source)
-        await session.flush()
-        document = Document(
-            source_id=source.id,
-            filename="ready.md",
-            content_type="text/markdown",
-            size_bytes=10,
-            storage_path="/tmp/ready.md",
-            status=DocumentStatus.PENDING,
-        )
-        session.add(document)
-        await session.flush()
-        cleanup_job = Job(
-            type=JobType.REPROCESS_DOCUMENT,
-            status=JobStatus.QUEUED,
-            source_id=source.id,
-            document_id=document.id,
-            payload={"target_document_id": document.id, "derived_source_ids": ["engine-old"]},
-        )
-        session.add(cleanup_job)
-        await session.commit()
-        source_id, cleanup_id = source.id, cleanup_job.id
-
-    engine = CoordinatedEngine()
-    queue = InProcessAsyncQueue(SessionLocal, engine, concurrency=1)
-    queue.begin_source_maintenance(source_id, cleanup_id)
-    await queue.enqueue(cleanup_id)
-    await asyncio.wait_for(engine.waiting.wait(), timeout=1)
-
-    async with SessionLocal() as session:
-        parked = await session.get(Job, cleanup_id)
-        assert parked.status == JobStatus.QUEUED
-        assert get_blocked_reason(parked.payload) == DELETE_WAITING_SOURCE
-    assert queue._queue.empty()
-
-    engine.idle.set()
-    queued_cleanup = await asyncio.wait_for(queue._queue.get(), timeout=1)
-    assert queued_cleanup[-1] == cleanup_id
-    queue._queue.task_done()
-    await queue.stop()
-
-
-@pytest.mark.asyncio
 async def test_maintenance_release_happens_after_peer_resume_is_durable():
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.db.models import Document, Job, Source
@@ -655,7 +592,7 @@ async def test_maintenance_release_happens_after_peer_resume_is_durable():
 
 
 @pytest.mark.asyncio
-async def test_cascaded_reprocess_job_does_not_leave_source_maintenance_stuck():
+async def test_cascaded_delete_job_does_not_leave_source_maintenance_stuck():
     from sag_api.core.db import SessionLocal, init_db
     from sag_api.db.models import Document, Job, Source
     from sag_api.enums import DocumentStatus, JobStatus, JobType
@@ -696,7 +633,7 @@ async def test_cascaded_reprocess_job_does_not_leave_source_maintenance_stuck():
         session.add_all([delete_target, peer])
         await session.flush()
         reprocess = Job(
-            type=JobType.REPROCESS_DOCUMENT,
+            type=JobType.DELETE_DOCUMENT,
             status=JobStatus.QUEUED,
             source_id=source.id,
             document_id=delete_target.id,
@@ -884,16 +821,19 @@ async def test_same_source_deletes_share_one_maintenance_window_and_run_serially
         async def end_document_maintenance(self, *_args, **_kwargs):
             self.end_count += 1
 
-        async def delete_document_data(self, _config_id, document_source_id, **_kwargs):
+        async def delete_data(self, request, **_kwargs):
+            from tests.document_requests import deletion_receipt
+
             self.active_deletes += 1
             self.max_active_deletes = max(self.max_active_deletes, self.active_deletes)
-            self.deleted.append(document_source_id)
+            self.deleted.append(request.source_id)
             try:
                 if len(self.deleted) == 1:
                     self.first_started.set()
                     await self.release_first.wait()
             finally:
                 self.active_deletes -= 1
+            return deletion_receipt(request)
 
     async def no_universe_refresh(*_args, **_kwargs):
         return None
@@ -902,6 +842,9 @@ async def test_same_source_deletes_share_one_maintenance_window_and_run_serially
 
     monkeypatch.setattr(universe_service, "schedule_universe_refresh", no_universe_refresh)
     await init_db()
+    engine = CoordinatedEngine()
+    queue = InProcessAsyncQueue(SessionLocal, engine, concurrency=2)
+    await queue.start()
     async with SessionLocal() as session:
         source = Source(name="batch-delete", sag_source_config_id="batch-delete-config"[:36])
         session.add(source)
@@ -936,10 +879,9 @@ async def test_same_source_deletes_share_one_maintenance_window_and_run_serially
         document_ids = [document.id for document in documents]
         job_ids = [job.id for job in jobs]
 
-    engine = CoordinatedEngine()
-    queue = InProcessAsyncQueue(SessionLocal, engine, concurrency=2)
-    await queue.start()
     try:
+        for job_id in job_ids:
+            await queue.enqueue(job_id)
         await asyncio.wait_for(engine.first_started.wait(), timeout=1)
         await asyncio.sleep(0.05)
         assert len(engine.deleted) == 1
@@ -958,6 +900,7 @@ async def test_same_source_deletes_share_one_maintenance_window_and_run_serially
                 await asyncio.sleep(0.01)
 
         await asyncio.wait_for(wait_for_both(), timeout=2)
+
         async def maintenance_released():
             while engine.end_count != 1:
                 await asyncio.sleep(0.01)
@@ -1074,9 +1017,7 @@ async def test_new_maintenance_request_is_dispatched_after_previous_window_close
     queue._source_maintenance_ready.add(source_id)
     queue._source_maintenance_dispatched[source_id] = "finishing-job"
 
-    finishing = asyncio.create_task(
-        queue.finish_source_maintenance(source_id, "finishing-job")
-    )
+    finishing = asyncio.create_task(queue.finish_source_maintenance(source_id, "finishing-job"))
     await asyncio.wait_for(engine.end_started.wait(), timeout=1)
     queue.begin_source_maintenance(source_id, next_job_id)
     await queue.enqueue(next_job_id)
@@ -1335,13 +1276,9 @@ async def test_concurrent_finish_calls_close_and_resume_once():
     queue._source_maintenance_ready.add(source_id)
     queue._source_maintenance_dispatched[source_id] = "finishing-delete"
 
-    first = asyncio.create_task(
-        queue.finish_source_maintenance(source_id, "finishing-delete")
-    )
+    first = asyncio.create_task(queue.finish_source_maintenance(source_id, "finishing-delete"))
     await asyncio.wait_for(engine.end_started.wait(), timeout=1)
-    second = asyncio.create_task(
-        queue.finish_source_maintenance(source_id, "finishing-delete")
-    )
+    second = asyncio.create_task(queue.finish_source_maintenance(source_id, "finishing-delete"))
     await asyncio.wait_for(second, timeout=1)
     engine.release_end.set()
     await asyncio.wait_for(first, timeout=1)

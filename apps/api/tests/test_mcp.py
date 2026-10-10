@@ -120,7 +120,10 @@ async def test_source_mcp_lists_and_calls_tools_over_engine():
                     r_ls = await client.call_tool("list_documents", {})
                     assert "probe.md" in r_ls.content[0].text
                     r_read = await client.call_tool("read", {"document_id": doc["id"]})
-                    assert "hello mcp world" in r_read.content[0].text
+                    # Upload registration is not a publication. Published MCP
+                    # body reads are exercised against real SQL in test_document_read.
+                    assert "尚无可读文本" in r_read.content[0].text
+                    assert "hello mcp world" not in r_read.content[0].text
                     r_out = await client.call_tool("outline", {"document_id": doc["id"]})
                     assert isinstance(r_out.content[0].text, str)  # 处理中→占位文案亦可
                     r_grep = await client.call_tool("grep", {"pattern": "不存在的串xyz", "source_id": src["id"]})

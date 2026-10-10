@@ -57,7 +57,7 @@ jobs:
       - name: Lint（ruff）
         run: ruff check sag_api/ sag_agent/ tests/
       - name: 测试（离线全套）
-        run: python -m pytest -q
+        run: python -m pytest -vv -o faulthandler_timeout=180
 
   backend-postgres-e2e:
     name: 后端 · PostgreSQL E2E

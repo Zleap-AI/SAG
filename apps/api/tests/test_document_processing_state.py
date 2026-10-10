@@ -1,11 +1,14 @@
 """Processing counters are display facts, not durable extraction checkpoints."""
 
+import asyncio
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from document_requests import document_receipt, document_request
 from sqlalchemy import delete, inspect, text, update
 from sqlalchemy.ext.asyncio import create_async_engine
+from zleap.sag.operations import ProcessSourceRequest
 
 from sag_api.core import db
 from sag_api.core.db import SessionLocal, init_db
@@ -14,9 +17,12 @@ from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs import tasks
 from sag_api.jobs.control import JobPaused
 from sag_api.jobs.inproc import _mark_document_waiting_retry
-from sag_api.sag.dto import ProcessCheckpoint, ProcessOutcome
+from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
 from sag_api.schemas.document import DocumentOut
 from sag_api.services.document_service import create_document_from_upload, resume_document
+from tests.document_requests import UncommittedDocumentManager, controller_processing_identity, processing_parameters
+
+pytestmark = pytest.mark.usefixtures("controller_identity")
 
 
 class Queue:
@@ -27,13 +33,18 @@ class Queue:
 @pytest.fixture
 async def processing_document():
     await init_db()
-    checkpoint = ProcessCheckpoint(source_id="article", chunk_ids=[str(i) for i in range(2033)], chunk_version="v1")
     async with SessionLocal() as session:
         source = Source(name="processing-state", sag_source_config_id=uuid4().hex)
         session.add(source)
         await session.flush()
+        request = document_request(source.sag_source_config_id)
         document = Document(
-            source_id=source.id, filename="stage.md", storage_path="/tmp/stage.md", status=DocumentStatus.PENDING
+            source_id=source.id,
+            filename="stage.md",
+            storage_path="/tmp/stage.md",
+            status=DocumentStatus.PENDING,
+            processed_chunks=0,
+            total_chunks=2033,
         )
         session.add(document)
         await session.flush()
@@ -42,12 +53,17 @@ async def processing_document():
             status=JobStatus.RUNNING,
             document_id=document.id,
             source_id=source.id,
-            payload=checkpoint.merge_payload({"custom": "untouched"}),
+            payload={
+                "processing_identity": controller_processing_identity(document.storage_path),
+                "process_request": request.model_dump(mode="json"),
+                "control_revision": 1,
+                "custom": "untouched",
+            },
         )
         session.add(job)
         await session.commit()
         ids = source.id, document.id, job.id
-    yield (*ids, checkpoint)
+    yield (*ids, request)
     async with SessionLocal() as session:
         await session.execute(delete(Job).where(Job.id == ids[2]))
         await session.execute(delete(Document).where(Document.id == ids[1]))
@@ -126,10 +142,11 @@ async def test_upload_public_contract_starts_queued_without_inventing_counts(tmp
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ending", ["success", "failure", "pause"])
 async def test_counts_advance_within_same_percent_and_finalizing_is_not_success(ending, processing_document):
-    _source_id, document_id, job_id, checkpoint = processing_document
+    _source_id, document_id, job_id, request = processing_document
 
-    class Manager:
-        async def process_document(self, *_args, on_stage, on_progress, on_checkpoint, **_kwargs):
+    class Manager(UncommittedDocumentManager):
+        async def process_document(self, _source_id, request_factory, *, on_stage, on_progress, **_kwargs):
+            assert await request_factory(None, *processing_parameters()) == request
             await on_stage("waiting_extraction")
             state = await snapshot(document_id)
             assert state.stage == "waiting_extraction"
@@ -145,25 +162,33 @@ async def test_counts_advance_within_same_percent_and_finalizing_is_not_success(
             state = await snapshot(document_id)
             assert (state.status, state.stage, state.completed) == (DocumentStatus.EXTRACTING, "finalizing", 2033)
             async with SessionLocal() as read:
-                assert (await read.get(Job, job_id)).payload == checkpoint.merge_payload({"custom": "untouched"})
+                assert (await read.get(Job, job_id)).payload == {
+                    "processing_identity": controller_processing_identity("/tmp/stage.md"),
+                    "process_request": request.model_dump(mode="json"),
+                    "control_revision": 1,
+                    "custom": "untouched",
+                }
             if ending == "failure":
                 raise RuntimeError("batch rejected")
             if ending == "pause":
-                return ProcessOutcome(paused=True)
-            await on_checkpoint(checkpoint.model_copy(update={"processed_chunk_ids": checkpoint.chunk_ids}))
+                return None
             assert (await snapshot(document_id)).stage == "finalizing"
-            return ProcessOutcome(source_id="article", chunk_count=2033, processed_chunk_ids=checkpoint.chunk_ids)
+            return document_receipt(request, chunk_count=2033)
 
     async with SessionLocal() as session:
         job = await session.get(Job, job_id)
         if ending == "failure":
             with pytest.raises(RuntimeError, match="batch rejected"):
-                await tasks._process_document_unlocked(session, job, engine_manager=Manager())
+                await tasks._process_document_unlocked(
+                    session, job, engine_manager=Manager(), lease_lost=asyncio.Event()
+                )
         elif ending == "pause":
             with pytest.raises(JobPaused):
-                await tasks._process_document_unlocked(session, job, engine_manager=Manager())
+                await tasks._process_document_unlocked(
+                    session, job, engine_manager=Manager(), lease_lost=asyncio.Event()
+                )
         else:
-            await tasks._process_document_unlocked(session, job, engine_manager=Manager())
+            await tasks._process_document_unlocked(session, job, engine_manager=Manager(), lease_lost=asyncio.Event())
     final = await snapshot(document_id)
     assert final.stage == ("ready" if ending == "success" else "finalizing")
     assert (
@@ -176,10 +201,10 @@ async def test_counts_advance_within_same_percent_and_finalizing_is_not_success(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("control", [DocumentStatus.PAUSING, DocumentStatus.DELETING])
 async def test_stage_and_count_callbacks_preserve_control_snapshot(control, processing_document):
-    _source_id, document_id, job_id, _checkpoint = processing_document
+    _source_id, document_id, job_id, _request = processing_document
     observed = []
 
-    class Manager:
+    class Manager(UncommittedDocumentManager):
         async def process_document(self, *_args, on_stage, on_progress, **_kwargs):
             await on_stage("extracting")
             await on_progress(811, 2033)
@@ -190,42 +215,52 @@ async def test_stage_and_count_callbacks_preserve_control_snapshot(control, proc
             await on_progress(2033, 2033)
             state = await snapshot(document_id)
             observed.append((state.status, state.stage, state.completed))
-            return ProcessOutcome(paused=True)
+            return None
 
     async with SessionLocal() as session:
         with pytest.raises(JobPaused):
-            await tasks._process_document_unlocked(session, await session.get(Job, job_id), engine_manager=Manager())
+            await tasks._process_document_unlocked(
+                session, await session.get(Job, job_id), engine_manager=Manager(), lease_lost=asyncio.Event()
+            )
     assert observed == [(control, "extracting", 811)]
 
 
 @pytest.mark.asyncio
-async def test_resume_invalidates_old_callbacks_and_resets_new_run(processing_document):
-    source_id, document_id, job_id, _checkpoint = processing_document
+async def test_resume_invalidates_old_callbacks_and_resets_new_run(processing_document, document_engine_manager):
+    source_id, document_id, job_id, _request = processing_document
     callbacks = {}
 
-    class First:
+    class First(UncommittedDocumentManager):
         async def process_document(self, *_args, on_stage, on_progress, **_kwargs):
             callbacks.update(stage=on_stage, progress=on_progress)
             await on_stage("extracting")
             await on_progress(2033, 2033)
-            return ProcessOutcome(paused=True)
+            return None
 
     async with SessionLocal() as session:
         with pytest.raises(JobPaused):
-            await tasks._process_document_unlocked(session, await session.get(Job, job_id), engine_manager=First())
+            await tasks._process_document_unlocked(
+                session, await session.get(Job, job_id), engine_manager=First(), lease_lost=asyncio.Event()
+            )
         job = await session.get(Job, job_id)
         job.status = JobStatus.PAUSED
         await session.commit()
         old_run = (await snapshot(document_id)).run_id
     async with SessionLocal() as session:
-        await resume_document(session, await session.get(Source, source_id), document_id, job_queue=Queue())
+        await resume_document(
+            session,
+            await session.get(Source, source_id),
+            document_id,
+            job_queue=Queue(),
+            engine_manager=document_engine_manager,
+        )
         queued = await snapshot(document_id)
         assert (queued.stage, queued.run_id) == ("queued", None)
         await callbacks["stage"]("extracting")
         await callbacks["progress"](2033, 2033)
         assert (await snapshot(document_id)).stage == "queued"
 
-    class Second:
+    class Second(UncommittedDocumentManager):
         async def process_document(self, *_args, on_stage, on_progress, **_kwargs):
             await on_stage("extracting")
             state = await snapshot(document_id)
@@ -235,22 +270,22 @@ async def test_resume_invalidates_old_callbacks_and_resets_new_run(processing_do
             await callbacks["progress"](2033, 2033)
             assert (await snapshot(document_id)).completed == 0
             await on_progress(10, 2033)
-            return ProcessOutcome(paused=True)
+            return None
 
     async with SessionLocal() as session:
         job = await session.get(Job, job_id)
         job.status = JobStatus.RUNNING
         await session.commit()
         with pytest.raises(JobPaused):
-            await tasks._process_document_unlocked(session, job, engine_manager=Second())
+            await tasks._process_document_unlocked(session, job, engine_manager=Second(), lease_lost=asyncio.Event())
     assert (await snapshot(document_id)).completed == 10
 
 
 @pytest.mark.asyncio
 async def test_retry_queue_invalidates_run_without_discarding_snapshot(processing_document):
-    _source_id, document_id, job_id, _checkpoint = processing_document
+    _source_id, document_id, job_id, _request = processing_document
 
-    class Manager:
+    class Manager(UncommittedDocumentManager):
         async def process_document(self, *_args, on_stage, on_progress, **_kwargs):
             await on_stage("extracting")
             await on_progress(20, 2033)
@@ -259,7 +294,7 @@ async def test_retry_queue_invalidates_run_without_discarding_snapshot(processin
     async with SessionLocal() as session:
         job = await session.get(Job, job_id)
         with pytest.raises(RuntimeError, match="transient failure"):
-            await tasks._process_document_unlocked(session, job, engine_manager=Manager())
+            await tasks._process_document_unlocked(session, job, engine_manager=Manager(), lease_lost=asyncio.Event())
         await _mark_document_waiting_retry(session, job)
         await session.commit()
     state = await snapshot(document_id)
@@ -272,7 +307,7 @@ async def test_requeued_worker_does_not_keep_showing_finalizing(transition, proc
     from sag_api.jobs.control import JobYielded
     from sag_api.jobs.inproc import InProcessAsyncQueue
 
-    _source_id, document_id, job_id, _checkpoint = processing_document
+    _source_id, document_id, job_id, _request = processing_document
     async with SessionLocal() as session:
         document = await session.get(Document, document_id)
         document.status = DocumentStatus.EXTRACTING
@@ -293,14 +328,15 @@ async def test_requeued_worker_does_not_keep_showing_finalizing(transition, proc
         monkeypatch.setitem(tasks.TASK_HANDLERS, JobType.PROCESS_DOCUMENT, yield_handler)
         await queue._run_job(job_id)
     state = await snapshot(document_id)
-    assert (state.stage, state.run_id, state.completed) == ("queued", None, 2033)
+    expected_stage = "waiting_manual" if transition == "recover" else "queued"
+    assert (state.stage, state.run_id, state.completed) == (expected_stage, None, 2033)
 
 
 @pytest.mark.asyncio
-async def test_real_display_transaction_failure_does_not_poison_checkpoint_session(processing_document, monkeypatch):
+async def test_real_display_transaction_failure_does_not_poison_request_session(processing_document, monkeypatch):
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    _source_id, document_id, job_id, checkpoint = processing_document
+    _source_id, document_id, job_id, request = processing_document
 
     class FailingSession(AsyncSession):
         async def execute(self, *_args, **_kwargs):
@@ -308,57 +344,75 @@ async def test_real_display_transaction_failure_does_not_poison_checkpoint_sessi
 
     failing_factory = async_sessionmaker(db.engine, class_=FailingSession)
 
-    class Manager:
-        async def process_document(self, *_args, on_stage, on_progress, on_checkpoint, **_kwargs):
+    class Manager(UncommittedDocumentManager):
+        async def process_document(self, _source_id, request_factory, *, on_stage, on_progress, **_kwargs):
+            assert await request_factory(None, *processing_parameters()) == request
             await on_stage("extracting")
             with monkeypatch.context() as patch:
                 patch.setattr(tasks, "SessionLocal", failing_factory)
                 await on_stage("finalizing")
                 await on_progress(2033, 2033)
-            await on_checkpoint(checkpoint.model_copy(update={"processed_chunk_ids": checkpoint.chunk_ids}))
-            return ProcessOutcome(source_id="article", chunk_count=2033, processed_chunk_ids=checkpoint.chunk_ids)
+            return document_receipt(request, chunk_count=2033)
 
     async with SessionLocal() as session:
-        await tasks._process_document_unlocked(session, await session.get(Job, job_id), engine_manager=Manager())
+        await tasks._process_document_unlocked(
+            session, await session.get(Job, job_id), engine_manager=Manager(), lease_lost=asyncio.Event()
+        )
     state = await snapshot(document_id)
     assert state.status == DocumentStatus.READY
     assert (state.stage, state.completed, state.total) == ("ready", 2033, 2033)
     async with SessionLocal() as session:
-        persisted = ProcessCheckpoint.from_payload((await session.get(Job, job_id)).payload)
-        assert persisted.processed_chunk_ids == checkpoint.chunk_ids
+        persisted = ProcessSourceRequest.model_validate((await session.get(Job, job_id)).payload["process_request"])
+        assert persisted == request
 
 
 @pytest.mark.asyncio
-async def test_preparation_stages_keep_unknown_counts_until_ingest_commits(processing_document, monkeypatch):
+async def test_preparation_stages_keep_unknown_counts_until_public_extraction_starts(
+    processing_document, monkeypatch, tmp_path
+):
     from sag_api.parsing.service import PreparedDocument
 
-    _source_id, document_id, job_id, checkpoint = processing_document
+    _source_id, document_id, job_id, request = processing_document
     async with SessionLocal() as session:
         job = await session.get(Job, job_id)
         job.payload = {}
+        await session.commit()
+
+    markdown = tmp_path / "prepared.md"
+    markdown.write_text("# A\nA documented fact.")
+    async with SessionLocal() as session:
+        document = await session.get(Document, document_id)
+        document.storage_path = str(markdown)
         await session.commit()
 
     async def prepare(_path, _settings, *, on_state, **_kwargs):
         await on_state({"provider": "anydoc", "status": "running"})
         current = await snapshot(document_id)
         assert (current.stage, current.completed, current.total) == ("parsing", None, None)
-        return PreparedDocument(path="/tmp/prepared.md", provider="anydoc")
+        return PreparedDocument(path=str(markdown), provider="anydoc")
 
-    class Manager:
-        async def process_document(self, *_args, on_stage, on_checkpoint, **_kwargs):
+    class Manager(UncommittedDocumentManager):
+        async def process_document(self, source_config_id, request_factory, *, on_stage, on_progress, **_kwargs):
+            processor = IncrementalDocumentProcessor(
+                SimpleNamespace(resources=SimpleNamespace(prompts=SimpleNamespace(language="en"))),
+                source_config_id,
+                max_concurrency=1,
+            )
+            bound = await request_factory(processor, *processing_parameters())
             for stage in ["parsing", "chunking", "indexing"]:
                 await on_stage(stage)
                 current = await snapshot(document_id)
                 assert (current.stage, current.completed, current.total) == (stage, None, None)
-            await on_checkpoint(checkpoint)
-            current = await snapshot(document_id)
-            assert (current.stage, current.completed, current.total) == ("indexing", 0, 2033)
-            await on_stage("waiting_extraction")
             await on_stage("extracting")
+            await on_progress(0, 2033)
+            current = await snapshot(document_id)
+            assert (current.stage, current.completed, current.total) == ("extracting", 0, 2033)
             await on_stage("finalizing")
-            return ProcessOutcome(source_id="article", chunk_count=2033, processed_chunk_ids=checkpoint.chunk_ids)
+            return document_receipt(bound, chunk_count=2033)
 
     monkeypatch.setattr(tasks, "prepare_document", prepare)
     async with SessionLocal() as session:
-        await tasks._process_document_unlocked(session, await session.get(Job, job_id), engine_manager=Manager())
+        await tasks._process_document_unlocked(
+            session, await session.get(Job, job_id), engine_manager=Manager(), lease_lost=asyncio.Event()
+        )
     assert (await snapshot(document_id)).stage == "ready"

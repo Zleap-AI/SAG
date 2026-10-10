@@ -57,11 +57,7 @@ class SearchOutcome(BaseModel):
 
     @classmethod
     def from_result(cls, result: Any) -> SearchOutcome:
-        raw_sections = (
-            getattr(result, "sections", None)
-            or getattr(result, "chunks", None)
-            or []
-        )
+        raw_sections = getattr(result, "sections", None) or getattr(result, "chunks", None) or []
         query = getattr(result, "query", "") or ""
         if not isinstance(query, str):
             query = str(query)
@@ -191,66 +187,3 @@ class UniverseTimelineInfo(BaseModel):
     has_more: bool = False
     next_cursor: str | None = Field(default=None, max_length=2048)
     as_of: datetime
-
-
-class ProcessOutcome(BaseModel):
-    """文档处理（ingest + extract）结果。"""
-
-    source_id: str | None = None
-    chunk_count: int = 0
-    event_count: int = 0
-    chunk_ids: list[str] = []
-    event_ids: list[str] = []
-    processed_chunk_ids: list[str] = []
-    eventless_chunk_ids: list[str] = []
-    token_usage: int = 0
-    paused: bool = False
-
-    @classmethod
-    def from_results(cls, ingest: Any, extract: Any) -> ProcessOutcome:
-        return cls(
-            source_id=getattr(ingest, "source_id", None),
-            chunk_count=int(getattr(ingest, "chunk_count", 0) or 0),
-            event_count=int(getattr(extract, "event_count", 0) or 0),
-            chunk_ids=list(getattr(ingest, "chunk_ids", []) or []),
-            event_ids=list(getattr(extract, "event_ids", []) or []),
-            eventless_chunk_ids=list(
-                getattr(extract, "eventless_chunk_ids", []) or []
-            ),
-        )
-
-
-class EventEntityQuality(BaseModel):
-    rejected_attempts: int = 0
-    eventless_after_contract: list[str] = Field(default_factory=list)
-    reason_counts: dict[str, int] = Field(default_factory=dict)
-
-
-class ProcessCheckpoint(BaseModel):
-    """可持久化到 Job.payload 的文档处理断点。"""
-
-    source_id: str | None = None
-    chunk_ids: list[str] = []
-    processed_chunk_ids: list[str] = []
-    event_count: int = 0
-    event_ids: list[str] = []
-    eventless_chunk_ids: list[str] = []
-    token_usage: int = 0
-    # 管线定位信息：chunk_version 为恢复必需；普通 ingest 的 generation_id 可为空。
-    generation_id: str | None = None
-    chunk_version: str | None = None
-    source_version: str | None = None
-    event_entity_quality: EventEntityQuality = Field(
-        default_factory=EventEntityQuality
-    )
-
-    @classmethod
-    def from_payload(cls, payload: dict | None) -> ProcessCheckpoint:
-        value = (payload or {}).get("process_checkpoint")
-        return cls.model_validate(value) if isinstance(value, dict) else cls()
-
-    def merge_payload(self, payload: dict | None) -> dict:
-        return {
-            **(payload or {}),
-            "process_checkpoint": self.model_dump(),
-        }

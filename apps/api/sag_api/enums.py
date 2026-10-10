@@ -45,6 +45,8 @@ class SourceStatus(StrEnum):
     ACTIVE = "active"
     PAUSED = "paused"
     ERROR = "error"
+    DELETING = "deleting"
+    DELETE_FAILED = "delete_failed"
 
 
 class DocumentStatus(StrEnum):
@@ -63,6 +65,7 @@ class JobType(StrEnum):
     PROCESS_DOCUMENT = "process_document"
     REPROCESS_DOCUMENT = "reprocess_document"
     DELETE_DOCUMENT = "delete_document"
+    DELETE_SOURCE = "delete_source"
     SYNC_SOURCE = "sync_source"
     INDEX_UNIVERSE = "index_universe"
     OCTX_PREFLIGHT = "octx_preflight"

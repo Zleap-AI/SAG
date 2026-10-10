@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
 from sag_api.core.errors import (
+    ConflictError,
     NotFoundError,
 )
 from sag_api.core.logging import get_logger
@@ -35,6 +36,7 @@ from sag_api.db.models import (
 from sag_api.enums import JobStatus, JobType
 from sag_api.jobs import JobQueue
 from sag_api.sag import EngineManager
+from sag_api.services.retrieval_service import published_document_inputs
 from sag_api.services.universe_query import (
     _stable_unit,
     active_overview,
@@ -99,7 +101,7 @@ async def _previous_source_stats(session: AsyncSession, user_id: str) -> dict[st
             .order_by(UniverseOverview.created_at.desc())
         )
     ).first()
-    if active is None or int(active.schema_version or 1) < 3:
+    if active is None or int(active.schema_version or 1) < 4:
         return {}
     rows = list(
         (
@@ -153,7 +155,10 @@ async def rebuild_universe_overview(
     user_id: str,
 ) -> UniverseOverview:
     """Build aggregate virtual partitions, then atomically make them active."""
-    sources = list((await session.execute(select(Source).order_by(Source.created_at))).scalars())
+    sources = list((await session.execute(
+        select(Source).where(Source.is_deleting.is_(False)).order_by(Source.created_at)
+    )).scalars())
+    published = await published_document_inputs(sources)
     previous_positions = await _previous_partition_positions(session, user_id)
     previous_stats = await _previous_source_stats(session, user_id)
     dirty_snapshot = list(
@@ -192,6 +197,7 @@ async def rebuild_universe_overview(
                 stats = await engine_manager.universe_overview_stats(
                     source.sag_source_config_id,
                     source=source,
+                    source_ids=published.get(source.sag_source_config_id, ()),
                     category_limit=0,
                 )
                 return source.id, stats
@@ -297,6 +303,8 @@ async def rebuild_universe_overview(
         }
 
         session.add_all(partitions)
+        if published != await published_document_inputs(sources):
+            raise ConflictError("文档发布版本已变化，请重新构建知识宇宙")
         await session.flush()
         await session.execute(
             update(UniverseOverview)
@@ -317,7 +325,7 @@ async def rebuild_universe_overview(
         overview.node_count = total_events + total_entities
         overview.relation_count = total_relations
         overview.bounds = bounds
-        overview.schema_version = 3
+        overview.schema_version = 4
         overview.as_of = completed_at
         overview.completed_at = completed_at
         overview.error = None

@@ -16,14 +16,14 @@ const { values } = parseArgs({ options: { evidence: { type: 'string' }, help: { 
 if (values.help) {
   console.log('Usage: node scripts/run-live-sag.mjs [--evidence <new disposable directory>]')
   console.log('Prerequisites: uv sync --project ../../apps/api --frozen --extra dev; pnpm run build')
-  console.log('Uses the published zleap-sag 0.14.0 and real SAG HTTP/MCP/SQLite/LanceDB, with deterministic local extraction/embedding responses. External model quality is not validated.')
+  console.log('Uses the published zleap-sag 0.15.0 and real SAG HTTP/MCP/SQLite/LanceDB, with deterministic local extraction/embedding responses. External model quality is not validated.')
   process.exit(0)
 }
 const integrationRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const apiRoot = resolve(integrationRoot, '../../apps/api')
 const python = join(apiRoot, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
 const engine = await promisify(execFile)(python, ['-c', 'import importlib.metadata; print(importlib.metadata.version("zleap-sag"))'])
-assert.equal(engine.stdout.trim(), '0.14.0', 'Install the pinned published API dependencies first')
+assert.equal(engine.stdout.trim(), '0.15.0', 'Install the pinned published API dependencies first')
 const evidence = values.evidence ? resolve(values.evidence) : await mkdtemp(join(tmpdir(), 'dsh-sag-real-'))
 await mkdir(evidence, { recursive: true })
 assert.deepEqual(await readdir(evidence), [], 'Use a new, empty evidence directory to keep acceptance storage isolated')
@@ -138,7 +138,7 @@ async function check(readOnly = false) {
     assert.equal(outcome.code, 0, `Registered tools acceptance failed (${readOnly ? 'after API restart' : 'main path'}); inspect acceptance logs`)
   } finally { clearTimeout(timer) }
 }
-const summary = { backend: 'real SAG API', engine: 'published zleap-sag 0.14.0', modelBoundary: 'deterministic-local-fixture',
+const summary = { backend: 'real SAG API', engine: 'published zleap-sag 0.15.0', modelBoundary: 'deterministic-local-fixture',
   dshVersion: '0.2.0-rc.2', packageArchive: archive, profileDir, installedPackage,
   externalModelsValidated: false, apiOrigin: origin, modelOrigin: `http://127.0.0.1:${modelPort}/v1`, evidenceDirectory: evidence, completed: false, ownedProcessesStopped: false }
 let api

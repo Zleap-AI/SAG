@@ -48,7 +48,7 @@ class FakeRead:
 @pytest.mark.asyncio
 async def test_server_requires_initialize_and_rejects_duplicate_initialize() -> None:
     pool = FakePool()
-    server = RuntimeServer(pool, FakeSearch(), FakeRead(), ("product-docs",), engine_version="0.14.0")
+    server = RuntimeServer(pool, FakeSearch(), FakeRead(), ("product-docs",), engine_version="0.15.0")
 
     early = await server.accept(request('{"jsonrpc":"2.0","id":1,"method":"search","params":{"query":"q","namespaces":["product-docs"],"mode":"fast","limit":1}}'))
     ready = await server.accept(request('{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"1.0"}}'))
@@ -56,7 +56,7 @@ async def test_server_requires_initialize_and_rejects_duplicate_initialize() -> 
 
     assert early.error.data.code == "DSH_SAG_NOT_INITIALIZED"
     assert ready.result == {
-        "protocolVersion": "1.0", "engineVersion": "0.14.0", "health": "available",
+        "protocolVersion": "1.0", "engineVersion": "0.15.0", "health": "available",
         "evidenceRead": True, "namespaces": ["product-docs"],
     }
     assert duplicate.error.data.code == "DSH_SAG_ALREADY_INITIALIZED"
@@ -69,7 +69,7 @@ async def test_server_requires_initialize_and_rejects_duplicate_initialize() -> 
 async def test_cancel_waits_for_request_to_settle_as_cancelled() -> None:
     search = FakeSearch()
     search.gate = asyncio.Event()
-    server = RuntimeServer(FakePool(), search, FakeRead(), ("a",), engine_version="0.14.0")
+    server = RuntimeServer(FakePool(), search, FakeRead(), ("a",), engine_version="0.15.0")
     await server.accept(request('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1.0"}}'))
     running = asyncio.create_task(server.accept(request('{"jsonrpc":"2.0","id":2,"method":"search","params":{"query":"q","namespaces":["a"],"mode":"fast","limit":1}}')))
     await asyncio.sleep(0)
@@ -84,7 +84,7 @@ async def test_cancel_waits_for_request_to_settle_as_cancelled() -> None:
 @pytest.mark.asyncio
 async def test_shutdown_closes_pool_and_rejects_new_work() -> None:
     pool = FakePool()
-    server = RuntimeServer(pool, FakeSearch(), FakeRead(), ("a",), engine_version="0.14.0")
+    server = RuntimeServer(pool, FakeSearch(), FakeRead(), ("a",), engine_version="0.15.0")
     await server.accept(request('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1.0"}}'))
 
     response = await server.accept(request('{"jsonrpc":"2.0","id":2,"method":"shutdown","params":{}}'))

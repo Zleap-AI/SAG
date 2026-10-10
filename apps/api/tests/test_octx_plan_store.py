@@ -4,6 +4,8 @@ import uuid
 
 import pytest
 
+from tests.document_requests import UncommittedDocumentManager, processing_parameters
+
 
 def test_installation_local_ids_are_deterministic_and_kind_isolated():
     from sag_api.sag.octx_ids import installation_local_id, relation_local_id
@@ -281,9 +283,7 @@ async def test_structured_plan_imports_one_atomic_shadow_partition(tmp_path):
             assert await session.scalar(select(func.count()).select_from(Entity)) == 1
             assert await session.scalar(select(func.count()).select_from(EventEntity)) == 2
             child = await session.scalar(select(SourceEvent).where(SourceEvent.title == "Child"))
-            root = await session.scalar(
-                select(SourceEvent).where(SourceEvent.title == long_root_title[:255])
-            )
+            root = await session.scalar(select(SourceEvent).where(SourceEvent.title == long_root_title[:255]))
             assert child is not None and root is not None
             assert child.parent_id == root.id
             assert child.extra_data["octx"]["chunk_ids"] == [chunk_id]
@@ -374,10 +374,15 @@ async def test_structured_plan_resumes_an_exactly_materialized_shadow_partition(
 
 
 @pytest.mark.asyncio
-async def test_knowledge_only_package_reuses_document_processing_with_checkpoints(tmp_path):
+@pytest.mark.parametrize("retryable_receipt", [None, False, True])
+async def test_knowledge_only_package_reuses_public_document_processing(tmp_path, retryable_receipt):
+    from types import SimpleNamespace
+
+    from document_requests import document_receipt
     from octx import create_octx
 
-    from sag_api.sag.dto import ProcessOutcome
+    from sag_api.core.errors import UpstreamError
+    from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
     from sag_api.sag.octx_importer import import_knowledge_package
 
     source = tmp_path / "source"
@@ -390,23 +395,28 @@ async def test_knowledge_only_package_reuses_document_processing_with_checkpoint
     package = tmp_path / "knowledge.octx"
     create_octx(tmp_path / "workspace", source=source, output=package, name="Knowledge")
 
-    class Engine:
+    class Engine(UncommittedDocumentManager):
         paths: list[str] = []
+        requests: list[dict] = []
 
-        async def process_document(self, source_config_id, path, **kwargs):
+        async def process_document(self, source_config_id, request_factory, **kwargs):
             assert source_config_id == "shadow-knowledge"
-            self.paths.append(path)
-            await kwargs["on_checkpoint"](
-                kwargs["checkpoint"].model_copy(update={"source_id": "article-k", "chunk_ids": ["chunk-k"]})
+            processor = IncrementalDocumentProcessor(
+                SimpleNamespace(resources=SimpleNamespace(prompts=SimpleNamespace(language="en"))),
+                source_config_id,
+                max_concurrency=1,
             )
-            return ProcessOutcome(
-                source_id="article-k",
-                chunk_count=1,
-                event_count=2,
-                chunk_ids=["chunk-k"],
-                processed_chunk_ids=["chunk-k"],
-                token_usage=3,
-            )
+            request = await request_factory(processor, *processing_parameters())
+            self.paths.append(request.source.original_file.path)
+            self.requests.append(request.model_dump(mode="json"))
+            receipt = document_receipt(request, chunk_count=1, event_count=2, token_usage=3)
+            if retryable_receipt is not None and len(self.requests) == 1:
+                return receipt.model_copy(update={
+                    "status": "failed", "checkpoint": "indexed", "retryable": retryable_receipt,
+                    "failure_code": "dependency_unavailable", "failure_message": "temporary vector outage",
+                    "result": None,
+                })
+            return receipt
 
     saved: list[dict] = []
 
@@ -414,17 +424,32 @@ async def test_knowledge_only_package_reuses_document_processing_with_checkpoint
         saved.append(value)
 
     engine = Engine()
+    checkpoint = {}
+    if retryable_receipt is not None:
+        with pytest.raises(UpstreamError, match="temporary vector outage") as caught:
+            await import_knowledge_package(
+                package, tmp_path / "controlled", source_config_id="shadow-knowledge",
+                engine_manager=engine, checkpoint=checkpoint, on_checkpoint=on_checkpoint,
+            )
+        assert caught.value.code == "dependency_unavailable"
+        assert caught.value.retryable is retryable_receipt
+        assert caught.value.layer.value == "engine"
+        assert checkpoint["documents"]["knowledge/doc.md"]["process_request"] == engine.requests[0]
+        if not retryable_receipt:
+            return
     result = await import_knowledge_package(
         package,
         tmp_path / "controlled",
         source_config_id="shadow-knowledge",
         engine_manager=engine,
-        checkpoint={},
+        checkpoint=checkpoint,
         on_checkpoint=on_checkpoint,
     )
 
     assert result.counts == {"documents": 1, "chunks": 1, "events": 2}
-    assert len(engine.paths) == 1
+    assert len(engine.paths) == (2 if retryable_receipt else 1)
+    if retryable_receipt:
+        assert engine.requests[0] == engine.requests[1]
     assert (tmp_path / "controlled" / "00000000.md").is_file()
     assert saved[-1]["documents"]["knowledge/doc.md"]["status"] == "ready"
 

@@ -30,6 +30,18 @@ if TYPE_CHECKING:
 log = get_logger("sag")
 
 
+def _input_scope_filter(data_source_ids: list[str], source_ids_by_config: dict[str, tuple[str, ...]] | None):
+    """Keep each input allowlist bound to its storage range before vector limits."""
+    from zleap.sag.core.adapters.models import Filter
+
+    if source_ids_by_config is None:
+        return Filter.one_of("data_source_id", tuple(data_source_ids))
+    return Filter.any(*(
+        Filter.all(Filter.eq("data_source_id", scid), Filter.one_of("source_id", source_ids_by_config[scid]))
+        for scid in data_source_ids if source_ids_by_config.get(scid)
+    ))
+
+
 class SearchReader:
     """检索召回路径。"""
 
@@ -45,6 +57,7 @@ class SearchReader:
         source: Source | None,
         strategy: str,
         top_k: int,
+        source_ids: tuple[str, ...] | None = None,
         include_ranked_candidates: bool = False,
     ) -> SearchOutcome:
         """单次检索（带每源时限）。超时抛 asyncio.TimeoutError。
@@ -52,6 +65,8 @@ class SearchReader:
         strategy 是门面名(vector/multi/multi_es_fast);进入 zleap 前翻译成引擎名。
         """
         timeout = max(1.0, self._access.settings.search_source_timeout)
+        if source_ids is not None and not source_ids:
+            return SearchOutcome(query=query, sections=[], stats={"candidates": 0})
         engine_strategy = self._access.zleap_engine_strategy(strategy)
 
         async def run() -> Any:
@@ -62,7 +77,7 @@ class SearchReader:
                     return await engine.search(
                         SearchRequest(
                             query=query,
-                            scope=SearchScope(data_source_ids=(source_config_id,)),
+                            scope=SearchScope(data_source_ids=(source_config_id,), source_ids=source_ids or ()),
                             options=SearchOptions(
                                 strategy=engine_strategy,
                                 top_k=top_k,
@@ -96,6 +111,7 @@ class SearchReader:
         source: Source | None = None,
         strategy: str | None = None,
         top_k: int | None = None,
+        source_ids: tuple[str, ...] | None = None,
         include_ranked_candidates: bool = False,
     ) -> SearchOutcome:
         """检索（韧性版）：精确模式超时/失败/空结果时回退快速模式。
@@ -111,6 +127,10 @@ class SearchReader:
         }
         if include_ranked_candidates:
             search_options["include_ranked_candidates"] = True
+        if source_ids is not None:
+            if not source_ids:
+                return SearchOutcome(query=query, sections=[], stats={"candidates": 0})
+            search_options["source_ids"] = source_ids
         try:
             outcome = await self._access.search_raw(
                 source_config_id,
@@ -173,7 +193,7 @@ class SearchReader:
         *,
         strategy: str | None = None,
         top_k: int | None = None,
-        exclude_source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
+        source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
         include_ranked_candidates: bool = False,
     ) -> SearchOutcome:
         """在统一候选与并发边界内检索；单源失败不影响整体结果。"""
@@ -182,109 +202,50 @@ class SearchReader:
         per_source_k = max(top_k, 4)
         requested_sources = len(targets)
         targets = targets[: self._access.settings.search_source_candidate_limit]
-        has_exclusions = any(source_ids for source_ids in (exclude_source_ids_by_config or {}).values())
+        if source_ids_by_config is not None:
+            targets = [(scid, source) for scid, source in targets if source_ids_by_config.get(scid)]
 
-        ranked_candidates_unavailable = include_ranked_candidates and has_exclusions
-
-        def with_ranked_candidates_diagnostic(stats: dict[str, Any]) -> dict[str, Any]:
-            if not ranked_candidates_unavailable:
-                return stats
-            return {
-                **stats,
-                "ranked_candidates": [],
-                "ranked_candidates_unavailable_reason": "document_source_exclusions",
-            }
-
-        if ((strategy == "vector" and not include_ranked_candidates) or has_exclusions) and targets:
+        if strategy == "vector" and not include_ranked_candidates and targets:
             try:
-                outcome = await self._access.search_chunk_vectors(
+                return await self._access.search_chunk_vectors(
                     targets,
                     query,
                     top_k=top_k,
                     requested_sources=requested_sources,
-                    exclude_source_ids_by_config=exclude_source_ids_by_config,
+                    source_ids_by_config=source_ids_by_config,
                 )
-                if has_exclusions and strategy != "vector":
-                    return SearchOutcome(
-                        query=outcome.query,
-                        sections=outcome.sections,
-                        stats=with_ranked_candidates_diagnostic(
-                            {
-                                **outcome.stats,
-                                "requested_strategy": strategy,
-                                "effective_strategy": "vector",
-                                "fallback_used": True,
-                            }
-                        ),
-                    )
-                if ranked_candidates_unavailable:
-                    return SearchOutcome(
-                        query=outcome.query,
-                        sections=outcome.sections,
-                        stats=with_ranked_candidates_diagnostic(dict(outcome.stats)),
-                    )
-                return outcome
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
-                # The lexical branch in ``retrieve_relevant_sections`` is already
-                # running in parallel. Return control to it instead of paying a
-                # second timeout in the legacy per-source vector path.
                 log.warning("批量块向量召回超时，保留并行词法结果")
                 return SearchOutcome(
                     query=query,
                     sections=[],
-                    stats=with_ranked_candidates_diagnostic(
-                        {
-                            "sources": len(targets),
-                            "sources_requested": requested_sources,
-                            "source_limit_applied": requested_sources > len(targets),
-                            "candidates": 0,
-                            "chunk_recall": (
-                                "batch-vector-prefilter-timeout" if has_exclusions else "batch-vector-timeout"
-                            ),
-                        }
-                    ),
+                    stats={
+                        "sources": len(targets),
+                        "sources_requested": requested_sources,
+                        "source_limit_applied": requested_sources > len(targets),
+                        "candidates": 0,
+                        "chunk_recall": "batch-vector-timeout",
+                    },
                 )
-            except Exception as error:  # noqa: BLE001
-                if has_exclusions:
-                    log.warning(
-                        "带删除屏障的批量块召回失败，不回退未过滤检索：%s",
-                        error,
-                    )
-                    return SearchOutcome(
-                        query=query,
-                        sections=[],
-                        stats=with_ranked_candidates_diagnostic(
-                            {
-                                "sources": len(targets),
-                                "sources_requested": requested_sources,
-                                "source_limit_applied": requested_sources > len(targets),
-                                "candidates": 0,
-                                "requested_strategy": strategy,
-                                "effective_strategy": "vector",
-                                "fallback_used": True,
-                                "chunk_recall": "batch-vector-prefilter-failed",
-                            }
-                        ),
-                    )
-                # Keep the established per-source engine path as a compatibility
-                # fallback for storage providers that cannot do a filtered batch kNN.
-                log.warning("批量块向量召回失败，回退逐信源检索：%s", error)
+            except Exception as error:  # noqa: BLE001 - use the same scope in per-range fallback
+                log.warning("批量块向量召回失败，回退逐范围检索：%s", error)
 
         semaphore = asyncio.Semaphore(self._access.settings.search_source_concurrency)
 
         async def _one(scid: str, source: Source | None):
             async with semaphore:
                 try:
-                    outcome = await self._access.search(
-                        scid,
-                        query,
-                        source=source,
-                        strategy=strategy,
-                        top_k=per_source_k,
-                        include_ranked_candidates=include_ranked_candidates,
-                    )
+                    options = {
+                        "source": source,
+                        "strategy": strategy,
+                        "top_k": per_source_k,
+                        "include_ranked_candidates": include_ranked_candidates,
+                    }
+                    if source_ids_by_config is not None:
+                        options["source_ids"] = source_ids_by_config[scid]
+                    outcome = await self._access.search(scid, query, **options)
                     return scid, outcome
                 except Exception as e:  # noqa: BLE001
                     log.warning("fan-out 检索失败 %s：%s", scid, getattr(e, "message", None) or e)
@@ -358,14 +319,19 @@ class SearchReader:
         *,
         top_k: int,
         requested_sources: int,
-        exclude_source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
+        source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
     ) -> SearchOutcome:
         """Recall chunks across all selected sources with one query embedding."""
 
-        sources_by_config = {source_config_id: source for source_config_id, source in targets}
+        sources_by_config = {
+            scid: source for scid, source in targets
+            if source_ids_by_config is None or source_ids_by_config.get(scid)
+        }
         source_config_ids = list(sources_by_config)
+        if not source_config_ids:
+            return SearchOutcome(query=query, sections=[], stats={"candidates": 0})
         await self._access.ensure_read_runtime(sources_by_config)
-        from zleap.sag.core.adapters.models import Filter, VectorQuery
+        from zleap.sag.core.adapters.models import VectorQuery
 
         async def recall() -> tuple[list[Any], dict[str, float]]:
             timings: dict[str, float] = {}
@@ -377,37 +343,13 @@ class SearchReader:
             query_vector = await engine.resources.embedding.generate(query)
             timings["vector.embedding"] = round((time.perf_counter() - t0) * 1000, 2)
             t1 = time.perf_counter()
-            exclusions = {
-                source_config_id: tuple(
-                    sorted({value.strip() for value in source_ids if isinstance(value, str) and value.strip()})
-                )
-                for source_config_id in source_config_ids
-                if (
-                    source_ids := (exclude_source_ids_by_config or {}).get(
-                        source_config_id,
-                        (),
-                    )
-                )
-            }
-            exclusions = {
-                source_config_id: source_ids for source_config_id, source_ids in exclusions.items() if source_ids
-            }
-            filters = [Filter.one_of("data_source_id", tuple(source_config_ids))]
-            if exclusions:
-                exclusion_pairs = [
-                    Filter.all(
-                        Filter.eq("data_source_id", source_config_id),
-                        Filter.one_of("source_id", tuple(source_ids)),
-                    )
-                    for source_config_id, source_ids in exclusions.items()
-                ]
-                filters.append(Filter.negate(Filter.any(*exclusion_pairs)))
+            filters = _input_scope_filter(source_config_ids, source_ids_by_config)
             hits = await engine.resources.vector.query(
                 "source_chunks",
                 VectorQuery(
                     vector=query_vector,
                     vector_field="content_vector",
-                    filters=Filter.all(*filters),
+                    filters=filters,
                     limit=top_k,
                 ),
             )
@@ -471,6 +413,7 @@ class SearchReader:
         sources_by_config: dict[str, Source | None],
         *,
         limit: int | None = None,
+        source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
     ) -> dict[tuple[str, str], float]:
         """Recall extracted events directly from their title/content vectors.
 
@@ -479,6 +422,10 @@ class SearchReader:
         chunks from degrading into chunk-only search results.
         """
 
+        if source_ids_by_config is not None:
+            sources_by_config = {
+                scid: source for scid, source in sources_by_config.items() if source_ids_by_config.get(scid)
+            }
         query = query.strip()
         source_config_ids = sorted(
             source_config_id.strip() for source_config_id in sources_by_config if source_config_id.strip()
@@ -493,14 +440,14 @@ class SearchReader:
         candidate_limit = min(200, max(bounded_limit * 4, 24))
 
         await self._access.ensure_read_runtime(sources_by_config)
-        from zleap.sag.core.adapters.models import Filter, VectorQuery
+        from zleap.sag.core.adapters.models import VectorQuery
 
         async def recall_vectors() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
             slot = await self._access.slot(source_config_ids[0], sources_by_config[source_config_ids[0]])
             engine = slot.engine
             query_vector = await engine.resources.embedding.generate(query)
             store = engine.resources.vector
-            filters = Filter.one_of("data_source_id", tuple(source_config_ids))
+            filters = _input_scope_filter(source_config_ids, source_ids_by_config)
 
             async def channel(field: str, k: int) -> list[dict[str, Any]]:
                 hits = await store.query(

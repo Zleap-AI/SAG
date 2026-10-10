@@ -376,9 +376,10 @@ def test_external_citations_are_safe_deduplicated_bounded_and_mapping_aware():
 
 
 @pytest.mark.asyncio
-async def test_search_tool_uses_global_citation_offset():
+async def test_search_tool_uses_global_citation_offset(publication_source):
     class _EM:
-        async def search_many(self, targets, query, strategy=None, top_k=None):
+        async def search_many(self, targets, query, strategy=None, top_k=None, source_ids_by_config=None):
+            assert source_ids_by_config == {"scid": ("document-1",)}
             return SearchOutcome(
                 query=query,
                 sections=[
@@ -387,17 +388,14 @@ async def test_search_tool_uses_global_citation_offset():
                         content="内容",
                         chunk_id="c1",
                         source_config_id="scid",
+                        source_id="document-1",
                         score=0.9,
                     )
                 ],
             )
 
-    class _Src:
-        sag_source_config_id = "scid"
-        id = "sid"
-        name = "源"
-
-    ctx = ToolContext(engine_manager=_EM(), sources=[_Src()], citation_offset=3)
+    source = await publication_source("源", "scid", "document-1")
+    ctx = ToolContext(engine_manager=_EM(), sources=[source], citation_offset=3)
     result = await SearchContextTool().invoke({"query": "q"}, ctx)
     assert "[4]" in result.content  # 编号从 offset+1 开始
     assert result.citations[0]["n"] == 4

@@ -187,6 +187,7 @@
     "finalizingDescription": "正在检查处理结果并保存，完成后即可检索"
   },
   "DocumentStatus": {
+    "deletePaused": "等待手动继续删除",
     "pending": "待处理",
     "loading": "解析入库",
     "extracting": "抽取中",
@@ -293,6 +294,10 @@
     "saveChanges": "保存修改"
   },
   "SourceCard": {
+    "deleteSubmitted": "删除请求已提交",
+    "deleting": "正在删除…",
+    "deletePaused": "等待手动继续",
+    "continueDelete": "继续删除",
     "deleted": "信源已删除",
     "deleteFailed": "删除失败",
     "noDescription": "暂无描述",
@@ -426,11 +431,16 @@
     "requeued": "已重新加入处理队列",
     "operationFailed": "操作失败",
     "deleted": "文档已删除",
-    "deleting": "文档已移除，后台清理将自动完成",
+    "deleting": "删除请求已提交，清理完成前文档不可访问",
+    "continueDelete": "继续删除",
     "deleteFailed": "删除失败",
     "pausing": "正在停止抽取，已入库的分块和向量将保留",
     "pauseFailed": "停止失败",
-    "resumed": "已加入处理队列，将复用分块并重新抽取",
+    "resumed": "已加入处理队列，将从保存的进度继续",
+    "restartTitle": "重新处理这份文档？",
+    "restartDescription": "输入或抽取配置已变化，当前任务不能继续。确认后将重新抽取整份文档，已发布版本会继续可用。",
+    "restartChangedDescription": "输入、配置或确认有效期已变化，请重新确认。确认后将重新抽取整份文档，已发布版本会继续可用。",
+    "restartConfirm": "重新处理整份文档",
     "resumeFailed": "继续失败",
     "viewDocument": "查看文档",
     "viewDetails": "查看详情与原文预览",

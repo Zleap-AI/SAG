@@ -28,149 +28,66 @@ class SearchSource(Protocol):
 
 
 EventScoreMap = dict[tuple[str, str], float]
-DocumentSourceExclusions = dict[str, tuple[str, ...]]
+DocumentSourceScope = dict[str, tuple[str, ...]]
 
 
-@dataclass(frozen=True, slots=True)
-class _HiddenDerivatives:
-    source_ids: frozenset[str] = frozenset()
-    source_keys: frozenset[tuple[str, str]] = frozenset()
-    source_config_ids: frozenset[str] = frozenset()
-    event_keys: frozenset[tuple[str, str]] = frozenset()
-
-
-async def _hidden_document_derivatives(
-    sources: list[SearchSource],
-) -> _HiddenDerivatives:
-    """Read the persisted logical-delete/reprocess barrier for retrieval."""
+async def published_document_inputs(sources: list[SearchSource]) -> DocumentSourceScope:
+    """Resolve only current qualified publication pointers, including paused candidates."""
     from sqlalchemy import select
 
     from sag_api.core.db import SessionLocal
-    from sag_api.db.models import Document, Job
-    from sag_api.enums import DocumentStatus, JobStatus, JobType
+    from sag_api.db.models import Document, Source
 
-    source_ids = [source.id for source in sources]
-    if not source_ids:
-        return _HiddenDerivatives()
-    config_by_source = {
-        source.id: source.sag_source_config_id for source in sources
-    }
-    hidden_document_ids: set[str] = set()
-    hidden_source_ids: set[str] = set()
-    hidden_source_keys: set[tuple[str, str]] = set()
-    hidden_configs: set[str] = set()
-    hidden_event_keys: set[tuple[str, str]] = set()
+    by_source = {source.id: source.sag_source_config_id for source in sources}
+    values: dict[str, set[str]] = {source.sag_source_config_id: set() for source in sources}
+    if not by_source:
+        return {}
     async with SessionLocal() as session:
-        documents = list(
-            (
-                await session.scalars(
-                    select(Document).where(
-                        Document.source_id.in_(source_ids),
-                        Document.status.in_(
-                            [DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED]
-                        ),
-                    )
+        rows = (
+            await session.execute(
+                select(Document.source_id, Document.sag_source_id).join(Source, Document.source_id == Source.id).where(
+                    Document.source_id.in_(by_source),
+                    Document.has_publication,
+                    Source.is_deleting.is_(False),
                 )
-            ).all()
-        )
-        active_control_jobs = list(
-            (
-                await session.scalars(
-                    select(Job).where(
-                        Job.source_id.in_(source_ids),
-                        Job.type.in_([JobType.DELETE_DOCUMENT, JobType.REPROCESS_DOCUMENT]),
-                        Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
-                    )
-                )
-            ).all()
-        )
-        failed_control_jobs = list(
-            (
-                await session.scalars(
-                    select(Job)
-                    .join(Document, Job.document_id == Document.id)
-                    .where(
-                        Job.source_id.in_(source_ids),
-                        Job.type.in_([JobType.DELETE_DOCUMENT, JobType.REPROCESS_DOCUMENT]),
-                        Job.status == JobStatus.FAILED,
-                        Document.status.in_([DocumentStatus.FAILED, DocumentStatus.DELETE_FAILED]),
-                    )
-                )
-            ).all()
-        )
-        active_control_jobs.extend(failed_control_jobs)
-        hidden_document_ids.update(document.id for document in documents)
-        hidden_document_ids.update(
-            job.document_id for job in active_control_jobs if job.document_id
-        )
-        if hidden_document_ids:
-            histories = list(
-                (
-                    await session.scalars(
-                        select(Job).where(Job.document_id.in_(hidden_document_ids))
-                    )
-                ).all()
             )
-        else:
-            histories = []
+        ).all()
+    for source_id, input_id in rows:
+        if input_id:
+            values[by_source[source_id]].add(input_id)
+    return {scid: tuple(sorted(ids)) for scid, ids in values.items()}
 
-    for document in documents:
-        config_id = config_by_source.get(document.source_id)
-        if document.sag_source_id:
-            hidden_source_ids.add(document.sag_source_id)
-            if config_id:
-                hidden_source_keys.add((config_id, document.sag_source_id))
-        if config_id:
-            hidden_configs.add(config_id)
-    for job in [*active_control_jobs, *histories]:
-        payload = job.payload or {}
-        checkpoint = payload.get("process_checkpoint")
-        if isinstance(checkpoint, dict):
-            value = checkpoint.get("source_id")
-            if isinstance(value, str) and value.strip():
-                normalized_source_id = value.strip()
-                hidden_source_ids.add(normalized_source_id)
-                config_id = config_by_source.get(job.source_id or "")
-                if config_id:
-                    hidden_source_keys.add((config_id, normalized_source_id))
-            config_id = config_by_source.get(job.source_id or "")
-            if config_id:
-                hidden_event_keys.update(
-                    (config_id, event_id.strip())
-                    for event_id in checkpoint.get("event_ids", [])
-                    if isinstance(event_id, str) and event_id.strip()
-                )
-        derived_source_ids = {
-            value.strip()
-            for value in payload.get("derived_source_ids", [])
-            if isinstance(value, str) and value.strip()
-        }
-        hidden_source_ids.update(derived_source_ids)
-        config_id = config_by_source.get(job.source_id or "")
-        if config_id:
-            hidden_source_keys.update(
-                (config_id, source_id) for source_id in derived_source_ids
-            )
-            hidden_configs.add(config_id)
-    return _HiddenDerivatives(
-        source_ids=frozenset(hidden_source_ids),
-        source_keys=frozenset(hidden_source_keys),
-        source_config_ids=frozenset(hidden_configs),
-        event_keys=frozenset(hidden_event_keys),
+
+async def grep_published_chunks(engine_manager, source: SearchSource, pattern: str, *, limit: int) -> list[dict]:
+    """Apply current publication pointers before LIMIT and recheck before returning evidence."""
+    published = await published_document_inputs([source])
+    input_ids = published.get(source.sag_source_config_id, ())
+    if not input_ids:
+        return []
+    rows = await engine_manager.grep_chunks(
+        source.sag_source_config_id,
+        pattern,
+        source=source,
+        limit=limit,
+        source_ids=input_ids,
     )
+    current = await published_document_inputs([source])
+    visible = current.get(source.sag_source_config_id, ())
+    return [row for row in rows if row["source_id"] in visible]
 
 
-def _document_source_exclusions(
-    hidden: _HiddenDerivatives,
-) -> DocumentSourceExclusions:
-    """Scope hidden engine article IDs to their owning source config."""
-    values: dict[str, set[str]] = {}
-    for source_config_id, source_id in hidden.source_keys:
-        values.setdefault(source_config_id, set()).add(source_id)
-    return {
-        source_config_id: tuple(sorted(source_ids))
-        for source_config_id, source_ids in values.items()
-    }
+async def get_published_chunk(engine_manager, source: SearchSource, chunk_id: str):
+    published = await published_document_inputs([source])
+    input_ids = published.get(source.sag_source_config_id, ())
+    if not input_ids:
+        return None
+    chunk = await engine_manager.get_chunk(
+        source.sag_source_config_id,
+        chunk_id,
+        source=source,
+        source_ids=input_ids,
+    )
+    return chunk if published == await published_document_inputs([source]) else None
 
 
 _BOILERPLATE = (
@@ -257,11 +174,7 @@ def rerank_sections(
     )
     lexical = lexical or []
     lexical_keys = {_section_key(section) for section in lexical}
-    exact_keys = (
-        lexical_keys
-        if exact_lexical_keys is None
-        else lexical_keys.intersection(exact_lexical_keys)
-    )
+    exact_keys = lexical_keys if exact_lexical_keys is None else lexical_keys.intersection(exact_lexical_keys)
     merged: dict[tuple[str, str], tuple[RetrievedSection, int]] = {}
     for index, section in enumerate([*semantic, *lexical]):
         key = _section_key(section)
@@ -287,13 +200,9 @@ def rerank_sections(
     semantic_floor = max(0.35, top_raw * 0.68)
     denominator = max(1, len(candidates) - 1)
     lexical_scores = {
-        key: _lexical_relevance(query, section, analysis=effective)
-        for key, (section, _index) in candidates
+        key: _lexical_relevance(query, section, analysis=effective) for key, (section, _index) in candidates
     }
-    has_lexical_signal = any(
-        key in lexical_keys or score >= 0.2
-        for key, score in lexical_scores.items()
-    )
+    has_lexical_signal = any(key in lexical_keys or score >= 0.2 for key, score in lexical_scores.items())
     ranked: list[tuple[float, float, int, RetrievedSection]] = []
 
     for position, (key, (section, original_index)) in enumerate(candidates):
@@ -335,7 +244,7 @@ async def _lexical_sections(
     sources: list[SearchSource],
     *,
     analysis: QueryAnalysis,
-    exclude_source_ids_by_config: DocumentSourceExclusions | None = None,
+    source_ids_by_config: DocumentSourceScope,
 ) -> tuple[list[RetrievedSection], set[tuple[str, str]]]:
     grep_chunks = getattr(engine_manager, "grep_chunks", None)
     terms = analysis.lookup_terms
@@ -343,10 +252,7 @@ async def _lexical_sections(
         return [], set()
 
     semaphore = asyncio.Semaphore(max(1, settings.search_source_concurrency))
-    expanded_keys = {
-        normalize_lexical_text(term)
-        for term in analysis.expanded_terms
-    }
+    expanded_keys = {normalize_lexical_text(term) for term in analysis.expanded_terms}
 
     async def one(
         source: SearchSource,
@@ -358,20 +264,7 @@ async def _lexical_sections(
                     "source": source,
                     "limit": 2,
                 }
-                if (
-                    getattr(
-                        engine_manager,
-                        "supports_document_source_exclusions",
-                        False,
-                    )
-                    and exclude_source_ids_by_config
-                ):
-                    options["exclude_source_ids"] = (
-                        exclude_source_ids_by_config.get(
-                            source.sag_source_config_id,
-                            (),
-                        )
-                    )
+                options["source_ids"] = source_ids_by_config[source.sag_source_config_id]
                 rows = await grep_chunks(
                     source.sag_source_config_id,
                     term,
@@ -395,12 +288,7 @@ async def _lexical_sections(
 
     groups = await asyncio.gather(*(one(source, term) for source in sources for term in terms))
     sections = [section for group, _strong in groups for section in group]
-    exact_keys = {
-        _section_key(section)
-        for group, strong in groups
-        if strong
-        for section in group
-    }
+    exact_keys = {_section_key(section) for group, strong in groups if strong for section in group}
     return sections, exact_keys
 
 
@@ -422,43 +310,34 @@ async def retrieve_relevant_sections(
     )
     requested_limit = max(1, min(int(top_k or settings.search_top_k), 50))
     candidate_limit = min(50, max(requested_limit * 3, requested_limit + 8))
+    published = await published_document_inputs(sources)
+    sources = [source for source in sources if published.get(source.sag_source_config_id)]
     targets = [(source.sag_source_config_id, source) for source in sources]
     engine_start = time.perf_counter()
-    hidden = await _hidden_document_derivatives(sources)
-    exclusions = _document_source_exclusions(hidden)
     search_options: dict[str, Any] = {
         "strategy": strategy,
         "top_k": candidate_limit,
     }
     if include_ranked_candidates:
         search_options["include_ranked_candidates"] = True
-    if (
-        getattr(
-            engine_manager,
-            "supports_document_source_exclusions",
-            False,
-        )
-        and exclusions
-    ):
-        search_options["exclude_source_ids_by_config"] = exclusions
+    search_options["source_ids_by_config"] = published
     outcome, lexical_recall = await asyncio.gather(
         engine_manager.search_many(targets, query, **search_options),
         _lexical_sections(
             engine_manager,
             sources,
             analysis=analysis,
-            exclude_source_ids_by_config=exclusions,
+            source_ids_by_config=published,
         ),
     )
     lexical, exact_lexical_keys = lexical_recall
-    # A delete can commit while either engine query is in flight. Re-read the
-    # persisted barrier before returning evidence so the delete is linearized.
-    hidden = await _hidden_document_derivatives(sources)
+    # A publication switch or delete can commit while recall is in flight.
+    # Recheck current pointers before returning evidence.
+    current = await published_document_inputs(sources)
     engine_latency_ms = round((time.perf_counter() - engine_start) * 1000, 2)
+
     def visible(section: RetrievedSection) -> bool:
-        if section.source_id:
-            return section.source_id not in hidden.source_ids
-        return section.source_config_id not in hidden.source_config_ids
+        return bool(section.source_id) and section.source_id in current.get(section.source_config_id or "", ())
 
     semantic_sections = [section for section in outcome.sections if visible(section)]
     lexical_sections = [section for section in lexical if visible(section)]
@@ -485,7 +364,7 @@ async def retrieve_relevant_sections(
         "chinese_segmentation_used": analysis.chinese_segmentation_used,
         "lexical_term_count": len(analysis.lookup_terms),
         "has_more": reranked.relevant_count > len(reranked.sections),
-        "logically_deleted_filtered": hidden_count,
+        "publication_filtered": hidden_count,
         "latency_engine_ms": engine_latency_ms,
         "latency_rerank_ms": rerank_latency_ms,
         "latency_total_ms": total_latency_ms,
@@ -515,15 +394,21 @@ async def recall_event_scores(
     search = getattr(engine_manager, "search_event_scores", None)
     if not callable(search):
         return {}
-    hidden = await _hidden_document_derivatives(list(sources_by_config.values()))
+    published = await published_document_inputs(list(sources_by_config.values()))
+    sources_by_config = {scid: source for scid, source in sources_by_config.items() if published.get(scid)}
+    if not sources_by_config:
+        return {}
     try:
-        result = await search(query, sources_by_config, limit=limit)
+        result = await search(query, sources_by_config, limit=limit, source_ids_by_config=published)
     except asyncio.CancelledError:
         raise
     except Exception as error:  # noqa: BLE001
         log.warning("事项向量召回失败，继续使用原文块结果：%s", error)
         return {}
     if not isinstance(result, dict):
+        return {}
+    current = await published_document_inputs(list(sources_by_config.values()))
+    if any(current.get(scid) != published.get(scid) for scid in sources_by_config):
         return {}
 
     scores: EventScoreMap = {}
@@ -533,8 +418,6 @@ async def recall_event_scores(
         source_config_id = str(raw_key[0] or "").strip()
         event_id = str(raw_key[1] or "").strip()
         if not source_config_id or not event_id:
-            continue
-        if (source_config_id, event_id) in hidden.event_keys:
             continue
         try:
             score = float(raw_score)

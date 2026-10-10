@@ -250,7 +250,7 @@ def write_assets(cache_path: str, files: dict[str, bytes]) -> str | None:
         shutil.rmtree(target, ignore_errors=True)
         return None
     os.makedirs(parent, exist_ok=True)
-    staging = tempfile.mkdtemp(prefix=".parsed-assets-", dir=parent)
+    staging = tempfile.mkdtemp(prefix=os.path.basename(cache_path) + ".staging-", dir=parent)
     try:
         for name, payload in files.items():
             destination = os.path.join(staging, *name.split("/"))

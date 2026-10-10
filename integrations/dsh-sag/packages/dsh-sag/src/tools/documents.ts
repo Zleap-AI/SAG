@@ -1,8 +1,8 @@
 import type { ToolExecution, PreToolDecision } from '@deepseek-ai/dsh-tools'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ResolvedLocalConfig } from '../config.js'
-import type { SagDocument } from '../local/api-client.js'
-import { jsonRender, localOperation, requireToolCapability, selectSource, type ConnectionManager } from './local.js'
+import { SagApiError, type SagDocument, type SagJob } from '../local/api-client.js'
+import { jsonRender, localInputError, localOperation, requireToolCapability, selectSource, type ConnectionManager } from './local.js'
 
 const DOCUMENT = {
   type: 'object', additionalProperties: false, properties: {
@@ -14,6 +14,25 @@ const DOCUMENT = {
     errorStage: { oneOf: [{ type: 'string' }, { type: 'null' }] },
   },
 } as const
+
+const DOCUMENT_JOB_FIELDS = {
+  accepted: { type: 'boolean', required: true }, jobId: { type: 'string', required: true },
+  documentId: { type: 'string', required: true }, sourceId: { type: 'string', required: true },
+  status: { type: 'string', enum: ['queued', 'running', 'paused', 'succeeded', 'failed'], required: true },
+  progress: { type: 'number' }, attempts: { type: 'integer' },
+  error: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+} as const
+
+function documentJobValue<Type extends SagJob['type']>(job: SagJob & { readonly type: Type }, sourceId: string, documentId: string) {
+  return {
+    accepted: true, jobId: job.id, documentId: job.documentId ?? documentId,
+    sourceId: job.sourceId ?? sourceId, status: job.status,
+    type: job.type,
+    ...(job.progress === undefined ? {} : { progress: job.progress }),
+    ...(job.attempts === undefined ? {} : { attempts: job.attempts }),
+    ...(job.error === undefined ? {} : { error: job.error }),
+  }
+}
 
 function documentValue(document: SagDocument) {
   return {
@@ -91,12 +110,8 @@ export function createDocumentTools(manager: ConnectionManager, config: Resolved
     },
     output: { schema: {
       type: 'object', additionalProperties: false, properties: {
-        accepted: { type: 'boolean', required: true }, jobId: { type: 'string', required: true },
-        documentId: { type: 'string', required: true }, sourceId: { type: 'string', required: true },
-        status: { type: 'string', enum: ['queued', 'running', 'paused', 'succeeded', 'failed'], required: true },
-        type: { type: 'string', const: 'reprocess_document', required: true },
-        progress: { type: 'number' }, attempts: { type: 'integer' },
-        error: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+        ...DOCUMENT_JOB_FIELDS,
+        type: { type: 'string', const: 'process_document', required: true },
       },
     }, render: (_args, value) => jsonRender(value) },
     timeoutMs: config.requestTimeoutMs,
@@ -104,14 +119,14 @@ export function createDocumentTools(manager: ConnectionManager, config: Resolved
       return localOperation(manager, exec.signal, async connection => {
         requireToolCapability(connection, 'sag_reprocess_document')
         const sourceId = await selectSource(connection, args.source_id, exec.signal)
-        const job = await connection.gateway.reprocessDocument(sourceId, args.document_id, exec.signal)
-        return {
-          accepted: true, jobId: job.id, documentId: job.documentId ?? args.document_id,
-          sourceId: job.sourceId ?? sourceId, status: job.status,
-          type: job.type,
-          ...(job.progress === undefined ? {} : { progress: job.progress }),
-          ...(job.attempts === undefined ? {} : { attempts: job.attempts }),
-          ...(job.error === undefined ? {} : { error: job.error }),
+        try {
+          const job = await connection.gateway.reprocessDocument(sourceId, args.document_id, exec.signal)
+          return documentJobValue(job, sourceId, args.document_id)
+        } catch (error) {
+          if (error instanceof SagApiError && error.code === 'document_restart_required') {
+            localInputError('请在 SAG 页面确认重新处理后重试')
+          }
+          throw error
         }
       })
     },
@@ -120,14 +135,15 @@ export function createDocumentTools(manager: ConnectionManager, config: Resolved
 
   const remove = defineTool({
     name: 'sag_delete_document',
-    description: 'Permanently delete one document from a local SAG knowledge base after dsh user approval.',
+    description: 'Request permanent document deletion after dsh user approval and return the accepted cleanup job state.',
     parameters: {
       document_id: { type: 'string', required: true, description: 'Document id.' },
       source_id: { type: 'string', description: 'Knowledge-base id.' },
     },
     output: { schema: {
       type: 'object', additionalProperties: false, properties: {
-        deleted: { type: 'boolean', required: true }, documentId: { type: 'string', required: true }, sourceId: { type: 'string', required: true },
+        ...DOCUMENT_JOB_FIELDS,
+        type: { type: 'string', const: 'delete_document', required: true },
       },
     }, render: (_args, value) => jsonRender(value) },
     timeoutMs: config.requestTimeoutMs,
@@ -135,8 +151,8 @@ export function createDocumentTools(manager: ConnectionManager, config: Resolved
       return localOperation(manager, exec.signal, async connection => {
         requireToolCapability(connection, 'sag_delete_document')
         const sourceId = await selectSource(connection, args.source_id, exec.signal)
-        await connection.gateway.deleteDocument(sourceId, args.document_id, exec.signal)
-        return { deleted: true, documentId: args.document_id, sourceId }
+        const job = await connection.gateway.deleteDocument(sourceId, args.document_id, exec.signal)
+        return documentJobValue(job, sourceId, args.document_id)
       })
     },
     presentCall: args => ({ card: 'generic', title: 'Delete SAG document', kind: 'delete', rawInput: args.document_id }),

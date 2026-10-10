@@ -84,20 +84,16 @@ async def _connector_api_resource():
     app = create_app()
     email = f"dsh-api-cleanup-{uuid4().hex}@example.test"
     source_ids: list[str] = []
-    engine_manager = None
     transport = httpx.ASGITransport(app=app)
     try:
         async with _draining_app_lifespan(app):
-            engine_manager = app.state.engine_manager
             async with httpx.AsyncClient(transport=transport, base_url="http://sag") as client:
                 response = await client.post(
                     "/api/v1/auth/register",
                     json={"email": email, "password": "password123"},
                 )
                 assert response.status_code == 201
-                jwt_headers = {
-                    "Authorization": f"Bearer {response.json()['access_token']}"
-                }
+                jwt_headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
                 source = await client.post(
                     "/api/v1/sources",
                     headers=jwt_headers,
@@ -107,9 +103,7 @@ async def _connector_api_resource():
                 source_id = source.json()["id"]
                 source_ids.append(source_id)
                 connection = await client.get("/api/v1/system/dsh-connection")
-                connector_headers = {
-                    "Authorization": f"Bearer {connection.json()['accessToken']}"
-                }
+                connector_headers = {"Authorization": f"Bearer {connection.json()['accessToken']}"}
                 try:
                     yield client, app, jwt_headers, connector_headers, source_id, source_ids
                 finally:
@@ -130,23 +124,28 @@ async def _connector_api_resource():
                             if pending is None:
                                 break
                             await asyncio.sleep(0.05)
+                    for cleanup_source_id in reversed(source_ids):
+                        cleanup_job_id = None
+                        async with SessionLocal() as session:
+                            if session.bind.dialect.name == "sqlite":
+                                await session.execute(text("BEGIN IMMEDIATE"))
+                            if await session.get(Source, cleanup_source_id) is not None:
+                                cleanup_job = await delete_source(
+                                    session, cleanup_source_id, upload_dir=settings.upload_dir,
+                                    job_queue=app.state.job_queue,
+                                )
+                                cleanup_job_id = cleanup_job.id
+                        if cleanup_job_id is not None:
+                            async with asyncio.timeout(60):
+                                while True:
+                                    async with SessionLocal() as reader:
+                                        cleanup_job = await reader.get(Job, cleanup_job_id)
+                                        assert cleanup_job is not None
+                                        if cleanup_job.status is JobStatus.SUCCEEDED:
+                                            break
+                                        assert cleanup_job.status is not JobStatus.FAILED, cleanup_job.error
+                                    await asyncio.sleep(0.05)
     finally:
-        assert engine_manager is not None
-        for cleanup_source_id in reversed(source_ids):
-            # Reserve SQLite's writer before reading. Upgrading a read snapshot
-            # during cleanup can fail immediately despite the busy timeout.
-            # Each production deletion commits and schedules its own follow-up,
-            # so keep a fresh transaction per source instead of reusing a snapshot.
-            async with SessionLocal() as session:
-                if session.bind.dialect.name == "sqlite":
-                    await session.execute(text("BEGIN IMMEDIATE"))
-                if await session.get(Source, cleanup_source_id) is not None:
-                    await delete_source(
-                        session,
-                        cleanup_source_id,
-                        engine_manager=engine_manager,
-                        upload_dir=settings.upload_dir,
-                    )
         async with SessionLocal() as session:
             await session.execute(delete(User).where(User.email == email))
             await session.commit()
@@ -156,18 +155,14 @@ async def _connector_api_resource():
 async def db_session() -> AsyncSession:
     await init_db()
     async with SessionLocal() as session:
-        await session.execute(
-            delete(Setting).where(Setting.scope == "global", Setting.key == "dsh_integration")
-        )
+        await session.execute(delete(Setting).where(Setting.scope == "global", Setting.key == "dsh_integration"))
         await session.execute(delete(User).where(User.email.like("dsh-integration-%@example.test")))
         await session.execute(delete(User).where(User.email.like("dsh-api-%@example.test")))
         await session.execute(delete(Source).where(Source.name.like("dsh-integration-%")))
         await session.commit()
         yield session
         await session.rollback()
-        await session.execute(
-            delete(Setting).where(Setting.scope == "global", Setting.key == "dsh_integration")
-        )
+        await session.execute(delete(Setting).where(Setting.scope == "global", Setting.key == "dsh_integration"))
         await session.execute(delete(User).where(User.email.like("dsh-integration-%@example.test")))
         await session.execute(delete(User).where(User.email.like("dsh-api-%@example.test")))
         await session.execute(delete(Source).where(Source.name.like("dsh-integration-%")))
@@ -488,9 +483,7 @@ async def test_dsh_connector_state_is_created_once_for_concurrent_first_access(
 
     async with SessionLocal() as session:
         row_count = await session.scalar(
-            select(func.count()).select_from(Setting).where(
-                Setting.scope == "global", Setting.key == "dsh_integration"
-            )
+            select(func.count()).select_from(Setting).where(Setting.scope == "global", Setting.key == "dsh_integration")
         )
 
     assert first_token == second_token
@@ -720,7 +713,17 @@ async def test_local_discovery_mode_rejects_public_docker_port_binding(
 async def test_connector_token_calls_approved_knowledge_apis(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    from sag_api.enums import JobType
+    from sag_api.jobs.tasks import TASK_HANDLERS
     from sag_api.sag.dto import ChunkInfo
+
+    async def unrelated_document_processing(_session, _job, **_kwargs):
+        return None
+
+    # This case checks connector authorization, not model configuration or
+    # extraction. Keep real routing, enqueueing and worker completion while
+    # isolating the document handler's external model dependency.
+    monkeypatch.setitem(TASK_HANDLERS, JobType.PROCESS_DOCUMENT, unrelated_document_processing)
 
     async with _connector_api_resource() as (
         client,
@@ -762,8 +765,21 @@ async def test_connector_token_calls_approved_knowledge_apis(
             headers=connector_headers,
         )
 
-        async def fake_get_chunk(_source_config_id, chunk_id, *, source=None):
+        async with SessionLocal() as session:
+            session.add(
+                Document(
+                    source_id=source_id,
+                    filename="published-dsh.md",
+                    storage_path="/test/dsh.md",
+                    status=DocumentStatus.READY,
+                    sag_source_id="dsh-published",
+                )
+            )
+            await session.commit()
+
+        async def fake_get_chunk(_source_config_id, chunk_id, *, source=None, source_ids=None):
             assert source is not None and source.id == source_id
+            assert "dsh-published" in source_ids
             return ChunkInfo(
                 chunk_id=chunk_id,
                 heading="DSH",
@@ -808,7 +824,9 @@ async def test_connector_token_calls_approved_knowledge_apis(
     assert read.status_code == 200
     assert read.json()["content"] == "connector readable content"
     assert searched.status_code == 200
-    assert deleted.status_code == 200
+    assert deleted.status_code == 202
+    assert deleted.json()["type"] == "delete_document"
+    assert deleted.json()["status"] == "succeeded"  # This input had never started processing.
 
 
 @pytest.mark.asyncio
@@ -836,27 +854,17 @@ async def test_connector_token_cannot_call_sag_control_plane_apis():
         delete_target_id = delete_target.json()["id"]
         source_ids.append(delete_target_id)
 
-        connector_model = await client.get(
-            "/api/v1/system/model-config", headers=connector_headers
-        )
-        connector_capabilities = await client.get(
-            "/api/v1/system/dsh", headers=connector_headers
-        )
+        connector_model = await client.get("/api/v1/system/model-config", headers=connector_headers)
+        connector_capabilities = await client.get("/api/v1/system/dsh", headers=connector_headers)
         connector_agents = await client.get("/api/v1/agents", headers=connector_headers)
-        connector_source_delete = await client.delete(
-            f"/api/v1/sources/{delete_target_id}", headers=connector_headers
-        )
-        connector_export = await client.get(
-            "/api/v1/system/dsh/export", headers=connector_headers
-        )
+        connector_source_delete = await client.delete(f"/api/v1/sources/{delete_target_id}", headers=connector_headers)
+        connector_export = await client.get("/api/v1/system/dsh/export", headers=connector_headers)
         connector_settings = await client.put(
             "/api/v1/system/dsh/settings",
             headers=connector_headers,
             json={"default_source_id": None},
         )
-        connector_regenerate = await client.post(
-            "/api/v1/system/dsh/regenerate", headers=connector_headers
-        )
+        connector_regenerate = await client.post("/api/v1/system/dsh/regenerate", headers=connector_headers)
 
         assert connector_model.status_code == 401
         assert connector_capabilities.status_code == 200
@@ -876,9 +884,7 @@ async def test_connector_token_cannot_call_sag_control_plane_apis():
             ],
             "upload": {
                 "maxMb": settings.max_upload_mb,
-                "extensions": sorted(
-                    extension.lstrip(".") for extension in settings.allowed_upload_exts
-                ),
+                "extensions": sorted(extension.lstrip(".") for extension in settings.allowed_upload_exts),
             },
             "defaultSourceId": source_id,
         }
@@ -897,12 +903,8 @@ async def test_connector_token_cannot_call_sag_control_plane_apis():
             headers=jwt_headers,
             json={"default_source_id": source_id},
         )
-        jwt_source_delete = await client.delete(
-            f"/api/v1/sources/{delete_target_id}", headers=jwt_headers
-        )
-        jwt_regenerate = await client.post(
-            "/api/v1/system/dsh/regenerate", headers=jwt_headers
-        )
+        jwt_source_delete = await client.delete(f"/api/v1/sources/{delete_target_id}", headers=jwt_headers)
+        jwt_regenerate = await client.post("/api/v1/system/dsh/regenerate", headers=jwt_headers)
         restored = await client.put(
             "/api/v1/system/dsh/settings",
             headers=jwt_headers,
@@ -914,7 +916,8 @@ async def test_connector_token_cannot_call_sag_control_plane_apis():
     assert jwt_agents.status_code == 200
     assert jwt_export.status_code == 200
     assert jwt_settings.status_code == 200
-    assert jwt_source_delete.status_code == 200
+    assert jwt_source_delete.status_code == 202
+    assert jwt_source_delete.json()["type"] == "delete_source"
     assert jwt_regenerate.status_code == 200
     assert restored.status_code == 200
 
@@ -995,9 +998,7 @@ async def test_connector_global_search_is_structured_only(
             "source_ids": [source_id],
             "save_exploration": True,
         }
-        connector_response = await client.post(
-            "/api/v1/search", headers=connector_headers, json=request
-        )
+        connector_response = await client.post("/api/v1/search", headers=connector_headers, json=request)
 
         assert connector_response.status_code == 200
         connector_body = connector_response.json()
@@ -1007,9 +1008,7 @@ async def test_connector_global_search_is_structured_only(
         assert spy_llm.complete_calls == 0
         assert save_calls == 0
 
-        jwt_response = await client.post(
-            "/api/v1/search", headers=jwt_headers, json=request
-        )
+        jwt_response = await client.post("/api/v1/search", headers=jwt_headers, json=request)
 
     assert jwt_response.status_code == 200
     assert jwt_response.json()["summary"] == "JWT summary [1]"

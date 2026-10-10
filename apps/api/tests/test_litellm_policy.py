@@ -128,6 +128,38 @@ def _schema_request(**overrides: Any) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("frozen_mode,stock_mode", [("auto", "json_schema"), ("json_schema", "auto")])
+async def test_installed_policy_uses_admitted_mode_after_settings_change(monkeypatch, frozen_mode, stock_mode):
+    from sag_api.generation.responses.routing import request_settings
+
+    calls = []
+
+    async def completion(**kwargs):
+        calls.append(kwargs)
+        if kwargs["response_format"]["type"] == "json_schema":
+            raise GatewayError("response_format json_schema is not supported", 400)
+        return {"ok": True}
+
+    monkeypatch.setattr(litellm, "acompletion", completion)
+    stock = Settings(_env_file=None, llm_structured_output_mode=frozen_mode)
+    frozen = stock.model_copy(deep=True)
+    handle = install_litellm_policy(stock)
+    stock.llm_structured_output_mode = stock_mode
+    token = request_settings.set(frozen)
+    try:
+        if frozen_mode == "auto":
+            assert await litellm.acompletion(**_schema_request()) == {"ok": True}
+            assert [call["response_format"]["type"] for call in calls] == ["json_schema", "json_object"]
+        else:
+            with pytest.raises(GatewayError):
+                await litellm.acompletion(**_schema_request())
+            assert [call["response_format"]["type"] for call in calls] == ["json_schema"]
+    finally:
+        request_settings.reset(token)
+        uninstall_litellm_policy(handle)
+
+
+@pytest.mark.asyncio
 async def test_auto_downgrades_once_and_caches_by_provider_base_url_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

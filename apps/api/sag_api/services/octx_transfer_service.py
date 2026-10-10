@@ -88,6 +88,7 @@ from sag_api.services.octx_export import (
     submit_export_decision,
 )
 from sag_api.services.octx_transfer_common import (  # noqa: E402
+    _claim_import_target,
     _create_job,
     _duration_seconds,
     _ensure_shadow_identity,
@@ -547,7 +548,7 @@ async def execute_structured_import(
         progress_detail={"phase": "switching"},
     )
     await session.commit()
-    source = await session.get(Source, transfer.target_source_id) if transfer.target_source_id else None
+    source = await _claim_import_target(session, transfer)
     old_source_config_id = source.sag_source_config_id if source is not None else None
     source_id = source.id if source is not None else new_id()
     installation = OctxInstallation(
@@ -766,7 +767,7 @@ async def execute_knowledge_import(
     )
     await session.commit()
 
-    source = await session.get(Source, transfer.target_source_id) if transfer.target_source_id else None
+    source = await _claim_import_target(session, transfer)
     old_source_config_id = source.sag_source_config_id if source is not None else None
     source_id = source.id if source is not None else new_id()
     installation = OctxInstallation(

@@ -19,7 +19,7 @@ import { useSourceContent } from "./use-source-content";
 
 const base: Doc = {
   id: "doc-1", source_id: "source-1", filename: "report.pdf",
-  content_type: "application/pdf", size_bytes: 123, status: "extracting",
+  content_type: "application/pdf", size_bytes: 123, status: "extracting", has_publication: false,
   chunk_count: 20, event_count: 0, progress: 52, token_usage: 0, error: null,
   original_file_available: false,
   processing_stage: "extracting", processed_chunks: 8, total_chunks: 20,
@@ -83,6 +83,25 @@ describe("document processing in existing list layouts", () => {
     expect(view.querySelector('[role="progressbar"]')).toBeNull();
   });
 
+  it.each(["normal", "compact"] as const)("keeps old published exports available in %s rows", (variant) => {
+    for (const status of ["paused", "failed", "extracting"] as const) {
+      const view = list({ ...base, status, has_publication: true, event_count: 4 }, variant);
+      const exportButton = view.querySelector<HTMLButtonElement>('button[title="导出此文档为 .octx"]');
+      expect(exportButton).not.toBeNull();
+      expect(exportButton?.disabled).toBe(false);
+      if (variant === "normal") expect(view.textContent).toContain("20 块 / 4 事件");
+    }
+  });
+
+  it("allows exporting the published version while a resume mutation is pending", () => {
+    const view = list({ ...base, status: "paused", has_publication: true }, "normal", "zh-CN", true);
+    expect(view.querySelector<HTMLButtonElement>('button[title="导出此文档为 .octx"]')?.disabled).toBe(false);
+  });
+
+  it("does not offer export for an unpublished candidate", () => {
+    expect(list({ ...base, has_publication: false }).querySelector('button[title="导出此文档为 .octx"]')).toBeNull();
+  });
+
   it("keeps local resume feedback ahead of stale saved progress", () => {
     const view = list({ ...base, status: "paused", processed_chunks: 20 }, "normal", "zh-CN", true);
     expect(view.textContent).toContain("正在继续");
@@ -143,6 +162,31 @@ describe("live document details", () => {
   async function render(documentId = "doc-1") {
     await act(async () => root.render(provider(<DocumentDetailContent sourceId="source-1" documentId={documentId} />)));
   }
+
+  it.each(["paused", "failed", "extracting"] as const)("shows the published body while the candidate is %s", async (status) => {
+    vi.spyOn(api, "getDocument").mockResolvedValue({ ...base, status, has_publication: true });
+    const fetchBody = vi.mocked(fetch).mockResolvedValue({
+      status: 200, ok: true, text: async () => "the retained published text",
+    } as Response);
+    await render();
+    expect(fetchBody).toHaveBeenCalledWith(expect.stringContaining("/parsed"), expect.any(Object));
+    expect(container.textContent).toContain("the retained published text");
+    expect(container.querySelector('[role="tab"][data-state="active"]')?.textContent).toBe("解析内容");
+  });
+
+  it("refreshes a published body when publication changes without changing its boolean", async () => {
+    vi.spyOn(api, "getDocument")
+      .mockResolvedValueOnce({ ...base, has_publication: true })
+      .mockResolvedValue({ ...base, has_publication: true, updated_at: "2026-10-07T00:01:00Z" });
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ status: 200, ok: true, text: async () => "first publication" } as Response)
+      .mockResolvedValue({ status: 200, ok: true, text: async () => "replacement publication" } as Response);
+    await render();
+    expect(container.textContent).toContain("first publication");
+    await act(async () => vi.advanceTimersByTimeAsync(4_000));
+    expect(container.textContent).toContain("replacement publication");
+    expect(container.textContent).not.toContain("first publication");
+  });
 
   it("updates counts, then explains persistence and converges to ready", async () => {
     vi.spyOn(api, "getDocument")

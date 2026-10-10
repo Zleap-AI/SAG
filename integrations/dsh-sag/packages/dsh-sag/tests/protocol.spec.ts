@@ -13,7 +13,7 @@ describe('runtime protocol', () => {
       id: 1,
       result: {
         protocolVersion: '1.0',
-        engineVersion: '0.14.0',
+        engineVersion: '0.15.0',
         health: 'available',
         evidenceRead: true,
         namespaces: ['product-docs'],
@@ -23,7 +23,7 @@ describe('runtime protocol', () => {
       id: 1,
       result: {
         protocolVersion: '1.0',
-        engineVersion: '0.14.0',
+        engineVersion: '0.15.0',
         health: 'available',
         evidenceRead: true,
         namespaces: ['product-docs'],

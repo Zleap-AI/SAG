@@ -2,43 +2,49 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from zleap.sag import DataEngine
+from sqlalchemy import select
 from zleap.sag.core.ai.embedding import EmbeddingClient
 
 from sag_api.core.config import settings
+from sag_api.core.db import SessionLocal
+from sag_api.db.models import Source
+from tests.document_models import local_models
 from tests.helpers import corpus
 from tests.test_dsh_integration import _connector_api_resource
 
 
 @pytest.fixture
 def anydoc_api(monkeypatch):
-    calls = []
-
     async def vector(_client, _text):
         return [1.0] + [0.0] * ((_client.schema_dimensions or settings.effective_embedding_schema_dimensions) - 1)
 
     async def vectors(_client, texts):
         return [await vector(_client, text) for text in texts]
 
-    async def no_remote_extraction(_engine, target, *args, **kwargs):
-        calls.append(target)
-        return SimpleNamespace(event_ids=(), event_count=0, stats={"zero_event_chunks": list(target.chunk_ids)})
-
     monkeypatch.setattr(EmbeddingClient, "generate", vector)
     monkeypatch.setattr(EmbeddingClient, "batch_generate", vectors)
-    monkeypatch.setattr(DataEngine, "extract", no_remote_extraction)
+
     @asynccontextmanager
     async def resource():
         # MCP's AnyIO cancel scope must enter and exit in the test's same task.
-        async with _connector_api_resource() as (client, app, jwt, connector, source_id, _source_ids):
-            for config in (settings, app.state.engine_manager._settings):
-                monkeypatch.setattr(config, "document_parser", "anydoc")
-                monkeypatch.setattr(config, "llm_api_key", "offline-test-placeholder")
-            yield client, jwt, connector, source_id, calls
+        with local_models() as models:
+            async with _connector_api_resource() as (client, app, jwt, connector, source_id, _source_ids):
+                for config in (settings, app.state.engine_manager._settings):
+                    monkeypatch.setattr(config, "document_parser", "anydoc")
+                    monkeypatch.setattr(config, "llm_provider", "openai")
+                    monkeypatch.setattr(config, "llm_model", "local")
+                    monkeypatch.setattr(config, "llm_base_url", models.base_url)
+                    monkeypatch.setattr(config, "llm_api_key", "offline-test-placeholder")
+                    monkeypatch.setattr(config, "embedding_base_url", models.base_url)
+                # Provisioning precedes the fixture's local model configuration.
+                # Reopen this source using actual production resource eviction.
+                async with SessionLocal() as session:
+                    config_id = await session.scalar(select(Source.sag_source_config_id).where(Source.id == source_id))
+                await app.state.engine_manager.release(config_id)
+                yield client, jwt, connector, source_id, models.calls
 
     return resource
 
@@ -70,7 +76,8 @@ async def _assert_upload_is_retrievable(resource, tmp_path, extension):
         original.write_bytes("项目,金额\n产品A材料,10\n产品B材料,20\n".encode("gb18030"))
     original_bytes = original.read_bytes()
     uploaded = await client.post(
-        f"/api/v1/sources/{source_id}/documents", headers=jwt,
+        f"/api/v1/sources/{source_id}/documents",
+        headers=jwt,
         files={"file": (original.name, original_bytes, "application/octet-stream")},
     )
     assert uploaded.status_code == 201, uploaded.text
@@ -83,7 +90,8 @@ async def _assert_upload_is_retrievable(resource, tmp_path, extension):
     assert extraction_calls
 
     response = await client.post(
-        "/api/v1/search", headers=connector,
+        "/api/v1/search",
+        headers=connector,
         json={"query": "材料", "source_ids": [source_id], "strategy": "vector", "top_k": 10},
     )
     assert response.status_code == 200, response.text
@@ -96,7 +104,8 @@ async def _assert_upload_is_retrievable(resource, tmp_path, extension):
     for section in sections:
         assert section["source_id"] == source_id
         chunk = await client.get(
-            f"/api/v1/sources/{source_id}/chunks/{section['chunk_id']}", headers=jwt,
+            f"/api/v1/sources/{source_id}/chunks/{section['chunk_id']}",
+            headers=jwt,
         )
         assert chunk.status_code == 200, chunk.text
         assert chunk.json()["content"] == section["content"]
@@ -117,7 +126,8 @@ async def _assert_scan_pdf_is_rejected(resource, tmp_path):
     original = tmp_path / "scan.pdf"
     corpus.write_scanned_pdf(original)
     uploaded = await client.post(
-        f"/api/v1/sources/{source_id}/documents", headers=jwt,
+        f"/api/v1/sources/{source_id}/documents",
+        headers=jwt,
         files={"file": (original.name, original.read_bytes(), "application/pdf")},
     )
     assert uploaded.status_code == 201, uploaded.text

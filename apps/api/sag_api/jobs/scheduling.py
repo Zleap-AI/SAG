@@ -9,6 +9,8 @@ DELETE_PRIORITY: Final = 0
 RESUME_PRIORITY: Final = 10
 NORMAL_PRIORITY: Final = 50
 SOURCE_MAINTENANCE: Final = "source_maintenance"
+SOURCE_BUSY: Final = "source_busy"
+MANUAL_RECOVERY: Final = "manual_recovery"
 DELETE_WAITING_SOURCE: Final = "delete_waiting_source"
 
 _UNSET = object()

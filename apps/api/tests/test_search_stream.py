@@ -22,7 +22,8 @@ class SearchEngine:
     async def provision(self, *_args):
         return None
 
-    async def search_many(self, targets, query, *, strategy=None, top_k=None):
+    async def search_many(self, targets, query, *, strategy=None, top_k=None, source_ids_by_config=None):
+        assert source_ids_by_config == {targets[0][0]: ("stream-document",)}
         return SearchOutcome(
             query=query,
             sections=[
@@ -32,6 +33,7 @@ class SearchEngine:
                     content="骑手技能包括路线规划和异常处理。",
                     score=0.91,
                     source_config_id=targets[0][0],
+                    source_id="stream-document",
                 )
             ],
             stats={"strategy": strategy, "top_k": top_k},
@@ -79,7 +81,7 @@ def _events(body: str) -> list[tuple[str, dict]]:
     return events
 
 
-async def _auth_and_source(client: httpx.AsyncClient) -> tuple[dict[str, str], str]:
+async def _auth_and_source(client: httpx.AsyncClient, published_inputs) -> tuple[dict[str, str], str]:
     registered = await client.post(
         "/api/v1/auth/register",
         json={
@@ -95,11 +97,13 @@ async def _auth_and_source(client: httpx.AsyncClient) -> tuple[dict[str, str], s
         json={"name": "流式搜索测试源"},
     )
     assert source.status_code == 201, source.text
+    await published_inputs(source.json()["id"], "stream-document")
     return headers, source.json()["id"]
 
 
 async def _search(
     llm,
+    published_inputs,
     *,
     request_overrides: dict | None = None,
 ) -> list[tuple[str, dict]]:
@@ -113,7 +117,7 @@ async def _search(
         async with app.router.lifespan_context(app):
             app.state.llm = llm
             async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-                headers, source_id = await _auth_and_source(client)
+                headers, source_id = await _auth_and_source(client, published_inputs)
                 response = await client.post(
                     "/api/v1/search/stream",
                     headers=headers,
@@ -131,10 +135,10 @@ async def _search(
 
 
 @pytest.mark.asyncio
-async def test_search_stream_emits_true_deltas_then_canonical_response():
+async def test_search_stream_emits_true_deltas_then_canonical_response(published_inputs):
     llm = StreamingLLM(["骑手", "需要规划能力", " [1]"])
 
-    events = await _search(llm)
+    events = await _search(llm, published_inputs)
 
     assert [name for name, _payload in events] == [
         "result",
@@ -158,8 +162,8 @@ async def test_search_stream_emits_true_deltas_then_canonical_response():
 
 
 @pytest.mark.asyncio
-async def test_search_stream_replaces_invalid_citations_with_grounded_fallback():
-    events = await _search(StreamingLLM(["不存在的引用 [9]"]))
+async def test_search_stream_replaces_invalid_citations_with_grounded_fallback(published_inputs):
+    events = await _search(StreamingLLM(["不存在的引用 [9]"]), published_inputs)
 
     assert [name for name, _payload in events] == [
         "result",
@@ -174,8 +178,8 @@ async def test_search_stream_replaces_invalid_citations_with_grounded_fallback()
 
 
 @pytest.mark.asyncio
-async def test_search_stream_provider_failure_completes_with_grounded_fallback():
-    events = await _search(FailingStreamingLLM([]))
+async def test_search_stream_provider_failure_completes_with_grounded_fallback(published_inputs):
+    events = await _search(FailingStreamingLLM([]), published_inputs)
 
     assert [name for name, _payload in events] == [
         "result",
@@ -187,7 +191,7 @@ async def test_search_stream_provider_failure_completes_with_grounded_fallback()
 
 
 @pytest.mark.asyncio
-async def test_search_stream_emits_terminal_error_when_completion_cannot_be_saved(monkeypatch):
+async def test_search_stream_emits_terminal_error_when_completion_cannot_be_saved(monkeypatch, published_inputs):
     from sag_api.services import universe_service
 
     async def fail_save(*_args, **_kwargs):
@@ -196,6 +200,7 @@ async def test_search_stream_emits_terminal_error_when_completion_cannot_be_save
     monkeypatch.setattr(universe_service, "save_exploration", fail_save)
     events = await _search(
         StreamingLLM(["有效答案 [1]"]),
+        published_inputs,
         request_overrides={"save_exploration": True},
     )
 

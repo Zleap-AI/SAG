@@ -90,7 +90,12 @@ export interface SagJob {
 
 /** Reprocess endpoint job with its operation-specific type. */
 export interface SagReprocessJob extends SagJob {
-  readonly type: 'reprocess_document'
+  readonly type: 'process_document'
+}
+
+/** Delete endpoint job with its operation-specific type. */
+export interface SagDeleteJob extends SagJob {
+  readonly type: 'delete_document'
 }
 
 /** Full content for one source chunk. */
@@ -442,12 +447,14 @@ export class SagApiClient {
   /** Queue reprocessing for one document. */
   async reprocessDocument(sourceId: string, documentId: string, signal: AbortSignal): Promise<SagReprocessJob> {
     const job = parseJob(await this.requestJson(`/sources/${encodePath(sourceId)}/documents/${encodePath(documentId)}/reprocess`, { method: 'POST' }, signal))
-    if (job.type !== 'reprocess_document') throw new Error('dsh-sag: reprocess job.type must be reprocess_document')
+    if (job.type !== 'process_document') throw new Error('dsh-sag: reprocess job.type must be process_document')
     return job as SagReprocessJob
   }
 
-  /** Delete one document after the caller has obtained dsh approval. */
-  async deleteDocument(sourceId: string, documentId: string, signal: AbortSignal): Promise<unknown> {
-    return this.requestJson(`/sources/${encodePath(sourceId)}/documents/${encodePath(documentId)}`, { method: 'DELETE' }, signal)
+  /** Request document deletion after dsh approval and return the accepted job. */
+  async deleteDocument(sourceId: string, documentId: string, signal: AbortSignal): Promise<SagDeleteJob> {
+    const job = parseJob(await this.requestJson(`/sources/${encodePath(sourceId)}/documents/${encodePath(documentId)}`, { method: 'DELETE' }, signal))
+    if (job.type !== 'delete_document') throw new Error('dsh-sag: delete job.type must be delete_document')
+    return job as SagDeleteJob
   }
 }

@@ -47,6 +47,7 @@ class UniverseReader:
         self,
         source_config_id: str,
         *,
+        source_ids: tuple[str, ...],
         source: Source | None = None,
         bucket_count: int = 8,
         category_limit: int = 8,
@@ -70,29 +71,26 @@ class UniverseReader:
                         func.max(event_time),
                     ).where(
                         SourceEvent.data_source_id == source_config_id,
+                        SourceEvent.source_id.in_(source_ids),
                         active_event,
                     )
                 )
             ).one()
-            entity_count = int(
-                (
-                    await session.execute(
-                        select(func.count(Entity.id)).where(Entity.data_source_id == source_config_id)
-                    )
-                ).scalar_one()
-                or 0
-            )
             unique_relation_rows = (
                 select(EventEntity.event_id, EventEntity.entity_id)
                 .join(SourceEvent, SourceEvent.id == EventEntity.event_id)
                 .join(Entity, Entity.id == EventEntity.entity_id)
                 .where(
                     SourceEvent.data_source_id == source_config_id,
+                    SourceEvent.source_id.in_(source_ids),
                     Entity.data_source_id == source_config_id,
                     active_event,
                 )
                 .distinct()
                 .subquery()
+            )
+            entity_count = int(
+                await session.scalar(select(func.count(func.distinct(unique_relation_rows.c.entity_id)))) or 0
             )
             relation_count = int(
                 (await session.execute(select(func.count()).select_from(unique_relation_rows))).scalar_one() or 0
@@ -105,6 +103,7 @@ class UniverseReader:
                         select(category, func.count(SourceEvent.id).label("count"))
                         .where(
                             SourceEvent.data_source_id == source_config_id,
+                            SourceEvent.source_id.in_(source_ids),
                             active_event,
                         )
                         .group_by(category)
@@ -137,6 +136,7 @@ class UniverseReader:
                         await session.execute(
                             select(*count_columns).where(
                                 SourceEvent.data_source_id == source_config_id,
+                                SourceEvent.source_id.in_(source_ids),
                                 active_event,
                             )
                         )
@@ -164,6 +164,7 @@ class UniverseReader:
         source_config_id: str,
         entity_ids: list[str],
         *,
+        source_ids: tuple[str, ...],
         as_of_db: datetime,
     ) -> dict[str, int]:
         """Count factual source events for a batch of entities at one snapshot."""
@@ -186,6 +187,7 @@ class UniverseReader:
                         EventEntity.entity_id.in_(entity_ids),
                         EventEntity.created_time <= as_of_db,
                         SourceEvent.data_source_id == source_config_id,
+                        SourceEvent.source_id.in_(source_ids),
                         event_time <= as_of_db,
                         SourceEvent.created_time <= as_of_db,
                         (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
@@ -201,6 +203,7 @@ class UniverseReader:
         source_config_id: str,
         events: list[dict[str, Any]],
         *,
+        source_ids: tuple[str, ...],
         as_of_db: datetime,
         entity_limit: int,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -279,6 +282,7 @@ class UniverseReader:
             session,
             source_config_id,
             entity_ids,
+            source_ids=source_ids,
             as_of_db=as_of_db,
         )
 
@@ -344,6 +348,7 @@ class UniverseReader:
         self,
         source_config_id: str,
         *,
+        source_ids: tuple[str, ...],
         source_revision: str,
         source: Source | None = None,
         limit: int = 6,
@@ -412,17 +417,23 @@ class UniverseReader:
         event_time = func.coalesce(SourceEvent.start_time, SourceEvent.created_time)
         filters = [
             SourceEvent.data_source_id == source_config_id,
+            SourceEvent.source_id.in_(source_ids),
             (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
             event_time <= as_of_db,
             SourceEvent.created_time <= as_of_db,
         ]
+
         def stored_event_time(event_id: str):
             # Compare the same value used by ORDER BY. SQLite server defaults
             # omit microseconds; rebinding a Python datetime adds .000000 and
             # makes equal instants compare unequal, repeating a page boundary.
             return (
                 select(event_time)
-                .where(SourceEvent.data_source_id == source_config_id, SourceEvent.id == event_id)
+                .where(
+                    SourceEvent.data_source_id == source_config_id,
+                    SourceEvent.source_id.in_(source_ids),
+                    SourceEvent.id == event_id,
+                )
                 .correlate(None)
                 .scalar_subquery()
             )
@@ -497,6 +508,7 @@ class UniverseReader:
             # for the page head; the page itself is contiguous in that order.
             base_filters = [
                 SourceEvent.data_source_id == source_config_id,
+                SourceEvent.source_id.in_(source_ids),
                 (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
                 event_time <= as_of_db,
                 SourceEvent.created_time <= as_of_db,
@@ -545,6 +557,7 @@ class UniverseReader:
                     }
                     for row in page
                 ],
+                source_ids=source_ids,
                 as_of_db=as_of_db,
                 entity_limit=bounded_entities,
             )
@@ -654,6 +667,7 @@ class UniverseReader:
         node_kind: str,
         node_id: str,
         *,
+        source_ids: tuple[str, ...],
         source_revision: str,
         source: Source | None = None,
         limit: int = 4,
@@ -733,6 +747,7 @@ class UniverseReader:
                         ).where(
                             SourceEvent.id == node_id,
                             SourceEvent.data_source_id == source_config_id,
+                            SourceEvent.source_id.in_(source_ids),
                             (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
                             event_time <= as_of_db,
                             SourceEvent.created_time <= as_of_db,
@@ -813,6 +828,7 @@ class UniverseReader:
                     session,
                     source_config_id,
                     [str(row.entity_id) for row in page],
+                    source_ids=source_ids,
                     as_of_db=as_of_db,
                 )
                 next_cursor = None
@@ -879,6 +895,22 @@ class UniverseReader:
                     select(Entity.id, Entity.name, Entity.type, Entity.description).where(
                         Entity.id == node_id,
                         Entity.data_source_id == source_config_id,
+                        select(1)
+                        .select_from(EventEntity)
+                        .join(
+                            SourceEvent,
+                            SourceEvent.id == EventEntity.event_id,
+                        )
+                        .where(
+                            EventEntity.entity_id == Entity.id,
+                            SourceEvent.data_source_id == source_config_id,
+                            SourceEvent.source_id.in_(source_ids),
+                            SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED"),
+                            EventEntity.created_time <= as_of_db,
+                            SourceEvent.created_time <= as_of_db,
+                            func.coalesce(SourceEvent.start_time, SourceEvent.created_time) <= as_of_db,
+                        )
+                        .exists(),
                         Entity.created_time <= as_of_db,
                     )
                 )
@@ -903,6 +935,7 @@ class UniverseReader:
             effective_after = after
             base_filters = [
                 SourceEvent.data_source_id == source_config_id,
+                SourceEvent.source_id.in_(source_ids),
                 (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
                 event_time <= as_of_db,
                 SourceEvent.created_time <= as_of_db,
@@ -1018,6 +1051,7 @@ class UniverseReader:
                     }
                     for row in page
                 ],
+                source_ids=source_ids,
                 as_of_db=as_of_db,
                 entity_limit=self._access.settings.universe_event_entity_limit,
             )
@@ -1065,12 +1099,13 @@ class UniverseReader:
         node_kind: str,
         node_id: str,
         *,
+        source_ids: tuple[str, ...],
         source: Source | None = None,
     ) -> dict[str, Any] | None:
         """Read node metadata only; graph neighborhoods are served by universe_expand."""
         await self._access.slot(source_config_id, source)
         from sqlalchemy import select
-        from zleap.sag.db.models import Entity, SourceEvent
+        from zleap.sag.db.models import Entity, EventEntity, SourceEvent
 
         sf = await self._access.relational_session_factory(source_config_id)
         async with sf() as session:
@@ -1089,6 +1124,7 @@ class UniverseReader:
                         ).where(
                             SourceEvent.id == node_id,
                             SourceEvent.data_source_id == source_config_id,
+                            SourceEvent.source_id.in_(source_ids),
                             (SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED")),
                         )
                     )
@@ -1117,6 +1153,19 @@ class UniverseReader:
                     select(Entity.id, Entity.name, Entity.type, Entity.description).where(
                         Entity.id == node_id,
                         Entity.data_source_id == source_config_id,
+                        select(1)
+                        .select_from(EventEntity)
+                        .join(
+                            SourceEvent,
+                            SourceEvent.id == EventEntity.event_id,
+                        )
+                        .where(
+                            EventEntity.entity_id == Entity.id,
+                            SourceEvent.data_source_id == source_config_id,
+                            SourceEvent.source_id.in_(source_ids),
+                            SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED"),
+                        )
+                        .exists(),
                     )
                 )
             ).one_or_none()

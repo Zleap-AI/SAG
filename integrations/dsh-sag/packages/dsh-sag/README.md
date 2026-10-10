@@ -7,7 +7,7 @@ dsh-sag lets DeepSeek Harness use your SAG knowledge base for search, reading, u
 - This source package: `0.2.0`; DeepSeek Harness: `0.2.0-rc.2`.
 - Node.js: `^22.19.0` or `>=24.0.0`; Node.js 24 is recommended. Both `dsh` and `pnpm` must be on PATH.
 - SAG must include the Connect dsh setting and local connector API.
-- Embedded engine: `zleap-sag==0.14.0`. See [advanced configuration](docs/embedded.md).
+- Embedded engine: `zleap-sag==0.15.0`. See [advanced configuration](docs/embedded.md).
 
 The previously published `0.1.1` plugin is for older dsh hosts and cannot be installed on dsh 0.2. Other host versions have not been verified.
 

@@ -1,10 +1,11 @@
 """R3 稳定硬化：就绪/存活探针、上传白名单、Job 退避重试、引擎 LRU 逐出。"""
 
 import asyncio
-from types import SimpleNamespace
 
 import httpx
 import pytest
+
+from tests.document_requests import processing_parameters
 
 
 def test_test_runtime_disables_background_engine_warmup():
@@ -107,9 +108,7 @@ async def test_health_ready_and_upload_whitelist():
                 source = await session.get(Source, sid)
                 assert source is not None
                 source_config_id = source.sag_source_config_id
-            engine_session_factory = await app.state.engine_manager.get_sag_session_factory(
-                source_config_id
-            )
+            engine_session_factory = await app.state.engine_manager.get_sag_session_factory(source_config_id)
             async with engine_session_factory() as engine_session:
                 parent = await engine_session.get(DataSource, source_config_id)
                 assert parent is not None
@@ -261,13 +260,13 @@ async def test_engine_lru_eviction():
     for i in range(3):
         eng = FakeEngine()
         engines[f"s{i}"] = eng
-        mgr._slots[f"s{i}"] = _Slot(engine=eng, last_used=float(i))
+        mgr._slots[f"s{i}"] = _Slot(engine=eng, last_used=float(i), config=processing_parameters()[0])
 
     # s0 最久未用，但先把它锁住 → 应跳过它，逐出次久的 s1
     await mgr._slots["s0"].lock.acquire()
     try:
         newest = FakeEngine()
-        mgr._slots["s_new"] = _Slot(engine=newest, last_used=100.0)  # 现在 4 个 > 3
+        mgr._slots["s_new"] = _Slot(engine=newest, last_used=100.0, config=processing_parameters()[0])  # 现在 4 个 > 3
         await mgr._evict_lru(keep="s_new")
     finally:
         mgr._slots["s0"].lock.release()
@@ -291,7 +290,7 @@ async def test_engine_close_all_waits_for_inflight_use():
 
     engine = FakeEngine()
     manager = EngineManager(settings)
-    manager._slots["source"] = _Slot(engine=engine)
+    manager._slots["source"] = _Slot(engine=engine, config=processing_parameters()[0])
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -352,7 +351,7 @@ async def test_engine_allows_same_source_document_concurrency():
             pass
 
     manager = EngineManager(settings)
-    manager._slots["source"] = _Slot(engine=FakeEngine())
+    manager._slots["source"] = _Slot(engine=FakeEngine(), config=processing_parameters()[0])
     entered = 0
     both_entered = asyncio.Event()
     release = asyncio.Event()
@@ -375,43 +374,27 @@ async def test_engine_allows_same_source_document_concurrency():
 
 
 @pytest.mark.asyncio
-async def test_document_cleanup_drains_and_blocks_same_source_processing(monkeypatch):
+async def test_document_cleanup_drains_and_blocks_same_source_processing():
     """清理派生数据期间不允许同一信源启动新的文档处理。"""
     from sag_api.core.config import settings
-    from sag_api.sag import document_cleanup
     from sag_api.sag.engine_manager import EngineManager, _Slot
+    from tests.document_requests import deletion_receipt, deletion_request
 
     class FakeEngine:
-        class _Relational:
-            def session_factory(self):
-                return SimpleNamespace()
-
-        class _Vector:
-            pass
-
-        resources = SimpleNamespace(relational=_Relational(), vector=_Vector())
-
         async def aclose(self):
             pass
 
-    class Deleted:
-        chunk_ids = ()
-        event_ids = ()
-        relation_ids = ()
-        entity_ids = ()
+        async def delete_source(self, request):
+            assert (request.data_source_id, request.source_id) == ("source", "document")
+            cleanup_entered.set()
+            await release_cleanup.wait()
+            return deletion_receipt(request)
 
     cleanup_entered = asyncio.Event()
     release_cleanup = asyncio.Event()
 
-    async def fake_delete_records(source_config_id, document_source_id, session_factory=None, vector_store=None):
-        assert (source_config_id, document_source_id) == ("source", "document")
-        cleanup_entered.set()
-        await release_cleanup.wait()
-        return Deleted()
-
-    monkeypatch.setattr(document_cleanup, "delete_document_records", fake_delete_records)
     manager = EngineManager(settings)
-    slot = _Slot(engine=FakeEngine())
+    slot = _Slot(engine=FakeEngine(), config=processing_parameters()[0])
     manager._slots["source"] = slot
 
     first_entered = asyncio.Event()
@@ -431,7 +414,7 @@ async def test_document_cleanup_drains_and_blocks_same_source_processing(monkeyp
 
     first = asyncio.create_task(first_processing())
     await first_entered.wait()
-    cleanup = asyncio.create_task(manager.delete_document_data("source", "document"))
+    cleanup = asyncio.create_task(manager.delete_data(deletion_request("source", "document")))
     for _ in range(20):
         if not slot.concurrent_allowed.is_set():
             break
@@ -461,7 +444,7 @@ async def test_engine_maintenance_drains_writers_and_reopens_admission():
             pass
 
     manager = EngineManager(settings)
-    slot = _Slot(engine=FakeEngine())
+    slot = _Slot(engine=FakeEngine(), config=processing_parameters()[0])
     manager._slots["source"] = slot
     writer_entered = asyncio.Event()
     release_writer = asyncio.Event()
@@ -506,7 +489,6 @@ async def test_engine_maintenance_drains_writers_and_reopens_admission():
 @pytest.mark.asyncio
 async def test_document_waiting_for_engine_admission_yields_to_maintenance():
     from sag_api.core.config import settings
-    from sag_api.sag.dto import ProcessCheckpoint
     from sag_api.sag.engine_manager import EngineManager, _Slot
 
     class FakeEngine:
@@ -514,28 +496,25 @@ async def test_document_waiting_for_engine_admission_yields_to_maintenance():
             pass
 
     manager = EngineManager(settings)
-    manager._slots["source"] = _Slot(engine=FakeEngine())
+    manager._slots["source"] = _Slot(engine=FakeEngine(), config=processing_parameters()[0])
     await manager.begin_document_maintenance("source")
     try:
 
         async def should_pause():
             return True
 
+        async def should_not_bind(_processor):
+            raise AssertionError("paused admission must not build a new request")
+
         outcome = await asyncio.wait_for(
             manager.process_document(
                 "source",
-                None,
-                checkpoint=ProcessCheckpoint(
-                    source_id="engine-document",
-                    chunk_ids=["chunk-1"],
-                ),
+                should_not_bind,
                 should_pause=should_pause,
             ),
             timeout=0.2,
         )
-        assert outcome.paused is True
-        assert outcome.source_id == "engine-document"
-        assert outcome.chunk_ids == ["chunk-1"]
+        assert outcome is None
     finally:
         await manager.end_document_maintenance("source")
 
@@ -586,7 +565,7 @@ async def test_search_falls_back_to_vector():
 
     async def run_case(engine):
         em = EngineManager(settings)
-        em._slots["scid"] = _Slot(engine=engine)
+        em._slots["scid"] = _Slot(engine=engine, config=processing_parameters()[0])
         return await em.search("scid", "q", strategy="multi")
 
     # 失败回退
@@ -606,7 +585,7 @@ async def test_search_falls_back_to_vector():
 
     em = EngineManager(settings)
     fv = FailVector(fail_multi=False)
-    em._slots["scid"] = _Slot(engine=fv)
+    em._slots["scid"] = _Slot(engine=fv, config=processing_parameters()[0])
     with pytest.raises(RuntimeError, match="vector down"):
         await em.search("scid", "q", strategy="vector")
     assert fv.calls == ["vector"]

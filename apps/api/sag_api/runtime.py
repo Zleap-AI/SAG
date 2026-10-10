@@ -188,10 +188,11 @@ class KnowledgeRuntime:
         """Synchronize persisted settings into the live knowledge runtime."""
         async with self._lock:
             refreshed = settings.model_copy(update={"data_dir": str(self._active_path)})
-            for field_name in refreshed.__class__.model_fields:
-                setattr(self._settings, field_name, getattr(refreshed, field_name))
-            if reset_engines and self._engine_manager is not None:
-                await self._engine_manager.aclose_all()
+            if self._engine_manager is not None:
+                await self._engine_manager.apply_settings(refreshed, reset_engines=reset_engines)
+            else:
+                for field_name in refreshed.__class__.model_fields:
+                    setattr(self._settings, field_name, getattr(refreshed, field_name))
 
     def _has_started_resources(self) -> bool:
         return any(

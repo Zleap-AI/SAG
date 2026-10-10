@@ -19,8 +19,9 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from sag_api.services.insight_service import find_entity_context
 from sag_api.services.outline_service import build_outline, render_outline_text
-from sag_api.services.retrieval_service import retrieve_relevant_sections
+from sag_api.services.retrieval_service import get_published_chunk, grep_published_chunks, retrieve_relevant_sections
 
 if TYPE_CHECKING:
     from sag_api.db.models import Document, Source
@@ -104,9 +105,7 @@ class MCPScope:
     sources: tuple[Source, ...]
 
 
-_scope: contextvars.ContextVar[MCPScope | None] = contextvars.ContextVar(
-    "sag_mcp_scope", default=None
-)
+_scope: contextvars.ContextVar[MCPScope | None] = contextvars.ContextVar("sag_mcp_scope", default=None)
 
 
 def _require_scope() -> MCPScope:
@@ -154,15 +153,11 @@ def _sections_to_text(sections: list, sources: tuple[Source, ...]) -> str:
         source = by_config.get(getattr(section, "source_config_id", None))
         source = source or by_id.get(getattr(section, "source_id", None))
         source_line = f"来源：{_source_title(source)}\n" if source and len(sources) > 1 else ""
-        blocks.append(
-            f"[{index}] {heading}{tag}\n{source_line}{getattr(section, 'content', '')}"
-        )
+        blocks.append(f"[{index}] {heading}{tag}\n{source_line}{getattr(section, 'content', '')}")
     return "\n\n".join(blocks)
 
 
-async def _document_in_scope(
-    scope: MCPScope, document_id: str
-) -> tuple[Document, Source] | None:
+async def _document_in_scope(scope: MCPScope, document_id: str) -> tuple[Document, Source] | None:
     from sag_api.core.db import SessionLocal
     from sag_api.db.models import Document
 
@@ -255,29 +250,10 @@ def build_source_mcp(
 
         async def _one(source: Source) -> str | None:
             try:
-                scid = source.sag_source_config_id
-                entities = await scope.engine_manager.list_entities(
-                    scid, source=source, limit=200
-                )
-                lowered = target.lower()
-                match = next(
-                    (entity for entity in entities if (entity.name or "").lower() == lowered),
-                    None,
-                )
-                if match is None:
-                    match = next(
-                        (
-                            entity
-                            for entity in entities
-                            if lowered in (entity.name or "").lower()
-                        ),
-                        None,
-                    )
-                if match is None:
+                found = await find_entity_context(scope.engine_manager, source, target)
+                if found is None:
                     return None
-                snippets = await scope.engine_manager.entity_context(
-                    scid, match.id, source=source, limit=6
-                )
+                match, snippets = found
                 body = "\n\n".join(snippets) if snippets else (match.description or "")
                 prefix = f"来源：{_source_title(source)}\n" if len(selected) > 1 else ""
                 return f"{prefix}实体「{match.name}」（{match.type}）：\n{body}".strip()
@@ -329,10 +305,7 @@ def build_source_mcp(
             lines = []
             for document in rows:
                 status = getattr(document.status, "value", document.status)
-                lines.append(
-                    f"- {document.filename} · id={document.id} · {status} · "
-                    f"{document.chunk_count} 分块"
-                )
+                lines.append(f"- {document.filename} · id={document.id} · {status} · {document.chunk_count} 分块")
             header = f"## {_source_title(source)}\n" if len(selected) > 1 else ""
             blocks.append(header + "\n".join(lines))
         return "\n\n".join(blocks)
@@ -348,7 +321,7 @@ def build_source_mcp(
         if match is None:
             return "（未找到该文档）"
         document, source = match
-        if not document.sag_source_id:
+        if not document.has_publication:
             return "（尚无大纲：文档可能仍在处理中）"
         rows = await scope.engine_manager.list_chunk_headings(
             source.sag_source_config_id,
@@ -391,12 +364,7 @@ def build_source_mcp(
 
         async def _one(source: Source) -> list[dict]:
             try:
-                return await scope.engine_manager.grep_chunks(
-                    source.sag_source_config_id,
-                    needle,
-                    source=source,
-                    limit=bounded_limit,
-                )
+                return await grep_published_chunks(scope.engine_manager, source, needle, limit=bounded_limit)
             except Exception:
                 return []
 
@@ -404,12 +372,9 @@ def build_source_mcp(
         blocks = []
         for source, rows in zip(selected, results, strict=True):
             for row in rows:
-                source_line = (
-                    f"来源：{_source_title(source)}\n" if len(selected) > 1 else ""
-                )
+                source_line = f"来源：{_source_title(source)}\n" if len(selected) > 1 else ""
                 blocks.append(
-                    f"{row['heading'] or '片段'}（chunk_id={row['chunk_id']}）\n"
-                    f"{source_line}{row['snippet']}"
+                    f"{row['heading'] or '片段'}（chunk_id={row['chunk_id']}）\n{source_line}{row['snippet']}"
                 )
                 if len(blocks) >= bounded_limit:
                     break
@@ -454,10 +419,7 @@ def build_source_mcp(
             return f"（超出范围：全文共 {len(lines)} 行）"
         body = "".join(f"{start + index + 1:>5}\t{line}" for index, line in enumerate(page))
         source_line = f"来源：{_source_title(source)}\n" if len(scope.sources) > 1 else ""
-        return (
-            f"{document.filename} · 第 {start + 1}-{start + len(page)} 行 / "
-            f"共 {len(lines)} 行\n{source_line}{body}"
-        )
+        return f"{document.filename} · 第 {start + 1}-{start + len(page)} 行 / 共 {len(lines)} 行\n{source_line}{body}"
 
     @mcp.tool(
         title=MCP_TOOL_LABELS["get_chunk"],
@@ -475,9 +437,7 @@ def build_source_mcp(
 
         async def _one(source: Source):
             try:
-                chunk = await scope.engine_manager.get_chunk(
-                    source.sag_source_config_id, cid, source=source
-                )
+                chunk = await get_published_chunk(scope.engine_manager, source, cid)
                 return source, chunk
             except Exception:
                 return source, None

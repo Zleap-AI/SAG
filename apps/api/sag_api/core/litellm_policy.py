@@ -45,14 +45,22 @@ class StructuredOutputCapabilityCache:
         return lock
 
 
+def _effective_settings(settings: Settings) -> Settings:
+    from sag_api.generation.responses.routing import request_settings
+    from sag_api.services.chatbot_service import operation, query_scope
+
+    snapshot = operation.get()
+    if snapshot is not None and query_scope.get() and snapshot.connections["llm"].enabled:
+        return snapshot.settings
+    return request_settings.get() or settings
+
+
 def _capability_key(request: Mapping[str, Any], settings: Settings) -> CapabilityKey:
     model = str(request.get("model") or settings.routed_llm_model)
     if model.startswith("sag_responses/"):
         from sag_api.core.responses import Config as ResponsesConfig
-        from sag_api.generation.responses.routing import request_settings
 
-        active = request_settings.get() or settings
-        config = ResponsesConfig.from_settings(active)
+        config = ResponsesConfig.from_settings(settings)
         return CapabilityKey("responses:" + config.provider, config.endpoint, model.casefold())
     explicit_provider = request.get("custom_llm_provider")
     provider = str(
@@ -175,10 +183,7 @@ def apply_litellm_completion_policy(
     from sag_api.services.chatbot_service import operation, query_scope
 
     normalized = dict(request)
-    if str(normalized.get("model", "")).startswith("sag_responses/"):
-        from sag_api.generation.responses.routing import request_settings
-
-        settings = request_settings.get() or settings
+    settings = _effective_settings(settings)
     snapshot = operation.get()
     if snapshot is not None and query_scope.get() and snapshot.connections["llm"].enabled:
         settings = snapshot.settings
@@ -245,11 +250,12 @@ def install_litellm_policy(settings: Settings) -> Any:
     cache = StructuredOutputCapabilityCache()
 
     async def sag_acompletion(*args: Any, **kwargs: Any) -> Any:
-        if settings.llm_structured_output_mode != "auto" or not _json_schema_request(
+        active = _effective_settings(settings)
+        if active.llm_structured_output_mode != "auto" or not _json_schema_request(
             kwargs
         ):
             return await original_acompletion(*args, **kwargs)
-        key = _capability_key(kwargs, settings)
+        key = _capability_key(kwargs, active)
         known = cache.get(key)
         if known == "json_object":
             return await original_acompletion(*args, **_with_json_object(kwargs))
@@ -265,7 +271,7 @@ def install_litellm_policy(settings: Settings) -> Any:
             try:
                 result = await original_acompletion(*args, **kwargs)
             except Exception as error:
-                if not should_downgrade_json_schema(error, kwargs, settings):
+                if not should_downgrade_json_schema(error, kwargs, active):
                     raise
                 cache.mark(key, "json_object")
                 return await original_acompletion(

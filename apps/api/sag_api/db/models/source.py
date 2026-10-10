@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import JSON, Integer, String, Text
 from sqlalchemy import Enum as SAEnum
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column
 
 from sag_api.db.base import Base, IDMixin, TimestampMixin
@@ -32,3 +33,12 @@ class Source(IDMixin, TimestampMixin, Base):
     document_count: Mapped[int] = mapped_column(Integer, default=0)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     event_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    @hybrid_property
+    def is_deleting(self) -> bool:
+        return self.status in {SourceStatus.DELETING, SourceStatus.DELETE_FAILED}
+
+    @is_deleting.inplace.expression
+    @classmethod
+    def _is_deleting_expression(cls):
+        return cls.status.in_([SourceStatus.DELETING, SourceStatus.DELETE_FAILED])

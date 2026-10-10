@@ -6,7 +6,7 @@ dsh-sag 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 
 
 ## 安装和连接
 
-本源码版本为 `0.2.0`，适配 DeepSeek Harness `0.2.0-rc.2`。默认连接已运行的 SAG，不需要 Python；高级 embedded 模式使用 `zleap-sag==0.14.0`。
+本源码版本为 `0.2.0`，适配 DeepSeek Harness `0.2.0-rc.2`。默认连接已运行的 SAG，不需要 Python；高级 embedded 模式使用 `zleap-sag==0.15.0`。
 
 先启动 SAG，准备 Node.js 24、pnpm 11.7.0 和 dsh 0.2.0-rc.2。如果尚未安装 dsh，可以运行 `npm install --global @deepseek-ai/dsh@0.2.0-rc.2`。
 
@@ -63,7 +63,7 @@ pnpm run test:release
 pnpm run check:pack
 ```
 
-`check:pack` 使用 `DSH_BIN` 指定的宿主（默认 PATH 中的 dsh），验证干净 profile 的真实 tarball 安装、CLI、Web 起停、错误配置拒绝和 Cordis 共享。Python 测试验证 installed 0.14.0 引擎及 stdio 生命周期；模型服务使用隔离的确定性响应，不能代表外部模型质量。
+`check:pack` 使用 `DSH_BIN` 指定的宿主（默认 PATH 中的 dsh），验证干净 profile 的真实 tarball 安装、CLI、Web 起停、错误配置拒绝和 Cordis 共享。Python 测试验证 installed 0.15.0 引擎及 stdio 生命周期；模型服务使用隔离的确定性响应，不能代表外部模型质量。
 
 在 SAG 完整源码中，还可以运行真实后端验收：
 
@@ -73,6 +73,6 @@ pnpm run build
 node scripts/run-live-sag.mjs
 ```
 
-脚本使用临时目录和动态本机端口，启动真实 SAG API 与已发布的 0.14.0 引擎，验证全部 11 个插件工具、上传处理、检索阅读及 API 重启后的连接恢复，结束时停止所创建的服务。它输出证据目录；外部模型由本机确定性响应代替。
+脚本使用临时目录和动态本机端口，启动真实 SAG API 与已发布的 0.15.0 引擎，验证全部 11 个插件工具、上传处理、检索阅读及 API 重启后的连接恢复，结束时停止所创建的服务。它输出证据目录；外部模型由本机确定性响应代替。
 
 插件发布使用 `dsh-sag-v<版本>` 标签，与 SAG 的 `v<版本>` 桌面发布分开。见[独立发布说明](docs/releasing.md)。

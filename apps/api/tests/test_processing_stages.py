@@ -1,156 +1,91 @@
-"""Processing labels follow actual pipeline boundaries, including extractor waits."""
+"""Processing labels follow public kernel events, including actual capacity waits."""
 
 import asyncio
 from types import SimpleNamespace
 
-import pytest
+from document_requests import document_receipt, document_request
 from zleap.sag.pipeline.events import StageEvent, StageEventType, StageName
 
-from sag_api.sag.dto import ProcessCheckpoint
 from sag_api.sag.incremental_processor import IncrementalDocumentProcessor
 
 
-async def _ignore(_value):
-    pass
-
-
-async def _never_pause():
+async def never_pause():
     return False
 
 
-def _processor(**engine):
-    return IncrementalDocumentProcessor(
-        SimpleNamespace(resources=SimpleNamespace(prompts=SimpleNamespace(language="en")), **engine),
-        "source", max_concurrency=1,
-    )
+def processor(process_source):
+    return IncrementalDocumentProcessor(SimpleNamespace(process_source=process_source), "source", max_concurrency=1)
 
 
-def _checkpoint():
-    return ProcessCheckpoint(source_id="article", chunk_ids=["c1"], chunk_version="v1")
-
-
-@pytest.mark.asyncio
-async def test_ingest_stage_events_reach_the_document_before_extraction():
+async def test_public_stage_events_reach_the_document_in_kernel_order():
     stages = []
+    request = document_request("source")
 
     async def on_stage(stage):
         stages.append(stage)
 
-    async def ingest(*_args, observer=None, **_kwargs):
-        for stage in (StageName.PARSE, StageName.CHUNK, StageName.INDEX):
-            if observer is not None:
-                await observer(StageEvent(stage=stage, type=StageEventType.STARTED, run_id="ingest"))
-        return SimpleNamespace(
-            source_id="article", chunk_ids=("c1",), generation_id=None,
-            chunk_version="v1", source_version="s1",
+    async def process_source(bound, *, observer, cancellation):
+        for stage in (StageName.PARSE, StageName.CHUNK, StageName.INDEX, StageName.EXTRACT):
+            await observer(StageEvent(stage=stage, type=StageEventType.STARTED, run_id=bound.context.operation_id))
+        assert stages == ["parsing", "chunking", "indexing", "extracting"]
+        await observer(
+            StageEvent(stage=StageName.EXTRACT, type=StageEventType.SUCCEEDED, run_id=bound.context.operation_id)
         )
+        return document_receipt(bound)
 
-    async def extract(*_args, observer, **_kwargs):
-        await observer(StageEvent(stage=StageName.EXTRACT, type=StageEventType.STARTED, run_id="extract"))
-        assert stages == ["loading", "parsing", "chunking", "indexing", "waiting_extraction", "extracting"]
-        return SimpleNamespace(event_ids=(), event_count=0, stats={})
-
-    outcome = await _processor(ingest=ingest, extract=extract).process(
-        "/tmp/document.md", checkpoint=ProcessCheckpoint(), on_checkpoint=_ignore,
-        should_pause=_never_pause, on_stage=on_stage,
-    )
-    assert not outcome.paused
+    result = await processor(process_source).process(request, should_pause=never_pause, on_stage=on_stage)
+    assert result.status == "succeeded"
     assert stages[-1] == "finalizing"
 
 
-@pytest.mark.asyncio
-async def test_waiting_document_does_not_claim_extraction_has_started():
-    class Extractor:
-        _on_progress = None
-
-    extractor = Extractor()
-    entered, release, second_notice = asyncio.Event(), asyncio.Event(), asyncio.Event()
+async def test_capacity_wait_does_not_claim_extraction_started_before_a_public_event():
+    entered, release = asyncio.Event(), asyncio.Event()
     stages = []
-
-    async def first_extract(*_args, **_kwargs):
-        entered.set()
-        await release.wait()
-        return SimpleNamespace(event_ids=(), event_count=0, stats={})
-
-    async def second_extract(*_args, observer, **_kwargs):
-        await observer(StageEvent(stage=StageName.EXTRACT, type=StageEventType.STARTED, run_id="extract"))
-        assert stages == ["waiting_extraction", "extracting"]
-        return SimpleNamespace(event_ids=(), event_count=0, stats={})
+    request = document_request("source")
 
     async def on_stage(stage):
         stages.append(stage)
-        second_notice.set()
 
-    async def run(extract, callback=None):
-        return await _processor(_extractor=extractor, extract=extract).process(
-            None, checkpoint=_checkpoint(), on_checkpoint=_ignore,
-            should_pause=_never_pause, on_stage=callback,
+    async def process_source(bound, *, observer, cancellation):
+        entered.set()
+        await release.wait()
+        await observer(
+            StageEvent(stage=StageName.EXTRACT, type=StageEventType.STARTED, run_id=bound.context.operation_id)
         )
+        assert stages == ["extracting"]
+        await observer(
+            StageEvent(stage=StageName.EXTRACT, type=StageEventType.SUCCEEDED, run_id=bound.context.operation_id)
+        )
+        return document_receipt(bound)
 
-    first = asyncio.create_task(run(first_extract))
-    second = None
+    task = asyncio.create_task(processor(process_source).process(request, should_pause=never_pause, on_stage=on_stage))
     try:
         await asyncio.wait_for(entered.wait(), 1)
-        second = asyncio.create_task(run(second_extract, on_stage))
-        await asyncio.wait_for(second_notice.wait(), 1)
-        assert stages == ["waiting_extraction"]
+        assert stages == []
         release.set()
-        await asyncio.wait_for(asyncio.gather(first, second), 1)
-        assert stages == ["waiting_extraction", "extracting", "finalizing"]
+        result = await asyncio.wait_for(task, 1)
+        assert result.status == "succeeded"
+        assert stages == ["extracting", "finalizing"]
     finally:
         release.set()
-        for task in (first, second):
-            if task is not None:
-                task.cancel()
-        await asyncio.gather(*(task for task in (first, second) if task is not None), return_exceptions=True)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
-@pytest.mark.asyncio
-async def test_stage_display_failure_does_not_abort_extraction_or_checkpoint():
-    snapshots = []
+async def test_stage_display_failure_does_not_change_the_public_receipt():
+    request = document_request("source")
+    receipt = document_receipt(request, event_count=1)
 
     async def on_stage(_stage):
         raise RuntimeError("display unavailable")
 
-    async def on_checkpoint(value):
-        snapshots.append(value)
+    async def process_source(bound, *, observer, cancellation):
+        await observer(
+            StageEvent(stage=StageName.EXTRACT, type=StageEventType.STARTED, run_id=bound.context.operation_id)
+        )
+        await observer(
+            StageEvent(stage=StageName.EXTRACT, type=StageEventType.SUCCEEDED, run_id=bound.context.operation_id)
+        )
+        return receipt
 
-    async def extract(*_args, **_kwargs):
-        return SimpleNamespace(event_ids=("event",), event_count=1, stats={})
-
-    outcome = await _processor(extract=extract).process(
-        None, checkpoint=_checkpoint(), on_checkpoint=on_checkpoint,
-        should_pause=_never_pause, on_stage=on_stage,
-    )
-    assert not outcome.paused
-    assert snapshots[0].processed_chunk_ids == ["c1"]
-
-
-@pytest.mark.asyncio
-async def test_engine_capacity_wait_is_not_reported_as_active_extraction():
-    entered, release = asyncio.Event(), asyncio.Event()
-    stages = []
-
-    async def on_stage(stage):
-        stages.append(stage)
-
-    async def extract(*_args, observer, **_kwargs):
-        entered.set()
-        await release.wait()
-        await observer(StageEvent(stage=StageName.EXTRACT, type=StageEventType.STARTED, run_id="extract"))
-        assert stages[-1] == "extracting"
-        return SimpleNamespace(event_ids=(), event_count=0, stats={})
-
-    task = asyncio.create_task(_processor(extract=extract).process(
-        None, checkpoint=_checkpoint(), on_checkpoint=_ignore,
-        should_pause=_never_pause, on_stage=on_stage,
-    ))
-    try:
-        await asyncio.wait_for(entered.wait(), 1)
-        assert stages == ["waiting_extraction"]
-        release.set()
-        await asyncio.wait_for(task, 1)
-        assert stages[-1] == "finalizing"
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+    assert await processor(process_source).process(request, should_pause=never_pause, on_stage=on_stage) == receipt

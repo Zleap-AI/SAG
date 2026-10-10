@@ -508,7 +508,7 @@ function ParsedDocumentPreview({ doc }: { doc: Doc }) {
 
   React.useEffect(() => {
     const tr = tRef.current;
-    if (doc.status !== "ready") {
+    if (!doc.has_publication) {
       setState({
         phase: "none",
         message:
@@ -561,7 +561,7 @@ function ParsedDocumentPreview({ doc }: { doc: Doc }) {
       alive = false;
       controller.abort();
     };
-  }, [doc.error, doc.status, locale, parsedUrl]);
+  }, [doc.error, doc.has_publication, doc.status, doc.updated_at, locale, parsedUrl]);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
@@ -599,7 +599,7 @@ function ParsedDocumentPreview({ doc }: { doc: Doc }) {
 export function DocumentPreview({ doc }: { doc: Doc }) {
   const t = useTranslations("DetailPanel");
   const [previewMode, setPreviewMode] = React.useState<"parsed" | "original">(
-    doc.status === "ready" ? "parsed" : "original",
+    doc.has_publication ? "parsed" : "original",
   );
 
   return (

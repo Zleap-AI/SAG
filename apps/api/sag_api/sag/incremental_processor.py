@@ -1,42 +1,4 @@
-"""zleap-sag 0.8.2 管线适配层。
-
-0.8.2 将 load/extract 收敛为显式管线,本模块是 SAG 文档处理(ingest+extract)
-与 zleap 管线公开 API 之间的适配:
-
-- ``engine.ingest(...)``:Parse → Chunk → Index,返回 ``ChunkSetRef``
-  (含 source_id / chunk_ids / generation_id / chunk_version);
-- ``engine.extract(ref, ExtractionOptions, observer, cancellation)``:
-  整批抽取,返回 ``EventSetRef``(event_ids / entity_ids / stats)。
-
-SAG 职责(保留):断点持久化、暂停/取消、进度映射、与 Job 系统的对接。
-zleap 职责(0.8.2 已内置,不再由 SAG 实现):实体数契约
-(``ExtractionLimits.min_entities_per_event=1``)、修复重试(``max_retries``)、
-无效事项过滤(``is_valid``)、代际替换语义。
-
-临时行为差异（与 0.7.1 相比，带 REQ 标记）：
-
-- REQ-1/2（事件粒度过滤与修复）：0.8.2 的契约校验与修复重试是批次粒度，SAG 不再
-  做逐事件过滤（0.7.1 的 ``_require_event_entities`` / ``guarded_save_events``
-  monkeypatch 已删除）；一个 chunk 修复耗尽会拒绝整批。
-  **0.13.0 已提供能力**（``ExtractionOptions.on_contract_violation="drop_event"``
-  与越界整数引用修复），但 SAG 保持默认 ``raise``：全丢事件会“成功”并可能用空快照
-  替换来源原有事项，属静默丢数据，应由用户显式选择而非升级时替其决定。
-- REQ-3（逐块断点）：0.8.2 一次 extract 覆盖全部 chunks（单代提交），SAG 不再逐块
-  持久化断点；暂停/取消后恢复会整批重跑（LLM 成本回归）。
-  **0.13.0 已提供**（``process_source()`` 逐 Chunk 检查点 + ``extraction_progress``），
-  但采纳它需要换成调用方自有 id 与可重放的内联正文，是一次驱动层重写，已单独立项。
-- REQ-4/5（schema 强化与 SQLite int64 防护）：0.7.1 的
-  ``_strengthen_event_entity_schema`` / ``_install_sqlite_integer_guard``
-  monkeypatch 目标在 0.8.2 已不可达，shim 删除。
-  **0.13.0 已内置**：越界整数降级为 ``text`` 并记 ``entity_int64_overflow`` 告警，
-  本项就此结清（SAG 侧无需残留代码）。
-- REQ-6（provider 降级）：旧 ``compat.py`` 的安装函数自 0.8.2 起也只是空操作，
-  已随本次升级删除。该能力由 SAG 自己的 LiteLLM seam 提供
-  （``core/litellm_policy.py``）。
-- REQ-7（引擎耗时统计）：旧的检索链 monkey-patch 目标是并不存在的模块，从未生效，
-  已删除。要让耗时真正有值应改用 zleap 公开的
-  ``SearchOptions(include_stage_stats=True)``（单独事项）。
-"""
+"""文档处理的公开持久操作适配；成功块与恢复状态由引擎拥有。"""
 
 from __future__ import annotations
 
@@ -44,31 +6,24 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
-from weakref import WeakKeyDictionary
 
 from zleap.sag import DataEngine
+from zleap.sag.operations import OperationContext, OperationResult, ProcessSourceRequest
 from zleap.sag.pipeline import (
     CancellationToken,
     ChunkOptions,
-    ChunkSetRef,
     DocumentSource,
     ExtractionExecutionOptions,
     ExtractionLimits,
     ExtractionOptions,
     FileSource,
-    IndexOptions,
     SourceDescriptor,
     SourceType,
-    WriteStatus,
 )
-from zleap.sag.pipeline.errors import PipelineCancelledError
 from zleap.sag.pipeline.events import StageEvent, StageEventType, StageName
 
 from sag_api.core.logging import get_logger
-from sag_api.sag.dto import ProcessCheckpoint, ProcessOutcome
 
-CheckpointCallback = Callable[[ProcessCheckpoint], Awaitable[None]]
 PauseCheck = Callable[[], Awaitable[bool]]
 StageCallback = Callable[[str], Awaitable[None]]
 ProgressCallback = Callable[[int, int], Awaitable[None]]
@@ -122,18 +77,32 @@ _UNTRUSTED_DOCUMENT_CONTENT_GUARDS = {
     ),
 }
 
-# zleap 0.13.0 exposes the batch callback on the extractor, not engine.extract.
-# Serialize calls sharing that extractor while its callback is temporarily set.
-_EXTRACTION_PROGRESS_LOCKS: WeakKeyDictionary[Any, asyncio.Lock] = WeakKeyDictionary()
-
 
 async def _report_stage(callback: StageCallback | None, stage: str) -> None:
-    """Stage labels are best-effort display state, never durable checkpoints."""
     if callback is not None:
         try:
             await callback(stage)
-        except Exception as exc:  # noqa: BLE001 - display failures must not abort the pipeline
+        except Exception as exc:  # noqa: BLE001 - display failure does not change engine results
             log.warning("处理阶段更新失败 error_type=%s", type(exc).__name__)
+
+
+def document_extraction_options(
+    language: str, *, max_concurrency: int, max_entities_per_event: int
+) -> ExtractionOptions:
+    """Compose the actual business extraction policy for requests and confirmation."""
+    requirements = _KNOWLEDGE_EVENT_REQUIREMENTS.get(language)
+    content_guard = _UNTRUSTED_DOCUMENT_CONTENT_GUARDS.get(language)
+    if requirements is None or content_guard is None:
+        raise RuntimeError(f"不支持的抽取提示词语言: {language!r}")
+    return ExtractionOptions(
+        source_type="article", contract="rich",
+        limits=ExtractionLimits(
+            max_events_per_chunk=20, min_entities_per_event=1,
+            max_entities_per_event=max_entities_per_event,
+        ),
+        execution=ExtractionExecutionOptions(max_concurrency=max_concurrency),
+        guidance_rules=(requirements, content_guard),
+    )
 
 
 class IncrementalDocumentProcessor:
@@ -147,8 +116,6 @@ class IncrementalDocumentProcessor:
         chunk_mode: str = "standard",
         document_title: str | None = None,
         max_entities_per_event: int = 20,
-        enable_strict_filtering: bool = False,
-        event_entity_attempts: int = 2,
     ) -> None:
         self._engine = engine
         self._source_config_id = source_config_id
@@ -158,255 +125,106 @@ class IncrementalDocumentProcessor:
         self._document_title = (document_title or "").strip()
         self._max_entities_per_event = max(1, min(20, max_entities_per_event))
 
-        # 0.8.2 已内置契约与修复重试,以下 0.7.1 参数仅保留接口兼容:
-        # - enable_strict_filtering → zleap 无对应开关(REQ 待对齐),忽略并记录;
-        # - event_entity_attempts → zleap ExtractionOptions.max_retries(默认 5)接管。
-        if enable_strict_filtering:
-            log.warning("0.8.2 无严格过滤开关,忽略 enable_strict_filtering(REQ 待对齐)")
-        self._event_entity_attempts = max(1, min(3, event_entity_attempts))
+    async def build_request(
+        self,
+        path: str | Path,
+        *,
+        context: OperationContext,
+        input_id: str,
+        original_path: str | Path | None = None,
+    ) -> ProcessSourceRequest:
+        """Assemble once; the caller persists this public request before execution."""
+        markdown = Path(path)
+        content_bytes = await asyncio.to_thread(markdown.read_bytes)
+        original = Path(original_path) if original_path is not None else markdown
+        original_bytes = content_bytes if original == markdown else await asyncio.to_thread(original.read_bytes)
+        language = self._engine.resources.prompts.language
+        return ProcessSourceRequest(
+            context=context.model_copy(
+                update={
+                    "isolation": "input",
+                    "request_digest": sha256(content_bytes).hexdigest(),
+                }
+            ),
+            source=DocumentSource(
+                content=content_bytes.decode("utf-8-sig"),
+                original_file=FileSource(path=str(original), format_hint=original.suffix.lower().lstrip(".")),
+                original_sha256=sha256(original_bytes).hexdigest(),
+                format_hint="markdown",
+                descriptor=SourceDescriptor(
+                    data_source_id=self._source_config_id,
+                    source_id=input_id,
+                    source_type=SourceType.ARTICLE,
+                    title=self._document_title or None,
+                ),
+            ),
+            chunk_options=ChunkOptions(
+                strategy="standard" if original_path is not None else self._chunk_mode,
+                max_tokens=self._chunk_max_tokens,
+            ),
+            extraction_options=document_extraction_options(
+                language, max_concurrency=self._max_concurrency,
+                max_entities_per_event=self._max_entities_per_event,
+            ),
+        )
 
-    # ── 主流程 ────────────────────────────────────────────────────────────
     async def process(
         self,
-        path: str | Path | None,
+        request: ProcessSourceRequest,
         *,
-        checkpoint: ProcessCheckpoint,
-        on_checkpoint: CheckpointCallback,
         should_pause: PauseCheck,
         on_stage: StageCallback | None = None,
         on_progress: ProgressCallback | None = None,
-        original_path: str | Path | None = None,
-    ) -> ProcessOutcome:
-        current = checkpoint.model_copy(deep=True)
+    ) -> OperationResult | None:
+        """Replay the bound request; None means pause before engine admission.
 
-        # 阶段 1:解析 → 切块 → 落库(仅在断点尚未建立时)
-        if not current.chunk_ids:
-            if path is None:
-                raise RuntimeError("文档尚未切片，无法从断点继续")
-            await _report_stage(on_stage, "loading")
-            await self._ingest(current, path, on_checkpoint, on_stage=on_stage, original_path=original_path)
-
-        chunk_set = self._chunk_set_ref(current)
-
-        # 阶段 2:整批抽取(0.8.2 批次粒度;REQ-3 落地前不逐块断点)
-        cancelled, events = await self._extract(current, chunk_set, should_pause, on_progress, on_stage)
-        paused = cancelled or bool(current.processed_chunk_ids) and len(current.processed_chunk_ids) < len(
-            current.chunk_ids
-        )
-
-        if not cancelled and events is not None:
-            await _report_stage(on_stage, "finalizing")
-            current.event_ids = list(events.event_ids)
-            current.event_count = events.event_count
-            current.processed_chunk_ids = list(chunk_set.chunk_ids)
-            await on_checkpoint(current.model_copy(deep=True))
-
-        return ProcessOutcome(
-            source_id=current.source_id,
-            chunk_count=len(current.chunk_ids),
-            event_count=current.event_count,
-            chunk_ids=list(current.chunk_ids),
-            event_ids=list(current.event_ids),
-            processed_chunk_ids=list(current.processed_chunk_ids),
-            eventless_chunk_ids=list(current.eventless_chunk_ids),
-            token_usage=current.token_usage,
-            paused=paused,
-        )
-
-    async def _ingest(
-        self,
-        current: ProcessCheckpoint,
-        path: str | Path,
-        on_checkpoint: CheckpointCallback,
-        *,
-        on_stage: StageCallback | None = None,
-        original_path: str | Path | None = None,
-    ) -> None:
-        """Parse → Chunk → Index;把 ChunkSetRef 的定位信息固化进断点。"""
-        descriptor = SourceDescriptor(
-            source_type=SourceType.ARTICLE,
-            title=self._document_title or None,
-        )
-        source: str | DocumentSource = str(path)
-        if original_path is not None and Path(original_path).suffix.lower() in {".xls", ".xlsx"}:
-            original = Path(original_path)
-            # Canonical Markdown alone cannot recover merged cells or record boundaries.
-            content = await asyncio.to_thread(Path(path).read_text, encoding="utf-8")
-            original_bytes = await asyncio.to_thread(original.read_bytes)
-            source = DocumentSource(
-                content=content,
-                original_file=FileSource(path=str(original), format_hint=original.suffix.lower().lstrip(".")),
-                original_sha256=sha256(original_bytes).hexdigest(),
-                descriptor=descriptor,
-                format_hint="markdown",
-            )
-        async def observer(event: StageEvent) -> None:
-            stages = {StageName.PARSE: "parsing", StageName.CHUNK: "chunking", StageName.INDEX: "indexing"}
-            if event.type == StageEventType.STARTED and event.stage in stages:
-                await _report_stage(on_stage, stages[event.stage])
-
-        chunk_set = await self._engine.ingest(
-            source,
-            descriptor=descriptor,
-            chunk_options=ChunkOptions(
-                # heading_strict in 0.12.0 drops record-group metadata.
-                strategy="standard" if isinstance(source, DocumentSource) else self._chunk_mode,  # type: ignore[arg-type]
-                max_tokens=self._chunk_max_tokens,
-            ),
-            index_options=IndexOptions(),
-            observer=observer,
-        )
-        current.source_id = chunk_set.source_id
-        current.chunk_ids = list(chunk_set.chunk_ids)
-        current.generation_id = chunk_set.generation_id
-        current.chunk_version = chunk_set.chunk_version
-        current.source_version = chunk_set.source_version
-        current.processed_chunk_ids = []
-        current.event_count = 0
-        current.event_ids = []
-        current.eventless_chunk_ids = []
-        current.token_usage = 0
-        await on_checkpoint(current.model_copy(deep=True))
-        log.info(
-            "文档切片完成 source_config_id=%s source_id=%s chunks=%d generation=%s",
-            self._source_config_id,
-            current.source_id,
-            len(current.chunk_ids),
-            current.generation_id,
-        )
-
-    def _chunk_set_ref(self, current: ProcessCheckpoint) -> ChunkSetRef:
-        """从断点重建 ChunkSetRef；普通 ingest 的 generation_id 可为空。"""
-        if not current.chunk_version:
-            raise RuntimeError("断点缺少 chunk_version，无法重建 ChunkSetRef；请重新处理文档")
-        if current.source_id is None:
-            raise RuntimeError("断点缺少 source_id，无法重建 ChunkSetRef")
-        return ChunkSetRef(
-            data_source_id=self._source_config_id,
-            source_type=SourceType.ARTICLE,
-            source_id=current.source_id,
-            source_version=current.source_version or "",
-            chunk_version=current.chunk_version,
-            generation_id=current.generation_id,
-            chunk_ids=tuple(current.chunk_ids),
-            client_key_to_chunk_id={},
-            relation_status=WriteStatus.SUCCEEDED,
-            vector_status=WriteStatus.SUCCEEDED,
-        )
-
-    async def _extract(
-        self,
-        current: ProcessCheckpoint,
-        chunk_set: ChunkSetRef,
-        should_pause: PauseCheck,
-        on_progress: ProgressCallback | None,
-        on_stage: StageCallback | None = None,
-    ) -> tuple[bool, Any]:
-        """整批抽取;暂停由 CancellationToken + 后台轮询驱动,进度经 observer 透出。"""
-        prompt_language = getattr(getattr(self._engine.resources, "prompts", None), "language", None)
-        requirements = _KNOWLEDGE_EVENT_REQUIREMENTS.get(prompt_language)
-        content_guard = _UNTRUSTED_DOCUMENT_CONTENT_GUARDS.get(prompt_language)
-        if requirements is None or content_guard is None:
-            raise RuntimeError(f"不支持的抽取提示词语言: {prompt_language!r}")
-
-        options = ExtractionOptions(
-            source_type="article",
-            contract="rich",
-            limits=ExtractionLimits(
-                max_events_per_chunk=20,
-                min_entities_per_event=1,
-                max_entities_per_event=self._max_entities_per_event,
-            ),
-            execution=ExtractionExecutionOptions(max_concurrency=self._max_concurrency),
-            guidance_rules=(requirements, content_guard),
-        )
+        A cancelled durable operation is returned from public status. The caller
+        owns its pause intent and decides business state from that actual result.
+        """
         cancellation = CancellationToken()
+        control_error: Exception | None = None
 
         async def poll_pause() -> None:
+            nonlocal control_error
             while not cancellation.is_cancelled:
                 try:
-                    if await should_pause():
-                        cancellation.cancel()
-                        return
-                except Exception:  # noqa: BLE001 - 暂停探测失败按不暂停处理
-                    pass
-                await asyncio.sleep(1.0)
-
-        poller = asyncio.create_task(poll_pause())
-
-        async def report_progress(completed: int, total: int) -> None:
-            if on_progress is None:
-                return
-            try:
-                await on_progress(completed, total)
-            except Exception as exc:  # noqa: BLE001 - display writes must not fail extraction
-                log.warning("抽取进度更新失败 error_type=%s", type(exc).__name__)
+                    pause = await should_pause()
+                except Exception as exc:  # noqa: BLE001 - loss of control stops dispatch
+                    control_error = exc
+                    cancellation.cancel()
+                    return
+                if pause:
+                    cancellation.cancel()
+                    return
+                await asyncio.sleep(0.2)
 
         async def observer(event: StageEvent) -> None:
-            if event.stage != StageName.EXTRACT:
-                return
-            if event.type == StageEventType.STARTED:
-                # The engine may also wait for its mutation capacity after our
-                # extractor lock. Its public event marks actual stage execution.
-                await _report_stage(on_stage, "extracting")
-                return
-            if event.type != StageEventType.PROGRESS:
-                return
-            # Stage progress is also display-only: completed chunks are not durable
-            # until engine.extract returns after the atomic batch commit.
-            await report_progress(event.completed or 0, event.total or len(chunk_set.chunk_ids))
-
-        async def extract() -> Any:
-            return await self._engine.extract(
-                chunk_set, options, observer=observer, cancellation=cancellation,
-            )
-
-        try:
-            await _report_stage(on_stage, "waiting_extraction")
-            extractor = getattr(self._engine, "_extractor", None)
-            if extractor is None or not hasattr(extractor, "_on_progress"):
-                # Custom adapters may provide public stage progress instead.
-                events = await extract()
-            else:
-                lock = _EXTRACTION_PROGRESS_LOCKS.setdefault(extractor, asyncio.Lock())
-                # Observe cooperative pause while waiting without interrupting
-                # engine.extract's atomic commit once extraction has started.
-                while not cancellation.is_cancelled:
-                    try:
-                        async with asyncio.timeout(0.1):
-                            await lock.acquire()
-                        break
-                    except TimeoutError:
-                        continue
-                else:
-                    return True, None
+            stages = {
+                StageName.PARSE: "parsing",
+                StageName.CHUNK: "chunking",
+                StageName.INDEX: "indexing",
+                StageName.EXTRACT: "extracting",
+            }
+            if event.type == StageEventType.STARTED and event.stage in stages:
+                await _report_stage(on_stage, stages[event.stage])
+            elif event.stage == StageName.EXTRACT and event.type == StageEventType.PROGRESS and on_progress:
                 try:
-                    if cancellation.is_cancelled:
-                        return True, None
-                    previous = extractor._on_progress
-                    extractor._on_progress = report_progress
-                    try:
-                        events = await extract()
-                    finally:
-                        extractor._on_progress = previous
-                finally:
-                    lock.release()
-        except PipelineCancelledError:
-            log.info("抽取已取消 source_config_id=%s", self._source_config_id)
-            return True, None
+                    await on_progress(event.completed or 0, event.total or 0)
+                except Exception as exc:  # noqa: BLE001 - display is best effort
+                    log.warning("抽取进度更新失败 error_type=%s", type(exc).__name__)
+            elif event.stage == StageName.EXTRACT and event.type == StageEventType.SUCCEEDED:
+                await _report_stage(on_stage, "finalizing")
+
+        poller = asyncio.create_task(poll_pause())
+        try:
+            result = await self._engine.process_source(request, observer=observer, cancellation=cancellation)
         except asyncio.CancelledError:
-            raise
+            if not cancellation.is_cancelled:
+                raise
+            result = await self._engine.get_operation_status(request.context.operation_id)
         finally:
             poller.cancel()
-            try:
-                await poller
-            except BaseException:  # noqa: BLE001 - 取消后的 CancelledError 也属预期
-                pass
-
-        stats = dict(getattr(events, "stats", {}) or {})
-        current.token_usage = int(stats.get("token_usage", 0) or 0)
-        # 0.8.2 统计含 zero_event_chunks(整批抽取下语义与 0.7.1 的逐块 eventless 对齐)
-        zero_chunks = stats.get("zero_event_chunks", [])
-        if isinstance(zero_chunks, (list, tuple)):
-            current.eventless_chunk_ids = [str(item) for item in zero_chunks]
-        return False, events
+            await asyncio.gather(poller, return_exceptions=True)
+        if control_error is not None and (result is None or result.status != "succeeded"):
+            raise control_error
+        return result

@@ -1,28 +1,49 @@
 """任务处理器 —— 按 JobType 分发。
 
-处理器只关心「做什么」；状态机（queued/running/succeeded/failed）由队列 worker 统一维护。
-处理器内部负责领域对象（Document/Source）的阶段状态与计数更新。
+队列负责执行准入和重试；处理器负责领域对象的阶段状态与计数。
+需要与发布或记录删除原子确认的成功终态，在同一个业务事务中保存。
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import re
+import shutil
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
+from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import case, or_, update
+from sqlalchemy import case, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from zleap.sag.operations import (
+    DeleteDataSourceRequest,
+    DeleteSourceRequest,
+    OperationContext,
+    OperationResult,
+    ProcessSourceRequest,
+)
+from zleap.sag.pipeline import ChunkSetRef, EventSetRef
 
-from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
-from sag_api.core.errors import ApiError, NotFoundError
+from sag_api.core.errors import (
+    ApiError,
+    ConflictError,
+    DocumentRestartRequiredError,
+    NotFoundError,
+    UpstreamError,
+    ValidationError,
+)
 from sag_api.core.logging import get_logger
 from sag_api.db.base import new_id
-from sag_api.db.models import Document, Job, Source
-from sag_api.enums import DocumentStatus, JobStatus, JobType
+from sag_api.db.models import AgentBinding, Document, Job, OctxInstallation, OctxTransfer, Source
+from sag_api.db.models.job import job_payload_matches
+from sag_api.enums import BindingTargetType, DocumentStatus, JobStatus, JobType
 from sag_api.jobs.control import JobPaused, JobYielded
 from sag_api.jobs.octx_tasks import (
     export_octx,
@@ -31,20 +52,17 @@ from sag_api.jobs.octx_tasks import (
     import_octx,
     preflight_octx,
 )
-from sag_api.jobs.scheduling import SOURCE_MAINTENANCE
+from sag_api.jobs.scheduling import SOURCE_BUSY, SOURCE_MAINTENANCE
 from sag_api.parsing import ParsePaused, prepare_document
 from sag_api.sag import EngineManager
-from sag_api.sag.document_vector_identity import (
-    record_document_vector_identity,
-    refresh_source_vector_identity,
-)
-from sag_api.sag.dto import ProcessCheckpoint, extraction_display_percent
+from sag_api.sag.document_identity import document_processing_identity, processing_identity_restart_reason
+from sag_api.sag.document_vector_identity import refresh_source_vector_identity
+from sag_api.sag.dto import extraction_display_percent
 from sag_api.sag.octx_vector_protocol import configured_embedding_identity
 from sag_api.services.source_operation_service import (
     acquire_operation_lease,
     acquire_source_exclusive_lease,
     acquire_source_processing_lease,
-    touch_source_revision,
 )
 
 log = get_logger("jobs")
@@ -113,9 +131,7 @@ def _fallback_reason(state: dict[str, Any], source: str) -> str | None:
     """回退原因按来源解析器取值，回退目标自己的失败作为兜底。"""
     fallback = state.get("fallback")
     if isinstance(fallback, dict):
-        return _redact_parser_reason(
-            fallback.get(f"{source}_error") or fallback.get("markitdown_error")
-        )
+        return _redact_parser_reason(fallback.get(f"{source}_error") or fallback.get("markitdown_error"))
     return _redact_parser_reason(state.get("error") or state.get("message"))
 
 
@@ -160,9 +176,7 @@ def _parser_state_values(state: dict[str, Any]) -> dict[str, str | None]:
         "mineru_model": mineru_model,
         "parser_status": status,
         "fallback_from": fallback_from,
-        "fallback_reason": _fallback_reason(state, fallback_from)
-        if fallback_from
-        else None,
+        "fallback_reason": _fallback_reason(state, fallback_from) if fallback_from else None,
     }
 
 
@@ -209,17 +223,22 @@ def _cleared_parser_values() -> dict[str, None]:
 
 async def _yield_after_document_transition_lost(
     session: AsyncSession,
-    document: Document,
+    document_id: str,
+    control_revision: int,
 ) -> None:
     """Converge a winning pause/delete intent without overwriting it."""
-    document_id = document.id
     await session.rollback()
     current = await session.get(Document, document_id, populate_existing=True)
-    if current is not None and current.status == DocumentStatus.PAUSING:
+    if (
+        current is not None
+        and current.control_revision == control_revision
+        and current.status == DocumentStatus.PAUSING
+    ):
         paused = await session.execute(
             update(Document)
             .where(
                 Document.id == document_id,
+                Document.control_revision == control_revision,
                 Document.status == DocumentStatus.PAUSING,
             )
             .values(status=DocumentStatus.PAUSED, error=None)
@@ -249,17 +268,29 @@ async def process_document(session: AsyncSession, job: Job, *, engine_manager: E
     document = await session.get(Document, job.document_id) if job.document_id else None
     if document is None:
         raise NotFoundError("文档不存在")
-    async with acquire_source_processing_lease(SessionLocal, document.source_id, job.id):
+    async with AsyncExitStack() as admission:
+        try:
+            lease_lost = await admission.enter_async_context(
+                acquire_source_processing_lease(
+                    SessionLocal,
+                    document.source_id,
+                    job.id,
+                    admission_timeout_seconds=0,
+                )
+            )
+        except ConflictError as error:
+            raise JobYielded(SOURCE_BUSY) from error
         await _process_document_unlocked(
             session,
             job,
             engine_manager=engine_manager,
             job_queue=job_queue,
+            lease_lost=lease_lost,
         )
 
 
 async def _process_document_unlocked(
-    session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None
+    session: AsyncSession, job: Job, *, engine_manager: EngineManager, lease_lost: asyncio.Event, job_queue=None
 ) -> None:
     """解析、入库并按 chunk 并发抽取；每个 chunk 完成即保存断点。"""
     document = await session.get(Document, job.document_id) if job.document_id else None
@@ -268,7 +299,21 @@ async def _process_document_unlocked(
     source = await session.get(Source, document.source_id)
     if source is None:
         raise NotFoundError("信源不存在")
-    checkpoint = ProcessCheckpoint.from_payload(job.payload)
+    control_revision = (job.payload or {}).get("control_revision", document.control_revision)
+    if document.control_revision != control_revision:
+        raise JobPaused()
+    saved_request = (job.payload or {}).get("process_request")
+    if saved_request is None and (job.payload or {}).get("process_checkpoint"):
+        raise ValidationError("旧任务断点不能直接恢复，请确认重新处理文档")
+    request = ProcessSourceRequest.model_validate(saved_request) if saved_request is not None else None
+    from sag_api.services.document_service import reconcile_document_receipt
+
+    if await reconcile_document_receipt(session, source, document, job, engine_manager):
+        await session.commit()
+        return
+    input_artifact = (job.payload or {}).get("input_artifact")
+    input_path = input_artifact["path"] if input_artifact else document.storage_path
+    preserve_publication = document.has_publication
     scheduler_yield_reason: str | None = None
 
     async def refresh_payload() -> dict:
@@ -287,21 +332,18 @@ async def _process_document_unlocked(
             async with SessionLocal() as progress_session:
                 statement = update(Document).where(
                     Document.id == document_id,
+                    Document.control_revision == control_revision,
                     Document.processing_run_id == (previous_run_id if initialize else run_id),
                     Document.status.in_(active_states + ([DocumentStatus.FAILED] if initialize else [])),
                 )
                 if condition is not None:
                     statement = statement.where(condition)
-                changed = await progress_session.execute(
-                    statement.values(**values).returning(Document.progress)
-                )
+                changed = await progress_session.execute(statement.values(**values).returning(Document.progress))
                 percent = changed.scalar_one_or_none()
                 if percent is None:
                     return False
                 if "progress" in values:
-                    await progress_session.execute(
-                        update(Job).where(Job.id == job_id).values(progress=percent / 100)
-                    )
+                    await progress_session.execute(update(Job).where(Job.id == job_id).values(progress=percent / 100))
                 await progress_session.commit()
                 return True
         except Exception as exc:  # noqa: BLE001 - display state is best effort
@@ -312,8 +354,8 @@ async def _process_document_unlocked(
         {
             "processing_run_id": run_id,
             "processing_stage": "queued",
-            "processed_chunks": 0 if checkpoint.chunk_ids else None,
-            "total_chunks": len(checkpoint.chunk_ids) if checkpoint.chunk_ids else None,
+            "processed_chunks": 0 if request is not None else None,
+            "total_chunks": document.total_chunks if request is not None else None,
             "status": DocumentStatus.PENDING if document.status == DocumentStatus.FAILED else document.status,
         },
         initialize=True,
@@ -331,9 +373,9 @@ async def _process_document_unlocked(
             values["status"] = DocumentStatus.EXTRACTING
             if stage == "waiting_extraction":
                 values.update(
-                    progress=extraction_display_percent(0, len(checkpoint.chunk_ids), committed=False),
+                    progress=20,
                     processed_chunks=0,
-                    total_chunks=len(checkpoint.chunk_ids),
+                    total_chunks=document.total_chunks,
                 )
             elif stage == "extracting":
                 values["progress"] = case(
@@ -358,47 +400,83 @@ async def _process_document_unlocked(
             ),
         )
 
+    async def save_parser_result(values: dict, *, state: dict | None = None, parsed_path: str | None = None) -> None:
+        for _ in range(4):
+            payload = await refresh_payload()
+            next_payload = {**payload, "parser_result": values}
+            if state is not None:
+                next_payload["document_parser"] = state
+            if parsed_path is not None:
+                next_payload["parsed_artifact"] = {"path": parsed_path}
+            saved = await session.execute(
+                update(Job)
+                .where(
+                    Job.id == job_id,
+                    job_payload_matches(session, payload),
+                    Job.document_id.in_(
+                        select(Document.id).where(
+                            Document.id == document_id,
+                            Document.control_revision == control_revision,
+                        )
+                    ),
+                )
+                .values(payload=next_payload)
+                .execution_options(synchronize_session=False)
+            )
+            if saved.rowcount == 1:
+                if not preserve_publication:
+                    await session.execute(
+                        update(Document)
+                        .where(
+                            Document.id == document_id,
+                            Document.control_revision == control_revision,
+                            Document.status.in_(active_states + [DocumentStatus.PAUSING, DocumentStatus.PAUSED]),
+                        )
+                        .values(**values)
+                        .execution_options(synchronize_session=False)
+                    )
+                await session.commit()
+                await session.refresh(job, attribute_names=["payload"])
+                return
+            await session.rollback()
+            await session.refresh(document)
+            await session.refresh(source)
+            await session.refresh(job)
+            if document.control_revision != control_revision:
+                raise JobPaused()
+        raise ValidationError("任务控制状态已变化，请重新执行恢复操作")
+
     async def on_parser_state(state: dict) -> None:
         await session.refresh(document)
         if document.status in _CONTROL_TRANSITION_STATES | {DocumentStatus.PAUSED, DocumentStatus.READY}:
             return
         if display_initialized and document.processing_run_id != run_id:
             return
-        await update_display({
-            "status": DocumentStatus.LOADING,
-            "processing_stage": "parsing",
-            "progress": case((Document.progress < 10, 10), else_=Document.progress),
-        })
-        for field, value in _parser_state_values(state).items():
-            setattr(document, field, value)
-        job.payload = {**(await refresh_payload()), "document_parser": state}
-        await session.commit()
-
-    async def on_checkpoint(value: ProcessCheckpoint) -> None:
-        nonlocal checkpoint
-        checkpoint = value
-        await session.refresh(document)
-        job.payload = value.merge_payload(await refresh_payload())
-        document.chunk_count = len(value.chunk_ids)
-        document.event_count = value.event_count
-        document.sag_source_id = value.source_id
-        document.token_usage = value.token_usage
-        if document.status == DocumentStatus.EXTRACTING and document.processing_run_id == run_id:
-            total = len(value.chunk_ids)
-            completed = len(value.processed_chunk_ids)
-            document.progress = extraction_display_percent(completed, total, committed=True)
-            job.progress = document.progress / 100
-        await session.commit()
-        display_values = {"total_chunks": len(value.chunk_ids), "processed_chunks": len(value.processed_chunk_ids)}
-        if value.chunk_ids and len(value.processed_chunk_ids) >= len(value.chunk_ids):
-            display_values["processing_stage"] = "finalizing"
-        await update_display(display_values)
+        await update_display(
+            {
+                "status": DocumentStatus.LOADING,
+                "processing_stage": "parsing",
+                "progress": case((Document.progress < 10, 10), else_=Document.progress),
+            }
+        )
+        await save_parser_result(_parser_state_values(state), state=state)
 
     async def should_pause() -> bool:
         nonlocal scheduler_yield_reason
+        if lease_lost.is_set():
+            scheduler_yield_reason = None
+            return True
         async with SessionLocal() as control_session:
             current_job = await control_session.get(Job, job.id)
             if current_job is None:
+                return True
+            current_document = await control_session.get(Document, document_id)
+            if (
+                current_document is None
+                or current_document.control_revision != control_revision
+                or not current_document.is_active
+                or (display_initialized and current_document.processing_run_id != run_id)
+            ):
                 return True
             if current_job.status == JobStatus.PAUSED or (current_job.payload or {}).get("pause_requested"):
                 scheduler_yield_reason = None
@@ -416,6 +494,8 @@ async def _process_document_unlocked(
     async def _pause_or_yield() -> None:
         """把当前文档落到 PAUSED 或让行，供解析/抽取两个阶段共用。"""
         await session.refresh(document)
+        if document.control_revision != control_revision:
+            raise JobPaused()
         if scheduler_yield_reason == SOURCE_MAINTENANCE and document.status not in _CONTROL_TRANSITION_STATES:
             raise JobYielded(SOURCE_MAINTENANCE)
         if document.status in _DELETE_CONTROL_STATES:
@@ -425,27 +505,28 @@ async def _process_document_unlocked(
             update(Document)
             .where(
                 Document.id == document.id,
+                Document.control_revision == control_revision,
                 Document.status == expected_status,
             )
             .values(status=DocumentStatus.PAUSED, error=None)
             .execution_options(synchronize_session=False)
         )
         if paused.rowcount != 1:
-            await _yield_after_document_transition_lost(session, document)
+            await _yield_after_document_transition_lost(session, document_id, control_revision)
         await session.commit()
         raise JobPaused()
 
     # A worker retry reuses the document row. Clear the previous attempt's
     # failure before parsing can block for a long time. A fresh parse clears
     # stale provenance; retries retain saved parser tasks and chunk resumes
-    # retain their completed parser result. Ready-document reprocessing already
-    # clears both checkpoints and provenance in document_service.
+    # retain their completed parser result. A replacement keeps the published
+    # provenance until the completion transaction selects the candidate.
     # A winning pause/delete intent (document-side transition state) is left
     # untouched so concurrent control flows are never overwritten.
     if document.status not in _CONTROL_TRANSITION_STATES:
         saved_parser = (job.payload or {}).get("document_parser")
         resuming_parse = isinstance(saved_parser, dict) and bool(saved_parser)
-        if not checkpoint.chunk_ids and not resuming_parse:
+        if request is None and not resuming_parse and not preserve_publication:
             for field, value in _cleared_parser_values().items():
                 setattr(document, field, value)
         if document.error is not None:
@@ -455,12 +536,61 @@ async def _process_document_unlocked(
     try:
         prepared = None
         parser_stage = False
-        if not checkpoint.chunk_ids:
+
+        async def bind_request(processor, config, runtime_settings) -> ProcessSourceRequest:
+            nonlocal request, prepared, parser_stage
+            try:
+                identity = await document_processing_identity(
+                    config,
+                    runtime_settings,
+                    source.sag_source_config_id,
+                    input_path,
+                )
+            except OSError:
+                raise DocumentRestartRequiredError("resume_input_unavailable") from None
+            for _ in range(4):
+                payload = await refresh_payload()
+                saved = payload.get("process_request")
+                if saved is not None:
+                    request = ProcessSourceRequest.model_validate(saved)
+                confirmed = payload.get("confirmed_identity")
+                if confirmed is not None and confirmed != identity:
+                    raise DocumentRestartRequiredError("confirmation_target_changed")
+                baseline = payload.get("processing_identity")
+                if baseline is not None:
+                    reason = processing_identity_restart_reason(baseline, identity)
+                    if reason:
+                        raise DocumentRestartRequiredError(reason)
+                    break
+                if request is not None or payload.get("document_parser"):
+                    raise DocumentRestartRequiredError("legacy_processing_identity")
+                stored = await session.execute(
+                    update(Job)
+                    .where(
+                        Job.id == job.id,
+                        job_payload_matches(session, payload),
+                        Job.document_id.in_(
+                            select(Document.id).where(
+                                Document.id == document_id,
+                                Document.control_revision == control_revision,
+                            )
+                        ),
+                    )
+                    .values(payload={**payload, "processing_identity": identity})
+                    .execution_options(synchronize_session=False)
+                )
+                await session.commit()
+                if stored.rowcount == 1:
+                    break
+            else:
+                raise ValidationError("任务控制状态已变化，请重新执行恢复操作")
+            if request is not None:
+                return request
             parser_stage = True
             try:
                 prepared = await prepare_document(
-                    document.storage_path,
-                    settings,
+                    input_path,
+                    runtime_settings,
                     state=(job.payload or {}).get("document_parser"),
                     on_state=on_parser_state,
                     should_pause=should_pause,
@@ -469,9 +599,7 @@ async def _process_document_unlocked(
                 await _pause_or_yield()
             parser_stage = False
             parser_state = (job.payload or {}).get("document_parser")
-            for field, value in _prepared_parser_values(prepared, parser_state).items():
-                setattr(document, field, value)
-            await session.commit()
+            await save_parser_result(_prepared_parser_values(prepared, parser_state), parsed_path=str(prepared.path))
             if prepared.fallback_from:
                 log.warning(
                     "文档解析已降级 doc=%s job=%s from=%s to=%s cached=%s error=%s",
@@ -482,27 +610,103 @@ async def _process_document_unlocked(
                     prepared.cached,
                     _redact_parser_reason(prepared.fallback_error),
                 )
-        outcome = await engine_manager.process_document(
+            if prepared is None:
+                raise RuntimeError("文档解析结果缺失")
+            operation_id = new_id()
+            candidate = await processor.build_request(
+                prepared.path,
+                context=OperationContext(
+                    operation_id=operation_id,
+                    idempotency_key=operation_id,
+                    request_digest="0" * 64,
+                    fence_scope=source.sag_source_config_id,
+                    fence_token=1,
+                    owner_id=job.id,
+                    isolation="input",
+                ),
+                input_id=new_id(),
+                original_path=input_path,
+            )
+            current = await document_processing_identity(
+                config,
+                runtime_settings,
+                source.sag_source_config_id,
+                input_path,
+            )
+            reason = processing_identity_restart_reason(identity, current)
+            if reason or candidate.source.original_sha256 != identity["original_sha256"]:
+                raise DocumentRestartRequiredError(
+                    "confirmation_target_changed"
+                    if (job.payload or {}).get("confirmed_identity")
+                    else reason or "resume_input_changed",
+                )
+            for _ in range(4):
+                payload = await refresh_payload()
+                saved = payload.get("process_request")
+                if saved is not None:
+                    request = ProcessSourceRequest.model_validate(saved)
+                    return request
+                bound = await session.execute(
+                    update(Job)
+                    .where(
+                        Job.id == job.id,
+                        job_payload_matches(session, payload),
+                        Job.document_id.in_(
+                            select(Document.id).where(
+                                Document.id == document_id,
+                                Document.control_revision == control_revision,
+                            )
+                        ),
+                    )
+                    .values(
+                        payload={
+                            **payload,
+                            "process_request": candidate.model_dump(mode="json"),
+                            "processing_identity": identity,
+                            "control_revision": control_revision,
+                            "vector_identity": configured_embedding_identity(runtime_settings),
+                        }
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                await session.commit()
+                if bound.rowcount == 1:
+                    request = candidate
+                    await session.refresh(job, attribute_names=["payload"])
+                    return request
+            await session.refresh(document)
+            if document.control_revision != control_revision:
+                raise JobPaused()
+            raise ValidationError("任务控制状态已变化，请重新执行恢复操作")
+
+        result = await engine_manager.process_document(
             source.sag_source_config_id,
-            str(prepared.path) if prepared is not None else None,
+            bind_request,
             source=source,
             on_stage=on_stage,
             on_progress=on_progress,
-            checkpoint=checkpoint,
-            on_checkpoint=on_checkpoint,
             should_pause=should_pause,
-            max_concurrency=settings.document_extract_concurrency,
             document_title=Path(document.filename).stem.strip(),
-            original_path=document.storage_path if prepared is not None else None,
         )
-        if outcome.paused:
+        if result is None or result.failure_code == "cancelled":
             await _pause_or_yield()
-    except (JobPaused, JobYielded):
+        if result.status != "succeeded" or result.checkpoint != "ready":
+            from sag_api.sag.errors import operation_failure
+
+            raise operation_failure(result, stage=ErrorStage.EXTRACT)
+        chunks = ChunkSetRef.model_validate(result.result["chunk_ref"])
+        events = EventSetRef.model_validate(result.result["event_ref"])
+        if request is None or result.source_id != request.source.descriptor.source_id:
+            raise RuntimeError("文档完成结果与持久请求不一致")
+        token_usage = int(((result.extraction_progress or {}).get("token_usage") or {}).get("total_tokens") or 0)
+    except (JobPaused, JobYielded, DocumentRestartRequiredError):
         raise
     except Exception as e:  # noqa: BLE001 - 记录到文档后再上抛给 worker
         await session.refresh(document)
+        if document.control_revision != control_revision:
+            raise JobPaused() from e
         if document.status in _CONTROL_TRANSITION_STATES or document.status == DocumentStatus.PAUSED:
-            await _yield_after_document_transition_lost(session, document)
+            await _yield_after_document_transition_lost(session, document_id, control_revision)
         layer, stage = _classify_document_failure(e, document.status)
         expected_status = document.status
         message = getattr(e, "message", None) or str(e)
@@ -517,10 +721,13 @@ async def _process_document_unlocked(
             parser_failure_values = _parser_state_values(parser_state)
             parser_failure_values["parser_status"] = "failed"
             parser_failure_values["fallback_reason"] = _redact_parser_reason(message)
+            if preserve_publication:
+                parser_failure_values = {}
         failed = await session.execute(
             update(Document)
             .where(
                 Document.id == document.id,
+                Document.control_revision == control_revision,
                 Document.status == expected_status,
             )
             .values(
@@ -533,7 +740,7 @@ async def _process_document_unlocked(
             .execution_options(synchronize_session=False)
         )
         if failed.rowcount != 1:
-            await _yield_after_document_transition_lost(session, document)
+            await _yield_after_document_transition_lost(session, document_id, control_revision)
         log.warning(
             "文档处理失败 doc=%s layer=%s stage=%s error=%s",
             document.id,
@@ -547,67 +754,27 @@ async def _process_document_unlocked(
     await session.refresh(document)
     if document.status in _DELETE_CONTROL_STATES:
         raise JobPaused()
-    if document.status == DocumentStatus.PAUSING:
-        document.status = DocumentStatus.PAUSED
-        await session.commit()
-        raise JobPaused()
-    completed = await session.execute(
-        update(Document)
-        .where(
-            Document.id == document.id,
-            Document.status.in_(
-                [
-                    DocumentStatus.PENDING,
-                    DocumentStatus.LOADING,
-                    DocumentStatus.EXTRACTING,
-                ]
-            ),
-        )
-        .values(
-            status=DocumentStatus.READY,
-            processing_stage="ready",
-            processed_chunks=outcome.chunk_count,
-            total_chunks=outcome.chunk_count,
-            chunk_count=outcome.chunk_count,
-            event_count=outcome.event_count,
-            sag_source_id=outcome.source_id,
-            progress=100,
-            token_usage=outcome.token_usage,
-            error=None,
-        )
-        .execution_options(synchronize_session=False)
-    )
-    if completed.rowcount != 1:
-        await _yield_after_document_transition_lost(session, document)
-    # 信源聚合计数用原子 SQL 更新，避免并发读改写丢失
-    await session.execute(
-        update(Source)
-        .where(Source.id == source.id)
-        .values(
-            chunk_count=Source.chunk_count + outcome.chunk_count,
-            event_count=Source.event_count + outcome.event_count,
-        )
-    )
-    # Persist the identity only after vectors were written successfully.  The
-    # source profile is derived from every active READY document, so a legacy
-    # or changed-configuration source becomes reusable only after all of its
-    # exported documents agree on the same identity.
-    await record_document_vector_identity(
+    from sag_api.services.document_service import publish_document_result
+
+    await refresh_payload()
+    if not await publish_document_result(
         session,
         source,
         document,
-        configured_embedding_identity(settings),
-    )
-    await touch_source_revision(session, source.id)
+        job,
+        result,
+        expected_run_id=run_id if display_initialized else previous_run_id,
+    ):
+        await _yield_after_document_transition_lost(session, document_id, control_revision)
     await session.commit()
     log.info(
         "文档处理完成 doc=%s parser=%s cached=%s chunks=%d events=%d tokens=%d",
         document.id,
         prepared.provider if prepared is not None else "checkpoint",
         prepared.cached if prepared is not None else True,
-        outcome.chunk_count,
-        outcome.event_count,
-        outcome.token_usage,
+        chunks.chunk_count,
+        events.event_count,
+        token_usage,
     )
     if job_queue is not None:
         from sag_api.services.universe_service import schedule_universe_refresh
@@ -625,7 +792,13 @@ async def delete_document_task(
 ) -> None:
     if not job.source_id:
         raise NotFoundError("删除任务缺少信源")
-    async with acquire_source_exclusive_lease(SessionLocal, job.source_id, f"document-delete:{job.id}"):
+    async with AsyncExitStack() as admission:
+        try:
+            await admission.enter_async_context(
+                acquire_source_exclusive_lease(SessionLocal, job.source_id, f"document-delete:{job.id}")
+            )
+        except ConflictError as error:
+            raise JobYielded(SOURCE_BUSY) from error
         await _delete_document_task_unlocked(session, job, engine_manager=engine_manager, job_queue=job_queue)
 
 
@@ -644,21 +817,66 @@ async def _delete_document_task_unlocked(
         raise NotFoundError("信源不存在")
 
     await session.refresh(document)
-    derived_source_ids = {
-        value.strip()
-        for value in (job.payload or {}).get("derived_source_ids", [])
-        if isinstance(value, str) and value.strip()
-    }
-    if document.sag_source_id:
-        derived_source_ids.add(document.sag_source_id)
-    for derived_source_id in sorted(derived_source_ids):
-        await engine_manager.delete_document_data(
-            source.sag_source_config_id,
-            derived_source_id,
-            source=source,
-        )
-    path = document.storage_path
-    job.payload = {**(job.payload or {}), "target_document_id": document.id}
+    from sag_api.parsing.service import remove_parsed_sidecars
+    from sag_api.services.document_service import _document_cleanup_targets
+
+    targets = await _document_cleanup_targets(session, document)
+    bound = dict((job.payload or {}).get("delete_requests") or {})
+    tokens: dict[str, int] = {}
+    histories = (await session.scalars(select(Job).where(Job.document_id == document.id))).all()
+    for historical in histories:
+        payload = historical.payload or {}
+        process = payload.get("process_request")
+        if process:
+            request = ProcessSourceRequest.model_validate(process)
+            input_id = request.source.descriptor.source_id
+            if request.source.descriptor.data_source_id == source.sag_source_config_id:
+                tokens[input_id] = max(tokens.get(input_id, 0), request.context.fence_token)
+        for serialized in (payload.get("delete_requests") or {}).values():
+            request = DeleteSourceRequest.model_validate(serialized)
+            if request.data_source_id == source.sag_source_config_id:
+                tokens[request.source_id] = max(tokens.get(request.source_id, 0), request.context.fence_token)
+    for input_id in targets["derived_source_ids"]:
+        if input_id not in bound:
+            operation_id = new_id()
+            digest = sha256(
+                json.dumps(
+                    {
+                        "operation_type": "delete_source",
+                        "data_source_id": source.sag_source_config_id,
+                        "source_id": input_id,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+            bound[input_id] = DeleteSourceRequest(
+                context=OperationContext(
+                    operation_id=operation_id,
+                    idempotency_key=operation_id,
+                    request_digest=digest,
+                    fence_scope=source.sag_source_config_id,
+                    fence_token=tokens.get(input_id, 0) + 1,
+                    owner_id=job.id,
+                    isolation="input",
+                ),
+                data_source_id=source.sag_source_config_id,
+                source_id=input_id,
+            ).model_dump(mode="json")
+        request = DeleteSourceRequest.model_validate(bound[input_id])
+        if request.data_source_id != source.sag_source_config_id or request.source_id != input_id:
+            raise ConflictError("文档删除请求与目标不匹配", layer=ErrorLayer.ENGINE, stage=ErrorStage.PERSIST)
+    job.payload = {**(job.payload or {}), **targets, "target_document_id": document.id, "delete_requests": bound}
+    await session.commit()
+    for derived_source_id in targets["derived_source_ids"]:
+        request = DeleteSourceRequest.model_validate(bound[derived_source_id])
+        result = await engine_manager.delete_data(request, source=source)
+        _require_delete_completion(request, result)
+    for path in targets["artifact_paths"]:
+        remove_parsed_sidecars(path)
+    for directory in targets["candidate_directories"]:
+        if Path(directory).exists():
+            shutil.rmtree(directory)
     job.document_id = None
     await session.flush()
     await session.delete(document)
@@ -667,11 +885,11 @@ async def _delete_document_task_unlocked(
 
     await _refresh_source_counts(session, source)
     await refresh_source_vector_identity(session, source)
+    job.status = JobStatus.SUCCEEDED
+    job.progress = 1.0
+    job.finished_at = datetime.now(UTC)
+    job.error = None
     await session.commit()
-    if path:
-        from sag_api.parsing.service import remove_parsed_sidecars
-
-        remove_parsed_sidecars(path)
     if job_queue is not None:
         from sag_api.services.universe_service import schedule_universe_refresh
 
@@ -690,72 +908,122 @@ async def _delete_document_task_unlocked(
             await session.rollback()
 
 
-async def reprocess_document_task(
-    session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None
+def _require_delete_completion(
+    request: DeleteSourceRequest | DeleteDataSourceRequest, result: OperationResult,
 ) -> None:
-    if not job.source_id:
-        raise NotFoundError("重新处理任务缺少信源")
-    async with acquire_source_exclusive_lease(SessionLocal, job.source_id, f"document-reprocess:{job.id}"):
-        await _reprocess_document_task_unlocked(session, job, engine_manager=engine_manager, job_queue=job_queue)
+    """Only the bound public receipt may authorize application file cleanup."""
+    input_delete = isinstance(request, DeleteSourceRequest)
+    operation_type = "delete_source" if input_delete else "delete_data_source"
+    input_id = request.source_id if input_delete else None
+    if (
+        not isinstance(result, OperationResult)
+        or result.operation_id != request.context.operation_id
+        or result.idempotency_key != request.context.idempotency_key
+        or result.request_digest != request.context.request_digest
+        or result.operation_type != operation_type
+        or result.data_source_id != request.data_source_id
+        or result.source_id != input_id
+        or result.fence_token != request.context.fence_token
+    ):
+        raise ConflictError("删除回执与请求不匹配", layer=ErrorLayer.ENGINE, stage=ErrorStage.PERSIST)
+    if result.status != "succeeded" or result.checkpoint != "ready":
+        raise UpstreamError(
+            result.failure_message or "持久删除尚未完成", layer=ErrorLayer.ENGINE, stage=ErrorStage.PERSIST,
+            retryable=bool(result.retryable) if result.status == "failed" else True,
+        )
+    if (result.result or {}).get("target") != ("source" if input_delete else "data_source"):
+        raise ConflictError("删除回执缺少完成目标", layer=ErrorLayer.ENGINE, stage=ErrorStage.PERSIST)
 
 
-async def _reprocess_document_task_unlocked(
-    session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None
+async def delete_source_task(session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None) -> None:
+    source_id = str((job.payload or {}).get("target_source_id") or "")
+    if not source_id:
+        raise NotFoundError("删除任务缺少信源")
+    async with AsyncExitStack() as admission:
+        try:
+            await admission.enter_async_context(
+                acquire_source_exclusive_lease(SessionLocal, source_id, f"source-delete:{job.id}")
+            )
+        except ConflictError as error:
+            raise JobYielded(SOURCE_BUSY) from error
+        await _delete_source_task_unlocked(session, job, engine_manager=engine_manager, job_queue=job_queue)
+
+
+async def _delete_source_task_unlocked(
+    session: AsyncSession, job: Job, *, engine_manager: EngineManager, job_queue=None,
 ) -> None:
-    """在信源维护窗口内清理旧派生数据，再排入普通文档处理任务。"""
-    target_document_id = job.document_id or str((job.payload or {}).get("target_document_id") or "")
-    if not target_document_id:
-        raise NotFoundError("重新处理任务缺少文档")
-    document = await session.get(Document, target_document_id)
-    if document is None:
-        raise NotFoundError("文档不存在")
-    source = await session.get(Source, document.source_id)
-    if source is None:
-        raise NotFoundError("信源不存在")
+    from sag_api.parsing.service import remove_parsed_sidecars
+    from sag_api.services.document_service import _document_cleanup_targets
+    from sag_api.services.source_service import _range_delete_request
 
     payload = dict(job.payload or {})
-    derived_source_ids = sorted(
-        {value.strip() for value in payload.get("derived_source_ids", []) if isinstance(value, str) and value.strip()}
-    )
-    if not payload.get("cleanup_completed"):
-        for derived_source_id in derived_source_ids:
-            await engine_manager.delete_document_data(
-                source.sag_source_config_id,
-                derived_source_id,
-                source=source,
-            )
-
-    await session.refresh(document)
-    if document.status in _DELETE_CONTROL_STATES:
-        job.payload = {
-            **payload,
-            "cleanup_completed": True,
-        }
-        await session.commit()
-        return
-
-    process_job_id = payload.get("process_job_id")
-    process_job = await session.get(Job, process_job_id) if isinstance(process_job_id, str) and process_job_id else None
-    if process_job is None:
-        process_job = Job(
-            type=JobType.PROCESS_DOCUMENT,
-            source_id=source.id,
-            document_id=document.id,
-            status=JobStatus.QUEUED,
-        )
-        session.add(process_job)
-        await session.flush()
+    source_id = str(payload.get("target_source_id") or "")
+    bound = dict(payload.get("delete_requests") or {})
+    if not source_id or not bound:
+        raise ConflictError("信源删除缺少持久请求", layer=ErrorLayer.API, stage=ErrorStage.PERSIST)
+    source = await session.get(Source, source_id, populate_existing=True)
+    if source is not None and not source.is_deleting:
+        raise ConflictError("信源删除状态已变化")
+    # A drained parser may have recorded artifacts after the original delete
+    # intent. Capture them before any engine or filesystem cleanup.
+    paths = set(payload.get("artifact_paths") or [])
+    directories = set(payload.get("candidate_directories") or [])
+    documents = await session.scalars(select(Document).where(Document.source_id == source_id))
+    for document in documents:
+        closure = await _document_cleanup_targets(session, document)
+        paths.update(closure["artifact_paths"])
+        directories.update(closure["candidate_directories"])
+    ranges = set(await session.scalars(select(OctxInstallation.sag_source_config_id).where(
+        OctxInstallation.source_id == source_id,
+    )))
+    transfers = await session.scalars(select(OctxTransfer).where(OctxTransfer.target_source_id == source_id))
+    for transfer in transfers:
+        range_id = (transfer.checkpoint or {}).get("source_config_id")
+        if isinstance(range_id, str) and range_id:
+            ranges.add(range_id)
+    for range_id in ranges:
+        if range_id not in bound:
+            bound[range_id] = _range_delete_request(range_id, job.id).model_dump(mode="json")
     job.payload = {
-        **payload,
-        "cleanup_completed": True,
-        "process_job_id": process_job.id,
+        **payload, "artifact_paths": sorted(paths), "candidate_directories": sorted(directories),
+        "delete_requests": bound,
     }
     await session.commit()
-    await session.refresh(process_job)
+    for range_id, serialized in bound.items():
+        request = DeleteDataSourceRequest.model_validate(serialized)
+        if request.data_source_id != range_id:
+            raise ConflictError("信源删除请求与目标不匹配")
+        runtime_source = source if source is not None and range_id == source.sag_source_config_id else None
+        result = await engine_manager.delete_data(request, source=runtime_source)
+        _require_delete_completion(request, result)
+    for range_id in bound:
+        await engine_manager.release(range_id)
+    for path in paths:
+        remove_parsed_sidecars(path)
+    for directory in directories:
+        if Path(directory).exists():
+            shutil.rmtree(directory)
+    # Keep the request and cleanup intent outside Source's CASCADE boundary.
+    job.source_id = None
+    await session.flush()
+    await session.execute(AgentBinding.__table__.delete().where(
+        AgentBinding.target_type == BindingTargetType.SOURCE, AgentBinding.target_id == source_id,
+    ))
+    if source is not None:
+        await session.delete(source)
+    job.status = JobStatus.SUCCEEDED
+    job.progress = 1.0
+    job.finished_at = datetime.now(UTC)
+    job.error = None
+    await session.commit()
     if job_queue is not None:
-        from sag_api.services.document_service import _enqueue_persisted_job
+        from sag_api.services.universe_service import schedule_universe_refresh
 
-        await _enqueue_persisted_job(job_queue, process_job.id)
+        try:
+            await schedule_universe_refresh(session, job_queue, source_id=None, reason="source_deleted")
+        except Exception:  # noqa: BLE001 - cleanup was already committed
+            log.exception("信源已删除，但知识宇宙刷新调度失败 source=%s", source_id)
+            await session.rollback()
 
 
 async def sync_source(session: AsyncSession, job: Job, *, engine_manager=None, job_queue=None) -> None:
@@ -830,8 +1098,8 @@ async def index_universe(session: AsyncSession, job: Job, *, engine_manager: Eng
 
 TASK_HANDLERS: dict[JobType, TaskHandler] = {
     JobType.PROCESS_DOCUMENT: process_document,
-    JobType.REPROCESS_DOCUMENT: reprocess_document_task,
     JobType.DELETE_DOCUMENT: delete_document_task,
+    JobType.DELETE_SOURCE: delete_source_task,
     JobType.SYNC_SOURCE: sync_source,
     JobType.INDEX_UNIVERSE: index_universe,
     JobType.OCTX_PREFLIGHT: preflight_octx,

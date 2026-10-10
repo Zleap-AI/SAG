@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   verify:
-    name: dsh 0.2.0-rc.2 and zleap-sag 0.14.0
+    name: dsh 0.2.0-rc.2 and zleap-sag 0.15.0
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:

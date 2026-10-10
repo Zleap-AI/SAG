@@ -36,12 +36,12 @@ for (const candidate of candidates) {
 }
 if (!project) throw new Error('bundled dsh-sag runtime project is missing')
 
-const environment = join(target, 'dsh-sag-runtime-0.14.0')
+const environment = join(target, 'dsh-sag-runtime-0.15.0')
 await mkdir(target, { recursive: true })
 run('uv', ['venv', '--python', python, environment])
 run('uv', ['sync', '--frozen', '--no-dev', '--project', project], {
   env: { ...process.env, UV_PROJECT_ENVIRONMENT: environment, PATH: `${process.env.PATH ?? ''}${delimiter}${dirname(python)}` },
 })
 const executable = process.platform === 'win32' ? join(environment, 'Scripts', 'python.exe') : join(environment, 'bin', 'python')
-run(executable, ['-c', "import importlib.metadata as m; assert m.version('zleap-sag') == '0.14.0'"])
+run(executable, ['-c', "import importlib.metadata as m; assert m.version('zleap-sag') == '0.15.0'"])
 process.stdout.write(`${executable}\n`)

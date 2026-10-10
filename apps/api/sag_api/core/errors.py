@@ -73,6 +73,27 @@ class ConflictError(ApiError):
     code = ErrorCode.CONFLICT
 
 
+class DocumentRestartRequiredError(ConflictError):
+    """文档需要确认重新处理，原任务保持不变。"""
+
+    code = ErrorCode.DOCUMENT_RESTART_REQUIRED
+
+    def __init__(
+        self, reason: str, *, confirmation_token: str | None = None,
+        layer: ErrorLayer = ErrorLayer.API, stage: ErrorStage = ErrorStage.EXTRACT,
+    ):
+        self.reason = reason
+        self.confirmation_token = confirmation_token
+        super().__init__("输入或处理配置已变化，或旧断点无法沿用，请确认重新处理文档", layer=layer, stage=stage)
+
+    def to_envelope(self, *, request_id: str | None = None) -> dict:
+        envelope = super().to_envelope(request_id=request_id)
+        envelope["error"]["restart_reason"] = self.reason
+        if self.confirmation_token is not None:
+            envelope["error"]["confirmation_token"] = self.confirmation_token
+        return envelope
+
+
 class ValidationError(ApiError):
     """输入校验失败。"""
 

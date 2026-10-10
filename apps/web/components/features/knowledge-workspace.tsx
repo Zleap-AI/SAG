@@ -27,6 +27,7 @@ import { useOctxImports } from "@/components/features/octx-import-provider";
 import { KnowledgeSourceWorkspace } from "@/components/features/knowledge-source-workspace";
 import { PageHeader } from "@/components/features/page-header";
 import { SourceCard } from "@/components/features/source-card";
+import { SourceDeletionStatus, useSourceDeletion } from "./source-deletion";
 import { SourceIdCopy } from "@/components/features/source-id-copy";
 import { SourceCreateForm } from "@/components/features/source-create-form";
 import { Button } from "@/components/ui/button";
@@ -46,10 +47,11 @@ export async function loadKnowledgeWorkspace(
   return variant === "normal" ? loader.refresh() : loader.ensureLoaded();
 }
 
-export function SourceRow({ source, first }: { source: Source; first: boolean }) {
+export function SourceRow({ source, first, onChanged }: { source: Source; first: boolean; onChanged?: () => void }) {
   const t = useTranslations("Knowledge");
   const locale = useLocale();
   const { timezone } = useApp();
+  const deletion = useSourceDeletion(source, onChanged);
   return (
     <div
       className={cn(
@@ -57,13 +59,13 @@ export function SourceRow({ source, first }: { source: Source; first: boolean })
         !first && "border-t",
       )}
     >
-      <Link
+      {!deletion.active && <Link
         href={`/knowledge/${source.id}`}
         className="absolute inset-0 z-0 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         aria-label={source.name}
       >
         <span className="sr-only">{source.name}</span>
-      </Link>
+      </Link>}
       <div className="pointer-events-none relative z-10 grid size-9 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
         <Layers className="size-4" />
       </div>
@@ -83,7 +85,8 @@ export function SourceRow({ source, first }: { source: Source; first: boolean })
         <span>{t("eventsCount", { count: source.event_count })}</span>
         <span>{relativeTime(source.updated_at, timezone, locale)}</span>
       </div>
-      <ChevronRight className="pointer-events-none relative z-10 size-4 shrink-0 text-muted-foreground" />
+      <SourceDeletionStatus deletion={deletion} />
+      {!deletion.active && <ChevronRight className="pointer-events-none relative z-10 size-4 shrink-0 text-muted-foreground" />}
     </div>
   );
 }
@@ -91,13 +94,22 @@ export function SourceRow({ source, first }: { source: Source; first: boolean })
 function CompactSourceRow({
   source,
   onOpen,
+  onChanged,
 }: {
   source: Source;
   onOpen: (source: Source) => void;
+  onChanged: () => void;
 }) {
   const t = useTranslations("Knowledge");
   const locale = useLocale();
   const { timezone } = useApp();
+  const deletion = useSourceDeletion(source, onChanged);
+  if (deletion.active) {
+    return <div className="flex flex-wrap items-center gap-3 rounded-lg px-2.5 py-2.5">
+      <span className="min-w-0 flex-1 truncate text-sm font-medium">{source.name}</span>
+      <SourceDeletionStatus deletion={deletion} />
+    </div>;
+  }
   return (
     <button
       type="button"
@@ -303,6 +315,7 @@ export function KnowledgeWorkspace({
                     <CompactSourceRow
                       key={source.id}
                       source={source}
+                      onChanged={refresh}
                       onOpen={(item) => {
                         dispatchUniverseSourceFocus(item.id);
                         setSelectedSource({ id: item.id, initialScreen: "documents" });
@@ -410,7 +423,7 @@ export function KnowledgeWorkspace({
         ) : (
           <div className="animate-fade-in overflow-hidden rounded-lg border">
             {sources.map((source, index) => (
-              <SourceRow key={source.id} source={source} first={index === 0} />
+              <SourceRow key={source.id} source={source} first={index === 0} onChanged={refresh} />
             ))}
           </div>
         )}

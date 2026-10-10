@@ -187,6 +187,7 @@
     "finalizingDescription": "Checking and saving the results. The document will be searchable when this finishes."
   },
   "DocumentStatus": {
+    "deletePaused": "Waiting to continue deletion manually",
     "pending": "Pending",
     "loading": "Parsing",
     "extracting": "Extracting",
@@ -293,6 +294,10 @@
     "saveChanges": "Save changes"
   },
   "SourceCard": {
+    "deleteSubmitted": "Deletion request submitted",
+    "deleting": "Deleting…",
+    "deletePaused": "Waiting for manual continuation",
+    "continueDelete": "Continue deletion",
     "deleted": "Source deleted",
     "deleteFailed": "Failed to delete source",
     "noDescription": "No description",
@@ -426,11 +431,16 @@
     "requeued": "Added back to the processing queue",
     "operationFailed": "Operation failed",
     "deleted": "Document deleted",
-    "deleting": "Document removed; background cleanup will finish automatically",
+    "deleting": "Deletion submitted; the document is unavailable until cleanup finishes",
+    "continueDelete": "Continue deletion",
     "deleteFailed": "Failed to delete document",
     "pausing": "Stopping extraction; stored chunks and embeddings will be retained",
     "pauseFailed": "Failed to stop extraction",
-    "resumed": "Queued to reuse stored chunks and rerun extraction",
+    "resumed": "Queued to continue from saved progress",
+    "restartTitle": "Process this document again?",
+    "restartDescription": "The input or extraction settings have changed, so this task cannot continue. Confirmation will process the whole document again. The published version will remain available.",
+    "restartChangedDescription": "The input, settings or confirmation validity have changed. Please confirm again to process the whole document. The published version will remain available.",
+    "restartConfirm": "Process the whole document again",
     "resumeFailed": "Failed to resume extraction",
     "viewDocument": "View document",
     "viewDetails": "View details and original content",

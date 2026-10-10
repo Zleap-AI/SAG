@@ -48,7 +48,7 @@ export interface StorageBootstrapStatus {
   diagnostic_path?: string | null;
 }
 
-export type SourceStatus = "active" | "paused" | "error";
+export type SourceStatus = "active" | "paused" | "error" | "deleting" | "delete_failed";
 export type SourceType = "document" | "web" | "message" | "audio";
 export type DocumentParser = "auto" | "markitdown" | "mineru" | "anydoc";
 export type EffectiveDocumentParser = Exclude<DocumentParser, "auto">;
@@ -70,6 +70,7 @@ export interface Source {
   source_type: SourceType;
   connector_kind: string;
   status: SourceStatus;
+  deletion_job?: BackgroundJob | null;
   document_count: number;
   chunk_count: number;
   event_count: number;
@@ -103,6 +104,9 @@ export interface Doc {
   content_type: string;
   size_bytes: number;
   status: DocumentStatus;
+  /** A complete published version remains readable during candidate processing. */
+  has_publication: boolean;
+  deletion_job?: BackgroundJob | null;
   chunk_count: number;
   event_count: number;
   progress: number;

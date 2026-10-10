@@ -237,6 +237,8 @@ async def test_persisted_document_identities_recover_legacy_source_after_all_doc
             size_bytes=1,
             storage_path="/tmp/first.md",
             status=DocumentStatus.READY,
+            sag_source_id="first-published-input",
+            control_revision=1,
         )
         second = Document(
             source_id=source.id,
@@ -245,6 +247,8 @@ async def test_persisted_document_identities_recover_legacy_source_after_all_doc
             size_bytes=1,
             storage_path="/tmp/second.md",
             status=DocumentStatus.READY,
+            sag_source_id="second-published-input",
+            control_revision=1,
         )
         session.add_all([first, second])
         await session.flush()

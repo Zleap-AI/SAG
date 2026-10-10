@@ -8,7 +8,7 @@ from typing import Any, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 RPC_PROTOCOL_VERSION = "1.0"
-REQUIRED_ENGINE_VERSION = "0.14.0"
+REQUIRED_ENGINE_VERSION = "0.15.0"
 MAX_FRAME_BYTES = 8 * 1024 * 1024
 
 

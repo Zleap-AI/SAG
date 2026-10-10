@@ -18,7 +18,7 @@ import { resolveConfig } from '../src/config.ts'
 class FakeSubprocess extends SubprocessRuntime {
   spawned = 0
   terminated = 0
-  engineVersion = '0.14.0'
+  engineVersion = '0.15.0'
 
   async resolveExecutable(): Promise<string> {
     return '/fake/python'
@@ -106,7 +106,7 @@ function deleteGateway(onDelete: () => void): SagGateway {
     read: () => Promise.reject(new Error('unused')), listDocuments: () => Promise.reject(new Error('unused')),
     getDocument: () => Promise.reject(new Error('unused')), uploadFile: () => Promise.reject(new Error('unused')),
     ingestText: () => Promise.reject(new Error('unused')), reprocessDocument: () => Promise.reject(new Error('unused')),
-    deleteDocument: () => { onDelete(); return Promise.resolve({ deleted: true }) },
+    deleteDocument: () => { onDelete(); return Promise.resolve({ id: 'delete-1', type: 'delete_document', status: 'queued', sourceId: 'source', documentId: 'doc' }) },
   }
 }
 
@@ -196,7 +196,7 @@ describe('Cordis lifecycle', () => {
 
     ctx.provide('approval', { request: vi.fn().mockResolvedValue('allowed-once') } as never)
     const allowed = await ctx.tools.execute({ ...input, callId: ToolCallId('delete-allowed'), agent: fakeAgent() })
-    expect(allowed).toMatchObject({ isError: false, value: { deleted: true } })
+    expect(allowed).toMatchObject({ isError: false, value: { accepted: true, jobId: 'delete-1', type: 'delete_document', status: 'queued' } })
     expect(deletes).toBe(1)
   })
 
@@ -220,7 +220,7 @@ describe('Cordis lifecycle', () => {
     ctx.subprocess.engineVersion = '0.9.0'
     const fork = ctx.plugin(DshSag, config)
 
-    await expect(fork).rejects.toThrow(/0\.14\.0/)
+    await expect(fork).rejects.toThrow(/0\.15\.0/)
     expect(ctx.tools.get('sag_search')).toBeUndefined()
     expect(ctx.subprocess.terminated).toBe(1)
   })

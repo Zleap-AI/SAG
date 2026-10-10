@@ -16,7 +16,9 @@ from sag_api.schemas.chunk import (
     ReadResponse,
 )
 from sag_api.services.document_service import get_public_document, read_document_lines
+from sag_api.services.insight_service import find_entity_context
 from sag_api.services.outline_service import build_outline, outline_rows
+from sag_api.services.retrieval_service import grep_published_chunks
 from sag_api.services.source_service import get_source
 
 router = APIRouter(prefix="/sources/{source_id}", tags=["knowledge"])
@@ -33,7 +35,7 @@ async def outline(
     """文档大纲：标题 + chunk_id，按阅读顺序排列，并附带标题层级与章节路径。"""
     source = await get_source(session, source_id)
     document = await get_public_document(session, source, document_id)
-    if not document.sag_source_id:
+    if not document.has_publication:
         raise NotFoundError("文档尚无大纲，可能仍在处理中")
     rows = await engine_manager.list_chunk_headings(
         source.sag_source_config_id,
@@ -65,12 +67,7 @@ async def grep(
 ) -> GrepResponse:
     """精确文本匹配：按原文字面内容查找，大小写不敏感。"""
     source = await get_source(session, source_id)
-    rows = await engine_manager.grep_chunks(
-        source.sag_source_config_id,
-        pattern,
-        source=source,
-        limit=limit,
-    )
+    rows = await grep_published_chunks(engine_manager, source, pattern, limit=limit)
     matches = [
         GrepMatchOut(
             chunk_id=row["chunk_id"],
@@ -92,7 +89,7 @@ async def read(
     session: AsyncSession = Depends(get_session),
     engine_manager: EngineManager = Depends(get_engine_manager),
 ) -> ReadResponse:
-    """按行分页读取文档文本：文本类读原文件，PDF / Office 等读解析后的 Markdown。"""
+    """按行分页读取当前发布版本的正文。"""
     source = await get_source(session, source_id)
     document = await get_public_document(session, source, document_id)
     try:
@@ -129,24 +126,10 @@ async def entity_context(
     target = name.strip()
     if not target:
         raise ValidationError("实体名称不能为空")
-    entities = await engine_manager.list_entities(
-        source.sag_source_config_id, source=source, limit=200
-    )
-    lowered = target.lower()
-    match = next(
-        (entity for entity in entities if (entity.name or "").lower() == lowered),
-        None,
-    )
-    if match is None:
-        match = next(
-            (entity for entity in entities if lowered in (entity.name or "").lower()),
-            None,
-        )
-    if match is None:
+    found = await find_entity_context(engine_manager, source, target)
+    if found is None:
         raise NotFoundError(f"未找到实体「{target}」")
-    snippets = await engine_manager.entity_context(
-        source.sag_source_config_id, match.id, source=source, limit=6
-    )
+    match, snippets = found
     context = "\n\n".join(snippets) if snippets else (match.description or "")
     return EntityContextOut(
         entity_id=match.id,

@@ -11,6 +11,7 @@ from sag_api.core.errors import ConfigurationError
 from sag_api.generation.chatbot import QueryLLM
 from sag_api.sag.search_reader import SearchReader
 from sag_api.services import chatbot_service as rt
+from tests.document_requests import process_test_input
 
 
 def configure(manager):
@@ -354,8 +355,9 @@ async def test_real_document_import_rebuild_and_concurrent_search(isolate, monke
     document = tmp_path / "document.md"
     document.write_text("# Original document\n\nA source document for retrieval and extraction.")
     try:
-        seed = await engine.process_document("source", str(document))
-        assert seed.chunk_count > 0 and seed.event_count > 0 and not seed.paused
+        seed = await process_test_input(engine, "source", document)
+        assert seed.status == "succeeded"
+        assert seed.result["chunk_ref"]["chunk_ids"] and seed.result["event_ref"]["event_ids"]
         assert any(host == "stock-embedding.invalid" for host, _, _ in calls)
         calls.clear()
         pause_extraction = True
@@ -371,8 +373,8 @@ async def test_real_document_import_rebuild_and_concurrent_search(isolate, monke
             finally:
                 release.set()
 
-        processed, found = await asyncio.gather(engine.process_document("source", str(next_document)), query())
-        assert processed.chunk_count > 0 and found.stats["chunk_recall"] == "batch-vector"
+        processed, found = await asyncio.gather(process_test_input(engine, "source", next_document), query())
+        assert processed.result["chunk_ref"]["chunk_ids"] and found.stats["chunk_recall"] == "batch-vector"
         assert any(host == "query-embedding.invalid" and scoped for host, _, scoped in calls)
         assert all(key == "stock-key" and not scoped for host, key, scoped in calls if host == "llm")
         assert all(

@@ -252,7 +252,7 @@ def reconcile_vector_identity_records(
     source: Any,
     identities: list[dict[str, Any] | None],
 ) -> bool:
-    """Derive a source-wide identity from every active READY document.
+    """Derive the export identity from every qualified published document.
 
     Legacy documents have ``None`` until they are reprocessed.  A source can
     therefore recover from ``mixed`` only after every exported document has a

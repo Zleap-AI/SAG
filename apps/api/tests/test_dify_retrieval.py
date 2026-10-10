@@ -15,7 +15,7 @@ def test_dify_retrieval_defaults_to_vector_strategy():
 
 
 @pytest.mark.asyncio
-async def test_dify_retrieval_returns_traceable_records_from_the_requested_source(monkeypatch):
+async def test_dify_retrieval_returns_traceable_records_from_the_requested_source(monkeypatch, published_inputs):
     from sag_api.core.config import settings
     from sag_api.core.deps import get_engine_manager
     from sag_api.main import app
@@ -28,10 +28,11 @@ async def test_dify_retrieval_returns_traceable_records_from_the_requested_sourc
         async def provision(self, *_args):
             return None
 
-        async def search_many(self, targets, query, *, strategy=None, top_k=None):
+        async def search_many(self, targets, query, *, strategy=None, top_k=None, source_ids_by_config=None):
             self.strategy = strategy
             self.top_k = top_k
             source_config_id = targets[0][0]
+            assert source_ids_by_config == {source_config_id: ("dify-document",)}
             return SearchOutcome(
                 query=query,
                 sections=[
@@ -41,6 +42,7 @@ async def test_dify_retrieval_returns_traceable_records_from_the_requested_sourc
                         content="可由 Dify 用作回答证据的原文。",
                         score=0.91,
                         source_config_id=source_config_id,
+                        source_id="dify-document",
                     )
                 ],
                 stats={"effective_strategy": "multi"},
@@ -66,6 +68,7 @@ async def test_dify_retrieval_returns_traceable_records_from_the_requested_sourc
                     json={"name": "Dify 接入测试源"},
                 )
                 assert source.status_code == 201, source.text
+                await published_inputs(source.json()["id"], "dify-document")
 
                 response = await client.post(
                     "/api/v1/dify/retrieval",

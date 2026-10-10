@@ -4,8 +4,8 @@ import { validateJsonSchemaValue, type JsonValue, type ToolRunContext } from '@d
 import type { SagConnectionReport } from '../src/connection/manager.ts'
 import type { SagConnectionDescriptor } from '../src/connection/types.ts'
 import { resolveConfig } from '../src/config.ts'
-import type { SagGateway } from '../src/local/gateway.ts'
-import { encodeLocalEvidenceRef, SagApiError } from '../src/local/api-client.ts'
+import { createSagGateway, type SagGateway } from '../src/local/gateway.ts'
+import { encodeLocalEvidenceRef, SagApiClient, SagApiError } from '../src/local/api-client.ts'
 import { createDocumentTools, sagDeleteApprovalGate } from '../src/tools/documents.ts'
 import { createIngestTextTool } from '../src/tools/ingest.ts'
 import { createReadTool } from '../src/tools/read.ts'
@@ -59,8 +59,8 @@ function gateway() {
     getDocument: vi.fn().mockResolvedValue({ id: 'doc-1', sourceId: 'default', status: 'ready' }),
     uploadFile: vi.fn().mockResolvedValue({ id: 'doc-upload', sourceId: 'default', status: 'pending' }),
     ingestText: vi.fn().mockResolvedValue({ id: 'doc-text', sourceId: 'default', status: 'pending' }),
-    reprocessDocument: vi.fn().mockResolvedValue({ id: 'job-1', sourceId: 'default', documentId: 'doc-1', type: 'reprocess_document', status: 'queued' }),
-    deleteDocument: vi.fn().mockResolvedValue({ deleted: true }),
+    reprocessDocument: vi.fn().mockResolvedValue({ id: 'job-1', sourceId: 'default', documentId: 'doc-1', type: 'process_document', status: 'queued' }),
+    deleteDocument: vi.fn().mockResolvedValue({ id: 'delete-1', sourceId: 'default', documentId: 'doc-1', type: 'delete_document', status: 'queued' }),
   } satisfies SagGateway
 }
 
@@ -136,7 +136,7 @@ describe('local SAG tools', () => {
       chunkCount: 3, error: 'parse failed', errorLayer: 'parser', errorStage: 'extract',
     })
     api.reprocessDocument.mockResolvedValue({
-      id: 'job-1', sourceId: null, documentId: null, type: 'reprocess_document', status: 'queued', progress: 0.25, attempts: 2, error: null,
+      id: 'job-1', sourceId: null, documentId: null, type: 'process_document', status: 'queued', progress: 0.25, attempts: 2, error: null,
     })
     const manager = managerWith(api)
     const [listSources, createSource] = createSourceTools(manager, config)
@@ -164,7 +164,7 @@ describe('local SAG tools', () => {
       { tool: listDocuments as unknown as PositiveTool, args: {}, title: 'List SAG documents', kind: 'read', renderIncludes: 'doc-1' },
       { tool: getDocument as unknown as PositiveTool, args: { document_id: 'doc-1' }, title: 'Read SAG document status', kind: 'read', rawInput: 'doc-1', renderIncludes: 'parse failed' },
       { tool: reprocess as unknown as PositiveTool, args: { document_id: 'doc-1' }, title: 'Reprocess SAG document', kind: 'execute', rawInput: 'doc-1', renderIncludes: 'job-1' },
-      { tool: remove as unknown as PositiveTool, args: { document_id: 'doc-1' }, title: 'Delete SAG document', kind: 'delete', rawInput: 'doc-1', renderIncludes: 'deleted' },
+      { tool: remove as unknown as PositiveTool, args: { document_id: 'doc-1' }, title: 'Delete SAG document', kind: 'delete', rawInput: 'doc-1', renderIncludes: 'delete-1' },
       { tool: createUploadTool(manager, config, fakeFs()) as unknown as PositiveTool, args: { path: '/tmp/a.md' }, title: 'Upload file to SAG', kind: 'edit', rawInput: '/tmp/a.md', locations: [{ path: '/tmp/a.md' }], renderIncludes: 'doc-upload' },
       { tool: createIngestTextTool(manager, config) as unknown as PositiveTool, args: { text: 'hello' }, title: 'Ingest text into SAG', kind: 'edit', rawInput: 'hello', renderIncludes: 'doc-text' },
     ]
@@ -200,13 +200,61 @@ describe('local SAG tools', () => {
   it.each(['queued', 'running', 'succeeded', 'failed'] as const)('projects real reprocess job status %s', async status => {
     const api = gateway()
     api.reprocessDocument.mockResolvedValue({
-      id: `job-${status}`, type: 'reprocess_document', status, sourceId: null, documentId: null,
+      id: `job-${status}`, type: 'process_document', status, sourceId: null, documentId: null,
       progress: status === 'succeeded' ? 1 : 0.5, attempts: 1, error: status === 'failed' ? 'failed' : null,
     })
     const reprocess = createDocumentTools(managerWith(api), config)[2]
-    await expect(reprocess.execute({ document_id: 'doc-1' }, exec)).resolves.toMatchObject({
-      jobId: `job-${status}`, type: 'reprocess_document', status, sourceId: 'fresh', documentId: 'doc-1',
+    const result = await reprocess.execute({ document_id: 'doc-1' }, exec)
+    expect(result).toMatchObject({
+      jobId: `job-${status}`, type: 'process_document', status, sourceId: 'fresh', documentId: 'doc-1',
     })
+    expect(validateJsonSchemaValue(reprocess.output.schema, result)).toEqual([])
+  })
+
+  it('directs restart confirmation to the SAG page without exposing or submitting the token', async () => {
+    const api = gateway()
+    const confirmationToken = 'private-confirmation-token'
+    api.reprocessDocument.mockRejectedValue(new SagApiError(
+      409, 'document_restart_required', `重新处理需要确认 ${confirmationToken}`, false, 'req-restart', 'api', 'extract',
+    ))
+    const reprocess = createDocumentTools(managerWith(api), config)[2]
+    const error: unknown = await reprocess.execute({ document_id: 'doc-1' }, exec).catch(error => error)
+    expect(error).toMatchObject({ message: '请在 SAG 页面确认重新处理后重试' })
+    expect(String(error)).not.toContain(confirmationToken)
+    expect(api.reprocessDocument).toHaveBeenCalledExactlyOnceWith('fresh', 'doc-1', exec.signal)
+  })
+
+  it('preserves other structured API errors from document reprocessing', async () => {
+    const api = gateway()
+    api.reprocessDocument.mockRejectedValue(new SagApiError(
+      503, 'dependency_unavailable', '模型服务暂时不可用', true, 'req-outage', 'llm', 'extract',
+    ))
+    const reprocess = createDocumentTools(managerWith(api), config)[2]
+    await expect(reprocess.execute({ document_id: 'doc-1' }, exec)).rejects.toMatchObject({
+      status: 503, code: 'dependency_unavailable', retryable: true,
+      requestId: 'req-outage', layer: 'llm', stage: 'extract',
+    })
+  })
+
+  it.each(['queued', 'running', 'succeeded'] as const)('reports HTTP 202 deletion job status %s through the REST gateway', async status => {
+    const client = new SagApiClient(descriptor, async (input, init) => {
+      expect(String(input)).toBe('http://127.0.0.1:8000/api/v1/sources/fresh/documents/doc-1')
+      expect(init).toMatchObject({ method: 'DELETE', signal: exec.signal })
+      return new Response(JSON.stringify({
+        id: `delete-${status}`, type: 'delete_document', status, source_id: 'fresh', document_id: null,
+        progress: status === 'succeeded' ? 1 : 0, attempts: 1, error: null,
+        created_at: '2026-10-10T00:00:00Z', started_at: null, finished_at: null,
+      }), { status: 202, headers: { 'Content-Type': 'application/json' } })
+    })
+    const remove = createDocumentTools(managerWith(createSagGateway(client)), config)[3]
+    const result = await remove.execute({ document_id: 'doc-1' }, exec)
+
+    expect(result).toEqual({
+      accepted: true, jobId: `delete-${status}`, type: 'delete_document', status, sourceId: 'fresh', documentId: 'doc-1',
+      progress: status === 'succeeded' ? 1 : 0, attempts: 1, error: null,
+    })
+    expect(validateJsonSchemaValue(remove.output.schema, result)).toEqual([])
+    expect(result).not.toHaveProperty('deleted')
   })
 
   it('declares integer document progress and strict real reprocess job fields', () => {

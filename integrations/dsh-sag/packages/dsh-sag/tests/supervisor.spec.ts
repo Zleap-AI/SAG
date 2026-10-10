@@ -15,7 +15,7 @@ function fakeRuntime(options: { health?: string; engineVersion?: string } = {}) 
       if (request.method === 'initialize') {
         stdout.write(`${JSON.stringify({
           jsonrpc: '2.0', id: request.id, result: {
-            protocolVersion: '1.0', engineVersion: options.engineVersion ?? '0.14.0',
+            protocolVersion: '1.0', engineVersion: options.engineVersion ?? '0.15.0',
             health: options.health ?? 'available', evidenceRead: true, namespaces: ['product-docs'],
           },
         })}\n`)
@@ -68,7 +68,7 @@ describe('SagRuntimeSupervisor', () => {
 
   it('terminates a sidecar whose engine version fails the handshake', async () => {
     const fixture = fakeRuntime({ engineVersion: '0.9.0' })
-    await expect(SagRuntimeSupervisor.start(fixture.runtime, config)).rejects.toThrow(/0\.14\.0/)
+    await expect(SagRuntimeSupervisor.start(fixture.runtime, config)).rejects.toThrow(/0\.15\.0/)
     expect(fixture.terminateCalls).toBe(1)
   })
 

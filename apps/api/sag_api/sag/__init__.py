@@ -1,7 +1,6 @@
-"""zleap-sag 适配层 —— 全项目唯一 import `zleap-sag` 的地方。
+"""zleap-sag 适配层 —— 管理运行资源与业务查询结果。
 
-对外只暴露 sag 自己的 DTO 与 `EngineManager`，从而把引擎实现细节与领域逻辑解耦，
-未来替换 / 升级引擎时改动收敛在此目录。
+查询结果使用业务 DTO；文档处理沿用引擎公开请求与回执，由 Job 保存调用绑定。
 """
 
 from sag_api.sag.dto import (
@@ -9,7 +8,6 @@ from sag_api.sag.dto import (
     EntityInfo,
     GraphAssociationInfo,
     GraphEventInfo,
-    ProcessOutcome,
     RetrievedSection,
     SearchOutcome,
     SourceGraphInfo,
@@ -22,7 +20,6 @@ __all__ = [
     "EntityInfo",
     "GraphAssociationInfo",
     "GraphEventInfo",
-    "ProcessOutcome",
     "RetrievedSection",
     "SearchOutcome",
     "SourceGraphInfo",

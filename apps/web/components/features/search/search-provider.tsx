@@ -4,6 +4,7 @@ import * as React from "react";
 import { useTranslations } from "next-intl";
 
 import { api, ApiError } from "@/lib/api";
+import { isSourceDeleting } from "@/lib/source-activity";
 import type { SearchStrategy } from "@/lib/retrieval-config";
 import type { ActivityItem, SearchResponse, Source } from "@/lib/types";
 import {
@@ -284,7 +285,8 @@ export function SearchProvider({
     if (!sourcesPromiseRef.current) {
       sourcesPromiseRef.current = api
         .listSources()
-        .then((sources) => {
+        .then((allSources) => {
+          const sources = allSources.filter((source) => !isSourceDeleting(source));
           sourcesLoadedRef.current = true;
           setState((current) => ({ ...current, sources }));
           return sources;

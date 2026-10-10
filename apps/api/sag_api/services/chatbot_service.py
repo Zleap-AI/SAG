@@ -437,6 +437,11 @@ class SettingsView:
         active = operation.get()
         if active is not None and query_scope.get():
             return getattr(active.settings, name)
+        from sag_api.generation.responses.routing import request_settings
+
+        request = request_settings.get()
+        if request is not None:
+            return getattr(request, name)
         return getattr(self.stock, name)
 
 

@@ -31,6 +31,7 @@ const MAP: Record<
   pausing: { variant: "secondary", icon: Loader2, spin: true },
   paused: { variant: "outline", icon: Pause },
   deleting: { variant: "secondary", icon: Trash2, spin: true },
+  "delete-paused": { variant: "outline", icon: Pause },
   delete_failed: { variant: "destructive", icon: XCircle },
   ready: { variant: "success", icon: Check },
   failed: { variant: "destructive", icon: XCircle },

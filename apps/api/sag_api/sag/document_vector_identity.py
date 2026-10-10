@@ -8,7 +8,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.db.models import Document, Source
-from sag_api.enums import DocumentStatus
 from sag_api.sag.octx_vector_protocol import reconcile_vector_identity_records
 
 
@@ -23,8 +22,7 @@ async def refresh_source_vector_identity(
             await session.scalars(
                 select(Document.vector_identity).where(
                     Document.source_id == source.id,
-                    Document.is_active.is_(True),
-                    Document.status == DocumentStatus.READY,
+                    Document.has_publication,
                 )
             )
         ).all()

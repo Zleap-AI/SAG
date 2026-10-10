@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
@@ -27,6 +28,7 @@ from sag_api.db.models import (
     Document,
     Job,
     OctxTransfer,
+    Source,
 )
 from sag_api.enums import (
     DocumentStatus,
@@ -209,18 +211,42 @@ async def _ensure_transfer_active(session: AsyncSession, transfer: OctxTransfer,
             stage=ErrorStage.OCTX_RESOLVE,
             retryable=False,
         )
+    if transfer.target_source_id:
+        available = await session.scalar(select(Source.id).where(
+            Source.id == transfer.target_source_id, Source.is_deleting.is_(False),
+        ))
+        if available is None:
+            raise ConflictError(
+                f"OCTX target unavailable at {stage}", code=ErrorCode.OCTX_TRANSFER_CANCELLED,
+                layer=ErrorLayer.API, stage=ErrorStage.OCTX_RESOLVE, retryable=False,
+            )
+
+
+async def _claim_import_target(session: AsyncSession, transfer: OctxTransfer) -> Source | None:
+    """Keep target admission and the final publication in one writer transaction."""
+    await _ensure_transfer_active(session, transfer, stage="atomic_switch")
+    target_id = transfer.target_source_id
+    if not target_id:
+        return None
+    claimed = await session.execute(update(Source).where(
+        Source.id == target_id, Source.is_deleting.is_(False),
+    ).values(status=Source.status))
+    if claimed.rowcount != 1:
+        raise ConflictError("OCTX target is being deleted", code=ErrorCode.OCTX_TRANSFER_CANCELLED, retryable=False)
+    await _ensure_transfer_active(session, transfer, stage="atomic_switch")
+    return await session.get(Source, target_id, populate_existing=True)
 
 
 def _export_document_state(documents: list[Document]) -> tuple[list[dict], list[dict]]:
     ready: list[dict] = []
     excluded: list[dict] = []
     for document in sorted(documents, key=lambda item: item.id):
-        if document.status is DocumentStatus.READY and document.sag_source_id:
+        if document.has_publication:
             ready.append(
                 {
                     "id": document.id,
                     "article_id": str(document.sag_source_id),
-                    "status": document.status.value,
+                    "status": DocumentStatus.READY.value,
                 }
             )
             continue

@@ -24,7 +24,8 @@ def test_universe_cursor_protocol_rejects_v1_tokens():
 @pytest.mark.asyncio
 async def test_universe_real_store_statistics_and_keyset_cursor():
     from sag_api.core.db import SessionLocal
-    from sag_api.db.models import Source, UniverseDirtySource, User
+    from sag_api.db.models import Document, Source, UniverseDirtySource, User
+    from sag_api.enums import DocumentStatus
     from sag_api.main import app
 
     transport = httpx.ASGITransport(app=app)
@@ -53,6 +54,19 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                 source = await session.get(Source, source_id)
                 assert source is not None
                 source_config_id = source.sag_source_config_id
+                session.add_all(
+                    [
+                        Document(
+                            source_id=source_id,
+                            filename=f"{input_id}.md",
+                            storage_path="/test/universe.md",
+                            status=DocumentStatus.READY,
+                            sag_source_id=input_id,
+                        )
+                        for input_id in ("timeline-doc", "late-doc")
+                    ]
+                )
+                await session.commit()
                 user_id = await session.scalar(select(User.id).where(User.email == email))
                 assert user_id is not None
             from zleap.sag.db.models import (
@@ -74,9 +88,7 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
             session_factory = await app.state.engine_manager.get_sag_session_factory(source_config_id)
             async with session_factory() as session:
                 await session.merge(DataSource(id=source_config_id, name="时序图谱测试源"))
-                await session.merge(
-                    DataSource(id=foreign_source_config_id, name="异常跨源引用")
-                )
+                await session.merge(DataSource(id=foreign_source_config_id, name="异常跨源引用"))
                 session.add(
                     EntityType(
                         id=entity_type_id,
@@ -194,15 +206,12 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
             assert rebuilt.status_code == 202, rebuilt.text
             deadline = time.monotonic() + 60
             while True:
-                job_response = await client.get(
-                    f"/api/v1/jobs/{rebuilt.json()['id']}", headers=headers
-                )
+                job_response = await client.get(f"/api/v1/jobs/{rebuilt.json()['id']}", headers=headers)
                 assert job_response.status_code == 200, job_response.text
                 if job_response.json()["status"] in {"succeeded", "failed"}:
                     break
                 assert time.monotonic() < deadline, (
-                    f"universe rebuild did not finish within 60 seconds: "
-                    f"{job_response.text}"
+                    f"universe rebuild did not finish within 60 seconds: {job_response.text}"
                 )
                 await asyncio.sleep(0.05)
             assert job_response.json()["status"] == "succeeded", job_response.text
@@ -252,9 +261,7 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                 return response.json()
 
             timeline_pages = [await timeline()]
-            retried_first_timeline_page = await timeline(
-                snapshot_id=timeline_pages[0]["snapshot_id"]
-            )
+            retried_first_timeline_page = await timeline(snapshot_id=timeline_pages[0]["snapshot_id"])
             assert retried_first_timeline_page["page_id"] == timeline_pages[0]["page_id"]
             assert retried_first_timeline_page["bundles"] == timeline_pages[0]["bundles"]
             missing_snapshot = await client.post(
@@ -275,9 +282,7 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                         timeline_pages[0]["snapshot_id"],
                     )
                 )
-            assert [
-                page["page"]["returned_bundles"] for page in timeline_pages
-            ] == [6, 6, 6, 6]
+            assert [page["page"]["returned_bundles"] for page in timeline_pages] == [6, 6, 6, 6]
             assert timeline_pages[0]["page"]["has_newer"] is False
             assert timeline_pages[0]["page"]["newer_cursor"] is None
             assert timeline_pages[-1]["page"]["has_older"] is False
@@ -292,123 +297,61 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
             assert recovered_newer_page["page"]["direction"] == "newer"
             assert recovered_newer_page["page"]["has_newer"] is False
             assert recovered_newer_page["page"]["has_older"] is True
-            assert [
-                bundle["event"]["id"] for bundle in recovered_newer_page["bundles"]
-            ] == [
+            assert [bundle["event"]["id"] for bundle in recovered_newer_page["bundles"]] == [
                 bundle["event"]["id"] for bundle in timeline_pages[0]["bundles"]
             ]
-            timeline_events = [
-                bundle["event"]["id"]
-                for page in timeline_pages
-                for bundle in page["bundles"]
-            ]
+            timeline_events = [bundle["event"]["id"] for page in timeline_pages for bundle in page["bundles"]]
             assert len(timeline_events) == len(set(timeline_events)) == 24
             assert set(timeline_events) == {*event_ids, old_event_id}
             assert timeline_events[-1] == old_event_id
 
             # The counting axis: ordinals stay contiguous across page seams and
             # every page reports the same snapshot event total.
-            assert [
-                bundle["ordinal"]
-                for page in timeline_pages
-                for bundle in page["bundles"]
-            ] == list(range(24))
+            assert [bundle["ordinal"] for page in timeline_pages for bundle in page["bundles"]] == list(range(24))
             assert all(page["total_events"] == 24 for page in timeline_pages)
             assert recovered_newer_page["total_events"] == 24
-            assert [
-                bundle["ordinal"] for bundle in recovered_newer_page["bundles"]
-            ] == [0, 1, 2, 3, 4, 5]
-            assert sum(
-                len(bundle["relations"])
-                for page in timeline_pages
-                for bundle in page["bundles"]
-            ) == 31
-            assert max(
-                bundle["event"]["related_count"]
-                for page in timeline_pages
-                for bundle in page["bundles"]
-            ) == 11
+            assert [bundle["ordinal"] for bundle in recovered_newer_page["bundles"]] == [0, 1, 2, 3, 4, 5]
+            assert sum(len(bundle["relations"]) for page in timeline_pages for bundle in page["bundles"]) == 31
+            assert max(bundle["event"]["related_count"] for page in timeline_pages for bundle in page["bundles"]) == 11
             for page in timeline_pages:
                 assert page["schema_version"] == 3
                 assert "nodes" not in page
                 assert "relations" not in page
                 assert len(page["bundles"]) == page["page"]["returned_bundles"]
-                assert page["bundles"][0]["cursor_before"] == page["page"][
-                    "newer_cursor"
-                ]
+                assert page["bundles"][0]["cursor_before"] == page["page"]["newer_cursor"]
                 assert page["bundles"][-1]["cursor_after"] == page["page"]["next_cursor"]
-                event_ids_in_page = {
-                    bundle["event"]["id"] for bundle in page["bundles"]
-                }
-                entity_ids_in_page = {
-                    node["id"]
-                    for bundle in page["bundles"]
-                    for node in bundle["nodes"]
-                }
-                page_relations = [
-                    relation
-                    for bundle in page["bundles"]
-                    for relation in bundle["relations"]
-                ]
+                event_ids_in_page = {bundle["event"]["id"] for bundle in page["bundles"]}
+                entity_ids_in_page = {node["id"] for bundle in page["bundles"] for node in bundle["nodes"]}
+                page_relations = [relation for bundle in page["bundles"] for relation in bundle["relations"]]
+                assert all(relation["from_id"] in event_ids_in_page for relation in page_relations)
+                assert all(relation["to_id"] in entity_ids_in_page for relation in page_relations)
+                event_counts = {bundle["event"]["id"]: bundle["event"]["related_count"] for bundle in page["bundles"]}
                 assert all(
-                    relation["from_id"] in event_ids_in_page
-                    for relation in page_relations
-                )
-                assert all(
-                    relation["to_id"] in entity_ids_in_page
-                    for relation in page_relations
-                )
-                event_counts = {
-                    bundle["event"]["id"]: bundle["event"]["related_count"]
-                    for bundle in page["bundles"]
-                }
-                assert all(
-                    sum(
-                        1
-                        for relation in page_relations
-                        if relation["from_id"] == event_id
-                    )
+                    sum(1 for relation in page_relations if relation["from_id"] == event_id)
                     == min(event_counts[event_id], 8)
                     for event_id in event_ids_in_page
                 )
                 assert page["page"]["returned_relations"] == len(page_relations)
-                assert page["page"]["returned_unique_nodes"] == (
-                    len(event_ids_in_page) + len(entity_ids_in_page)
-                )
+                assert page["page"]["returned_unique_nodes"] == (len(event_ids_in_page) + len(entity_ids_in_page))
                 for bundle in page["bundles"]:
                     assert bundle["event"]["id"] in event_ids_in_page
-                    assert bundle["neighbor_page"]["returned_unique"] == len(
-                        bundle["nodes"]
-                    )
+                    assert bundle["neighbor_page"]["returned_unique"] == len(bundle["nodes"])
                     assert bundle["neighbor_page"]["complete"] == (
-                        bundle["neighbor_page"]["returned_unique"]
-                        >= bundle["neighbor_page"]["total_unique"]
+                        bundle["neighbor_page"]["returned_unique"] >= bundle["neighbor_page"]["total_unique"]
                     )
-                    assert bundle["neighbor_page"]["complete"] == (
-                        bundle["neighbor_page"]["next_cursor"] is None
-                    )
-                    assert all(
-                        relation["from_id"] == bundle["event"]["id"]
-                        for relation in bundle["relations"]
-                    )
+                    assert bundle["neighbor_page"]["complete"] == (bundle["neighbor_page"]["next_cursor"] is None)
+                    assert all(relation["from_id"] == bundle["event"]["id"] for relation in bundle["relations"])
 
-            first_page_event_ids = [
-                bundle["event"]["id"] for bundle in timeline_pages[0]["bundles"]
-            ]
+            first_page_event_ids = [bundle["event"]["id"] for bundle in timeline_pages[0]["bundles"]]
             resumed_mid_page = await timeline(
                 timeline_pages[0]["bundles"][2]["cursor_after"],
                 timeline_pages[0]["snapshot_id"],
             )
-            assert resumed_mid_page["request_cursor"] == timeline_pages[0]["bundles"][2][
-                "cursor_after"
-            ]
+            assert resumed_mid_page["request_cursor"] == timeline_pages[0]["bundles"][2]["cursor_after"]
             assert resumed_mid_page["bundles"][0]["event"]["id"] == first_page_event_ids[3]
 
             partial_bundle = next(
-                bundle
-                for page in timeline_pages
-                for bundle in page["bundles"]
-                if bundle["event"]["id"] == event_ids[1]
+                bundle for page in timeline_pages for bundle in page["bundles"] if bundle["event"]["id"] == event_ids[1]
             )
             assert partial_bundle["neighbor_page"]["returned_unique"] == 8
             assert partial_bundle["neighbor_page"]["total_unique"] == 11
@@ -427,17 +370,13 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                     "snapshot_id": timeline_pages[0]["snapshot_id"],
                 },
             )
-            assert event_neighbor_remainder.status_code == 200, (
-                event_neighbor_remainder.text
-            )
+            assert event_neighbor_remainder.status_code == 200, event_neighbor_remainder.text
             remainder_patch = event_neighbor_remainder.json()
             assert remainder_patch["schema_version"] == 2
             assert remainder_patch["snapshot_id"] == timeline_pages[0]["snapshot_id"]
             assert remainder_patch["page"]["returned"] == 3
             assert remainder_patch["page"]["has_more"] is False
-            assert {
-                node["id"] for node in remainder_patch["nodes"]
-            }.isdisjoint(
+            assert {node["id"] for node in remainder_patch["nodes"]}.isdisjoint(
                 {node["id"] for node in partial_bundle["nodes"]}
             )
 
@@ -471,14 +410,9 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                 )
                 await session.commit()
 
-            stable_timeline_root = await timeline(
-                snapshot_id=timeline_pages[0]["snapshot_id"]
-            )
+            stable_timeline_root = await timeline(snapshot_id=timeline_pages[0]["snapshot_id"])
             assert stable_timeline_root["page_id"] == timeline_pages[0]["page_id"]
-            assert all(
-                bundle["event"]["id"] != late_event_id
-                for bundle in stable_timeline_root["bundles"]
-            )
+            assert all(bundle["event"]["id"] != late_event_id for bundle in stable_timeline_root["bundles"])
             stable_entity_root = await client.post(
                 "/api/v1/universe/expand",
                 headers=headers,
@@ -492,10 +426,7 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                 },
             )
             assert stable_entity_root.status_code == 200, stable_entity_root.text
-            assert all(
-                node["id"] != late_event_id
-                for node in stable_entity_root.json()["nodes"]
-            )
+            assert all(node["id"] != late_event_id for node in stable_entity_root.json()["nodes"])
             hidden_late_anchor = await client.post(
                 "/api/v1/universe/expand",
                 headers=headers,
@@ -510,12 +441,8 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
             )
             assert hidden_late_anchor.status_code == 404
             async with session_factory() as session:
-                await session.execute(
-                    delete(EventEntity).where(EventEntity.id == late_relation_id)
-                )
-                await session.execute(
-                    delete(SourceEvent).where(SourceEvent.id == late_event_id)
-                )
+                await session.execute(delete(EventEntity).where(EventEntity.id == late_relation_id))
+                await session.execute(delete(SourceEvent).where(SourceEvent.id == late_event_id))
                 await session.commit()
 
             async with SessionLocal() as session:
@@ -596,35 +523,20 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                 )
             assert [page["page"]["returned"] for page in pages] == [4] * 6
             assert pages[-1]["page"]["next_cursor"] is None
-            paged_ids = [
-                node["id"]
-                for page in pages
-                for node in page["nodes"]
-                if node["kind"] == "event"
-            ]
+            paged_ids = [node["id"] for page in pages for node in page["nodes"] if node["kind"] == "event"]
             assert len(paged_ids) == len(set(paged_ids)) == 24
             assert set(paged_ids) == {*event_ids, old_event_id}
-            projected_entity_ids = {
-                node["id"]
-                for page in pages
-                for node in page["nodes"]
-                if node["kind"] == "entity"
-            }
+            projected_entity_ids = {node["id"] for page in pages for node in page["nodes"] if node["kind"] == "entity"}
             assert len(set(auxiliary_entity_ids) & projected_entity_ids) == 7
             for page in pages:
                 assert page["schema_version"] == 2
                 assert page["source_id"] == source_id
                 assert page["snapshot_id"] == pages[0]["snapshot_id"]
                 assert page["bundle_id"].endswith(page["page_id"])
-                page_event_ids = {
-                    node["id"] for node in page["nodes"] if node["kind"] == "event"
-                }
-                page_entity_ids = {
-                    node["id"] for node in page["nodes"] if node["kind"] == "entity"
-                } | {entity_id}
+                page_event_ids = {node["id"] for node in page["nodes"] if node["kind"] == "event"}
+                page_entity_ids = {node["id"] for node in page["nodes"] if node["kind"] == "entity"} | {entity_id}
                 assert all(
-                    relation["from_id"] in page_event_ids
-                    and relation["to_id"] in page_entity_ids
+                    relation["from_id"] in page_event_ids and relation["to_id"] in page_entity_ids
                     for relation in page["relations"]
                 )
 
@@ -659,9 +571,7 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
             )
             assert missing_expand_snapshot.status_code == 422
             encoded_payload, encoded_signature = cursor.split(".", 1)
-            tampered_signature = (
-                f"{'A' if encoded_signature[0] != 'A' else 'B'}{encoded_signature[1:]}"
-            )
+            tampered_signature = f"{'A' if encoded_signature[0] != 'A' else 'B'}{encoded_signature[1:]}"
             tampered = f"{encoded_payload}.{tampered_signature}"
             tampered_response = await client.post(
                 "/api/v1/universe/expand",
@@ -748,9 +658,7 @@ async def test_universe_real_store_statistics_and_keyset_cursor():
                 },
             )
             assert stale_continuation_expand.status_code == 409
-            assert stale_continuation_expand.json()["error"]["code"] == (
-                "snapshot_changed"
-            )
+            assert stale_continuation_expand.json()["error"]["code"] == ("snapshot_changed")
 
 
 @pytest.mark.asyncio
@@ -760,7 +668,8 @@ async def test_universe_timeline_orders_same_instant_book_by_narrative_rank(time
     exploration order must fall back to the extractor's narrative rank, and the
     ordinals must stay contiguous so the client's counting axis can carry it."""
     from sag_api.core.db import SessionLocal
-    from sag_api.db.models import Source
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
     from sag_api.main import app
 
     transport = httpx.ASGITransport(app=app)
@@ -786,6 +695,16 @@ async def test_universe_timeline_orders_same_instant_book_by_narrative_rank(time
                 source = await session.get(Source, source_id)
                 assert source is not None
                 source_config_id = source.sag_source_config_id
+                session.add(
+                    Document(
+                        source_id=source_id,
+                        filename="book.md",
+                        storage_path="/test/book.md",
+                        status=DocumentStatus.READY,
+                        sag_source_id="book-doc",
+                    )
+                )
+                await session.commit()
             from zleap.sag.db.models import (
                 DataSource,
                 Entity,
@@ -860,7 +779,8 @@ async def test_universe_timeline_orders_same_instant_book_by_narrative_rank(time
                             "instant": imported_at.strftime("%Y-%m-%d %H:%M:%S"),
                             "start": (
                                 imported_at.strftime("%Y-%m-%d %H:%M:%S")
-                                if timestamp_storage == "sqlite_start_time" else None
+                                if timestamp_storage == "sqlite_start_time"
+                                else None
                             ),
                             "source_id": source_config_id,
                         },
@@ -898,16 +818,10 @@ async def test_universe_timeline_orders_same_instant_book_by_narrative_rank(time
 
             assert [page["page"]["returned_bundles"] for page in pages] == [6, 2]
             assert all(page["total_events"] == 8 for page in pages)
-            paged_event_ids = [
-                bundle["event"]["id"]
-                for page in pages
-                for bundle in page["bundles"]
-            ]
+            paged_event_ids = [bundle["event"]["id"] for page in pages for bundle in page["bundles"]]
             # Entry point is chapter 0; flying deeper reads the book forward.
             assert paged_event_ids == chapter_ids
-            assert [
-                bundle["ordinal"] for page in pages for bundle in page["bundles"]
-            ] == list(range(8))
+            assert [bundle["ordinal"] for page in pages for bundle in page["bundles"]] == list(range(8))
 
             # Paging back toward the newer end recovers the same narrative order.
             recovered = await timeline(
@@ -915,9 +829,7 @@ async def test_universe_timeline_orders_same_instant_book_by_narrative_rank(time
                 pages[0]["snapshot_id"],
                 "newer",
             )
-            assert [
-                bundle["event"]["id"] for bundle in recovered["bundles"]
-            ] == chapter_ids[:6]
+            assert [bundle["event"]["id"] for bundle in recovered["bundles"]] == chapter_ids[:6]
             assert [bundle["ordinal"] for bundle in recovered["bundles"]] == [
                 0,
                 1,

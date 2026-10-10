@@ -133,6 +133,25 @@ afterEach(() => {
 });
 
 describe("dsh service settings", () => {
+  it.each(["deleting", "delete_failed"] as const)("excludes %s sources without clearing the saved default", async (status) => {
+    vi.spyOn(api, "listSources").mockResolvedValue([...sources, { ...sources[0], id: "deleted-source", name: "正在删除的资料", status }]);
+    vi.spyOn(api, "dshIntegration").mockResolvedValue(integration({ defaultSourceId: "deleted-source" }));
+    const updates: unknown[] = [];
+    vi.spyOn(api, "updateDshIntegration").mockImplementation(async (value) => {
+      updates.push(value);
+      return integration({ defaultSourceId: value });
+    });
+    const mounted = await mount();
+    try {
+      const trigger = mounted.container.querySelector<HTMLButtonElement>('[aria-label="DeepSeek Harness 的默认知识库"]')!;
+      await act(async () => { trigger.dispatchEvent(pointerEvent("pointerdown")); });
+      const options = [...document.body.querySelectorAll('[role="option"]')].map((item) => item.textContent);
+      expect(options).toContain("项目资料");
+      expect(options).not.toContain("正在删除的资料");
+      expect(updates).toEqual([]);
+    } finally { await unmount(mounted.root, mounted.container); }
+  });
+
   it("keeps the dsh quick-start, recovery, export, and translation keys stable", () => {
     expect(dshInstallCommand()).toBe(
       "dsh plugin --profile web add @zleap-ai/dsh-sag",

@@ -15,16 +15,19 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from sag_api.core.config import settings
-from sag_api.core.errors import ServiceUnavailableError, UpstreamError
+from sag_api.core.errors import DocumentRestartRequiredError, ServiceUnavailableError, UpstreamError
 from sag_api.core.logging import get_logger
-from sag_api.db.models import Document
-from sag_api.enums import DocumentStatus, JobStatus, JobType
+from sag_api.db.models import Document, Source
+from sag_api.db.models.job import job_payload_matches
+from sag_api.enums import DocumentStatus, JobStatus, JobType, SourceStatus
 from sag_api.jobs.control import JobDeleted, JobPaused, JobYielded
 from sag_api.jobs.queue import JobQueue
 from sag_api.jobs.scheduling import (
     DELETE_PRIORITY,
     DELETE_WAITING_SOURCE,
+    MANUAL_RECOVERY,
     RESUME_PRIORITY,
+    SOURCE_BUSY,
     SOURCE_MAINTENANCE,
     get_blocked_reason,
     get_priority,
@@ -43,7 +46,7 @@ _MAINTENANCE_CLOSE_RETRY_SECONDS = 0.5
 _RETRY_ENQUEUE_RETRY_SECONDS = 0.5
 _MAINTENANCE_JOB_TYPES = {
     JobType.DELETE_DOCUMENT,
-    JobType.REPROCESS_DOCUMENT,
+    JobType.DELETE_SOURCE,
 }
 
 
@@ -64,17 +67,23 @@ def _is_retryable(exc: Exception) -> bool:
     )
 
 
-async def _mark_document_waiting_retry(session, job) -> None:
+async def _mark_document_waiting_retry(session, job) -> bool:
     """Keep a retryable document active without discarding its checkpoint."""
     if job.type != JobType.PROCESS_DOCUMENT or not job.document_id:
-        return
-    document = await session.get(Document, job.document_id)
-    if document is None:
-        return
-    document.status = DocumentStatus.PENDING
-    document.processing_stage = "waiting_retry"
-    document.processing_run_id = None
-    document.error = None
+        return True
+    marked = await session.execute(
+        update(Document)
+        .where(
+            Document.id == job.document_id,
+            Document.control_revision == job.payload["control_revision"],
+            Document.status.in_([
+                DocumentStatus.PENDING, DocumentStatus.LOADING,
+                DocumentStatus.EXTRACTING, DocumentStatus.FAILED,
+            ]),
+        )
+        .values(status=DocumentStatus.PENDING, processing_stage="waiting_retry", processing_run_id=None, error=None)
+    )
+    return marked.rowcount == 1
 
 
 async def _mark_document_queued(session, job) -> None:
@@ -85,21 +94,10 @@ async def _mark_document_queued(session, job) -> None:
         update(Document)
         .where(
             Document.id == job.document_id,
+            Document.control_revision == job.payload["control_revision"],
             Document.status.in_([DocumentStatus.PENDING, DocumentStatus.LOADING, DocumentStatus.EXTRACTING]),
         )
-        .values(processing_stage="queued", processing_run_id=None)
-    )
-
-
-async def _mark_reprocess_failed(session, document_id: str, message: str) -> None:
-    """Record reprocess failure without reviving a concurrent delete."""
-    await session.execute(
-        update(Document)
-        .where(
-            Document.id == document_id,
-            Document.status.not_in([DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED]),
-        )
-        .values(status=DocumentStatus.FAILED, error=message)
+        .values(status=DocumentStatus.PENDING, processing_stage="queued", processing_run_id=None)
     )
 
 
@@ -111,6 +109,7 @@ async def _converge_document_paused(session, job) -> None:
         update(Document)
         .where(
             Document.id == job.document_id,
+            Document.control_revision == job.payload["control_revision"],
             Document.status == DocumentStatus.PAUSING,
         )
         .values(status=DocumentStatus.PAUSED, error=None)
@@ -169,6 +168,15 @@ class InProcessAsyncQueue(JobQueue):
                     job = await session.get(Job, job_id)
                     if job is None:
                         return
+                    if get_blocked_reason(job.payload) == MANUAL_RECOVERY:
+                        return
+                    if job.type == JobType.PROCESS_DOCUMENT and job.source_id:
+                        source = await session.get(Source, job.source_id, populate_existing=True)
+                        if source is None or source.is_deleting:
+                            job.status = JobStatus.PAUSED
+                            job.payload = set_scheduler(job.payload, blocked_reason=SOURCE_MAINTENANCE)
+                            await session.commit()
+                            return
                     if job.type in _MAINTENANCE_JOB_TYPES and job.source_id:
                         self.begin_source_maintenance(job.source_id, job.id)
                         job.payload = set_scheduler(
@@ -284,6 +292,10 @@ class InProcessAsyncQueue(JobQueue):
                         if document is not None:
                             document.status = DocumentStatus.DELETING
                             document.error = None
+                    if job.type == JobType.DELETE_SOURCE:
+                        source = await session.get(Source, source_id)
+                        if source is not None:
+                            source.status = SourceStatus.DELETING
                     continue
 
                 job.status = JobStatus.FAILED
@@ -294,8 +306,10 @@ class InProcessAsyncQueue(JobQueue):
                     if document is not None:
                         document.status = DocumentStatus.DELETE_FAILED
                         document.error = message
-                elif job.type == JobType.REPROCESS_DOCUMENT and job.document_id:
-                    await _mark_reprocess_failed(session, job.document_id, message)
+                if job.type == JobType.DELETE_SOURCE:
+                    source = await session.get(Source, source_id)
+                    if source is not None:
+                        source.status = SourceStatus.DELETE_FAILED
             await session.commit()
 
         active = self._maintenance.jobs.get(source_id)
@@ -548,6 +562,8 @@ class InProcessAsyncQueue(JobQueue):
                             ).all()
                         )
                         for blocked in rows:
+                            if candidate_source is None or candidate_source.is_deleting:
+                                continue
                             if get_blocked_reason(blocked.payload) != SOURCE_MAINTENANCE:
                                 continue
                             payload = set_scheduler(
@@ -714,188 +730,158 @@ class InProcessAsyncQueue(JobQueue):
         self._started = False
 
     async def _recover(self) -> None:
+        """Read receipts and gate unfinished document work until a manual action."""
         from sag_api.db.models import Job, Source
+        from sag_api.services.document_service import qualify_historical_publications, reconcile_document_receipt
 
-        rows = []
+        manual_types = {
+            JobType.PROCESS_DOCUMENT, JobType.REPROCESS_DOCUMENT, JobType.DELETE_DOCUMENT, JobType.DELETE_SOURCE,
+        }
+        dispatch_ids = []
         for attempt in range(_RECOVERY_LOCK_RETRIES):
             try:
                 async with self._session_factory() as session:
-                    rows = (
-                        (
-                            await session.execute(
-                                select(Job).where(Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]))
-                            )
-                        )
-                        .scalars()
-                        .all()
-                    )
-
-                    # Older versions could persist multiple active jobs for one
-                    # document when identical control requests raced. Keep the
-                    # most advanced job of each type and make the rest inert
-                    # before workers are allowed to recover them.
-                    active_by_document: dict[tuple[str, JobType], list] = {}
-                    for candidate in rows:
-                        target_id = candidate.document_id or str(
-                            (candidate.payload or {}).get("target_document_id") or ""
-                        )
-                        if target_id and candidate.type in {
-                            JobType.PROCESS_DOCUMENT,
-                            JobType.REPROCESS_DOCUMENT,
-                            JobType.DELETE_DOCUMENT,
-                        }:
-                            active_by_document.setdefault((target_id, candidate.type), []).append(candidate)
-                    for candidates in active_by_document.values():
-                        if len(candidates) < 2:
-                            continue
-
-                        def recovery_rank(candidate):
-                            checkpoint = (candidate.payload or {}).get("process_checkpoint")
-                            processed_count = (
-                                len(checkpoint.get("processed_chunk_ids", [])) if isinstance(checkpoint, dict) else 0
-                            )
-                            return (
-                                candidate.status == JobStatus.RUNNING,
-                                processed_count,
-                                candidate.progress,
-                                candidate.created_at,
-                                candidate.id,
-                            )
-
-                        keeper = max(candidates, key=recovery_rank)
-                        for duplicate in candidates:
-                            if duplicate.id == keeper.id:
-                                continue
-                            duplicate.status = JobStatus.FAILED
-                            duplicate.error = "任务已被恢复流程中的较新进度取代"
-                            duplicate.finished_at = _now()
-                            duplicate.payload = {
-                                **(duplicate.payload or {}),
-                                "superseded_by_job_id": keeper.id,
-                            }
-                    for job in rows:
-                        if (
-                            job.type in _MAINTENANCE_JOB_TYPES
-                            and job.source_id
-                            and job.status in {JobStatus.QUEUED, JobStatus.RUNNING}
-                        ):
-                            self.begin_source_maintenance(job.source_id, job.id)
-                    for job in rows:
-                        if job.status == JobStatus.RUNNING:
-                            job.status = JobStatus.QUEUED
-                            await _mark_document_queued(session, job)
-
-                    transition_documents = list(
+                    await qualify_historical_publications(session)
+                    await session.commit()
+                    rows = list(
                         (
                             await session.scalars(
-                                select(Document).where(
-                                    Document.status.in_(
-                                        [
-                                            DocumentStatus.PAUSING,
-                                            DocumentStatus.DELETING,
-                                            DocumentStatus.DELETE_FAILED,
-                                        ]
-                                    )
+                                select(Job).where(
+                                    Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.PAUSED])
                                 )
                             )
                         ).all()
                     )
-                    jobs_by_document: dict[str, list] = {}
-                    transition_source_ids: set[str] = set()
+                    active_by_document = {}
                     for candidate in rows:
-                        target_id = candidate.document_id or str(
-                            (candidate.payload or {}).get("target_document_id") or ""
+                        target = candidate.document_id or str((candidate.payload or {}).get("target_document_id") or "")
+                        if target and candidate.type in manual_types:
+                            active_by_document.setdefault((target, candidate.type), []).append(candidate)
+                    for candidates in active_by_document.values():
+                        keeper = max(
+                            candidates,
+                            key=lambda candidate: (
+                                bool((candidate.payload or {}).get("process_request")),
+                                candidate.started_at is not None,
+                                candidate.created_at,
+                                candidate.id,
+                            ),
                         )
-                        if target_id:
-                            jobs_by_document.setdefault(target_id, []).append(candidate)
-                    for document in transition_documents:
-                        transition_source_ids.add(document.source_id)
-                        document_jobs = jobs_by_document.get(document.id, [])
-                        if document.status == DocumentStatus.PAUSING:
-                            document.status = DocumentStatus.PAUSED
-                            document.error = None
-                            for process_job in document_jobs:
-                                if process_job.type != JobType.PROCESS_DOCUMENT:
+                        for duplicate in candidates:
+                            if duplicate.id == keeper.id:
+                                continue
+                            duplicate.status = JobStatus.FAILED
+                            duplicate.error = "任务已被较新的文档任务取代"
+                            duplicate.finished_at = _now()
+                            duplicate.payload = {**(duplicate.payload or {}), "superseded_by_job_id": keeper.id}
+                    await session.commit()
+                    for job in rows:
+                        await session.refresh(job)
+                        if job.status == JobStatus.FAILED:
+                            continue
+                        if job.type not in manual_types:
+                            if job.status == JobStatus.RUNNING:
+                                job.status = JobStatus.QUEUED
+                                await session.commit()
+                            continue
+                        job_record_id = job.id
+                        target = job.document_id or str((job.payload or {}).get("target_document_id") or "")
+                        document = await session.get(Document, target) if target else None
+                        source = await session.get(Source, job.source_id) if job.source_id else None
+                        saved = (job.payload or {}).get("process_request")
+                        if (
+                            job.type == JobType.PROCESS_DOCUMENT
+                            and saved
+                            and source is not None
+                            and document is not None
+                            and document.status not in {DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED}
+                        ):
+                            try:
+                                if await reconcile_document_receipt(
+                                    session, source, document, job, self._engine_manager,
+                                ):
+                                    await session.commit()
                                     continue
-                                process_job.status = JobStatus.PAUSED
-                                payload = dict(process_job.payload or {})
-                                payload.pop("pause_requested", None)
-                                process_job.payload = payload
-                        else:
-                            document.status = DocumentStatus.DELETING
-                            document.error = None
-                            for process_job in document_jobs:
-                                if process_job.type == JobType.PROCESS_DOCUMENT:
-                                    process_job.status = JobStatus.PAUSED
-                            has_delete_job = any(
-                                candidate.type == JobType.DELETE_DOCUMENT and candidate.status == JobStatus.QUEUED
-                                for candidate in document_jobs
+                                else:
+                                    await session.refresh(job)
+                                    await session.refresh(document)
+                            except Exception as error:  # noqa: BLE001 - one unreadable receipt cannot start or erase work
+                                log.warning(
+                                    "启动读取文档结果失败 job=%s error_type=%s", job_record_id, type(error).__name__
+                                )
+                                await session.rollback()
+                                await session.refresh(job)
+                                if document is not None:
+                                    await session.refresh(document)
+                        payload = dict(job.payload or {})
+                        payload.pop("resume_requested", None)
+                        job.payload = set_scheduler(payload, blocked_reason=MANUAL_RECOVERY)
+                        job.status = JobStatus.PAUSED
+                        job.finished_at = None
+                        if document is not None and document.status not in {
+                            DocumentStatus.READY,
+                            DocumentStatus.DELETING,
+                            DocumentStatus.DELETE_FAILED,
+                        }:
+                            document.status = DocumentStatus.PAUSED
+                            document.processing_stage = "waiting_manual"
+                            document.processing_run_id = None
+                        await session.commit()
+                    # A lost cleanup Job must not cause an orphan to be deleted automatically.
+                    deleting = list(
+                        (
+                            await session.scalars(
+                                select(Document).join(Source, Document.source_id == Source.id).where(
+                                    Document.status.in_([DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED]),
+                                    Source.is_deleting.is_(False),
+                                )
                             )
-                            if not has_delete_job:
-                                delete_job = Job(
+                        ).all()
+                    )
+                    for document in deleting:
+                        cleanup = await session.scalar(
+                            select(Job.id)
+                            .where(
+                                Job.document_id == document.id,
+                                Job.type == JobType.DELETE_DOCUMENT,
+                                Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.PAUSED]),
+                            )
+                            .limit(1)
+                        )
+                        if cleanup is None:
+                            session.add(
+                                Job(
                                     type=JobType.DELETE_DOCUMENT,
                                     source_id=document.source_id,
                                     document_id=document.id,
-                                    status=JobStatus.QUEUED,
+                                    status=JobStatus.PAUSED,
                                     payload=set_scheduler(
                                         {"target_document_id": document.id},
                                         priority=DELETE_PRIORITY,
+                                        blocked_reason=MANUAL_RECOVERY,
                                     ),
                                 )
-                                session.add(delete_job)
-                                await session.flush()
-                                rows.append(delete_job)
-                                self.begin_source_maintenance(
-                                    document.source_id,
-                                    delete_job.id,
-                                )
-
-                    if transition_source_ids:
-                        from sag_api.services.document_service import _refresh_source_counts
-
-                        for transition_source_id in transition_source_ids:
-                            transition_source = await session.get(Source, transition_source_id)
-                            if transition_source is not None:
-                                await _refresh_source_counts(session, transition_source)
-
-                    for job in rows:
-                        if (
-                            job.source_id
-                            and get_blocked_reason(job.payload) == SOURCE_MAINTENANCE
-                            and not self.source_maintenance_requested(job.source_id)
-                        ):
-                            document = await session.get(Document, job.document_id) if job.document_id else None
-                            if document is None or document.status not in {
-                                DocumentStatus.PENDING,
-                                DocumentStatus.LOADING,
-                                DocumentStatus.EXTRACTING,
-                            }:
-                                continue
-                            payload = set_scheduler(
-                                job.payload,
-                                priority=RESUME_PRIORITY,
-                                blocked_reason=None,
                             )
-                            payload["resume_requested"] = True
-                            job.payload = payload
                     await session.commit()
+                    pending = list(
+                        (
+                            await session.scalars(
+                                select(Job)
+                                .where(
+                                    Job.status == JobStatus.QUEUED,
+                                )
+                                .order_by(Job.created_at, Job.id)
+                            )
+                        ).all()
+                    )
+                    dispatch_ids = [job.id for job in pending if not get_blocked_reason(job.payload)]
                 break
             except OperationalError as error:
-                locked = "database is locked" in str(error).lower()
-                if not locked or attempt == _RECOVERY_LOCK_RETRIES - 1:
+                if "database is locked" not in str(error).lower() or attempt == _RECOVERY_LOCK_RETRIES - 1:
                     raise
                 await asyncio.sleep(0.08 * (2**attempt))
-        rows = [
-            job
-            for job in rows
-            if job.status == JobStatus.QUEUED
-            and (job.type in _MAINTENANCE_JOB_TYPES or not get_blocked_reason(job.payload))
-        ]
-        rows.sort(key=lambda value: (value.created_at, value.id))
-        for job in rows:
-            await self.enqueue(job.id)
-        if rows:
-            log.info("恢复 %d 个未完成任务", len(rows))
+        for job_id in dispatch_ids:
+            await self.enqueue(job_id)
 
     async def _worker_loop(self, idx: int) -> None:
         while True:
@@ -939,8 +925,38 @@ class InProcessAsyncQueue(JobQueue):
             job = await session.get(Job, job_id)
             if job is None or job.status != JobStatus.QUEUED:
                 return
+            if job.type == JobType.REPROCESS_DOCUMENT:
+                from sag_api.services.document_service import hold_document_for_restart
+
+                if not await hold_document_for_restart(session, job, DocumentRestartRequiredError("legacy_checkpoint")):
+                    job.status = JobStatus.PAUSED
+                    job.payload = set_scheduler(
+                        {**(job.payload or {}), "restart_required": "legacy_checkpoint"},
+                        blocked_reason=MANUAL_RECOVERY,
+                    )
+                    await session.commit()
+                return
             payload = dict(job.payload or {})
+            if get_blocked_reason(payload) == MANUAL_RECOVERY:
+                return
+            if job.type == JobType.PROCESS_DOCUMENT and job.source_id:
+                source = await session.get(Source, job.source_id, populate_existing=True)
+                if source is None or source.is_deleting:
+                    job.status = JobStatus.PAUSED
+                    job.payload = set_scheduler(payload, blocked_reason=SOURCE_MAINTENANCE)
+                    await session.commit()
+                    return
+            if job.type == JobType.PROCESS_DOCUMENT and job.document_id:
+                document = await session.get(Document, job.document_id, populate_existing=True)
+                if document is not None:
+                    payload.setdefault("control_revision", document.control_revision)
+                    if payload["control_revision"] != document.control_revision:
+                        job.status = JobStatus.PAUSED
+                        await session.commit()
+                        return
             is_resume = bool(payload.pop("resume_requested", False))
+            payload.pop("failure_retryable", None)
+            previous_attempts = job.attempts
             claim = await session.execute(
                 update(Job)
                 .where(Job.id == job_id, Job.status == JobStatus.QUEUED)
@@ -949,7 +965,7 @@ class InProcessAsyncQueue(JobQueue):
                     status=JobStatus.RUNNING,
                     started_at=_now(),
                     finished_at=None,
-                    attempts=job.attempts if is_resume else job.attempts + 1,
+                    attempts=max(job.attempts, 1) if is_resume else job.attempts + 1,
                     progress=job.progress if is_resume else max(job.progress, 0.05),
                     error=None,
                 )
@@ -1014,10 +1030,13 @@ class InProcessAsyncQueue(JobQueue):
                     await _converge_document_paused(session, job)
                     log.info("任务已被并发暂停，忽略让行信号 job=%s", job_id)
                 elif job is not None:
+                    busy = yielded.reason == SOURCE_BUSY
                     payload = set_scheduler(
                         job.payload,
-                        blocked_reason=yielded.reason,
+                        blocked_reason=None if busy else yielded.reason,
                     )
+                    if busy and is_resume:
+                        payload["resume_requested"] = True
                     yielded_update = await session.execute(
                         update(Job)
                         .where(
@@ -1030,10 +1049,14 @@ class InProcessAsyncQueue(JobQueue):
                             status=JobStatus.QUEUED,
                             finished_at=None,
                             error=None,
+                            attempts=previous_attempts if busy else job.attempts,
                         )
                     )
                     if yielded_update.rowcount:
                         await _mark_document_queued(session, job)
+                        if busy:
+                            retry_delay_to_schedule = 0.25
+                            retry_source_maintenance = claimed_type in _MAINTENANCE_JOB_TYPES
                         log.info(
                             "任务临时让行 job=%s reason=%s",
                             job_id,
@@ -1063,6 +1086,14 @@ class InProcessAsyncQueue(JobQueue):
                             job_id,
                             job.progress * 100,
                         )
+            except DocumentRestartRequiredError as error:
+                from sag_api.services.document_service import hold_document_for_restart
+
+                await session.rollback()
+                job = await session.get(Job, job_id)
+                if job is not None and job.status == JobStatus.RUNNING and job.started_at == claimed_started_at:
+                    if await hold_document_for_restart(session, job, error):
+                        log.info("文档等待确认重跑 job=%s reason=%s", job_id, error.reason)
             except Exception as e:  # noqa: BLE001
                 await session.rollback()
                 job = await session.get(Job, job_id)
@@ -1073,9 +1104,13 @@ class InProcessAsyncQueue(JobQueue):
                     return
                 msg = getattr(e, "message", None) or str(e)
                 attempts = job.attempts if job is not None else settings.job_max_attempts
-                delete_cleanup = bool(job is not None and job.type == JobType.DELETE_DOCUMENT)
+                delete_cleanup = bool(job is not None and job.type in _MAINTENANCE_JOB_TYPES)
                 retry = job is not None and (_is_retryable(e) and attempts < settings.job_max_attempts)
                 if job is not None and job.status == JobStatus.RUNNING:
+                    if retry:
+                        # This control CAS takes the document write lock before
+                        # requeueing. A won deletion/retirement cannot be undone.
+                        retry = await _mark_document_waiting_retry(session, job)
                     if retry:
                         # 退避重排：状态回 QUEUED，延迟 base**attempts 秒后重新入队
                         delay = min(_BACKOFF_BASE_SECONDS ** min(attempts, 10), 60.0)
@@ -1093,12 +1128,15 @@ class InProcessAsyncQueue(JobQueue):
                             )
                         )
                         if retry_update.rowcount:
-                            await _mark_document_waiting_retry(session, job)
                             if delete_cleanup and job.document_id:
                                 document = await session.get(Document, job.document_id)
                                 if document is not None:
                                     document.status = DocumentStatus.DELETING
                                     document.error = None
+                            if job.type == JobType.DELETE_SOURCE and claimed_source_id:
+                                source = await session.get(Source, claimed_source_id)
+                                if source is not None:
+                                    source.status = SourceStatus.DELETING
                             retry_delay_to_schedule = delay
                             retry_source_maintenance = claimed_type in _MAINTENANCE_JOB_TYPES
                             release_source_maintenance = bool(delete_cleanup and claimed_source_id)
@@ -1111,19 +1149,16 @@ class InProcessAsyncQueue(JobQueue):
                                 msg,
                             )
                     else:
-                        failed_update = await session.execute(
-                            update(Job)
-                            .where(
-                                Job.id == job_id,
-                                Job.status == JobStatus.RUNNING,
-                                Job.started_at == claimed_started_at,
-                            )
-                            .values(
-                                status=JobStatus.FAILED,
-                                error=msg,
-                                finished_at=_now(),
-                            )
+                        failure_values = {"status": JobStatus.FAILED, "error": msg, "finished_at": _now()}
+                        failure_transition = update(Job).where(
+                            Job.id == job_id,
+                            Job.status == JobStatus.RUNNING,
+                            Job.started_at == claimed_started_at,
                         )
+                        if job.type == JobType.PROCESS_DOCUMENT:
+                            failure_values["payload"] = {**(job.payload or {}), "failure_retryable": _is_retryable(e)}
+                            failure_transition = failure_transition.where(job_payload_matches(session, job.payload))
+                        failed_update = await session.execute(failure_transition.values(**failure_values))
                         if failed_update.rowcount:
                             if job.type == JobType.DELETE_DOCUMENT and job.document_id:
                                 document = await session.get(Document, job.document_id)
@@ -1131,12 +1166,10 @@ class InProcessAsyncQueue(JobQueue):
                                     document.status = DocumentStatus.DELETE_FAILED
                                     document.error = msg
                                 release_source_maintenance = bool(claimed_source_id)
-                            elif job.type == JobType.REPROCESS_DOCUMENT and job.document_id:
-                                await _mark_reprocess_failed(
-                                    session,
-                                    job.document_id,
-                                    msg,
-                                )
+                            if job.type == JobType.DELETE_SOURCE:
+                                source = await session.get(Source, claimed_source_id) if claimed_source_id else None
+                                if source is not None:
+                                    source.status = SourceStatus.DELETE_FAILED
                                 release_source_maintenance = bool(claimed_source_id)
                             log.warning(
                                 "任务失败 job=%s（尝试 %d 次）：%s",
@@ -1144,6 +1177,13 @@ class InProcessAsyncQueue(JobQueue):
                                 attempts,
                                 msg,
                             )
+            if claimed_type in _MAINTENANCE_JOB_TYPES and claimed_source_id:
+                # Cleanup may already have committed its terminal state with
+                # the record deletion, including before a late lease-exit error.
+                completed = await session.scalar(select(Job.id).where(
+                    Job.id == job_id, Job.status == JobStatus.SUCCEEDED, Job.started_at == claimed_started_at,
+                ))
+                release_source_maintenance = release_source_maintenance or completed is not None
             await session.commit()
             if retry_delay_to_schedule is not None:
                 self._schedule_retry(job_id, retry_delay_to_schedule)

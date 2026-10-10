@@ -40,6 +40,7 @@ from sag_api.schemas.search import (
 from sag_api.services.eval.llm_judge import judge_pairwise
 from sag_api.services.retrieval_service import (
     EventScoreMap,
+    published_document_inputs,
     recall_event_scores,
     retrieve_relevant_sections,
     stream_synthesize_search_answer,
@@ -109,12 +110,16 @@ async def _event_graph_fields(
     event_scores = event_scores or {}
     if not sections and not event_scores:
         return {"events": [], "entities": [], "relations": []}
+    published = await published_document_inputs(list(sources_by_config.values()))
     graph = await engine_manager.graph_for_sections(
         sections,
         sources_by_config,
+        source_ids_by_config=published,
         event_limit=max(1, len(sections), len(event_scores)),
         event_scores=event_scores,
     )
+    if published != await published_document_inputs(list(sources_by_config.values())):
+        return {"events": [], "entities": [], "relations": []}
     events = []
     for event in graph.events:
         source = sources_by_config.get(event.source_config_id)
@@ -178,6 +183,7 @@ async def _prepare_global_search(
         )
 
     refs = {source.sag_source_config_id: source for source in sources}
+    published = await published_document_inputs(sources)
     outcome, event_scores = await asyncio.gather(
         retrieve_relevant_sections(
             engine_manager,
@@ -200,6 +206,9 @@ async def _prepare_global_search(
         refs,
         event_scores=event_scores,
     )
+    if published != await published_document_inputs(sources):
+        outcome = outcome.model_copy(update={"sections": []})
+        graph_fields = {"events": [], "entities": [], "relations": []}
     stats = {
         **outcome.stats,
         "event_candidates": len(event_scores),
@@ -287,6 +296,7 @@ async def search(
 ) -> SearchResponse:
     source = await get_source(session, source_id)
     refs = {source.sag_source_config_id: source}
+    published = await published_document_inputs([source])
     outcome, event_scores = await asyncio.gather(
         retrieve_relevant_sections(
             engine_manager,
@@ -311,6 +321,9 @@ async def search(
         refs,
         event_scores=event_scores,
     )
+    if published != await published_document_inputs([source]):
+        outcome = outcome.model_copy(update={"sections": []})
+        graph_fields = {"events": [], "entities": [], "relations": []}
     # 对外 source_id = sag 信源 id（可路由 / 取原文），不泄漏引擎内部 id
     return SearchResponse(
         query=outcome.query,
@@ -538,9 +551,7 @@ async def eval_compare(
 
     judges: list[EvalJudgeOut] = []
     if judge_enabled:
-        raw_by_strategy = {
-            result.strategy: result for result in results if result.error is None
-        }
+        raw_by_strategy = {result.strategy: result for result in results if result.error is None}
         pairs: list[tuple[str, str]] = []
         for a_index, a in enumerate(ordered_strategies):
             for b in ordered_strategies[a_index + 1 :]:
@@ -548,14 +559,8 @@ async def eval_compare(
                     pairs.append((a, b))
 
         async def one_pair(a: str, b: str) -> EvalJudgeOut | None:
-            a_sections = [
-                RetrievedSection(**section.model_dump())
-                for section in raw_by_strategy[a].sections
-            ]
-            b_sections = [
-                RetrievedSection(**section.model_dump())
-                for section in raw_by_strategy[b].sections
-            ]
+            a_sections = [RetrievedSection(**section.model_dump()) for section in raw_by_strategy[a].sections]
+            b_sections = [RetrievedSection(**section.model_dump()) for section in raw_by_strategy[b].sections]
             verdict = await judge_pairwise(
                 llm,
                 body.query,

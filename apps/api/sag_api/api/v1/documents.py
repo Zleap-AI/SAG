@@ -4,6 +4,7 @@ import asyncio
 import uuid
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
@@ -16,8 +17,8 @@ from sag_api.core.deps import (
 )
 from sag_api.core.errors import ApiError, ConflictError, NotFoundError, ValidationError
 from sag_api.core.logging import get_logger
-from sag_api.db.models import User
-from sag_api.enums import DocumentStatus
+from sag_api.db.models import Job, User
+from sag_api.enums import DocumentStatus, JobType
 from sag_api.jobs import JobQueue
 from sag_api.parsing.text import (
     TextDecodingError,
@@ -25,8 +26,7 @@ from sag_api.parsing.text import (
     read_text_file,
 )
 from sag_api.sag import EngineManager
-from sag_api.schemas.common import Ok
-from sag_api.schemas.document import DocumentOut, IngestRequest
+from sag_api.schemas.document import DocumentOut, DocumentReprocessRequest, IngestRequest
 from sag_api.schemas.job import JobOut
 from sag_api.services.document_service import (
     create_document_from_upload,
@@ -68,7 +68,22 @@ async def list_(
     session: AsyncSession = Depends(get_session),
 ) -> list[DocumentOut]:
     source = await get_source(session, source_id)
-    return [DocumentOut.model_validate(d) for d in await list_documents(session, source.id)]
+    documents = await list_documents(session, source.id)
+    cleanup_ids = [
+        document.id for document in documents
+        if document.status in {DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED}
+    ]
+    jobs = await session.scalars(
+        select(Job).where(Job.type == JobType.DELETE_DOCUMENT, Job.document_id.in_(cleanup_ids))
+        .order_by(Job.created_at.desc(), Job.id.desc())
+    ) if cleanup_ids else ()
+    latest: dict[str, JobOut] = {}
+    for job in jobs:
+        latest.setdefault(job.document_id, JobOut.model_validate(job))
+    return [
+        DocumentOut.model_validate(document).model_copy(update={"deletion_job": latest.get(document.id)})
+        for document in documents
+    ]
 
 
 @router.post("", response_model=DocumentOut, status_code=201)
@@ -266,7 +281,7 @@ async def get_parsed(
 
     source = await get_source(session, source_id)
     document = await get_public_document(session, source, document_id)
-    if document.status != DocumentStatus.READY:
+    if not document.has_publication:
         if document.status == DocumentStatus.FAILED:
             raise ConflictError(document.error or "文档解析失败，暂无解析内容")
         raise ConflictError("文档尚未解析完成")
@@ -287,9 +302,11 @@ async def get_parsed(
 async def reprocess(
     source_id: str,
     document_id: str,
+    request: DocumentReprocessRequest | None = None,
     _user: User = Depends(get_current_user_or_connector),
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
+    engine_manager: EngineManager = Depends(get_engine_manager),
 ) -> JobOut:
     async with source_document_mutation(SessionLocal, source_id, "document-reprocess"):
         source = await get_source(session, source_id)
@@ -298,6 +315,8 @@ async def reprocess(
             source,
             document_id,
             job_queue=job_queue,
+            engine_manager=engine_manager,
+            confirmation_token=request.confirmation_token if request else None,
         )
     return JobOut.model_validate(job)
 
@@ -324,27 +343,28 @@ async def resume(
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
+    engine_manager: EngineManager = Depends(get_engine_manager),
 ) -> JobOut:
     async with source_document_mutation(SessionLocal, source_id, "document-resume"):
         source = await get_source(session, source_id)
-        job = await resume_document(session, source, document_id, job_queue=job_queue)
+        job = await resume_document(session, source, document_id, job_queue=job_queue, engine_manager=engine_manager)
     return JobOut.model_validate(job)
 
 
-@router.delete("/{document_id}", response_model=Ok)
+@router.delete("/{document_id}", response_model=JobOut, status_code=202)
 async def delete_(
     source_id: str,
     document_id: str,
     _user: User = Depends(get_current_user_or_connector),
     session: AsyncSession = Depends(get_session),
     job_queue: JobQueue = Depends(get_job_queue),
-) -> Ok:
+) -> JobOut:
     async with source_document_mutation(SessionLocal, source_id, "document-delete"):
         source = await get_source(session, source_id)
-        await delete_document(
+        job = await delete_document(
             session,
             source,
             document_id,
             job_queue=job_queue,
         )
-    return Ok(detail="文档已删除")
+    return JobOut.model_validate(job)

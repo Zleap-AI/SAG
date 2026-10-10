@@ -82,7 +82,7 @@ dsh uses the registered tools to carry out these tasks. Document deletion prompt
 
 ## Embedded mode
 
-Advanced deployments can let dsh manage a Python sidecar running exactly `zleap-sag==0.14.0`. This mode registers only `sag_search` and `sag_read` for the configured namespaces.
+Advanced deployments can let dsh manage a Python sidecar running exactly `zleap-sag==0.15.0`. This mode registers only `sag_search` and `sag_read` for the configured namespaces.
 
 Prepare Python 3.11+, uv, the engine environment and namespace configuration using the [embedded guide](../packages/dsh-sag/docs/embedded.md).
 

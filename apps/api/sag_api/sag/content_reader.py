@@ -43,6 +43,7 @@ class ContentReader:
         sections: list[RetrievedSection],
         sources_by_config: dict[str, Source | None],
         *,
+        source_ids_by_config: dict[str, tuple[str, ...]],
         event_limit: int = 50,
         entity_limit: int = 48,
         edge_limit: int = 96,
@@ -92,6 +93,7 @@ class ContentReader:
         section_filters = [
             and_(
                 SourceEvent.data_source_id == source_config_id,
+                SourceEvent.source_id.in_(source_ids_by_config.get(source_config_id, ())),
                 SourceEvent.chunk_id.in_(chunk_ids),
             )
             for source_config_id, chunk_ids in chunk_ids_by_config.items()
@@ -99,6 +101,7 @@ class ContentReader:
         event_filters = [
             and_(
                 SourceEvent.data_source_id == source_config_id,
+                SourceEvent.source_id.in_(source_ids_by_config.get(source_config_id, ())),
                 SourceEvent.id.in_(event_ids),
             )
             for source_config_id, event_ids in direct_event_ids_by_config.items()
@@ -322,6 +325,7 @@ class ContentReader:
         self,
         source_config_id: str,
         *,
+        source_ids: tuple[str, ...],
         source: Source | None = None,
         types: list[str] | None = None,
         limit: int = 100,
@@ -329,18 +333,24 @@ class ContentReader:
         """读取该源的事件—实体图谱，按热度（关联事件数）排序。extract 后才有数据。"""
         await self._access.slot(source_config_id, source)  # 确保引擎 / DB 已初始化
         from sqlalchemy import func, select
-        from zleap.sag.db.models import Entity, EventEntity
+        from zleap.sag.db.models import Entity, EventEntity, SourceEvent
 
         heat = func.count(EventEntity.id)
-        conds = [Entity.data_source_id == source_config_id]
+        conds = [
+            Entity.data_source_id == source_config_id,
+            SourceEvent.data_source_id == source_config_id,
+            SourceEvent.source_id.in_(source_ids),
+            SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED"),
+        ]
         if types:
             conds.append(Entity.type.in_(list(types)))
         stmt = (
             select(Entity, heat.label("heat"))
-            .outerjoin(EventEntity, EventEntity.entity_id == Entity.id)
+            .join(EventEntity, EventEntity.entity_id == Entity.id)
+            .join(SourceEvent, SourceEvent.id == EventEntity.event_id)
             .where(*conds)
             .group_by(Entity.id)
-            .order_by(heat.desc())
+            .order_by(heat.desc(), Entity.name, Entity.id)
             .limit(limit)
         )
         sf = await self._access.relational_session_factory(source_config_id)
@@ -574,6 +584,7 @@ class ContentReader:
         source_config_id: str,
         entity_id: str,
         *,
+        source_ids: tuple[str, ...],
         source: Source | None = None,
         limit: int = 20,
     ) -> list[str]:
@@ -585,7 +596,12 @@ class ContentReader:
         stmt = (
             select(SourceEvent.title, SourceEvent.summary, SourceEvent.content)
             .join(EventEntity, EventEntity.event_id == SourceEvent.id)
-            .where(EventEntity.entity_id == entity_id)
+            .where(
+                EventEntity.entity_id == entity_id,
+                SourceEvent.data_source_id == source_config_id,
+                SourceEvent.source_id.in_(source_ids),
+                SourceEvent.status.is_(None) | (SourceEvent.status != "DELETED"),
+            )
             .limit(limit)
         )
         sf = await self._access.relational_session_factory(source_config_id)
@@ -653,23 +669,22 @@ class ContentReader:
         *,
         source: Source | None = None,
         limit: int = 20,
-        exclude_source_ids: tuple[str, ...] = (),
+        source_ids: tuple[str, ...] | None = None,
     ) -> list[dict]:
         """精确文本匹配（LIKE，大小写不敏感）：语义检索之外的确定性查找。"""
+        if source_ids is not None and not source_ids:
+            return []
         await self._access.ensure_read_runtime({source_config_id: source})
         from sqlalchemy import select
         from zleap.sag.db.models import SourceChunk
 
         needle = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        excluded = tuple(
-            sorted({value.strip() for value in exclude_source_ids if isinstance(value, str) and value.strip()})
-        )
         conditions = [
             SourceChunk.data_source_id == source_config_id,
             SourceChunk.content.ilike(f"%{needle}%", escape="\\"),
         ]
-        if excluded:
-            conditions.append(SourceChunk.source_id.not_in(excluded))
+        if source_ids is not None:
+            conditions.append(SourceChunk.source_id.in_(source_ids))
         stmt = (
             select(
                 SourceChunk.id,
@@ -737,6 +752,7 @@ class ContentReader:
         source_config_id: str,
         chunk_id: str,
         *,
+        source_ids: tuple[str, ...] | None = None,
         source: Source | None = None,
     ):
         """读取某分块的完整原文（引用/搜索溯源）。不存在返回 None。"""
@@ -745,16 +761,12 @@ class ContentReader:
         from sqlalchemy import select
         from zleap.sag.db.models import SourceChunk
 
+        conditions = [SourceChunk.id == chunk_id, SourceChunk.data_source_id == source_config_id]
+        if source_ids is not None:
+            conditions.append(SourceChunk.source_id.in_(source_ids))
         sf = await self._access.relational_session_factory(source_config_id)
         async with sf() as s:
-            row = (
-                await s.execute(
-                    select(SourceChunk).where(
-                        SourceChunk.id == chunk_id,
-                        SourceChunk.data_source_id == source_config_id,
-                    )
-                )
-            ).scalar_one_or_none()
+            row = (await s.execute(select(SourceChunk).where(*conditions))).scalar_one_or_none()
         if row is None:
             return None
         return ChunkInfo(

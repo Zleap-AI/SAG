@@ -62,6 +62,23 @@ class PreparedDocument:
     fallback_error: str | None = None
 
 
+def document_parser_identity(path: str, settings: Settings) -> dict[str, Any]:
+    """Describe the same effective routing used by parsing without starting work."""
+    suffix = os.path.splitext(path)[1].lower()
+    if suffix in {".md", ".markdown"}:
+        return {"provider": "original", "signature": "markdown"}
+    if suffix == ".pdf" and settings.effective_document_parser == "mineru":
+        provider = "mineru"
+    elif settings.effective_document_parser == anydoc_parser.PROVIDER and anydoc_parser.handles_path(path):
+        provider = "anydoc"
+    else:
+        provider = "markitdown"
+    identity = {"provider": provider, "signature": _signature(provider, settings)}
+    if provider == "mineru":
+        identity.update(service=settings.mineru_provider, endpoint=settings.mineru_base_url)
+    return identity
+
+
 async def prepare_document(
     path: str,
     settings: Settings,
@@ -71,24 +88,11 @@ async def prepare_document(
     should_pause: PauseCallback | None = None,
 ) -> PreparedDocument:
     """返回可直接交给 zleap-sag 的 Markdown 路径，保留原始上传文件。"""
-    suffix = os.path.splitext(path)[1].lower()
-    if suffix in {".md", ".markdown"}:
+    identity = document_parser_identity(path, settings)
+    if identity["provider"] == "original":
         return PreparedDocument(path=path, provider="original")
-
-    use_mineru = suffix == ".pdf" and settings.effective_document_parser == "mineru"
-    # AnyDoc 接管适配层支持的格式；Excel 沿用 MarkItDown，保留记录组边界。
-    use_anydoc = (
-        not use_mineru
-        and settings.effective_document_parser == anydoc_parser.PROVIDER
-        and anydoc_parser.handles_path(path)
-    )
-    if use_mineru:
-        provider: ParserProvider = "mineru"
-    elif use_anydoc:
-        provider = "anydoc"
-    else:
-        provider = "markitdown"
-    signature = _signature(provider, settings)
+    provider: ParserProvider = identity["provider"]
+    signature = identity["signature"]
     cache_path = f"{path}.parsed.{signature}.md"
     if _is_cached(cache_path):
         await _emit_cached_state(
@@ -834,7 +838,7 @@ def _relationship_target_is_missing(
 def _write_markdown(path: str, markdown: str) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     fd, temp_path = tempfile.mkstemp(
-        prefix=".parsed-", suffix=".md", dir=os.path.dirname(path) or "."
+        prefix=os.path.basename(path) + ".staging-", suffix=".md", dir=os.path.dirname(path) or "."
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as target:

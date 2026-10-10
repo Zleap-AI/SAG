@@ -1,6 +1,6 @@
 # Independent dsh-sag releases
 
-`@zleap-ai/dsh-sag` is maintained in SAG but keeps its own npm version. Plugin `0.2.0` targets dsh `0.2.0-rc.2` and embeds zleap-sag `0.14.0`; SAG's Web/API/Desktop version is independent.
+`@zleap-ai/dsh-sag` is maintained in SAG but keeps its own npm version. Plugin `0.2.0` targets dsh `0.2.0-rc.2` and embeds zleap-sag `0.15.0`; SAG's Web/API/Desktop version is independent.
 
 ## Verify and pack
 

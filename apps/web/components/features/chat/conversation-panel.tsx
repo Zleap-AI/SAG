@@ -46,6 +46,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Spinner } from "@/components/ui/spinner";
+import { isSourceDeleting } from "@/lib/source-activity";
 import {
   Tooltip,
   TooltipContent,
@@ -446,7 +447,7 @@ export function ConversationPanel({
   }, [messages, streaming]);
 
   React.useEffect(() => {
-    api.listSources().then(setSources).catch(() => {});
+    api.listSources().then((sources) => setSources(sources.filter((source) => !isSourceDeleting(source)))).catch(() => {});
   }, []);
 
   // 上下文用量估算：CJK ≈1 token/字，其余 ≈1 token/4 字符（无 tokenizer 的专业近似）

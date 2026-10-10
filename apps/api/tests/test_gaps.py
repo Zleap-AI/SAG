@@ -1,5 +1,6 @@
 """回归：删除信源收尾（绑定清理 + 引擎槽释放 + 上传目录移除）、注册开关。"""
 
+import asyncio
 import os
 
 import httpx
@@ -48,7 +49,18 @@ async def test_delete_cleanup_and_registration():
             await app.state.engine_manager.provision(sag_id)
             assert sag_id in app.state.engine_manager._slots
 
-            assert (await c.delete(f"/api/v1/sources/{sid}", headers=H)).status_code == 200
+            accepted = await c.delete(f"/api/v1/sources/{sid}", headers=H)
+            assert accepted.status_code == 202
+            assert accepted.json()["type"] == "delete_source"
+            async with asyncio.timeout(30):
+                while True:
+                    result = await c.get(f"/api/v1/jobs/{accepted.json()['id']}", headers=H)
+                    assert result.status_code == 200
+                    state = result.json()
+                    if state["status"] == "succeeded":
+                        break
+                    assert state["status"] != "failed", state["error"]
+                    await asyncio.sleep(0.05)
             bindings = (await c.get(f"/api/v1/agents/{agent['id']}/bindings", headers=H)).json()
             assert bindings == [], "指向已删信源的绑定应被清理"
             assert sag_id not in app.state.engine_manager._slots, "引擎槽应已释放"

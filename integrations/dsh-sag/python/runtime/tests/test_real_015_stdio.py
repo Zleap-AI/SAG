@@ -76,8 +76,8 @@ async def send(process, request_id, method, params, diagnostics=None):
 
 
 @pytest.mark.asyncio
-async def test_published_014_sidecar_starts_searches_reads_cancels_and_restarts(tmp_path):
-    assert importlib.metadata.version("zleap-sag") == "0.14.0"
+async def test_published_015_sidecar_starts_searches_reads_cancels_and_restarts(tmp_path):
+    assert importlib.metadata.version("zleap-sag") == "0.15.0"
     provider = LocalProvider()
     application = web.Application()
     application.router.add_post("/v1/embeddings", provider.embeddings)
@@ -130,7 +130,7 @@ async def test_published_014_sidecar_starts_searches_reads_cancels_and_restarts(
             diagnostics = asyncio.create_task(process.stderr.read())
             ready = await send(process, 1, "initialize", {"protocolVersion": "1.0"}, diagnostics)
             assert ready["result"] == {
-                "protocolVersion": "1.0", "engineVersion": "0.14.0", "health": "available",
+                "protocolVersion": "1.0", "engineVersion": "0.15.0", "health": "available",
                 "evidenceRead": True, "namespaces": ["product-docs"],
             }
             for mode in ("fast", "precise"):

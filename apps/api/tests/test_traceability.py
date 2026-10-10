@@ -9,7 +9,8 @@ import pytest
 @pytest.mark.asyncio
 async def test_chunk_endpoint_and_citation_refs():
     from sag_api.core.db import SessionLocal
-    from sag_api.db.models import Source
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
     from sag_api.generation.prompt import build_citations
     from sag_api.main import app
     from sag_api.sag.dto import RetrievedSection
@@ -29,6 +30,16 @@ async def test_chunk_endpoint_and_citation_refs():
             sid = src["id"]
             async with SessionLocal() as s:
                 scid = (await s.get(Source, sid)).sag_source_config_id
+                s.add(
+                    Document(
+                        source_id=sid,
+                        filename="manual.md",
+                        storage_path="/test/manual.md",
+                        status=DocumentStatus.READY,
+                        sag_source_id="d1",
+                    )
+                )
+                await s.commit()
 
             # 注入一个分块（模拟 ingest 产物）
             await app.state.engine_manager.provision(scid)

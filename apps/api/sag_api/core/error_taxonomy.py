@@ -93,6 +93,9 @@ class ErrorCode(StrEnum):
     TOO_MANY_SEARCH_SOURCES = "too_many_search_sources"
     """单次检索指定的信源数量超过上限。"""
 
+    DOCUMENT_RESTART_REQUIRED = "document_restart_required"
+    """文档断点无法沿用，需要用户确认创建新的处理任务。"""
+
     # —— 流式传输（SSE）——
     STREAM_ERROR = "stream_error"
     """SSE 流式生成中途意外中断（问答 / 搜索通用）。"""

@@ -7,7 +7,7 @@ dsh-sag 让 DeepSeek Harness 使用 SAG 个人知识库，包括检索、阅读�
 - 本源码插件：`0.2.0`；DeepSeek Harness：`0.2.0-rc.2`。
 - Node.js：`^22.19.0` 或 `>=24.0.0`，推荐 Node.js 24；`dsh` 和 `pnpm` 需要在 PATH 中。
 - SAG：包含“连接 dsh”设置和本地连接器 API。
-- embedded 引擎：`zleap-sag==0.14.0`，详见[高级配置](docs/embedded.md)。
+- embedded 引擎：`zleap-sag==0.15.0`，详见[高级配置](docs/embedded.md)。
 
 旧插件 `0.1.1` 用于旧版 dsh，不能安装到 dsh 0.2。其他宿主版本未验证。
 

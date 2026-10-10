@@ -37,8 +37,12 @@ async def import_knowledge_package(
     limits: ArchiveLimits | None = None,
 ) -> ImportStats:
     """Rebuild a knowledge-only package through the existing document pipeline."""
-    from sag_api.core.config import settings
-    from sag_api.sag.dto import ProcessCheckpoint
+    from zleap.sag.operations import OperationContext, ProcessSourceRequest
+    from zleap.sag.pipeline import ChunkSetRef, EventSetRef
+
+    from sag_api.core.error_taxonomy import ErrorStage
+    from sag_api.db.base import new_id
+    from sag_api.sag.errors import operation_failure
 
     root = Path(controlled_dir)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -66,39 +70,56 @@ async def import_knowledge_package(
             else:
                 target.write_bytes(document.raw)
                 target.chmod(0o600)
-            process_checkpoint = ProcessCheckpoint.model_validate(state.get("process_checkpoint") or {})
 
-            async def save_process(value: ProcessCheckpoint, _state: dict = state) -> None:
-                _state["status"] = "processing"
-                _state["process_checkpoint"] = value.model_dump()
+            async def bind_request(processor, _config, _settings, _state=state, _target=target) -> ProcessSourceRequest:
+                saved = _state.get("process_request")
+                if saved is not None:
+                    return ProcessSourceRequest.model_validate(saved)
+                operation_id = new_id()
+                request = await processor.build_request(
+                    _target,
+                    context=OperationContext(
+                        operation_id=operation_id,
+                        idempotency_key=operation_id,
+                        request_digest="0" * 64,
+                        fence_scope=source_config_id,
+                        fence_token=1,
+                        owner_id=operation_id,
+                        isolation="input",
+                    ),
+                    input_id=new_id(),
+                )
+                _state.update(status="processing", process_request=request.model_dump(mode="json"))
                 await persist()
+                return request
 
-            outcome = await engine_manager.process_document(
+            result = await engine_manager.process_document(
                 source_config_id,
-                str(target),
-                checkpoint=process_checkpoint,
-                on_checkpoint=save_process,
-                max_concurrency=settings.document_extract_concurrency,
+                bind_request,
                 document_title=Path(document.path).stem,
             )
-            if outcome.paused:
+            if result is None or result.failure_code == "cancelled":
                 raise RuntimeError(f"knowledge-only OCTX import paused: {document.path}")
+            if result.status != "succeeded" or result.checkpoint != "ready":
+                raise operation_failure(result, stage=ErrorStage.EXTRACT)
+            chunks = ChunkSetRef.model_validate(result.result["chunk_ref"])
+            events = EventSetRef.model_validate(result.result["event_ref"])
+            token_usage = int(((result.extraction_progress or {}).get("token_usage") or {}).get("total_tokens") or 0)
             state.update(
                 {
                     "status": "ready",
                     "logical_path": document.path,
                     "octx_document_id": document_id,
                     "controlled_path": str(target),
-                    "sag_source_id": outcome.source_id,
-                    "chunk_count": outcome.chunk_count,
-                    "event_count": outcome.event_count,
-                    "token_usage": outcome.token_usage,
-                    "process_checkpoint": process_checkpoint.model_dump(),
+                    "sag_source_id": result.source_id,
+                    "chunk_count": chunks.chunk_count,
+                    "event_count": events.event_count,
+                    "token_usage": token_usage,
                 }
             )
             counts["documents"] += 1
-            counts["chunks"] += outcome.chunk_count
-            counts["events"] += outcome.event_count
+            counts["chunks"] += chunks.chunk_count
+            counts["events"] += events.event_count
             await persist()
     return ImportStats(counts=counts)
 
@@ -386,9 +407,7 @@ async def import_structured_plan(
                 actual = {
                     "documents": int(
                         await session.scalar(
-                            select(func.count())
-                            .select_from(Article)
-                            .where(Article.data_source_id == source_config_id)
+                            select(func.count()).select_from(Article).where(Article.data_source_id == source_config_id)
                         )
                         or 0
                     ),

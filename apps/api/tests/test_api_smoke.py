@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from tests.document_requests import UncommittedDocumentManager, processing_parameters
+
 
 @pytest.mark.asyncio
 async def test_end_to_end_offline():
@@ -40,9 +42,7 @@ async def test_end_to_end_offline():
             )
             assert login.status_code == 200
             assert login.json()["user"]["id"] == r.json()["user"]["id"]
-            dup = await c.post(
-                "/api/v1/auth/register", json={"email": "a@b.com", "password": "password123"}
-            )
+            dup = await c.post("/api/v1/auth/register", json={"email": "a@b.com", "password": "password123"})
             assert dup.status_code == 409
 
             # 连接器 + 信源
@@ -53,6 +53,7 @@ async def test_end_to_end_offline():
             assert r.status_code == 201
             sid = r.json()["id"]
             assert r.json()["source_type"] == "document"
+
             # 共享测试库 → 用存在性/按 id 定位而非精确计数
             def _find(sources):
                 return next(s for s in sources if s["id"] == sid)
@@ -83,9 +84,7 @@ async def test_end_to_end_offline():
             body = gs.json()
             assert body["query"] == "hello" and isinstance(body["sections"], list)
             # 收窄到指定信源
-            gs2 = await c.post(
-                "/api/v1/search", headers=H, json={"query": "hello", "source_ids": [sid]}
-            )
+            gs2 = await c.post("/api/v1/search", headers=H, json={"query": "hello", "source_ids": [sid]})
             assert gs2.status_code == 200
 
 
@@ -172,9 +171,7 @@ async def test_folder_import_upload_rejects_malformed_batch_before_document_pers
 
     assert uploaded.status_code == 422
     assert after.status_code == 200
-    assert {document["id"] for document in after.json()} == {
-        document["id"] for document in before.json()
-    }
+    assert {document["id"] for document in after.json()} == {document["id"] for document in before.json()}
 
 
 @pytest.mark.asyncio
@@ -235,42 +232,24 @@ async def test_folder_import_upload_strips_client_paths_from_logs_and_document_n
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("controller_identity")
 async def test_uploaded_document_reaches_ready_through_background_queue():
+    from document_requests import DocumentRequestBuilder, document_receipt
     from sqlalchemy import select
 
     from sag_api.core.db import SessionLocal
     from sag_api.db.models import Document, Job, Source, User
     from sag_api.enums import JobStatus, JobType
     from sag_api.main import app
-    from sag_api.sag.dto import ProcessCheckpoint, ProcessOutcome
 
-    class OfflineDocumentEngine:
-        async def process_document(self, _config_id, _path, **kwargs):
-            await kwargs["on_stage"]("loading")
-            checkpoint = ProcessCheckpoint(
-                source_id="offline-engine-document",
-                chunk_ids=["chunk-1", "chunk-2"],
-                processed_chunk_ids=["chunk-1"],
-                event_count=1,
-                event_ids=["event-1"],
-                token_usage=100,
-            )
-            await kwargs["on_checkpoint"](checkpoint.model_copy(deep=True))
+    class OfflineDocumentEngine(UncommittedDocumentManager):
+        async def process_document(self, config_id, request_factory, **kwargs):
+            request = await request_factory(DocumentRequestBuilder(config_id), *processing_parameters())
+            await kwargs["on_stage"]("parsing")
             await kwargs["on_stage"]("extracting")
-            checkpoint.processed_chunk_ids = ["chunk-1", "chunk-2"]
-            checkpoint.event_count = 2
-            checkpoint.event_ids = ["event-1", "event-2"]
-            checkpoint.token_usage = 200
-            await kwargs["on_checkpoint"](checkpoint.model_copy(deep=True))
-            return ProcessOutcome(
-                source_id=checkpoint.source_id,
-                chunk_count=2,
-                event_count=2,
-                chunk_ids=checkpoint.chunk_ids,
-                processed_chunk_ids=checkpoint.processed_chunk_ids,
-                event_ids=checkpoint.event_ids,
-                token_usage=checkpoint.token_usage,
-            )
+            await kwargs["on_progress"](1, 2)
+            await kwargs["on_progress"](2, 2)
+            return document_receipt(request, chunk_count=2, event_count=2, token_usage=200)
 
         async def universe_overview_stats(self, *_args, **_kwargs):
             return {
@@ -346,7 +325,7 @@ async def test_uploaded_document_reaches_ready_through_background_queue():
             else:
                 pytest.fail("document job did not reach succeeded")
 
-            assert document.sag_source_id == "offline-engine-document"
+            assert document.sag_source_id == job.payload["process_request"]["source"]["descriptor"]["source_id"]
             assert source.document_count == 1
             assert source.chunk_count == 2
             assert source.event_count == 2
