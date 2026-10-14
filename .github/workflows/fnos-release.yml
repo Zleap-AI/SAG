@@ -142,7 +142,7 @@ jobs:
           test "$trivy_status" -eq 0
           test "$canonical_status" -eq 0
           test "$summary_status" -eq 0
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
           name: fnos-gateway-scan-${{ github.run_id }}-${{ github.run_attempt }}
@@ -202,7 +202,7 @@ jobs:
           set -euo pipefail
           test -n "${{ steps.build.outputs.digest }}"
           printf '%s\n' "${{ steps.build.outputs.digest }}" > "${{ matrix.name }}-digest.txt"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fnos-image-digest-${{ matrix.name }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ matrix.name }}-digest.txt
@@ -244,7 +244,7 @@ jobs:
           api_digest="$(node scripts/fnos-release-registry.mjs verify-digest --docker docker --image ghcr.io/zleap-ai/sag-api --digest "$(tr -d '\r\n' < API-digest.txt)" --revision "$CANDIDATE_REVISION" --version "$CANDIDATE_VERSION")"
           web_digest="$(node scripts/fnos-release-registry.mjs verify-digest --docker docker --image ghcr.io/zleap-ai/sag-web --digest "$(tr -d '\r\n' < Web-digest.txt)" --revision "$CANDIDATE_REVISION" --version "$CANDIDATE_VERSION")"
           node scripts/fnos-release-registry.mjs write-handoff --api-digest "$api_digest" --web-digest "$web_digest" --github-output "$GITHUB_OUTPUT" --artifact verified-digests.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fnos-verified-digests-${{ github.run_id }}-${{ github.run_attempt }}
           path: verified-digests.json
@@ -411,7 +411,7 @@ jobs:
           node scripts/fnos-release-manifest.mjs validate --input release/release-manifest.json
       - name: Upload one-day Candidate FPK
         if: ${{ inputs.mode == 'candidate' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sag-${{ needs.verify-release-request.outputs.version }}-candidate-${{ github.run_id }}
           path: |
