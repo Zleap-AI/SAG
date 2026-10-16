@@ -350,6 +350,48 @@ describe("embedding connection hints", () => {
   });
 });
 
+describe("generation connection tests", () => {
+  it.each(["openai", "responses"] as const)("tests only the %s generation draft while other sections are unfinished", async provider => {
+    mocks.getModelConfig.mockResolvedValue({ ...embeddingConfig, llm_provider: provider,
+      llm_responses_provider: "azure", llm_responses_endpoint: "https://saved.invalid/openai/responses",
+      llm_responses_api_version: "2025-04-01-preview", llm_responses_send_temperature: true });
+    mocks.getModelProviders.mockResolvedValue(embeddingProviders);
+    await mount();
+    await edit("#llm-model", "  qwen3.8-flash  ");
+    await edit("#llm-maxtok", "20000");
+    await edit("#llm-key", "  synthetic-generation-key  ");
+    if (provider === "responses") {
+      await edit("#original-responses-endpoint", "  https://draft.invalid/openai/responses  ");
+    } else {
+      await edit("#llm-url", "  https://api.302ai.cn/v1  ");
+    }
+    await edit("#emb-model", "");
+    await edit("#emb-dims", "0");
+    await edit("#emb-key", "synthetic-embedding-key");
+    await edit("#mineru-key", "synthetic-mineru-key");
+    const button = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent === "Test generation model")!;
+    await act(async () => button.click());
+    expect(mocks.testModelConfig).toHaveBeenCalledExactlyOnceWith({
+      llm_provider: provider, llm_model: "qwen3.8-flash", llm_api_key: "synthetic-generation-key",
+      llm_base_url: provider === "responses" ? "https://llm.invalid/v1" : "https://api.302ai.cn/v1",
+      llm_temperature: 0.3, llm_max_tokens: 20000, llm_context_window: 128000,
+      llm_timeout_ms: 60000, llm_max_retries: 2,
+      ...(provider === "responses" ? {
+        llm_responses_provider: "azure", llm_responses_endpoint: "https://draft.invalid/openai/responses",
+        llm_responses_api_version: "2025-04-01-preview", llm_responses_send_temperature: true,
+      } : {}),
+    });
+    expect(button.closest("section")!.textContent).toContain("Draft connected");
+    expect(container.querySelector<HTMLInputElement>("#emb-model")!.value).toBe("");
+    expect(container.querySelector<HTMLInputElement>("#emb-dims")!.value).toBe("0");
+    expect(container.querySelector<HTMLInputElement>("#emb-key")!.value).toBe("synthetic-embedding-key");
+    expect(container.querySelector<HTMLInputElement>("#mineru-key")!.value).toBe("synthetic-mineru-key");
+    expect(mocks.saveModelConfig).not.toHaveBeenCalled();
+    expect(writes()).toHaveLength(0);
+  });
+});
+
 describe("one page-wide model Save", () => {
   it("tests the unsaved original embedding draft without saving and reports dimensions", async () => {
     let finish!: (result: { ok: boolean; message: string; dimensions: number }) => void;

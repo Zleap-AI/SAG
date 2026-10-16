@@ -240,7 +240,10 @@ function BaseModelConfigForm({ saveRef, onState }: ModelSettingsProps = {}) {
     setTesting(true);
     setTestResult(null);
     try {
-      const result = await api.testModelConfig(currentPatch());
+      const draft = Object.fromEntries(
+        Object.entries(currentPatch()).filter(([key]) => key.startsWith("llm_")),
+      );
+      const result = await api.testModelConfig(draft);
       setTestResult(result);
       getDiagnosticsStore().record("model.test", {
         ok: result.ok,
