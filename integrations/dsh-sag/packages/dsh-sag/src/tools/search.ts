@@ -1,6 +1,6 @@
 import { defineTool, type ValueSchemaSpec } from '@deepseek-ai/dsh-tools'
 import type { SagConnectionManager } from '../connection/manager.js'
-import type { ResolvedConfig, ResolvedEmbeddedConfig, ResolvedLocalConfig } from '../config.js'
+import type { ResolvedConfig, ResolvedEmbeddedConfig } from '../config.js'
 import { presentSearchCall } from '../presentation.js'
 import type { SagRuntimeClient } from '../runtime/client.js'
 import type { SearchResult } from '../runtime/protocol.js'
@@ -15,6 +15,10 @@ interface SearchOutput {
 const LOCAL_SEARCH_OUTPUT_SCHEMA = {
   type: 'object', additionalProperties: false, properties: {
     query: { type: 'string', required: true },
+    retrieval: { type: 'object', additionalProperties: false, properties: {
+      requestedStrategy: { type: 'string', required: true }, effectiveStrategy: { type: 'string', required: true },
+      fallbackUsed: { type: 'boolean', required: true },
+    } },
     evidences: { type: 'array', required: true, items: {
       type: 'object', additionalProperties: false, properties: {
         evidenceRef: { type: 'string', required: true }, sourceId: { type: 'string', required: true },
@@ -27,9 +31,11 @@ const LOCAL_SEARCH_OUTPUT_SCHEMA = {
 } as const satisfies ValueSchemaSpec
 
 function renderLocalSearch(value: unknown): string {
-  const result = value as { evidences: Array<{ sourceName: string | null; sourceId: string; title: string; excerpt: string; score: number; evidenceRef: string }> }
-  if (result.evidences.length === 0) return 'No SAG evidence matched the query.'
-  return result.evidences.map((evidence, index) =>
+  const result = value as { retrieval?: { requestedStrategy: string; effectiveStrategy: string; fallbackUsed: boolean }; evidences: Array<{ sourceName: string | null; sourceId: string; title: string; excerpt: string; score: number; evidenceRef: string }> }
+  const notice = result.retrieval?.requestedStrategy === 'multi_jev' && result.retrieval.fallbackUsed
+    ? 'JEV scoring did not complete; coarse retrieval results are shown.\n\n' : ''
+  if (result.evidences.length === 0) return notice + 'No SAG evidence matched the query.'
+  return notice + result.evidences.map((evidence, index) =>
     `${index + 1}. [${evidence.sourceName ?? evidence.sourceId}] ${evidence.title} (score ${evidence.score.toFixed(3)})\n   ${evidence.excerpt}\n   evidence_ref: ${evidence.evidenceRef}`,
   ).join('\n\n')
 }
@@ -70,18 +76,19 @@ function createEmbeddedSearchTool(client: SagRuntimeClient, config: ResolvedEmbe
   })
 }
 
-function createLocalSearchTool(manager: Pick<SagConnectionManager, 'ensureConnected'>, config: ResolvedLocalConfig) {
+function createLocalSearchTool(manager: Pick<SagConnectionManager, 'ensureConnected'>) {
   return defineTool({
     name: 'sag_search',
     description: 'Search one or more local SAG knowledge bases and return opaque evidence_ref values for sag_read.',
     parameters: {
       query: { type: 'string', required: true, description: 'Natural-language or identifier search query.' },
       source_ids: { type: 'array', items: { type: 'string' }, description: 'Optional local SAG knowledge-base ids.' },
-      strategy: { type: 'string', enum: ['vector', 'multi', 'multi_es_fast'], description: 'SAG search strategy.' },
+      strategy: { type: 'string', enum: ['vector', 'multi', 'multi_es_fast', 'multi_jev'], description: 'SAG search strategy. JEV requires a configured scoring service and lexical search support.' },
       limit: { type: 'integer', description: 'Maximum evidence items, from 1 through 50.' },
     },
     output: { schema: LOCAL_SEARCH_OUTPUT_SCHEMA, render: (_args, value) => [{ type: 'text', text: renderLocalSearch(value) }] },
-    timeoutMs: config.requestTimeoutMs,
+    // SAG bounds recall and JEV ranking. Forward host cancellation without
+    // applying the short discovery/read deadline to a multi-source search.
     isConcurrencySafe: () => true,
     execute(args, exec) {
       return localOperation(manager, exec.signal, async connection => {
@@ -97,7 +104,11 @@ function createLocalSearchTool(manager: Pick<SagConnectionManager, 'ensureConnec
           ...(args.limit === undefined ? {} : { topK: args.limit }),
           ...(args.strategy === undefined ? {} : { strategy: args.strategy }),
         }, exec.signal)
-        return { query: result.query, evidences: result.evidences.map(evidence => ({
+        return { query: result.query, ...(result.stats.requested_strategy === 'multi_jev' ? { retrieval: {
+          requestedStrategy: 'multi_jev',
+          effectiveStrategy: typeof result.stats.effective_strategy === 'string' ? result.stats.effective_strategy : 'multi_jev',
+          fallbackUsed: result.stats.fallback_used === true,
+        } } : {}), evidences: result.evidences.map(evidence => ({
           evidenceRef: evidence.evidenceRef, sourceId: evidence.sourceId, sourceName: evidence.sourceName, chunkId: evidence.chunkId,
           title: evidence.heading || evidence.sourceName || evidence.chunkId, excerpt: evidence.content, score: evidence.score, rank: evidence.rank,
         })) }
@@ -111,5 +122,5 @@ function createLocalSearchTool(manager: Pick<SagConnectionManager, 'ensureConnec
 export function createSearchTool(client: SagRuntimeClient | Pick<SagConnectionManager, 'ensureConnected'>, config: ResolvedConfig) {
   return config.mode === 'embedded'
     ? createEmbeddedSearchTool(client as SagRuntimeClient, config)
-    : createLocalSearchTool(client as Pick<SagConnectionManager, 'ensureConnected'>, config)
+    : createLocalSearchTool(client as Pick<SagConnectionManager, 'ensureConnected'>)
 }

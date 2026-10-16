@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { RotateCw, Save } from "lucide-react";
+import { FlaskConical, RotateCw, Save } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
@@ -22,7 +22,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { api, ApiError } from "@/lib/api";
-import { SEARCH_STRATEGIES } from "@/lib/retrieval-config";
+import { getSearchStrategiesDisabled, SEARCH_STRATEGIES } from "@/lib/retrieval-config";
 import type { ModelConfig, ModelConfigPatch } from "@/lib/types";
 import {
   Tooltip,
@@ -35,7 +35,6 @@ export function KnowledgeConfigForm() {
   const t = useTranslations("KnowledgeConfig");
   const strategies = useTranslations("SearchStrategies");
   const { refreshCapabilities, capabilities } = useApp();
-  const disabledStrategies = capabilities?.search_strategies_disabled ?? {};
   const [loaded, setLoaded] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
@@ -46,6 +45,30 @@ export function KnowledgeConfigForm() {
   const [strategy, setStrategy] = React.useState<ModelConfig["search_strategy"]>("multi");
   const [topK, setTopK] = React.useState(8);
   const [language, setLanguage] = React.useState<ModelConfig["sag_language"]>("zh");
+  const [jevEndpoint, setJevEndpoint] = React.useState("");
+  const [savedJevEndpoint, setSavedJevEndpoint] = React.useState("");
+  const [jevModel, setJevModel] = React.useState("jev-latest");
+  const [jevKey, setJevKey] = React.useState("");
+  const [jevKeySet, setJevKeySet] = React.useState(false);
+  const [jevTimeout, setJevTimeout] = React.useState(30);
+  const [jevFailurePolicy, setJevFailurePolicy] =
+    React.useState<ModelConfig["jev_failure_policy"]>("error");
+  const [testingJev, setTestingJev] = React.useState(false);
+  const [jevTestResult, setJevTestResult] = React.useState<{ ok: boolean; message: string } | null>(null);
+  let validEndpoint = false;
+  try {
+    const url = new URL(jevEndpoint.trim());
+    validEndpoint = ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
+  } catch { /* An empty or incomplete draft cannot enable JEV. */ }
+  const jevDraftReady = validEndpoint && Boolean(jevModel.trim());
+  const disabledStrategies = getSearchStrategiesDisabled(capabilities, strategies("unsupportedBackend"), jevDraftReady);
+  const jevUnsupported = disabledStrategies.multi_jev?.reason === "unsupported_backend";
+  const invalidJevDraft = !jevUnsupported && (
+    (Boolean(jevEndpoint.trim()) && !jevDraftReady)
+    || !jevModel.trim()
+    || !Number.isFinite(jevTimeout) || jevTimeout < 0.1 || jevTimeout > 120
+    || (strategy === "multi_jev" && !jevDraftReady)
+  );
 
   const hydrate = React.useCallback((config: ModelConfig) => {
     setChunkMaxTokens(config.document_chunk_max_tokens ?? 1_000);
@@ -54,6 +77,14 @@ export function KnowledgeConfigForm() {
     setStrategy(config.search_strategy);
     setTopK(config.search_top_k);
     setLanguage(config.sag_language);
+    setJevEndpoint(config.jev_endpoint ?? "");
+    setSavedJevEndpoint(config.jev_endpoint ?? "");
+    setJevModel(config.jev_model ?? "jev-latest");
+    setJevKey("");
+    setJevKeySet(config.jev_api_key_set ?? false);
+    setJevTimeout(config.jev_ranking_timeout_seconds ?? 30);
+    setJevFailurePolicy(config.jev_failure_policy ?? "error");
+    setJevTestResult(null);
     setLoaded(true);
   }, []);
 
@@ -70,6 +101,28 @@ export function KnowledgeConfigForm() {
     void load();
   }, [load]);
 
+  function jevPatch(): ModelConfigPatch {
+    return {
+      jev_endpoint: jevEndpoint.trim() || null,
+      jev_model: jevModel.trim(),
+      jev_ranking_timeout_seconds: jevTimeout,
+      jev_failure_policy: jevFailurePolicy,
+      ...(jevKey.trim() ? { jev_api_key: jevKey.trim() } : {}),
+    };
+  }
+
+  async function testJev() {
+    setTestingJev(true);
+    setJevTestResult(null);
+    try {
+      setJevTestResult(await api.testJevModelConfig(jevPatch()));
+    } catch (error) {
+      setJevTestResult({ ok: false, message: error instanceof ApiError ? error.message : t("jevTestFailed") });
+    } finally {
+      setTestingJev(false);
+    }
+  }
+
   async function save() {
     setSaving(true);
     try {
@@ -80,6 +133,7 @@ export function KnowledgeConfigForm() {
         search_strategy: strategy,
         search_top_k: topK,
         sag_language: language,
+        ...(!jevUnsupported ? jevPatch() : {}),
       };
       const { config } = await api.saveModelConfig(patch);
       hydrate(config);
@@ -276,10 +330,61 @@ export function KnowledgeConfigForm() {
             </Field>
           </div>
         </SettingsRow>
+        <SettingsRow title={t("jevTitle")} description={t("jevDescription")}>
+          <fieldset disabled={jevUnsupported || saving || testingJev} className="grid min-w-0 gap-4 sm:grid-cols-2">
+            <Field className="sm:col-span-2">
+              <FieldLabel htmlFor="kb-jev-endpoint">{t("jevEndpoint")}</FieldLabel>
+              <Input id="kb-jev-endpoint" type="url" placeholder="https://…" value={jevEndpoint}
+                onChange={(event) => { setJevEndpoint(event.target.value); setJevTestResult(null); }} />
+              <FieldDescription>{t("jevEndpointDescription")}</FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="kb-jev-model">{t("jevModel")}</FieldLabel>
+              <Input id="kb-jev-model" value={jevModel}
+                onChange={(event) => { setJevModel(event.target.value); setJevTestResult(null); }} />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="kb-jev-api-key">{t("jevKey")}</FieldLabel>
+              <Input id="kb-jev-api-key" type="password" autoComplete="new-password" value={jevKey}
+                placeholder={jevKeySet && jevEndpoint.trim() === savedJevEndpoint ? t("jevKeyConfigured") : t("jevKeyOptional")}
+                onChange={(event) => { setJevKey(event.target.value); setJevTestResult(null); }} />
+              <FieldDescription>{t("jevKeyDescription")}</FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="kb-jev-timeout">{t("jevTimeout")}</FieldLabel>
+              <Input id="kb-jev-timeout" type="number" min={0.1} max={120} step={0.1} value={jevTimeout}
+                onChange={(event) => { setJevTimeout(Number(event.target.value)); setJevTestResult(null); }} />
+              <FieldDescription>{t("jevTimeoutDescription")}</FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="kb-jev-failure-policy">{t("jevFailurePolicy")}</FieldLabel>
+              <Select value={jevFailurePolicy} onValueChange={(value) => {
+                setJevFailurePolicy(value as ModelConfig["jev_failure_policy"]); setJevTestResult(null);
+              }}>
+                <SelectTrigger id="kb-jev-failure-policy"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="error">{t("jevError")}</SelectItem>
+                  <SelectItem value="fallback_to_score">{t("jevFallback")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+          </fieldset>
+          {jevUnsupported && <p className="text-sm text-muted-foreground">{strategies("unsupportedBackend")}</p>}
+          {invalidJevDraft && <p role="alert" className="text-sm text-destructive">{t("jevInvalidDraft")}</p>}
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <Button type="button" variant="outline" size="sm" onClick={() => void testJev()}
+              disabled={jevUnsupported || !jevDraftReady || invalidJevDraft || saving || testingJev}>
+              {testingJev ? <Spinner /> : <FlaskConical />}
+              {testingJev ? t("jevTesting") : t("jevTest")}
+            </Button>
+            {jevTestResult && <p role={jevTestResult.ok ? "status" : "alert"}
+              className={jevTestResult.ok ? "text-sm text-muted-foreground" : "text-sm text-destructive"}>{jevTestResult.message}</p>}
+          </div>
+        </SettingsRow>
       </SettingsSection>
 
       <div className="flex justify-end border-t pt-4">
-        <Button type="button" onClick={save} disabled={saving}>
+        <Button type="button" onClick={save} disabled={saving || testingJev || invalidJevDraft || Boolean(disabledStrategies[strategy])}>
           {saving ? <Spinner /> : <Save />}
           {saving ? t("saving") : t("save")}
         </Button>

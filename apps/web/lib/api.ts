@@ -166,6 +166,11 @@ type SearchStreamTimeout = "first-result" | "idle";
 const SEARCH_FIRST_RESULT_TIMEOUT_MS = 30_000;
 const SEARCH_STREAM_IDLE_TIMEOUT_MS = 45_000;
 
+function usesServerSearchDeadline(strategy?: SearchStrategy): boolean {
+  // An omitted strategy may inherit JEV from the global configuration.
+  return strategy === undefined || strategy === "multi_jev";
+}
+
 function isSearchResponse(value: unknown): value is SearchResponse {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<SearchResponse>;
@@ -234,7 +239,9 @@ async function streamGlobalSearch(
         : clientErrorMessage("searchIdleTimeout"),
     );
 
-  armStreamTimeout("first-result", SEARCH_FIRST_RESULT_TIMEOUT_MS);
+  if (!usesServerSearchDeadline(body.strategy)) {
+    armStreamTimeout("first-result", SEARCH_FIRST_RESULT_TIMEOUT_MS);
+  }
   const searchStartMs = Date.now();
   let response: Response;
   try {
@@ -451,10 +458,12 @@ async function streamGlobalSearch(
 
 interface RequestOptions extends RequestInit {
   redirectOnUnauthorized?: boolean;
+  /** null delegates the deadline to a bounded server operation; caller abort still applies. */
+  timeoutMs?: number | null;
 }
 
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const { redirectOnUnauthorized = true, ...requestInit } = opts;
+  const { redirectOnUnauthorized = true, timeoutMs = 30_000, ...requestInit } = opts;
   const token = getToken();
   const headers: Record<string, string> = {
     ...(requestInit.headers as Record<string, string>),
@@ -466,11 +475,10 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   if (!headers["Accept-Language"])
     headers["Accept-Language"] = readClientLocale();
 
-  // 30s 超时护栏（SSE 流式接口不走此函数，不受影响）
-  const timeoutSignal = AbortSignal.timeout(30_000);
-  const signal = requestInit.signal
-    ? AbortSignal.any([requestInit.signal, timeoutSignal])
-    : timeoutSignal;
+  const timeoutSignal = timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs);
+  const signal = timeoutSignal
+    ? requestInit.signal ? AbortSignal.any([requestInit.signal, timeoutSignal]) : timeoutSignal
+    : requestInit.signal;
 
   const method = requestInit.method ?? "GET";
   const startMs = Date.now();
@@ -479,8 +487,10 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
     res = await fetch(`${API_BASE}${path}`, { ...requestInit, headers, signal });
   } catch (e) {
     const durationMs = Date.now() - startMs;
-    const isTimeout = e instanceof DOMException && e.name === "TimeoutError";
-    const isAbort = e instanceof DOMException && e.name === "AbortError";
+    const isAbort = Boolean(requestInit.signal?.aborted)
+      || (e instanceof DOMException && e.name === "AbortError");
+    const isTimeout = !isAbort && (Boolean(timeoutSignal?.aborted)
+      || (e instanceof DOMException && e.name === "TimeoutError"));
     getDiagnosticsStore().record("error", {
       source: "api",
       method,
@@ -488,7 +498,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
       duration_ms: durationMs,
       error_code: isTimeout ? "timeout" : isAbort ? "aborted" : "network",
       error_message: isTimeout
-        ? "Request timed out after 30s"
+        ? timeoutMs === null ? "Request deadline exceeded" : `Request timed out after ${timeoutMs / 1000}s`
         : isAbort
           ? "Request was cancelled"
           : "Network error — server unreachable or DNS failure",
@@ -771,6 +781,17 @@ export const api = {
       "/api/v1/system/model-config/embedding/test",
       { method: "POST", body: JSON.stringify(b ?? {}) },
     ),
+  testJevModelConfig: (b: ModelConfigPatch, signal?: AbortSignal) =>
+    request<{ ok: boolean; message: string }>(
+      "/api/v1/system/model-config/jev/test",
+      {
+        method: "POST", body: JSON.stringify(b), signal,
+        // Leave transport time around an explicit draft limit. Omitted values
+        // inherit server settings, so their deadline must be resolved there too.
+        timeoutMs: b.jev_ranking_timeout_seconds === undefined
+          ? null : b.jev_ranking_timeout_seconds * 1000 + 5_000,
+      },
+    ),
 
   // 信源
   listSources: () => request<Source[]>("/api/v1/sources"),
@@ -1001,6 +1022,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(b),
       signal,
+      timeoutMs: usesServerSearchDeadline(b.strategy) ? null : undefined,
     }),
   streamGlobalSearch,
   evalCompare: (b: EvalCompareBody, signal?: AbortSignal) =>
@@ -1008,6 +1030,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(b),
       signal,
+      timeoutMs: b.strategies.includes("multi_jev") ? null : undefined,
     }),
 
   // 知识宇宙：统计轮廓 + 原子时间线与显式探索

@@ -13,6 +13,7 @@ from zleap.sag import EngineConfig
 from zleap.sag.config import (
     ElasticsearchVectorConfig,
     EmbeddingConfig,
+    JevConfig,
     LLMConfig,
     OceanBaseConnectionConfig,
     OceanBaseVectorConfig,
@@ -117,6 +118,11 @@ def build_engine_config(settings: Settings, *, overrides: dict[str, Any] | None 
         storage_mode="normal",
         llm=llm,
         embedding=embedding,
+        jev=(
+            JevConfig(endpoint=settings.jev_endpoint, model=settings.jev_model, api_key=settings.jev_api_key)
+            if settings.jev_endpoint
+            else None
+        ),
         relational=_build_relational(settings),
         vector=_build_vector(settings),
         data_dir=str(overrides.get("data_dir") or settings.data_dir),

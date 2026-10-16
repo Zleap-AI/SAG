@@ -35,6 +35,7 @@ class SectionOut(BaseModel):
     rank: int
     source_id: str | None
     source_name: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class SearchEventOut(BaseModel):

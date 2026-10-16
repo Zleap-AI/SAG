@@ -212,6 +212,9 @@ async def test_search_stream_emits_terminal_error_when_completion_cannot_be_save
     assert events[-1][1] == {
         "code": "upstream_error",
         "message": "探索保存失败",
+        "layer": "llm",
+        "stage": "unknown",
+        "retryable": False,
     }
 
 

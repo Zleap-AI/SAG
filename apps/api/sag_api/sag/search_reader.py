@@ -13,9 +13,10 @@ import math
 import time
 from typing import TYPE_CHECKING, Any
 
-from zleap.sag.pipeline import SearchOptions, SearchOutputOptions, SearchRequest, SearchScope
+from zleap.sag.pipeline import RankingOptions, SearchOptions, SearchOutputOptions, SearchRequest, SearchScope
 
-from sag_api.core.error_taxonomy import ErrorStage
+from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
+from sag_api.core.errors import ServiceUnavailableError
 from sag_api.core.logging import get_logger
 from sag_api.sag._timings_probe import capture_scope as _timings_capture_scope
 from sag_api.sag._timings_probe import release_scope as _timings_release_scope
@@ -24,10 +25,26 @@ from sag_api.sag.errors import map_sag_errors
 from sag_api.services.chatbot_service import query_operation
 
 if TYPE_CHECKING:
+    from sag_api.core.config import Settings
     from sag_api.db.models import Source
     from sag_api.sag.engine_access import EngineAccess
 
 log = get_logger("sag")
+
+
+def search_source_timeout_seconds(settings: Settings, strategy: str | None) -> float:
+    """One source's lock, recall and ranking budget; excludes fan-out queueing."""
+    timeout = max(1.0, settings.search_source_timeout)
+    if (strategy or settings.search_strategy) == "multi_jev":
+        timeout += settings.jev_ranking_timeout_seconds
+    return timeout
+
+
+def _jev_sort_key(section: RetrievedSection) -> tuple[int, float]:
+    """Only compare scores within a scoring channel; JEV evidence comes first."""
+    channel = section.metadata.get("score_source")
+    priority = {"jev": 0, "event_score": 1, "query_chunk_fallback": 2}.get(channel, 3)
+    return priority, -section.score if priority < 3 else 0.0
 
 
 def _input_scope_filter(data_source_ids: list[str], source_ids_by_config: dict[str, tuple[str, ...]] | None):
@@ -62,12 +79,18 @@ class SearchReader:
     ) -> SearchOutcome:
         """单次检索（带每源时限）。超时抛 asyncio.TimeoutError。
 
-        strategy 是门面名(vector/multi/multi_es_fast);进入 zleap 前翻译成引擎名。
+        strategy 是门面名；进入 zleap 前翻译成引擎名。
         """
-        timeout = max(1.0, self._access.settings.search_source_timeout)
+        timeout = search_source_timeout_seconds(self._access.settings, strategy)
         if source_ids is not None and not source_ids:
             return SearchOutcome(query=query, sections=[], stats={"candidates": 0})
         engine_strategy = self._access.zleap_engine_strategy(strategy)
+        ranking_options = {}
+        if strategy == "multi_jev":
+            ranking_options["ranking"] = RankingOptions(
+                timeout_seconds=self._access.settings.jev_ranking_timeout_seconds,
+                on_timeout=self._access.settings.jev_failure_policy,
+            )
 
         async def run() -> Any:
             # The timeout must include waiting for the per-source lock. Otherwise
@@ -85,6 +108,7 @@ class SearchReader:
                                 output=SearchOutputOptions(
                                     include_ranked_candidates=include_ranked_candidates,
                                 ),
+                                **ranking_options,
                             ),
                         )
                     )
@@ -93,9 +117,25 @@ class SearchReader:
         bucket, token = _timings_capture_scope()
         try:
             result = await asyncio.wait_for(run(), timeout)
+        except TimeoutError as error:
+            if strategy == "multi_jev":
+                raise ServiceUnavailableError(
+                    "JEV 检索超时，请稍后重试", layer=ErrorLayer.ENGINE, stage=ErrorStage.RETRIEVE,
+                ) from error
+            raise
         finally:
             _timings_release_scope(token)
         outcome = SearchOutcome.from_result(result)
+        if strategy == "multi_jev":
+            ranking = outcome.stats.get("ranking") or {}
+            ranked = ranking.get("method") == "jev" and not ranking.get("fallback_reason")
+            for section in outcome.sections:
+                if section.metadata.get("recall_channel") == "query_chunk_fallback":
+                    section.metadata["score_source"] = "query_chunk_fallback"
+                elif section.metadata.get("event_ids"):
+                    section.metadata["score_source"] = "jev" if ranked else "event_score"
+                else:
+                    section.metadata["score_source"] = "unknown"
         if bucket:
             merged_stats = dict(outcome.stats)
             merged_stats["engine_timings"] = dict(bucket)
@@ -119,6 +159,7 @@ class SearchReader:
         精确模式的查询侧含 LLM 实体抽取（慢且可能失败重试）；事件向量层缺失的源也会空转。
         回退把这类退化收敛为一次快速向量检索，可经 `search_fallback_vector=false` 关闭。
         """
+        requested_strategy = strategy or self._access.settings.search_strategy
         strategy = self._access.effective_search_strategy(strategy)
         top_k = top_k or self._access.settings.search_top_k
         search_options: dict[str, Any] = {
@@ -138,20 +179,29 @@ class SearchReader:
                 strategy=strategy,
                 **search_options,
             )
+            if strategy == "multi_jev":
+                ranking = outcome.stats.get("ranking") or {"method": "jev", "fallback_reason": None}
+                return outcome.model_copy(update={"stats": {
+                    **outcome.stats,
+                    "requested_strategy": requested_strategy,
+                    "effective_strategy": strategy,
+                    "fallback_used": bool(ranking.get("fallback_reason")),
+                    "ranking": ranking,
+                }})
             if outcome.sections or strategy == "vector" or not self._access.settings.search_fallback_vector:
                 return SearchOutcome(
                     query=outcome.query,
                     sections=outcome.sections,
                     stats={
                         **outcome.stats,
-                        "requested_strategy": strategy,
+                        "requested_strategy": requested_strategy,
                         "effective_strategy": strategy,
                         "fallback_used": False,
                     },
                 )
             log.info("精确检索空结果，回退快速检索 source_config_id=%s", source_config_id)
         except TimeoutError:
-            if strategy == "vector" or not self._access.settings.search_fallback_vector:
+            if strategy in {"vector", "multi_jev"} or not self._access.settings.search_fallback_vector:
                 raise
             log.warning(
                 "检索超时(%.0fs) 回退 vector source_config_id=%s strategy=%s",
@@ -160,7 +210,7 @@ class SearchReader:
                 strategy,
             )
         except Exception as e:  # noqa: BLE001
-            if strategy == "vector" or not self._access.settings.search_fallback_vector:
+            if strategy in {"vector", "multi_jev"} or not self._access.settings.search_fallback_vector:
                 raise
             log.warning(
                 "检索失败回退 vector source_config_id=%s strategy=%s err=%s",
@@ -179,7 +229,7 @@ class SearchReader:
             sections=outcome.sections,
             stats={
                 **outcome.stats,
-                "requested_strategy": strategy,
+                "requested_strategy": requested_strategy,
                 "effective_strategy": "vector",
                 "fallback_used": True,
             },
@@ -196,7 +246,8 @@ class SearchReader:
         source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
         include_ranked_candidates: bool = False,
     ) -> SearchOutcome:
-        """在统一候选与并发边界内检索；单源失败不影响整体结果。"""
+        """有界并发检索；JEV 任一源失败则取消其他源并报告整次失败。"""
+        requested_strategy = strategy or self._access.settings.search_strategy
         strategy = self._access.effective_search_strategy(strategy)
         top_k = top_k or self._access.settings.search_top_k
         per_source_k = max(top_k, 4)
@@ -239,7 +290,7 @@ class SearchReader:
                 try:
                     options = {
                         "source": source,
-                        "strategy": strategy,
+                        "strategy": requested_strategy,
                         "top_k": per_source_k,
                         "include_ranked_candidates": include_ranked_candidates,
                     }
@@ -248,10 +299,20 @@ class SearchReader:
                     outcome = await self._access.search(scid, query, **options)
                     return scid, outcome
                 except Exception as e:  # noqa: BLE001
+                    if strategy == "multi_jev":
+                        raise
                     log.warning("fan-out 检索失败 %s：%s", scid, getattr(e, "message", None) or e)
                     return None
 
-        results = await asyncio.gather(*(_one(scid, src) for scid, src in targets))
+        tasks = [asyncio.create_task(_one(scid, src)) for scid, src in targets]
+        try:
+            results = await asyncio.gather(*tasks)
+        except BaseException:
+            # An all-or-error JEV request must not leave sibling scorers running.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
         best: dict[tuple[str, str], RetrievedSection] = {}
         loose: list[RetrievedSection] = []
@@ -266,11 +327,18 @@ class SearchReader:
                 if sec.chunk_id:
                     key = (sec.source_config_id, sec.chunk_id)
                     prev = best.get(key)
-                    if prev is None or sec.score > prev.score:
+                    if prev is None or (
+                        _jev_sort_key(sec) < _jev_sort_key(prev)
+                        if strategy == "multi_jev" else sec.score > prev.score
+                    ):
                         best[key] = sec
                 else:
                     loose.append(sec)
-        merged = sorted([*best.values(), *loose], key=lambda x: x.score, reverse=True)[:top_k]
+        merged = (
+            sorted([*best.values(), *loose], key=_jev_sort_key)
+            if strategy == "multi_jev"
+            else sorted([*best.values(), *loose], key=lambda x: x.score, reverse=True)
+        )[:top_k]
         ranked_candidates: list[dict[str, Any]] = []
         if include_ranked_candidates:
             for result in results:
@@ -286,7 +354,7 @@ class SearchReader:
             "sources_requested": requested_sources,
             "source_limit_applied": requested_sources > len(targets),
             "candidates": len(best) + len(loose),
-            "requested_strategy": strategy,
+            "requested_strategy": requested_strategy,
             "effective_strategy": next(
                 (
                     outcome.stats.get("effective_strategy", strategy)
@@ -303,6 +371,19 @@ class SearchReader:
                 for _, outcome in [result]
             ),
         }
+        if strategy == "multi_jev":
+            source_stats = {scid: outcome.stats for scid, outcome in results if outcome is not None}
+            reasons = list(dict.fromkeys(
+                reason
+                for value in source_stats.values()
+                if (reason := (value.get("ranking") or {}).get("fallback_reason"))
+            ))
+            stats.update(
+                source_stats=source_stats,
+                ranking={"method": "jev", "fallback_reason": "; ".join(reasons) or None},
+                effective_strategy="multi_jev",
+                fallback_used=bool(reasons),
+            )
         if include_ranked_candidates:
             stats["ranked_candidates"] = ranked_candidates
         return SearchOutcome(

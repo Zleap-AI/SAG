@@ -17,9 +17,11 @@ import { toast } from "sonner";
 
 import {
   getSearchStrategy,
+  getSearchStrategiesDisabled,
   type SearchStrategy,
 } from "@/lib/retrieval-config";
 import type { SearchResultSort } from "@/lib/search-result-sort";
+import { RetrievalStatus } from "@/components/features/retrieval-status";
 import { cn } from "@/lib/utils";
 import type {
   ActivityItem,
@@ -437,7 +439,7 @@ export function SearchPanel({
                 value={search.strategy}
                 defaultValue={search.defaultStrategy}
                 onValueChange={changeStrategy}
-                disabledMap={capabilities?.search_strategies_disabled}
+                disabledMap={getSearchStrategiesDisabled(capabilities, searchStrategies("unsupportedBackend"))}
               />
             </div>
             {mentionOpen && (
@@ -540,6 +542,7 @@ export function SearchPanel({
               : "mx-auto max-w-3xl",
           )}
         >
+          <RetrievalStatus stats={search.result.stats} requestedStrategy={search.lastStrategy} />
           <div className="flex items-center justify-between gap-3 px-1">
             <h2 className="flex items-center gap-2 text-sm font-medium">
               {t("results")}

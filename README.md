@@ -62,7 +62,7 @@ Upload a document once. SAG parses it, splits it into chunks, embeds it, extract
 | Capability | What it gives you |
 | --- | --- |
 | Knowledge ingestion | File and web sources, document parsing, chunking, embedding, event/entity extraction, background processing |
-| Search | Cross-source or source-scoped retrieval with Fast (`vector`), Fast (`multi_es_fast`), and Precise (`multi`) modes |
+| Search | Cross-source or source-scoped retrieval with Fast (`vector` / `multi_es_fast`), Precise (`multi`), and optional JEV reranking (`multi_jev`) modes |
 | Source tracing | Open any result or citation back to the exact original chunk |
 | Knowledge graph | Inspect events, entities, and their queryable associations |
 | Agent chat | Multi-turn answers grounded in selected sources, with clickable citations |
@@ -563,8 +563,13 @@ Pipeline request and result types are available from `zleap.sag.pipeline`: `Pars
 | Fast (vector) | `vector` | Direct retrieval by semantic similarity for a faster response |
 | Fast (multi_es-fast) | `multi_es_fast` | BM25 entity recall and event multi-hop retrieval, skipping LLM reranking |
 | Precise | `multi` | Combines entity relationships with LLM reranking for more complete results |
+| JEV reranking | `multi_jev` | Scores recalled and graph-expanded evidence through an independent JEV service |
 
 These are the application/API strategy names; the application maps `multi` to the Python engine's `full_expand` and `multi_es_fast` to `pruned_expand_rff`. Availability depends on storage capabilities: `multi_es_fast` requires lexical search support.
+
+Configure the full scoring URL, model, and independent API key in Settings → Knowledge → Retrieval, then select JEV as the default or for an individual exploration. `multi_jev` maps to `pruned_expand_jev` and requires lexical search support (currently LanceDB/Elasticsearch). Queries and candidate evidence are sent to that service; existing documents do not need reindexing. `SAG_JEV_*` defaults are also listed in `.env.example`; saved UI configuration takes precedence.
+
+JEV ranking defaults to a 30-second deadline and returns an error on failure. Users can explicitly allow coarse results, which are marked as a fallback. The application also budgets for recall and source queueing while preserving ranking scores and order. Chat assistants inherit the global strategy unless their persona overrides it; Dify retains its independent setting.
 
 #### Storage backends
 

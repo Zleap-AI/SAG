@@ -610,7 +610,10 @@
     "mode": "Retrieval mode",
     "modeAria": "Retrieval mode: {strategy}",
     "default": "Default",
-    "disabledSuffix": "(unavailable)"
+    "disabledSuffix": "(unavailable)",
+    "multiJevLabel": "JEV reranking",
+    "multiJevDescription": "Expand related evidence, then score relevance with your configured JEV service.",
+    "unsupportedBackend": "This server does not advertise JEV support. Upgrade the server to use this mode."
   },
   "RetrievalTest": {
     "failed": "Retrieval failed",
@@ -666,7 +669,25 @@
     "topK": "Results · {count, number}",
     "topKAria": "Number of results",
     "saving": "Saving…",
-    "save": "Save and apply"
+    "save": "Save and apply",
+    "jevTitle": "JEV reranking service",
+    "jevDescription": "Selecting JEV mode sends the question and candidate evidence to this service for relevance scoring. Saving the service alone does not enable this mode.",
+    "jevEndpoint": "Full scoring URL",
+    "jevEndpointDescription": "Use the complete HTTP(S) scoring URL supplied by your service. No path is added automatically.",
+    "jevModel": "Model",
+    "jevKey": "API key (optional)",
+    "jevKeyConfigured": "Configured; leave blank to keep it",
+    "jevKeyOptional": "Leave blank for a service without authentication",
+    "jevKeyDescription": "This key is separate from your generation model key. Changing the service address clears the saved key; enter a new one if required.",
+    "jevTimeout": "Reranking time limit (seconds)",
+    "jevTimeoutDescription": "Total scoring and retry time, from 0.1 to 120 seconds.",
+    "jevFailurePolicy": "When reranking fails",
+    "jevError": "Report an error",
+    "jevFallback": "Allow coarse results",
+    "jevTest": "Test JEV connection",
+    "jevTesting": "Testing…",
+    "jevTestFailed": "JEV connection test failed",
+    "jevInvalidDraft": "Enter a valid full HTTP(S) URL, a model name, and a time limit between 0.1 and 120 seconds."
   },
   "ChatbotConfig": {
     "retry": "Retry",
@@ -1694,5 +1715,12 @@
     "includesQA": "Key Q&A interaction events",
     "includesErrors": "Error and exception information",
     "includesEnv": "System environment information"
+  },
+  "RetrievalStatus": {
+    "requested": "Requested: {mode}",
+    "actual": "Actual: {mode}",
+    "coarse": "Coarse ranking",
+    "jevFallback": "JEV reranking did not complete; these results include coarse ranking.",
+    "partial": "Partial results: some sources did not complete."
   }
 }

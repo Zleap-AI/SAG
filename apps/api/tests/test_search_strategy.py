@@ -557,7 +557,7 @@ def test_strategies_capability_report_marks_multi_es_disabled_on_pgvector(monkey
     monkeypatch.setattr(settings, "sag_vector_provider", "lancedb")
     ok_report = EngineManager.strategies_capability_report(settings)
     assert set(ok_report["enabled"]) == {"vector", "multi", "multi_es_fast"}
-    assert ok_report["disabled"] == {}
+    assert ok_report["disabled"]["multi_jev"]["reason"] == "jev_not_configured"
 
 
 @pytest.mark.asyncio

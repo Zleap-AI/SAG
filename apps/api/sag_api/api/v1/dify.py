@@ -101,9 +101,14 @@ async def retrieval(
                 "heading": section.heading,
                 "retrieval_strategy": effective_strategy,
                 "fallback_used": fallback_used,
+                **({
+                    "score_source": section.metadata.get("score_source", "unknown"),
+                    "ranking_fallback_reason": (outcome.stats.get("ranking") or {}).get("fallback_reason"),
+                } if strategy == "multi_jev" else {}),
             },
         )
         for section in outcome.sections
         if section.score >= body.retrieval_setting.score_threshold
+        and (strategy != "multi_jev" or fallback_used or section.metadata.get("score_source") == "jev")
     ]
     return DifyRetrievalResponse(records=records)

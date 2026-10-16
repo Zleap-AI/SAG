@@ -48,6 +48,11 @@ _FIELDS = frozenset(
         "embedding_base_url",
         "embedding_api_key",
         "embedding_dimensions",
+        "jev_endpoint",
+        "jev_model",
+        "jev_api_key",
+        "jev_ranking_timeout_seconds",
+        "jev_failure_policy",
         "document_parser",
         "mineru_provider",
         "mineru_base_url",
@@ -63,8 +68,10 @@ _FIELDS = frozenset(
         "sag_language",
     }
 )
-_SECRET_FIELDS = frozenset({"llm_api_key", "embedding_api_key", "mineru_api_key"})
-_NULLABLE_FIELDS = frozenset({"llm_base_url", "embedding_base_url", "embedding_dimensions", "mineru_base_url"})
+_SECRET_FIELDS = frozenset({"llm_api_key", "embedding_api_key", "mineru_api_key", "jev_api_key"})
+_NULLABLE_FIELDS = frozenset({
+    "llm_base_url", "embedding_base_url", "embedding_dimensions", "mineru_base_url", "jev_endpoint",
+})
 _LOCKABLE_LLM_FIELDS = frozenset(
     {
         "llm_provider",
@@ -224,9 +231,24 @@ def apply_overrides(settings: Settings, overrides: dict) -> None:
     """把持久化配置写回 settings；部署锁定时保留 LLM 环境值。"""
     normalized = _normalize_overrides(overrides)
     locked_fields = _LOCKABLE_LLM_FIELDS if settings.lock_llm_config else frozenset()
-    for key, value in normalized.items():
-        if key in _FIELDS and key not in locked_fields:
-            setattr(settings, key, value)
+    updates = {key: value for key, value in normalized.items() if key in _FIELDS and key not in locked_fields}
+    try:
+        validated = Settings.model_validate({**settings.model_dump(), **updates})
+    except ValueError:
+        raise ConfigurationError(
+            "Invalid saved model configuration; repair the model settings before startup"
+        ) from None
+    # A saved endpoint may outlive a deployment's environment defaults. Never pair
+    # its destination with a secret belonging to a different environment endpoint.
+    if (
+        "jev_endpoint" in updates
+        and validated.jev_endpoint != settings.jev_endpoint
+        and "jev_api_key" not in updates
+    ):
+        updates["jev_api_key"] = None
+        validated.jev_api_key = None
+    for key in updates:
+        setattr(settings, key, getattr(validated, key))
     if settings is _settings:
         for key in _MODEL_CONFIG_SOURCES:
             if key in locked_fields:
@@ -343,6 +365,11 @@ def effective_model_config() -> dict:
         "embedding_base_url": _settings.embedding_base_url,
         "embedding_dimensions": _settings.embedding_dimensions,
         "embedding_api_key_set": bool(_settings.embedding_api_key),
+        "jev_endpoint": _settings.jev_endpoint,
+        "jev_model": _settings.jev_model,
+        "jev_api_key_set": bool(_settings.jev_api_key),
+        "jev_ranking_timeout_seconds": _settings.jev_ranking_timeout_seconds,
+        "jev_failure_policy": _settings.jev_failure_policy,
         "document_parser": _settings.document_parser,
         "effective_document_parser": _settings.effective_document_parser,
         "mineru_provider": _settings.mineru_provider,
@@ -403,6 +430,8 @@ async def save_model_config(session: AsyncSession, patch: dict) -> dict:
         if _settings.lock_llm_config and key in _LOCKABLE_LLM_FIELDS:
             continue
         if key in _SECRET_FIELDS:
+            if key == "jev_api_key" and isinstance(value, str):
+                value = value.strip()
             if value:  # 仅非空才更新；空/None 保留原值
                 stored[key] = str(value)
             continue
@@ -415,13 +444,25 @@ async def save_model_config(session: AsyncSession, patch: dict) -> dict:
     candidate = {**_settings.model_dump(), **stored}
     if _settings.lock_llm_config:
         candidate.update({key: getattr(_settings, key) for key in _LOCKABLE_LLM_FIELDS})
-    if candidate["llm_provider"] == "responses":
-        try:
-            Settings.model_validate(candidate)
-        except ValueError:
-            raise ConfigurationError(
-                "Invalid Responses configuration; check endpoint, API version and reasoning options"
-            ) from None
+    try:
+        validated = Settings.model_validate(candidate)
+    except ValueError:
+        message = (
+            "Invalid Responses configuration; check endpoint, API version and reasoning options"
+            if candidate["llm_provider"] == "responses"
+            else "Invalid model configuration; check the service settings"
+        )
+        raise ConfigurationError(message) from None
+    candidate = validated.model_dump()
+    stored = {key: candidate[key] if key in _FIELDS else value for key, value in stored.items()}
+    # Credentials belong to their scoring endpoint; a new destination must not
+    # inherit the old secret, including an environment-supplied secret.
+    if str(patch.get("jev_api_key") or "").strip():
+        # Key-only updates must also pin their current destination (including None),
+        # so a future environment endpoint cannot silently receive a saved secret.
+        stored["jev_endpoint"] = candidate["jev_endpoint"]
+    elif candidate["jev_endpoint"] != _settings.jev_endpoint:
+        stored["jev_api_key"] = None
     identity = ("llm_provider", "llm_responses_provider", "llm_responses_endpoint")
     if (
         not _settings.lock_llm_config

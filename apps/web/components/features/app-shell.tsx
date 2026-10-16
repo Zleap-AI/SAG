@@ -35,6 +35,7 @@ import { DEFAULT_TIME_ZONE } from "@/lib/format";
 import { PetAgent } from "@/lib/pet-agent";
 import {
   DEFAULT_SEARCH_STRATEGY,
+  getSearchStrategiesDisabled,
   isSearchStrategy,
 } from "@/lib/retrieval-config";
 import {
@@ -316,6 +317,7 @@ function FullLoader() {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const t = useTranslations("AppShell");
+  const searchStrategies = useTranslations("SearchStrategies");
   const router = useRouter();
   const pathname = usePathname();
   const { theme, resolvedTheme, setTheme } = useTheme();
@@ -826,7 +828,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               ? capabilities.search_strategy
               : DEFAULT_SEARCH_STRATEGY
           }
-          disabledMap={capabilities?.search_strategies_disabled}
+          disabledMap={getSearchStrategiesDisabled(capabilities, searchStrategies("unsupportedBackend"))}
         >
           <KnowledgeProvider>
           <OctxImportProvider>

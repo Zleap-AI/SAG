@@ -5,8 +5,13 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 from zleap.sag.exceptions import (
+    AIAuthError,
+    AIError,
+    AIInvalidRequestError,
+    AITransientError,
     ConfigError,
     InvalidInputError,
+    LLMContextLengthError,
     NonRetryableError,
     OperationConflictError,
     ResourceNotFoundError,
@@ -14,6 +19,7 @@ from zleap.sag.exceptions import (
     SagError,
 )
 from zleap.sag.operations import OperationResult
+from zleap.sag.pipeline.errors import SearchStageError
 
 from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
 from sag_api.core.errors import (
@@ -51,6 +57,30 @@ def map_sag_errors(*, stage: ErrorStage = ErrorStage.UNKNOWN):
     """
     try:
         yield
+    except SearchStageError as e:
+        cause = e.__cause__
+        seen: set[int] = set()
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            if isinstance(cause, TimeoutError):
+                raise ServiceUnavailableError("检索精排超时，请稍后重试", layer=ErrorLayer.ENGINE, stage=stage) from e
+            if getattr(cause, "provider", None) == "jev":
+                if isinstance(cause, AIAuthError):
+                    raise ConfigurationError(
+                        "JEV 鉴权失败，请检查服务地址和 API Key", layer=ErrorLayer.ENGINE, stage=stage,
+                    ) from e
+                if isinstance(cause, AITransientError):
+                    raise ServiceUnavailableError(
+                        "JEV 精排服务暂不可用，请稍后重试", layer=ErrorLayer.ENGINE, stage=stage,
+                    ) from e
+                if isinstance(cause, (AIInvalidRequestError, LLMContextLengthError)):
+                    raise ValidationError(
+                        "JEV 精排请求被拒绝，请检查模型和候选内容限制", layer=ErrorLayer.ENGINE, stage=stage,
+                    ) from e
+                if isinstance(cause, AIError):
+                    raise UpstreamError("JEV 精排返回无效结果", layer=ErrorLayer.ENGINE, stage=stage) from e
+            cause = cause.__cause__
+        raise UpstreamError(str(e), layer=ErrorLayer.ENGINE, stage=stage, retryable=e.retryable) from e
     except ConfigError as e:
         raise ConfigurationError(str(e), layer=ErrorLayer.ENGINE, stage=stage) from e
     except ResourceNotFoundError as e:

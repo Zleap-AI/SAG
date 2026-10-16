@@ -276,6 +276,106 @@ async def test_rest_event_graph_omits_unpublished_direct_event_hits(publication_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["global", "source", "stream"])
+@pytest.mark.parametrize("strategy", [None, "multi_jev"])
+@pytest.mark.parametrize("channel", ["jev", "query_chunk_fallback"])
+async def test_jev_search_events_follow_ranked_evidence_without_extra_chunk_events(
+    publication_evidence, monkeypatch, entry, strategy, channel,
+):
+    """Independent vector hits and chunk expansion must not replace the ranked result."""
+    import json
+
+    import httpx
+    from sqlalchemy import select
+    from zleap.sag.db.models import SourceEvent
+
+    from sag_api.core.deps import get_engine_manager
+    from sag_api.main import app
+    from sag_api.sag import RetrievedSection, SearchOutcome
+
+    manager, source, document, _entity, history_chunk, hidden_chunk = publication_evidence
+    manager._settings.search_strategy = "multi_jev"
+    factory = await manager.get_sag_session_factory(source.sag_source_config_id)
+    hq_chunk, hq_id, extra_id = uuid4().hex, uuid4().hex, uuid4().hex
+    async with factory() as session:
+        history = await session.scalar(select(SourceEvent).where(SourceEvent.chunk_id == history_chunk))
+        hidden = await session.scalar(select(SourceEvent).where(SourceEvent.chunk_id == hidden_chunk).limit(1))
+        history_id, hidden_id = history.id, hidden.id
+        session.add_all([
+            SourceEvent(
+                id=hq_id, data_source_id=source.sag_source_config_id,
+                source_type="ARTICLE", source_id=document.sag_source_id, chunk_id=hq_chunk,
+                title="Cedar headquarters", summary="Harbor City", content="Harbor City", status="COMPLETED", rank=1,
+            ),
+            SourceEvent(
+                id=extra_id, data_source_id=source.sag_source_config_id,
+                source_type="ARTICLE", source_id=document.sag_source_id, chunk_id=hq_chunk,
+                title="Unscored event in the same chunk", summary="Unscored", content="Unscored",
+                status="COMPLETED", rank=0,
+            ),
+        ])
+        await session.commit()
+
+    async def search_many(_targets, query, **kwargs):
+        return SearchOutcome(query=query, sections=[
+            RetrievedSection(
+                source_config_id=source.sag_source_config_id, source_id=document.sag_source_id,
+                chunk_id=hq_chunk, content="Cedar HQ", score=0.87,
+                metadata={"score_source": channel, **({"event_ids": [hq_id, hidden_id]} if channel == "jev" else {})},
+            ),
+            RetrievedSection(
+                source_config_id=source.sag_source_config_id, source_id=document.sag_source_id,
+                chunk_id=history_chunk, content="Cedar history", score=0.24,
+                metadata={"score_source": channel, **({"event_ids": [history_id]} if channel == "jev" else {})},
+            ),
+        ], stats={"effective_strategy": "multi_jev", "ranking": {"method": "jev", "fallback_reason": None}})
+
+    async def vector_events(*args, **kwargs):
+        # This old independent recall incorrectly took precedence over JEV.
+        return {(source.sag_source_config_id, history_id): 1.0,
+                (source.sag_source_config_id, hq_id): 1.0,
+                (source.sag_source_config_id, extra_id): 1.0}
+
+    monkeypatch.setattr(manager, "search_many", search_many)
+    monkeypatch.setattr(manager, "search_event_scores", vector_events)
+    app.dependency_overrides[get_engine_manager] = lambda: manager
+    try:
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+                registered = await client.post("/api/v1/auth/register", json={
+                    "email": f"jev-event-{uuid4().hex}@t.com", "password": "password123",
+                })
+                assert registered.status_code == 201, registered.text
+                payload = {"query": "Cedar", "source_ids": [source.id], "top_k": 3}
+                if strategy is not None:
+                    payload["strategy"] = strategy
+                path = f"/api/v1/sources/{source.id}/search" if entry == "source" else "/api/v1/search"
+                if entry == "stream":
+                    path += "/stream"
+                response = await client.post(path, json=payload, headers={
+                    "Authorization": f"Bearer {registered.json()['access_token']}",
+                })
+                assert response.status_code == 200, response.text
+                if entry == "stream":
+                    from tests.test_search_stream import _events
+                    responses = [data for name, data in _events(response.text) if name in {"result", "completed"}]
+                    assert len(responses) == 2
+                else:
+                    responses = [json.loads(response.content)]
+                for result in responses:
+                    assert [item["score"] for item in result["sections"]] == [0.87, 0.24]
+                    if channel == "jev":
+                        assert [(item["id"], item["score"]) for item in result["events"]] == [
+                            (hq_id, 0.87), (history_id, 0.24),
+                        ]
+                        assert result["source_hits"][0]["max_score"] == 0.87
+                    else:
+                        assert result["events"] == [] and result["source_hits"] == []
+    finally:
+        app.dependency_overrides.pop(get_engine_manager, None)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("entry", ["source", "global"])
 async def test_rest_search_discards_old_body_when_publication_switches_during_graph(
     publication_evidence,

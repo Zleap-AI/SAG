@@ -610,7 +610,10 @@
     "mode": "检索模式",
     "modeAria": "检索模式：{strategy}",
     "default": "默认",
-    "disabledSuffix": "(不可用)"
+    "disabledSuffix": "(不可用)",
+    "multiJevLabel": "JEV 精排",
+    "multiJevDescription": "扩展关联证据后，使用配置的 JEV 服务评分相关性。",
+    "unsupportedBackend": "当前服务端未声明支持 JEV，请升级服务端后使用此模式。"
   },
   "RetrievalTest": {
     "failed": "检索失败",
@@ -666,7 +669,25 @@
     "topK": "召回条数 · {count, number}",
     "topKAria": "召回条数",
     "saving": "保存中…",
-    "save": "保存并生效"
+    "save": "保存并生效",
+    "jevTitle": "JEV 精排服务",
+    "jevDescription": "选择 JEV 模式时，会将问题与候选证据发送至此服务进行相关性评分。仅保存服务配置不会开启此模式。",
+    "jevEndpoint": "完整评分 URL",
+    "jevEndpointDescription": "填写服务商提供的完整 HTTP(S) 评分地址，系统不会自动追加路径。",
+    "jevModel": "模型",
+    "jevKey": "API Key（可选）",
+    "jevKeyConfigured": "已配置，留空保持不变",
+    "jevKeyOptional": "免密服务可留空",
+    "jevKeyDescription": "此密钥独立于生成模型密钥。更改服务地址后会清除原密钥，如需鉴权请重新填写。",
+    "jevTimeout": "精排总时限（秒）",
+    "jevTimeoutDescription": "包含评分与重试，总时限为 0.1 至 120 秒。",
+    "jevFailurePolicy": "精排失败时",
+    "jevError": "报错",
+    "jevFallback": "允许返回粗排结果",
+    "jevTest": "测试 JEV 连接",
+    "jevTesting": "测试中…",
+    "jevTestFailed": "JEV 连接测试失败",
+    "jevInvalidDraft": "请填写有效的完整 HTTP(S) URL、模型名，以及 0.1 至 120 秒的总时限。"
   },
   "ChatbotConfig": {
     "retry": "重试",
@@ -1694,5 +1715,12 @@
     "includesQA": "问答交互关键事件",
     "includesErrors": "错误与异常信息",
     "includesEnv": "系统环境信息"
+  },
+  "RetrievalStatus": {
+    "requested": "请求模式：{mode}",
+    "actual": "实际模式：{mode}",
+    "coarse": "粗排",
+    "jevFallback": "本次未完成 JEV 精排，已返回粗排结果。",
+    "partial": "部分结果：部分信源未完成检索。"
   }
 }

@@ -24,6 +24,8 @@ SAG_DIFY_SEARCH_STRATEGY=vector
 
 This setting affects the Dify endpoint only. It does not change the retrieval strategy in SAG Web.
 
+For JEV, configure `SAG_JEV_*` (or save the service in SAG Knowledge settings), then explicitly set `SAG_DIFY_SEARCH_STRATEGY=multi_jev`. This mode requires lexical search support. After successful ranking, the Dify threshold applies only to JEV-scored evidence; vector top-ups are excluded. When coarse fallback is allowed, record metadata includes `fallback_used`, `score_source`, and `ranking_fallback_reason`. Recalibrate score thresholds when switching scoring modes.
+
 ### Verify: values reached the API container
 
 ~~~bash
