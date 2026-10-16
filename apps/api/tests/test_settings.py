@@ -29,6 +29,8 @@ _RESTORE = (
     "embedding_base_url",
     "embedding_api_key",
     "embedding_dimensions",
+    "embedding_schema_dimensions",
+    "embedding_request_dimensions",
     "document_parser",
     "mineru_provider",
     "mineru_base_url",
@@ -243,6 +245,49 @@ def test_database_model_config_overrides_environment_default():
     apply_overrides(configured, {"llm_model": "database-model"})
 
     assert configured.llm_model == "database-model"
+
+
+@pytest.mark.parametrize(
+    "overrides,model,url,schema_dimensions,request_dimensions",
+    [
+        (
+            {"embedding_dimensions": 1024, "embedding_schema_dimensions": 1024, "embedding_request_dimensions": 1024},
+            "embedding-model", "https://embedding.invalid/v1", 1024, 1024,
+        ),
+        (
+            {"embedding_dimensions": None, "embedding_schema_dimensions": None, "embedding_request_dimensions": None},
+            "embedding-model", "https://embedding.invalid/v1", 1024, 1024,
+        ),
+        ({"llm_model": "saved-generation"}, "embedding-model", "https://embedding.invalid/v1", 16, 16),
+        (
+            {"embedding_dimensions": None, "embedding_schema_dimensions": None, "embedding_request_dimensions": None},
+            "BAAI/bge-m3", "https://api.siliconflow.cn/v1", 1024, None,
+        ),
+        ({"embedding_dimensions": 1024}, "embedding-model", "https://embedding.invalid/v1", 16, 16),
+        ({"embedding_dimensions": None}, "embedding-model", "https://embedding.invalid/v1", 16, 16),
+    ],
+)
+def test_saved_embedding_dimensions_override_split_environment(
+    overrides, model, url, schema_dimensions, request_dimensions,
+):
+    from sag_api.services.settings_service import apply_overrides
+
+    configured = Settings(
+        _env_file=None,
+        embedding_model=model,
+        embedding_base_url=url,
+        embedding_dimensions=16,
+        embedding_schema_dimensions=16,
+        embedding_request_dimensions=16,
+    )
+
+    apply_overrides(configured, overrides)
+
+    assert configured.effective_embedding_schema_dimensions == schema_dimensions
+    assert configured.effective_embedding_request_dimensions == request_dimensions
+    if "embedding_schema_dimensions" in overrides:
+        assert configured.embedding_schema_dimensions == overrides["embedding_schema_dimensions"]
+        assert configured.embedding_request_dimensions == overrides["embedding_request_dimensions"]
 
 
 def test_explicit_llm_lock_preserves_environment_values():

@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from sag_api.core.config import Settings
+from sag_api.core.config import Settings, expand_embedding_dimensions
 from sag_api.core.config import settings as _settings
 from sag_api.core.embedding_presets import QUICK_SETUP_EMBEDDINGS, EmbeddingSetupProvider
 from sag_api.core.errors import ConfigurationError, ConflictError
@@ -71,6 +71,9 @@ _FIELDS = frozenset(
         "sag_language",
     }
 )
+# New explicit dimension saves pin both meanings in the existing JSON row. Old
+# rows with only the alias retain their original split-environment precedence.
+_PERSISTED_FIELDS = _FIELDS | {"embedding_schema_dimensions", "embedding_request_dimensions"}
 _SECRET_FIELDS = frozenset({"llm_api_key", "embedding_api_key", "mineru_api_key", "jev_api_key"})
 _NULLABLE_FIELDS = frozenset({
     "llm_base_url", "embedding_base_url", "embedding_dimensions", "mineru_base_url", "jev_endpoint",
@@ -146,11 +149,8 @@ def _embedding_identity(settings: Settings, patch: dict) -> tuple[str, int]:
     UI/API 仍只暴露单一 `embedding_dimensions` 字段，它同时映射到 schema 与请求
     两项。未随 patch 传入时取配置的生效 schema 维度（含新字段与旧别名）。
     """
-    model = str(patch.get("embedding_model", settings.embedding_model))
-    if "embedding_dimensions" in patch:
-        dimensions = patch["embedding_dimensions"]
-        return model, int(dimensions or settings.effective_embedding_schema_dimensions)
-    return model, settings.effective_embedding_schema_dimensions
+    proposed = settings.model_copy(update=expand_embedding_dimensions(patch))
+    return str(proposed.embedding_model), proposed.effective_embedding_schema_dimensions
 
 
 async def _reject_incompatible_embedding_change(
@@ -234,7 +234,9 @@ def apply_overrides(settings: Settings, overrides: dict) -> None:
     """把持久化配置写回 settings；部署锁定时保留 LLM 环境值。"""
     normalized = _normalize_overrides(overrides)
     locked_fields = _LOCKABLE_LLM_FIELDS if settings.lock_llm_config else frozenset()
-    updates = {key: value for key, value in normalized.items() if key in _FIELDS and key not in locked_fields}
+    updates = {
+        key: value for key, value in normalized.items() if key in _PERSISTED_FIELDS and key not in locked_fields
+    }
     try:
         validated = Settings.model_validate({**settings.model_dump(), **updates})
     except ValueError:
@@ -366,7 +368,11 @@ def effective_model_config() -> dict:
         "llm_api_key_set": bool(_settings.llm_api_key),
         "embedding_model": _settings.embedding_model,
         "embedding_base_url": _settings.embedding_base_url,
-        "embedding_dimensions": _settings.embedding_dimensions,
+        "embedding_dimensions": (
+            _settings.effective_embedding_schema_dimensions
+            if _settings.embedding_schema_dimensions is not None
+            else _settings.embedding_dimensions
+        ),
         "embedding_api_key_set": bool(_settings.embedding_api_key),
         "jev_endpoint": _settings.jev_endpoint,
         "jev_model": _settings.jev_model,
@@ -448,6 +454,8 @@ async def _save_model_config_locked(session: AsyncSession, patch: dict) -> dict:
             continue
         stored[key] = value
 
+    if "embedding_dimensions" in patch:
+        stored.update(expand_embedding_dimensions({"embedding_dimensions": stored["embedding_dimensions"]}))
     stored = _normalize_overrides(stored)
     candidate = {**_settings.model_dump(), **stored}
     if _settings.lock_llm_config:
@@ -462,7 +470,7 @@ async def _save_model_config_locked(session: AsyncSession, patch: dict) -> dict:
         )
         raise ConfigurationError(message) from None
     candidate = validated.model_dump()
-    stored = {key: candidate[key] if key in _FIELDS else value for key, value in stored.items()}
+    stored = {key: candidate[key] if key in _PERSISTED_FIELDS else value for key, value in stored.items()}
     # Credentials belong to their scoring endpoint; a new destination must not
     # inherit the old secret, including an environment-supplied secret.
     if str(patch.get("jev_api_key") or "").strip():

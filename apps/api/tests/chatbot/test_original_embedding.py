@@ -98,6 +98,51 @@ async def test_original_embedding_draft_bypasses_query_routing_and_never_saves(
 
 
 @pytest.mark.parametrize(
+    "draft,vector_dimensions,request_dimensions",
+    [
+        ({"embedding_dimensions": 1024}, 1024, 1024),
+        ({"embedding_dimensions": None}, 1024, 1024),
+        (
+            {
+                "embedding_dimensions": None,
+                "embedding_model": "BAAI/bge-m3",
+                "embedding_base_url": "https://api.siliconflow.cn/v1",
+            },
+            1024,
+            None,
+        ),
+        ({}, 16, 16),
+    ],
+)
+async def test_original_embedding_draft_dimensions_override_split_environment_without_saving(
+    client, isolate, embedding_transport, database, draft, vector_dimensions, request_dimensions,
+):
+    from sqlalchemy import select
+
+    from sag_api.db.models import Setting
+
+    app, http = client
+    app.dependency_overrides[get_current_user] = lambda: object()
+    isolate.stock.embedding_dimensions = 16
+    isolate.stock.embedding_schema_dimensions = 16
+    isolate.stock.embedding_request_dimensions = 16
+    before = isolate.stock.model_dump()
+    calls, clients, payload = embedding_transport
+    payload["data"][0]["embedding"] = [1.0] * vector_dimensions
+
+    response = await http.post("/api/v1/system/model-config/embedding/test", json=draft)
+
+    assert response.status_code == 200 and response.json()["ok"], response.text
+    assert response.json()["dimensions"] == vector_dimensions
+    assert calls[0][2].get("dimensions") == request_dimensions
+    assert ("dimensions" in calls[0][2]) is (request_dimensions is not None)
+    assert clients[0].is_closed
+    assert isolate.stock.model_dump() == before and isolate.persisted == {}
+    async with database() as session:
+        assert await session.scalar(select(Setting)) is None
+
+
+@pytest.mark.parametrize(
     "draft,expected_url,expected_key",
     [
         ({"embedding_api_key": ""}, "https://stock-embedding.invalid/v1/embeddings", "stock-embedding-key"),
@@ -158,6 +203,7 @@ async def test_original_embedding_omits_unsupported_request_dimensions(client, i
     app.dependency_overrides[get_current_user] = lambda: object()
     isolate.stock.embedding_request_dimensions = None
     isolate.stock.embedding_dimensions = None
+    embedding_transport[2]["data"][0]["embedding"] = [1.0] * 1024
     response = await client.post(
         "/api/v1/system/model-config/embedding/test",
         json={

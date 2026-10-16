@@ -21,6 +21,8 @@ _RESTORE = (
     "embedding_base_url",
     "embedding_api_key",
     "embedding_dimensions",
+    "embedding_schema_dimensions",
+    "embedding_request_dimensions",
     "document_parser",
     "mineru_provider",
     "mineru_base_url",

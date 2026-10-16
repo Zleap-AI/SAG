@@ -46,6 +46,15 @@ def _embedding_request_dimensions_unsupported(base_url: str | None, model: str) 
     return (hostname, model.strip().lower()) == _EMBEDDING_REQUEST_DIMENSIONS_UNSUPPORTED
 
 
+def expand_embedding_dimensions(updates: dict) -> dict:
+    """An explicit UI dimension overrides both split fields, including when cleared."""
+    expanded = dict(updates)
+    if "embedding_dimensions" in updates:
+        expanded["embedding_schema_dimensions"] = updates["embedding_dimensions"]
+        expanded["embedding_request_dimensions"] = updates["embedding_dimensions"]
+    return expanded
+
+
 def normalize_jev_endpoint(value: str | None) -> str | None:
     """Keep the full scoring URL while rejecting credentials and unusable URLs."""
     if value is None or not value.strip():

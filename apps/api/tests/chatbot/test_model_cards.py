@@ -141,12 +141,150 @@ async def test_invalid_card_fields_do_not_publish_runtime_or_persistence(card_cl
         assert row.value == saved
 
 
+@pytest.mark.parametrize("field", ["embedding_schema_dimensions", "embedding_request_dimensions"])
+async def test_canonical_embedding_fields_cannot_be_submitted_by_api_clients(
+    card_client, isolate, database, field,
+):
+    client, runtime = card_client
+    before = isolate.stock.model_dump()
+
+    response = await client.put("/api/v1/system/model-config", json={field: 1024})
+
+    assert response.status_code == 200, response.text
+    assert isolate.stock.model_dump() == before
+    assert runtime.applied[0][0]["embedding_schema_dimensions"] == before["embedding_schema_dimensions"]
+    assert runtime.applied[0][0]["embedding_request_dimensions"] == before["embedding_request_dimensions"]
+    async with database() as session:
+        row = await session.scalar(select(Setting).where(Setting.key == "model_config"))
+        assert row.value == {}
+
+
 @pytest.mark.parametrize("dimensions", [None, 16])
 async def test_embedding_dimension_save_accepts_null_or_integer(card_client, isolate, dimensions):
     client, _ = card_client
     result = await client.put("/api/v1/system/model-config", json={"embedding_dimensions": dimensions})
     assert result.status_code == 200, result.text
     assert isolate.stock.embedding_dimensions == dimensions
+
+
+@pytest.mark.parametrize("dimensions,expected", [(1024, 1024), (None, 1024)])
+async def test_embedding_dimension_save_publishes_and_reloads_over_split_environment(
+    card_client, isolate, database, dimensions, expected,
+):
+    client, runtime = card_client
+    isolate.stock.embedding_dimensions = 16
+    isolate.stock.embedding_schema_dimensions = 16
+    isolate.stock.embedding_request_dimensions = 16
+    deployment = isolate.stock.model_copy(deep=True)
+
+    response = await client.put("/api/v1/system/model-config", json={"embedding_dimensions": dimensions})
+
+    assert response.status_code == 200, response.text
+    assert isolate.stock.effective_embedding_schema_dimensions == expected
+    assert isolate.stock.effective_embedding_request_dimensions == expected
+    assert runtime.applied[0][0]["embedding_schema_dimensions"] == dimensions
+    assert runtime.applied[0][0]["embedding_request_dimensions"] == dimensions
+    async with database() as session:
+        stored = await settings_service.load_overrides(session)
+    assert stored == {
+        "embedding_dimensions": dimensions,
+        "embedding_schema_dimensions": dimensions,
+        "embedding_request_dimensions": dimensions,
+    }
+    settings_service.apply_overrides(deployment, stored)
+    assert deployment.effective_embedding_schema_dimensions == expected
+    assert deployment.effective_embedding_request_dimensions == expected
+
+
+@pytest.mark.parametrize("dimensions", [None, 1024])
+async def test_indexed_embedding_guard_uses_proposed_effective_dimensions(
+    card_client, isolate, database, dimensions,
+):
+    client, runtime = card_client
+    isolate.stock.embedding_dimensions = 1024
+    isolate.stock.embedding_schema_dimensions = 16
+    isolate.stock.embedding_request_dimensions = 16
+    before = isolate.stock.model_dump()
+    async with database() as session:
+        session.add(Document(
+            source_id="indexed-source", filename="indexed.md", storage_path="/tmp/indexed.md",
+            sag_source_id="indexed-document",
+        ))
+        await session.commit()
+
+    response = await client.put("/api/v1/system/model-config", json={"embedding_dimensions": dimensions})
+
+    assert response.status_code == 409, response.text
+    assert isolate.stock.model_dump() == before and runtime.applied == []
+    async with database() as session:
+        assert await session.scalar(select(Setting)) is None
+
+
+async def test_loading_legacy_dimensions_keeps_existing_indexed_space(card_client, isolate, database):
+    client, _ = card_client
+    isolate.stock.embedding_dimensions = 16
+    isolate.stock.embedding_schema_dimensions = 16
+    isolate.stock.embedding_request_dimensions = 16
+    async with database() as session:
+        session.add(Setting(scope="global", key="model_config", value={"embedding_dimensions": 1024}))
+        session.add(Document(
+            source_id="indexed-source", filename="indexed.md", storage_path="/tmp/indexed.md",
+            sag_source_id="indexed-document",
+        ))
+        await session.commit()
+
+    await settings_service.apply_startup_overrides(database)
+
+    assert isolate.stock.embedding_dimensions == 1024
+    assert isolate.stock.effective_embedding_schema_dimensions == 16
+    assert isolate.stock.effective_embedding_request_dimensions == 16
+    response = await client.get("/api/v1/system/model-config")
+    assert response.json()["embedding_dimensions"] == 16
+    async with database() as session:
+        row = await session.scalar(select(Setting).where(Setting.key == "model_config"))
+        assert row.value == {"embedding_dimensions": 1024}
+
+
+async def test_unrelated_card_save_keeps_legacy_indexed_embedding_space(card_client, isolate, database):
+    client, runtime = card_client
+    isolate.stock.embedding_dimensions = 1024
+    isolate.stock.embedding_schema_dimensions = 16
+    isolate.stock.embedding_request_dimensions = 16
+    async with database() as session:
+        session.add(Setting(scope="global", key="model_config", value={"embedding_dimensions": 1024}))
+        session.add(Document(
+            source_id="indexed-source", filename="indexed.md", storage_path="/tmp/indexed.md",
+            sag_source_id="indexed-document",
+        ))
+        await session.commit()
+
+    response = await client.put("/api/v1/system/model-config", json={"llm_model": "new-generation"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["config"]["embedding_dimensions"] == 16
+    assert isolate.stock.effective_embedding_schema_dimensions == 16
+    assert isolate.stock.effective_embedding_request_dimensions == 16
+    assert runtime.applied[0][0]["embedding_schema_dimensions"] == 16
+    assert runtime.applied[0][0]["embedding_request_dimensions"] == 16
+    async with database() as session:
+        row = await session.scalar(select(Setting).where(Setting.key == "model_config"))
+        assert row.value == {"embedding_dimensions": 1024, "llm_model": "new-generation"}
+
+
+@pytest.mark.parametrize(
+    "alias,schema_dimensions,expected", [(1024, 16, 16), (None, 16, 16), (None, 1024, 1024), (None, None, None)],
+)
+async def test_model_page_dimensions_show_effective_schema_when_explicit(
+    card_client, isolate, alias, schema_dimensions, expected,
+):
+    client, _ = card_client
+    isolate.stock.embedding_dimensions = alias
+    isolate.stock.embedding_schema_dimensions = schema_dimensions
+    isolate.stock.embedding_request_dimensions = None
+
+    response = await client.get("/api/v1/system/model-config")
+
+    assert response.status_code == 200 and response.json()["embedding_dimensions"] == expected
 
 
 async def test_generation_probe_never_echoes_provider_errors(card_client, isolate, database, monkeypatch):

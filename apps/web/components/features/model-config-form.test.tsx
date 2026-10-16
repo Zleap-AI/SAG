@@ -518,8 +518,29 @@ describe("independent model cards", () => {
       .find(node => node.textContent === "Test embedding model")!;
     await act(async () => button.click());
     expect(mocks.testEmbeddingModelConfig).toHaveBeenCalledExactlyOnceWith({
-      embedding_model: "draft-embedding", embedding_base_url: "", embedding_dimensions: 3,
+      embedding_model: "draft-embedding", embedding_base_url: "",
       embedding_api_key: "synthetic-embedding-secret",
+    });
+  });
+
+  it.each([
+    ["unchanged schema dimension", 1024, null, {}],
+    ["changed dimension", 1024, "2048", { embedding_dimensions: 2048 }],
+    ["explicitly cleared dimension", 1024, "", { embedding_dimensions: null }],
+    ["unchanged model-default dimension", null, null, {}],
+  ] as const)("tests embedding with %s while preserving the saved request policy", async (_name, savedDimensions, draftDimensions, expectedDimensions) => {
+    mocks.getModelConfig.mockResolvedValue({ ...original, embedding_dimensions: savedDimensions });
+    await mount();
+    await edit("#emb-model", "draft-embedding");
+    await edit("#emb-url", "https://draft-embedding.invalid/v1");
+    await edit("#emb-key", "synthetic-embedding-key");
+    if (draftDimensions !== null) await edit("#emb-dims", draftDimensions);
+    const button = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(node => node.textContent === "Test embedding model")!;
+    await act(async () => button.click());
+    expect(mocks.testEmbeddingModelConfig).toHaveBeenCalledExactlyOnceWith({
+      embedding_model: "draft-embedding", embedding_base_url: "https://draft-embedding.invalid/v1",
+      embedding_api_key: "synthetic-embedding-key", ...expectedDimensions,
     });
   });
 });

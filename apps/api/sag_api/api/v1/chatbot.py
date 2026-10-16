@@ -10,6 +10,7 @@ from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.chatbot_config import EmbeddingUpdate, LLMUpdate, OriginalEmbeddingDraft, TestDraft, Update
+from sag_api.core.config import expand_embedding_dimensions
 from sag_api.core.db import get_session
 from sag_api.core.deps import get_current_user
 from sag_api.core.errors import ConfigurationError
@@ -90,11 +91,11 @@ async def test_original_embedding(
     from zleap.sag.core.adapters.defaults import OpenAIEmbeddingAdapter
     from zleap.sag.exceptions import AIAuthError, AIError, AIInvalidRequestError, AITransientError
 
-    updates = {
+    updates = expand_embedding_dimensions({
         key: (None if key.endswith("base_url") and value == "" else value)
         for key, value in body.model_dump(exclude_unset=True).items()
         if not (key.endswith("api_key") and not value)
-    }
+    })
     stock = rt.manager.stock
     active = stock.model_copy(update=updates, deep=True)
     if (

@@ -308,11 +308,13 @@ function BaseModelConfigForm() {
     setTestingEmbedding(true);
     setEmbeddingTestResult(null);
     try {
+      // An unchanged schema dimension must preserve the saved request policy.
+      const { embedding_dimensions: dimensions } = changedPatch("embedding");
       const result = await api.testEmbeddingModelConfig({
         embedding_model: embModel.trim(),
         embedding_base_url: embBaseUrl.trim(),
         embedding_api_key: embKey.trim(),
-        embedding_dimensions: embDims.trim() ? Number(embDims) : null,
+        ...(dimensions !== undefined ? { embedding_dimensions: dimensions } : {}),
       });
       setEmbeddingTestResult(result);
       getDiagnosticsStore().record("model.test", { target: "embedding", ok: result.ok, message: result.message });
