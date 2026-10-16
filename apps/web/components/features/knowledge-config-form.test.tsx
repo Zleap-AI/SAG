@@ -82,9 +82,10 @@ describe("JEV knowledge settings", () => {
     expect(container.querySelector<HTMLInputElement>("#kb-jev-endpoint")!.readOnly).toBe(true);
     expect(saved).toBeUndefined();
     expect(tested).toBeUndefined();
-    expect(container.textContent).toContain("Chinese is the default SAG extraction prompt language");
-    expect(container.textContent).toContain("not a JEV API parameter");
-    expect(container.textContent).toContain("without automatically translating your documents");
+    expect(container.textContent).toContain("Knowledge processing language");
+    expect(container.textContent).toContain("Chinese is the default for document extraction, query processing, and chat prompts");
+    expect(container.textContent).toContain("Documents are not translated");
+    expect(container.textContent).toContain("does not change JEV's scoring language");
     expect(container.textContent).toContain("latest stable JEV release");
   });
   it.each(["", "   "])("prefills the latest alias when the stored model is blank (%j)", async model => {

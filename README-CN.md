@@ -571,7 +571,7 @@ config = EngineConfig.from_env()
 
 JEV 在“设置 → 知识库 → 检索”选择 302.AI、TypeSafe 官方或自定义服务。未配置时，页面默认填入 302.AI 的完整评分 URL `https://api.302.ai/typesafeai/v1/systemone` 和模型 `jev-latest`，API Key 留空，由用户填写；官方预设使用 `https://api.typesafe.ai/v1/systemone`。自定义服务可编辑完整地址和模型，已有配置会保留，切换服务地址后需重新填写对应密钥。地址包含评分路径，系统不自动追加路径。[302 接口文档](https://doc.302.ai/517575517e0)、[官方 API](https://docs.typesafe.ai/api)。
 
-`jev-latest` 是最新稳定版别名，随稳定发布更新；也可手动填写服务支持的固定版本。[官方模型说明](https://docs.typesafe.ai/models)另提供预览版别名，其网关支持情况取决于服务商。“抽取语言”默认中文，控制 SAG 的抽取提示等处理，不是 JEV API 的语言参数，也不会自动翻译评分文本。
+`jev-latest` 是最新稳定版别名，随稳定发布更新；也可手动填写服务支持的固定版本。[官方模型说明](https://docs.typesafe.ai/models)另提供预览版别名，其网关支持情况取决于服务商。“知识处理语言”位于“设置 → 知识库 → 通用”，默认中文，保留已保存的值；用于 SAG 入库抽取、查询改写、查询实体抽取等提示词，客户端问答提示也使用此配置。它不是 JEV API 参数，不会自动翻译原文或评分文本。
 
 保存服务配置后，再将 JEV 设为默认或在探索界面单次选择。`multi_jev` 映射到 `pruned_expand_jev`，需要词法检索支持（当前 LanceDB/Elasticsearch）。问题与候选证据会发送到该服务；现有文档无需重新入库。也可使用 `.env.example` 中的 `SAG_JEV_*` 配置，设置页已保存的值优先。
 

@@ -194,90 +194,125 @@ export function KnowledgeConfigForm() {
     return (
       <div className="flex flex-col gap-6">
         {[
-          [t("parsingTitle"), t("parsingLoading")],
-          [t("retrievalTitle"), t("retrievalLoading")],
-        ].map(([title, description]) => (
-          <SettingsSection key={title} title={title} description={description}>
-            <div className="grid gap-3 p-4 sm:grid-cols-2 sm:p-5">
-              <Skeleton className="h-16 w-full" />
-              <Skeleton className="h-16 w-full" />
+          ["general", t("generalTitle"), t("generalLoading")],
+          ["document-processing", t("parsingTitle"), t("parsingLoading")],
+          ["retrieval", t("retrievalTitle"), t("retrievalLoading")],
+        ].map(([id, title, description]) => {
+          const section = (
+            <SettingsSection key={id} title={title} description={description}>
+              <div className="grid gap-3 p-4 sm:grid-cols-2 sm:p-5">
+                <Skeleton className="h-16 w-full" />
+                <Skeleton className="h-16 w-full" />
+              </div>
+            </SettingsSection>
+          );
+          return id === "document-processing" ? (
+            <div key={id} data-settings-section="document-processing" tabIndex={-1} className="scroll-mt-6 outline-none">
+              {section}
             </div>
-          </SettingsSection>
-        ))}
+          ) : section;
+        })}
       </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-6">
-      <SettingsSection title={t("parsingTitle")} description={t("parsingDescription")}>
-        <SettingsRow title={t("chunkSettings")} description={t("chunkDescription")}>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel htmlFor="kb-chunk-mode">{t("chunkMode")}</FieldLabel>
-              <Select
-                value={chunkMode}
-                onValueChange={(value) =>
-                  setChunkMode(value as ModelConfig["document_chunk_mode"])
-                }
-              >
-                <SelectTrigger id="kb-chunk-mode">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="standard">{t("smartChunking")}</SelectItem>
-                  <SelectItem value="heading_strict">{t("strictHeadings")}</SelectItem>
-                </SelectContent>
-              </Select>
-              <FieldDescription>
-                {chunkMode === "heading_strict"
-                  ? t("strictHeadingsDescription")
-                  : t("smartChunkingDescription")}
-              </FieldDescription>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="kb-chunk-max-tokens">{t("maxTokens")}</FieldLabel>
-              <Input
-                id="kb-chunk-max-tokens"
-                type="number"
-                min={100}
-                max={100000}
-                step={100}
-                value={chunkMaxTokens}
-                onChange={(event) =>
-                  setChunkMaxTokens(
-                    Math.min(100000, Math.max(100, Number(event.target.value) || 100)),
-                  )
-                }
-              />
-              <FieldDescription>{t("maxTokensDescription")}</FieldDescription>
-            </Field>
-          </div>
-        </SettingsRow>
-
-        <SettingsRow title={t("extractionSettings")} description={t("extractionDescription")}>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel htmlFor="kb-extract-concurrency">{t("concurrency")}</FieldLabel>
-              <Input
-                id="kb-extract-concurrency"
-                type="number"
-                min={1}
-                max={50}
-                value={extractConcurrency}
-                onChange={(event) =>
-                  setExtractConcurrency(
-                    Math.min(50, Math.max(1, Number(event.target.value) || 1)),
-                  )
-                }
-              />
-              <FieldDescription>{t("concurrencyDescription")}</FieldDescription>
-            </Field>
-          </div>
+      <SettingsSection key="general" title={t("generalTitle")} description={t("generalDescription")}>
+        <SettingsRow
+          title={t("processingLanguage")}
+          description={<span id="kb-language-description">{t("processingLanguageDescription")}</span>}
+          layout="inline"
+          contentClassName="w-full sm:w-40"
+        >
+          <Field>
+            <FieldLabel htmlFor="kb-language" className="sr-only">{t("processingLanguage")}</FieldLabel>
+            <Select
+              value={language}
+              onValueChange={(value) => setLanguage(value as ModelConfig["sag_language"])}
+            >
+              <SelectTrigger id="kb-language" aria-describedby="kb-language-description">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="zh">{t("chinese")}</SelectItem>
+                <SelectItem value="en">{t("english")}</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("retrievalTitle")} description={t("retrievalDescription")}>
+      <div key="document-processing" data-settings-section="document-processing" tabIndex={-1} className="scroll-mt-6 outline-none">
+        <SettingsSection title={t("parsingTitle")} description={t("parsingDescription")}>
+          <SettingsRow title={t("chunkSettings")} description={t("chunkDescription")}>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field>
+                <FieldLabel htmlFor="kb-chunk-mode">{t("chunkMode")}</FieldLabel>
+                <Select
+                  value={chunkMode}
+                  onValueChange={(value) =>
+                    setChunkMode(value as ModelConfig["document_chunk_mode"])
+                  }
+                >
+                  <SelectTrigger id="kb-chunk-mode">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="standard">{t("smartChunking")}</SelectItem>
+                    <SelectItem value="heading_strict">{t("strictHeadings")}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  {chunkMode === "heading_strict"
+                    ? t("strictHeadingsDescription")
+                    : t("smartChunkingDescription")}
+                </FieldDescription>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="kb-chunk-max-tokens">{t("maxTokens")}</FieldLabel>
+                <Input
+                  id="kb-chunk-max-tokens"
+                  type="number"
+                  min={100}
+                  max={100000}
+                  step={100}
+                  value={chunkMaxTokens}
+                  onChange={(event) =>
+                    setChunkMaxTokens(
+                      Math.min(100000, Math.max(100, Number(event.target.value) || 100)),
+                    )
+                  }
+                />
+                <FieldDescription>{t("maxTokensDescription")}</FieldDescription>
+              </Field>
+            </div>
+          </SettingsRow>
+
+          <SettingsRow title={t("extractionSettings")} description={t("extractionDescription")}>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field>
+                <FieldLabel htmlFor="kb-extract-concurrency">{t("concurrency")}</FieldLabel>
+                <Input
+                  id="kb-extract-concurrency"
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={extractConcurrency}
+                  onChange={(event) =>
+                    setExtractConcurrency(
+                      Math.min(50, Math.max(1, Number(event.target.value) || 1)),
+                    )
+                  }
+                />
+                <FieldDescription>{t("concurrencyDescription")}</FieldDescription>
+              </Field>
+            </div>
+          </SettingsRow>
+        </SettingsSection>
+      </div>
+
+      <SettingsSection key="retrieval" title={t("retrievalTitle")} description={t("retrievalDescription")}>
         <SettingsRow title={t("retrievalRules")} description={t("retrievalRulesDescription")}>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field>
@@ -326,22 +361,6 @@ export function KnowledgeConfigForm() {
               </Select>
             </Field>
             <Field>
-              <FieldLabel htmlFor="kb-language">{t("extractionLanguage")}</FieldLabel>
-              <Select
-                value={language}
-                onValueChange={(value) => setLanguage(value as ModelConfig["sag_language"])}
-              >
-                <SelectTrigger id="kb-language" aria-describedby="kb-language-description">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="zh">{t("chinese")}</SelectItem>
-                  <SelectItem value="en">{t("english")}</SelectItem>
-                </SelectContent>
-              </Select>
-              <FieldDescription id="kb-language-description">{t("extractionLanguageDescription")}</FieldDescription>
-            </Field>
-            <Field className="sm:col-span-2">
               <FieldLabel>{t("topK", { count: topK })}</FieldLabel>
               <div className="flex h-9 items-center">
                 <Slider
