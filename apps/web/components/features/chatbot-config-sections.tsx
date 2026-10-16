@@ -34,6 +34,7 @@ export function ChatbotConfigSections() {
   const [results, setResults] = React.useState<Partial<Record<Target, { ok: boolean; message: string }>>>({});
   const saved = React.useRef<Config | null>(null);
   const loadVersion = React.useRef(0);
+  const embeddingIdentityVersion = React.useRef(0);
   const load = React.useCallback(async (retainEdits = false) => {
     const version = ++loadVersion.current;
     try {
@@ -46,6 +47,13 @@ export function ChatbotConfigSections() {
       if (catalog) {
         if (!catalog.some(provider => provider.id === loaded.llm.provider)) throw new Error(c("loadFailed"));
         setProviders(catalog);
+      }
+      const previousEmbedding = saved.current?.embedding;
+      if (previousEmbedding && (previousEmbedding.model !== loaded.embedding.model ||
+        previousEmbedding.schema_dimensions !== loaded.embedding.schema_dimensions ||
+        previousEmbedding.request_dimensions !== loaded.embedding.request_dimensions)) {
+        embeddingIdentityVersion.current += 1;
+        setResults(current => ({ ...current, embedding: undefined }));
       }
       if (!retainEdits || !saved.current) saved.current = loaded;
       else saved.current = { ...saved.current, locked: loaded.locked, encryption_configured: loaded.encryption_configured,
@@ -63,11 +71,19 @@ export function ChatbotConfigSections() {
     }
   }, [c]);
   React.useEffect(() => { void load(); }, [load]);
-  // Refresh shared embedding identity/inherited tuning after saving the stock form.
+  // Refresh inherited metadata without replacing connection drafts.
   React.useEffect(() => {
-    const refresh = () => { void load(true); };
+    const refresh = () => {
+      if (document.visibilityState === "visible") void load(true);
+    };
     window.addEventListener("sag:stock-model-saved", refresh);
-    return () => window.removeEventListener("sag:stock-model-saved", refresh);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("sag:stock-model-saved", refresh);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
   }, [load]);
 
   const update = (target: Target, field: string, value: string | boolean) => {
@@ -130,20 +146,25 @@ export function ChatbotConfigSections() {
     }
   }
   const test = async (target: Target) => {
-    if (!config || config.locked || saving[target] || testing[target]) return;
+    if (!config || !config[target].enabled || config.locked || saving[target] || testing[target]) return;
     const message = validate(target);
     if (message) { setResults(current => ({ ...current, [target]: { ok: false, message } })); return; }
     setTesting(current => ({ ...current, [target]: true }));
     setResults(current => ({ ...current, [target]: undefined }));
+    const identityVersion = embeddingIdentityVersion.current;
     try {
       const result = await api.testChatbotConfig({
         [target]: { ...draft(target, config[target]), api_key: keys[target] }, target,
       });
-      setResults(current => ({ ...current, [target]: result }));
+      if (target === "llm" || identityVersion === embeddingIdentityVersion.current) {
+        setResults(current => ({ ...current, [target]: result }));
+      }
     } catch (e) {
-      setResults(current => ({ ...current, [target]: {
-        ok: false, message: e instanceof Error ? e.message : c("testFailed"),
-      } }));
+      if (target === "llm" || identityVersion === embeddingIdentityVersion.current) {
+        setResults(current => ({ ...current, [target]: {
+          ok: false, message: e instanceof Error ? e.message : c("testFailed"),
+        } }));
+      }
     } finally { setTesting(current => ({ ...current, [target]: false })); }
   };
   if (error && !config) return <div role="alert">{error}<Button type="button" variant="outline" onClick={() => void load()}>{c("retry")}</Button></div>;
@@ -184,7 +205,7 @@ export function ChatbotConfigSections() {
       </p>}
     </div>
     <div className="flex flex-wrap justify-end gap-2">
-      <Button type="button" variant="outline" disabled={disabled(target)} onClick={() => void test(target)}>
+      <Button type="button" variant="outline" disabled={disabled(target) || !config[target].enabled} onClick={() => void test(target)}>
         {testing[target] ? <Spinner /> : <Plug />}
         {testing[target] ? t("testing") : target === "llm" ? t("testGeneration")
           : t("testEmbedding")}
@@ -196,7 +217,8 @@ export function ChatbotConfigSections() {
       </Button>
     </div>
   </div>;
-  const enable = (target: Target) => <SettingsRow title={c("enable")} layout="inline">
+  const enable = (target: Target) => <SettingsRow title={c("enable")} layout="inline"
+    description={c(target === "llm" ? "llmEnableDescription" : "embeddingEnableDescription")}>
     <Switch aria-label={`Enable chatbot ${target}`} checked={config[target].enabled} disabled={disabled(target)}
       onCheckedChange={checked => update(target, "enabled", checked)} />
   </SettingsRow>;

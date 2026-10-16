@@ -699,6 +699,8 @@
     "keyPlaceholder": "Only if the endpoint requires authentication",
     "testEmbedding": "Test embedding connection",
     "enable": "Enable separate connection",
+    "llmEnableDescription": "When disabled, uses the saved generation model above. Enable the separate connection to test it.",
+    "embeddingEnableDescription": "When disabled, uses the saved embedding connection above. Enable the separate connection to test it.",
     "locked": "Chatbot connections are locked by the deployment environment.",
     "encryptionRequired": "Credential encryption is required only to save an API key. Keyless connections can be saved without it. Unsaved connections can still be tested.",
     "llmTitle": "Chatbot LLM (optional)",
