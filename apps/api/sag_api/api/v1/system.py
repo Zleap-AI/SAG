@@ -488,9 +488,28 @@ async def test_model_config(
             "message": f"连接成功 · {active.llm_provider} / {active.llm_model}",
         }
     except ApiError as e:
-        return {"ok": False, "message": e.message}
-    except Exception as e:  # noqa: BLE001
-        return {"ok": False, "message": str(e)}
+        messages = {
+            "llm_auth_error": "Generation authentication failed; check this card's API key and model permissions",
+            "llm_bad_request": "Generation request rejected; check this card's provider, endpoint, model and options",
+            "llm_unavailable": (
+                "Generation service unavailable; check the endpoint, rate limits and server availability"
+            ),
+            "llm_empty_response": "Generation service returned an empty response; check the model and protocol",
+        }
+        return {
+            "ok": False,
+            "message": messages.get(
+                e.code,
+                "Generation connection test failed; check endpoint, provider, model, credentials and availability",
+            ),
+        }
+    except Exception:  # noqa: BLE001 -- provider exceptions can contain credentials and response bodies.
+        return {
+            "ok": False,
+            "message": (
+                "Generation connection test failed; check endpoint, provider, model, credentials and availability"
+            ),
+        }
 
 
 @_model_config_router.post("/model-config/jev/test")

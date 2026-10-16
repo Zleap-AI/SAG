@@ -13,9 +13,11 @@ const chatbotTranslate = (key: string, values?: Record<string, string>) => {
   for (const [name, value] of Object.entries(values ?? {})) text = text.replace(`{${name}}`, value);
   return text;
 };
-const modelTranslate = (key: string) => {
+const modelTranslate = (key: string, values?: Record<string, string>) => {
   const message = english.ModelConfig[key as keyof typeof english.ModelConfig];
-  return typeof message === "string" ? message : key;
+  let text = typeof message === "string" ? message : key;
+  for (const [name, value] of Object.entries(values ?? {})) text = text.replace(`{${name}}`, value);
+  return text;
 };
 vi.mock("next-intl", () => ({ useTranslations: (namespace: string) => namespace === "ChatbotConfig" ? chatbotTranslate : modelTranslate }));
 vi.mock("@/lib/auth", () => ({ getToken: () => "test-token" }));
@@ -60,7 +62,163 @@ async function select(selector: string, label: string) {
   }
 }
 
+async function edit(selector: string, value: string) {
+  await act(async () => {
+    const input = container.querySelector<HTMLInputElement>(selector)!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+const saveButton = (target: "llm" | "embedding") => container.querySelector<HTMLButtonElement>(
+  `[aria-label="Save ${target === "llm" ? "Chatbot LLM (optional)" : "Query embedding (optional)"}"]`,
+)!;
+
 describe("native chatbot settings", () => {
+  it.each(["llm", "embedding"] as const)("saves %s while the other connection is invalid and retains failed draft keys for retry", async target => {
+    await mount();
+    await edit("#chatbot-llm-model", "");
+    if (target === "embedding") await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Enable chatbot llm"]')!.click());
+    await edit("#chatbot-llm-api-key", "chat-key");
+    await edit("#chatbot-embedding-api-key", "query-key");
+    await edit("#chatbot-embedding-base_url", "https://new-query.invalid/v1");
+    fetcher.mockImplementationOnce(async () => Response.json({ error: { message: "Database unavailable" } }, { status: 503 }));
+    await act(async () => saveButton(target).click());
+    const section = saveButton(target).closest("section")!;
+    expect(section.querySelector('[role="alert"]')!.textContent).toContain("Database unavailable");
+    expect(container.querySelector<HTMLInputElement>("#chatbot-llm-api-key")!.value).toBe("chat-key");
+    expect(container.querySelector<HTMLInputElement>("#chatbot-embedding-api-key")!.value).toBe("query-key");
+    fetcher.mockImplementationOnce(async () => Response.json({ config: { ...initial,
+      llm: { ...initial.llm, model: "" }, embedding: { ...initial.embedding, base_url: "https://new-query.invalid/v1" },
+    } }));
+    await act(async () => saveButton(target).click());
+    const body = JSON.parse(fetcher.mock.calls.at(-1)![1].body);
+    expect(Object.keys(body)).toEqual([target]);
+    expect(body[target].api_key).toBe(target === "llm" ? "chat-key" : "query-key");
+    if (target === "embedding") {
+      expect(body.embedding).toEqual({ enabled: false, base_url: "https://new-query.invalid/v1", api_key: "query-key" });
+      expect(container.querySelector<HTMLInputElement>("#chatbot-llm-model")!.value).toBe("");
+    }
+    expect(container.querySelector<HTMLInputElement>(`#chatbot-${target}-api-key`)!.value).toBe("");
+    expect(section.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("locates an empty enabled chatbot model while still allowing the query card to save", async () => {
+    await mount();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Enable chatbot llm"]')!.click());
+    await edit("#chatbot-llm-model", "   ");
+    const originalRequests = fetcher.mock.calls.length;
+    await act(async () => saveButton("llm").click());
+    expect(saveButton("llm").closest("section")!.querySelector('[role="alert"]')!.textContent).toContain("Enter a model name");
+    expect(document.activeElement?.id).toBe("chatbot-llm-model");
+    expect(fetcher.mock.calls).toHaveLength(originalRequests);
+    await edit("#chatbot-embedding-api-key", "query-key");
+    fetcher.mockImplementationOnce(async () => Response.json({ config: initial }));
+    await act(async () => saveButton("embedding").click());
+    expect(Object.keys(JSON.parse(fetcher.mock.calls.at(-1)![1].body))).toEqual(["embedding"]);
+    expect(container.querySelector<HTMLInputElement>("#chatbot-llm-model")!.value).toBe("   ");
+  });
+
+  it.each(["llm", "embedding"] as const)("allows an independent sibling test while %s is testing", async target => {
+    await mount();
+    await edit("#chatbot-llm-api-key", "chat-key"); await edit("#chatbot-embedding-api-key", "query-key");
+    const other = target === "llm" ? "embedding" : "llm";
+    const buttons = Object.fromEntries((["llm", "embedding"] as const).map(name => [name,
+      [...saveButton(name).closest("section")!.querySelectorAll<HTMLButtonElement>("button")]
+        .find(button => button.textContent?.startsWith("Test "))!,
+    ])) as Record<"llm" | "embedding", HTMLButtonElement>;
+    const finishes: Array<(response: Response) => void> = [];
+    fetcher.mockImplementation(() => new Promise<Response>(resolve => { finishes.push(resolve); }));
+    await act(async () => buttons[target].click());
+    expect(buttons[target].disabled).toBe(true); expect(buttons[other].disabled).toBe(false);
+    expect(saveButton(other).disabled).toBe(false);
+    await act(async () => buttons[other].click());
+    const bodies = fetcher.mock.calls.slice(-2).map(([, request]) => JSON.parse(request.body));
+    expect(bodies.map(body => Object.keys(body))).toEqual([[target, "target"], [other, "target"]]);
+    await act(async () => finishes[0](Response.json({ ok: true, message: "Connected" })));
+    expect(buttons[target].disabled).toBe(false); expect(buttons[other].disabled).toBe(true);
+    await act(async () => finishes[1](Response.json({ ok: false, message: "Unavailable" })));
+    expect(buttons[other].disabled).toBe(false);
+    expect(container.querySelector<HTMLInputElement>("#chatbot-llm-api-key")!.value).toBe("chat-key");
+    expect(container.querySelector<HTMLInputElement>("#chatbot-embedding-api-key")!.value).toBe("query-key");
+  });
+
+  it.each(["llm", "embedding"] as const)("keeps the sibling card editable, testable and saveable during a %s save", async target => {
+    await mount();
+    const other = target === "llm" ? "embedding" : "llm";
+    await edit(`#chatbot-${target}-api-key`, "saving-key");
+    let finish!: (response: Response) => void;
+    fetcher.mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve; }));
+    await act(async () => saveButton(target).click());
+    expect(container.querySelector<HTMLInputElement>(`#chatbot-${target}-api-key`)!.disabled).toBe(true);
+    expect(container.querySelector<HTMLInputElement>(`#chatbot-${other}-api-key`)!.disabled).toBe(false);
+    await edit(`#chatbot-${other}-api-key`, "other-key");
+    expect(saveButton(other).disabled).toBe(false);
+    const otherTest = [...saveButton(other).closest("section")!.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.startsWith("Test "))!;
+    expect(otherTest.disabled).toBe(false);
+    fetcher.mockImplementationOnce(async () => Response.json({ config: initial }));
+    await act(async () => saveButton(other).click());
+    expect(Object.keys(JSON.parse(fetcher.mock.calls.at(-1)![1].body))).toEqual([other]);
+    await edit(`#chatbot-${other}-api-key`, "newer-other-draft");
+    await act(async () => finish(Response.json({ config: initial })));
+    expect(container.querySelector<HTMLInputElement>(`#chatbot-${other}-api-key`)!.value).toBe("newer-other-draft");
+    expect(container.querySelector<HTMLInputElement>(`#chatbot-${target}-api-key`)!.value).toBe("");
+  });
+
+  it("keeps the latest shared vector identity when refresh responses arrive out of order", async () => {
+    await mount();
+    await edit("#chatbot-embedding-api-key", "query-draft-key");
+    const finishes: Array<(response: Response) => void> = [];
+    fetcher.mockImplementation(() => new Promise<Response>(resolve => { finishes.push(resolve); }));
+    await act(async () => window.dispatchEvent(new Event("sag:stock-model-saved")));
+    await act(async () => window.dispatchEvent(new Event("sag:stock-model-saved")));
+    await act(async () => finishes[1](Response.json({ config: { ...initial,
+      embedding: { ...initial.embedding, model: "latest-model", schema_dimensions: 8 },
+    } })));
+    await act(async () => finishes[0](Response.json({ config: initial })));
+    expect(container.textContent).toContain("latest-model");
+    expect(container.textContent).toContain("Schema dimensions: 8");
+    expect(container.querySelector<HTMLInputElement>("#chatbot-embedding-api-key")!.value).toBe("query-draft-key");
+  });
+
+  it("preserves freshly refreshed shared identity when an older optional save response completes", async () => {
+    await mount();
+    await edit("#chatbot-embedding-api-key", "query-key");
+    let finish!: (response: Response) => void;
+    fetcher.mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve; }));
+    await act(async () => saveButton("embedding").click());
+    fetcher.mockImplementationOnce(async () => Response.json({ config: { ...initial,
+      embedding: { ...initial.embedding, model: "updated-model", schema_dimensions: 12 },
+    } }));
+    await act(async () => window.dispatchEvent(new Event("sag:stock-model-saved")));
+    await act(async () => finish(Response.json({ config: initial })));
+    expect(container.textContent).toContain("updated-model");
+    expect(container.textContent).toContain("Schema dimensions: 12");
+    expect(saveButton("embedding").disabled).toBe(true);
+  });
+  it("saves only the selected optional card and keeps the other card's secret draft", async () => {
+    await mount();
+    await act(async () => {
+      for (const [selector, value] of [["#chatbot-llm-model", "new-chat-model"],
+        ["#chatbot-llm-api-key", "synthetic-chat-key"], ["#chatbot-embedding-api-key", "synthetic-query-key"]]) {
+        const input = container.querySelector<HTMLInputElement>(selector)!;
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    });
+    const button = container.querySelector<HTMLButtonElement>('[aria-label="Save Chatbot LLM (optional)"]');
+    expect(button).not.toBeNull();
+    fetcher.mockImplementation(async () => Response.json({ config: { ...initial, llm: {
+      ...initial.llm, model: "new-chat-model", credential_source: "database",
+    } } }));
+    await act(async () => button!.click());
+    const [, request] = fetcher.mock.calls.at(-1)!;
+    expect(JSON.parse(request.body)).toEqual({ llm: {
+      enabled: false, provider: "openai", base_url: "", model: "new-chat-model", api_key: "synthetic-chat-key",
+    } });
+    expect(container.querySelector<HTMLInputElement>("#chatbot-llm-api-key")!.value).toBe("");
+    expect(container.querySelector<HTMLInputElement>("#chatbot-embedding-api-key")!.value).toBe("synthetic-query-key");
+  });
   it.each(["llm", "embedding"])("shows green success and red failures for optional %s tests", async target => {
     await mount();
     const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button =>
@@ -122,6 +280,7 @@ describe("native chatbot settings", () => {
     expect(body.llm.responses_endpoint).toBe("https://draft.invalid/openai/v1/responses");
     expect(body.llm.responses_api_version).toBe("preview");
     expect(body.llm.responses_send_temperature).toBe(false);
+    expect(Object.keys(body)).toEqual(["llm", "target"]);
   });
 
   it("retains saved Bedrock connection overrides while displaying standard Bearer authentication", async () => {
@@ -225,6 +384,7 @@ describe("native chatbot settings", () => {
     expect(body.target).toBe("embedding"); expect(body.embedding.enabled).toBe(true);
     expect(body.embedding.api_key).toBe(""); expect(body.embedding.model).toBeUndefined();
     expect(body.embedding.schema_dimensions).toBeUndefined();
+    expect(Object.keys(body)).toEqual(["embedding", "target"]);
     expect(container.textContent).toContain("Connection successful");
   });
   it("uses the native provider catalog and official endpoint option", async () => {

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -27,6 +28,8 @@ _SCOPE = "global"
 _KEY = "model_config"
 _PREFERENCES_KEY = "system_preferences"
 log = get_logger("settings")
+# Runtime settings are process-local; serialize each read/merge/commit/publication.
+_MODEL_CONFIG_SAVE_LOCK = asyncio.Lock()
 
 # 允许运行期覆盖的字段（值已由请求 schema 校验/转型）
 _FIELDS = frozenset(
@@ -419,6 +422,11 @@ async def save_model_config(session: AsyncSession, patch: dict) -> dict:
     - 密钥字段值为空 → 忽略（保留原密钥，避免误清空）；空值仅经显式非空覆盖；
     - 可空字段（base_url / dimensions）值为空 → 置 None（清除）。
     """
+    async with _MODEL_CONFIG_SAVE_LOCK:
+        return await _save_model_config_locked(session, patch)
+
+
+async def _save_model_config_locked(session: AsyncSession, patch: dict) -> dict:
     await _reject_incompatible_embedding_change(session, patch)
     row = await _load_row(session)
     raw = dict(row.value) if row and isinstance(row.value, dict) else {}

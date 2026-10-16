@@ -723,6 +723,12 @@
     "savingConnections": "Saving chatbot connections…"
   },
   "ModelConfig": {
+    "saveCard": "Save {name}",
+    "cardSaved": "{name} saved.",
+    "cardSaveFailed": "{name} could not be saved. {detail}",
+    "modelRequired": "Enter a model name, then try again.",
+    "dimensionsInvalid": "Enter a whole number from 1 to 8192 for embedding dimensions, or leave it blank to use the model default.",
+    "refreshFailed": "Settings saved, but model information could not refresh. Try reloading the page.",
     "title": "Model settings",
     "description": "Generation, embedding, and parsing model parameters.",
     "loadFailed": "Unable to load model settings",
@@ -777,7 +783,7 @@
     "retriesDescription": "Automatic retry attempts after a failed request.",
     "embeddingDescription": "Used for document embeddings and semantic retrieval.",
     "modelAndConnection": "Model and connection",
-    "embeddingConnectionDescription": "Configure the URL and key independently. The hints below show which settings will be used.",
+    "embeddingConnectionDescription": "Configure the URL and key independently. Inheritance uses the saved generation settings; save generation changes first.",
     "embeddingNativeConnectionDescription": "Responses API, Anthropic, and Gemini use separate embedding connections. Configure an OpenAI-compatible embedding endpoint and key.",
     "embeddingAddressPlaceholder": "Leave blank to use generation URL",
     "embeddingAddressDefaultPlaceholder": "Leave blank to use default URL",
@@ -974,7 +980,7 @@
   },
   "QuickSetup": {
     "generationModel": "Chat model",
-    "generationValue": "qwen3.6-flash",
+    "generationValue": "qwen3.8-flash",
     "embeddingModel": "Document search model",
     "embeddingValue": "{model} · 1,024 dimensions",
     "embedding302Provider": "302.AI",

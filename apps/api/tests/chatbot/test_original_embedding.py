@@ -186,6 +186,7 @@ async def test_original_embedding_rejects_bad_vectors_and_closes_client(client, 
     payload["data"] = data
     response = await client.post("/api/v1/system/model-config/embedding/test", json={})
     assert response.status_code == 200 and not response.json()["ok"]
+    assert response.json()["code"] == "EMBEDDING_INVALID_RESPONSE"
     assert len(calls) == 1 and clients[0].is_closed
 
 
@@ -206,6 +207,99 @@ async def test_original_embedding_validation_hides_secrets(client, embedding_tra
     response = await client.post("/api/v1/system/model-config/embedding/test", json=draft)
     assert response.status_code == 422 and "validation-secret" not in response.text
     assert not embedding_transport[0]
+
+
+@pytest.mark.parametrize(
+    "draft,field",
+    [
+        ({"embedding_model": ""}, "embedding_model"),
+        ({"embedding_model": "   "}, "embedding_model"),
+        ({"embedding_model": None}, "embedding_model"),
+        ({"embedding_base_url": "https://validation-secret@host.invalid/v1"}, "embedding_base_url"),
+        ({"embedding_dimensions": True}, "embedding_dimensions"),
+        ({"embedding_dimensions": "16"}, "embedding_dimensions"),
+        ({"embedding_dimensions": {}}, "embedding_dimensions"),
+        ({"embedding_dimensions": 0}, "embedding_dimensions"),
+        ({"embedding_api_key": {"validation-secret": "validation-secret"}}, "embedding_api_key"),
+    ],
+)
+async def test_original_embedding_validation_identifies_only_safe_fields(client, embedding_transport, draft, field):
+    app, http = client
+    app.dependency_overrides[get_current_user] = lambda: object()
+    response = await http.post(
+        "/api/v1/system/model-config/embedding/test", json={"embedding_api_key": "validation-secret", **draft}
+    )
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert field in error["message"]
+    assert error["fields"][0]["field"] == field
+    assert "validation-secret" not in response.text
+    assert all(key not in error["fields"][0] for key in ("input", "ctx", "context"))
+    assert not embedding_transport[0]
+
+
+@pytest.mark.parametrize(
+    "failure,code",
+    [
+        ("auth", "EMBEDDING_AUTH_FAILED"),
+        ("invalid", "EMBEDDING_REQUEST_REJECTED"),
+        ("timeout", "EMBEDDING_TIMEOUT"),
+        ("connection", "EMBEDDING_UNAVAILABLE"),
+        ("response", "EMBEDDING_INVALID_RESPONSE"),
+    ],
+)
+async def test_original_embedding_failure_categories_never_echo_provider_data(client, monkeypatch, failure, code):
+    from zleap.sag.core.adapters.defaults import OpenAIEmbeddingAdapter
+    from zleap.sag.exceptions import AIAuthError, AIError, AIInvalidRequestError, AITransientError
+
+    app, http = client
+    app.dependency_overrides[get_current_user] = lambda: object()
+    failures = {
+        "auth": AIAuthError("provider-secret"),
+        "invalid": AIInvalidRequestError("provider-secret"),
+        "timeout": AITransientError("provider-secret", details={"failure_kind": "timeout"}),
+        "connection": AITransientError("provider-secret", details={"failure_kind": "transient"}),
+        "response": AIError("provider-secret"),
+    }
+    closed = []
+
+    async def fail(self, text):
+        raise failures[failure]
+
+    async def close(self):
+        closed.append(True)
+
+    monkeypatch.setattr(OpenAIEmbeddingAdapter, "generate", fail)
+    monkeypatch.setattr(OpenAIEmbeddingAdapter, "close", close)
+    response = await http.post("/api/v1/system/model-config/embedding/test", json={})
+    assert response.status_code == 200 and response.json()["ok"] is False
+    assert response.json()["code"] == code
+    assert "provider-secret" not in response.text
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("status,code", [(401, "EMBEDDING_AUTH_FAILED"), (422, "EMBEDDING_REQUEST_REJECTED")])
+async def test_original_embedding_classifies_real_sdk_http_failures(client, monkeypatch, status, code):
+    from openai import AsyncOpenAI
+
+    app, http = client
+    app.dependency_overrides[get_current_user] = lambda: object()
+    clients = []
+
+    def handle(request):
+        return httpx.Response(status, json={"error": {"message": "provider-secret", "code": "provider-secret"}})
+
+    def create(**kwargs):
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        clients.append(client)
+        return AsyncOpenAI(**kwargs, http_client=client)
+
+    monkeypatch.setattr("openai.AsyncOpenAI", create)
+    response = await http.post("/api/v1/system/model-config/embedding/test", json={})
+    assert response.status_code == 200 and response.json()["ok"] is False
+    assert response.json()["code"] == code
+    assert "provider-secret" not in response.text
+    assert len(clients) == 1 and clients[0].is_closed
 
 
 @pytest.mark.parametrize("cancel", [False, True])

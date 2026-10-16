@@ -194,7 +194,7 @@ The UI and services still start without model credentials. Embeddings are requir
 
 `SAG_LLM_*` values in Docker Compose or `.env` provide the initial model configuration. After an administrator saves model settings in the web UI, the persisted Settings value is used for subsequent extraction and generation jobs without a restart.
 
-The default embedding model is `Qwen/Qwen3-Embedding-4B`. When upgrading an existing BGE index, retain `SAG_EMBEDDING_MODEL=bge-large-en-v1.5`. To switch models, wait for existing indexed documents to finish deleting, change the model, then import them again.
+The default generation model is `qwen3.8-flash`, and the default embedding model is `Qwen/Qwen3-Embedding-4B`. When upgrading an existing BGE index, retain `SAG_EMBEDDING_MODEL=bge-large-en-v1.5`. To switch models, wait for existing indexed documents to finish deleting, change the model, then import them again.
 
 To make the deployment configuration mandatory, set `SAG_LOCK_LLM_CONFIG=true`. SAG then shows the generation fields as locked in Settings and continues to use the `SAG_LLM_*` values. Change Docker Compose or `.env` and recreate the API container to update a locked configuration. API keys remain deployment-managed and are never returned by the Settings API.
 
@@ -486,7 +486,7 @@ async def main() -> None:
         llm=LLMConfig(
             api_key="sk-...",
             base_url="https://your-openai-compatible-host/v1",
-            model="qwen3.6-flash",
+            model="qwen3.8-flash",
         ),
         # When api_key/base_url are omitted, embedding reuses the LLM endpoint.
         embedding=EmbeddingConfig(model="Qwen/Qwen3-Embedding-4B"),
@@ -529,7 +529,7 @@ Minimal environment configuration:
 export SAG_STORAGE_MODE=normal
 export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://your-openai-compatible-host/v1
-export LLM_MODEL=qwen3.6-flash
+export LLM_MODEL=qwen3.8-flash
 export EMBEDDING_MODEL=Qwen/Qwen3-Embedding-4B
 ```
 

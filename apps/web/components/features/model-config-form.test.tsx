@@ -20,7 +20,7 @@ const chatbotTranslate = (key: string, values?: Record<string, string>) => {
 let modelMessages: Record<string, unknown> = english.ModelConfig;
 const modelTranslate = (key: string, values?: Record<string, string | number>) => {
   const message = key.startsWith("embeddingAddress") || key.startsWith("embeddingKey") ||
-    key.startsWith("responses") || key === "separateEmbeddingAddress" || key === "embeddingInheritedAddressIndependentKey"
+    key.startsWith("responses") || ["saveCard", "cardSaved", "cardSaveFailed", "modelRequired", "dimensionsInvalid", "refreshFailed"].includes(key) || key === "separateEmbeddingAddress" || key === "embeddingInheritedAddressIndependentKey"
     ? modelMessages[key] : mocks.translate(key);
   let text = typeof message === "string" ? message : key;
   for (const [name, value] of Object.entries(values ?? {})) text = text.replaceAll(`{${name}}`, String(value));
@@ -86,8 +86,12 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 async function mount() { await act(async () => root.render(<ModelConfigForm />)); }
-function saveButton() { return [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "save" || button.textContent === "saving")!; }
-async function save() { await act(async () => saveButton().click()); }
+function saveButton(target?: string): HTMLButtonElement {
+  if (target) return container.querySelector<HTMLButtonElement>(`[aria-label="Save ${target}"]`)!;
+  const buttons = [...container.querySelectorAll<HTMLButtonElement>('button[aria-label^="Save "]')];
+  return buttons.find(button => !button.disabled) ?? saveButton("embeddingTitle");
+}
+async function save(target?: string) { await act(async () => saveButton(target).click()); }
 async function edit(selector: string, value: string) {
   await act(async () => {
     const input = container.querySelector<HTMLInputElement>(selector)!;
@@ -194,7 +198,7 @@ describe("embedding connection hints", () => {
     expect(fieldDescription("#emb-key")).toContain("A separate embedding key is already saved");
   });
 
-  it("tracks generation address drafts live only when the embedding address is inherited", async () => {
+  it("uses the saved generation address until its independent save succeeds", async () => {
     const config = { ...embeddingConfig, embedding_base_url: null };
     mocks.getModelConfig.mockResolvedValue(config);
     mocks.saveModelConfig.mockImplementation(async patch => ({ config: { ...config, ...patch } }));
@@ -203,7 +207,7 @@ describe("embedding connection hints", () => {
     expect(fieldDescription("#emb-url")).toContain("Currently used: https://llm.invalid/v1 (generation model URL)");
     await edit("#llm-model", config.llm_model);
     await edit("#llm-url", "  https://new-generation.invalid/v1  ");
-    expect(fieldDescription("#emb-url")).toContain("Used after saving: https://new-generation.invalid/v1 (generation model URL)");
+    expect(fieldDescription("#emb-url")).toContain("Currently used: https://llm.invalid/v1 (generation model URL)");
     expect(container.querySelector<HTMLInputElement>("#emb-url")!.value).toBe("");
     await edit("#llm-url", "  https://llm.invalid/v1  ");
     expect(fieldDescription("#emb-url")).toContain("Currently used: https://llm.invalid/v1 (generation model URL)");
@@ -245,18 +249,19 @@ describe("embedding connection hints", () => {
     expect(saveButton().disabled).toBe(true);
   });
 
-  it("recognizes a new generation key draft without showing its secret", async () => {
+  it("inherits a new generation key only after its independent save", async () => {
     mocks.getModelConfig.mockResolvedValue({ ...embeddingConfig, embedding_base_url: null,
       llm_api_key_set: false, embedding_api_key_set: false });
     await mount();
     expect(fieldDescription("#emb-key")).toContain("No embedding key is configured. Configure a separate key.");
     await edit("#llm-key", "generation-secret-draft");
-    expect(fieldDescription("#emb-key")).toContain("Uses the generation model key.");
+    expect(fieldDescription("#emb-key")).toContain("No embedding key is configured. Configure a separate key.");
     expect(fieldDescription("#emb-key")).not.toContain("generation-secret-draft");
     expect(container.textContent).not.toContain("generation-secret-draft");
     expect(fieldDescription("#emb-url")).toContain("Currently used: https://llm.invalid/v1 (generation model URL)");
     await save();
     expect(mocks.saveModelConfig).toHaveBeenCalledWith({ llm_api_key: "generation-secret-draft" });
+    expect(fieldDescription("#emb-key")).toContain("Uses the generation model key.");
   });
 
   it.each([
@@ -301,10 +306,11 @@ describe("embedding connection hints", () => {
       else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
     }
     expect(container.querySelector<HTMLInputElement>("#llm-key")!.value).toBe("");
-    expect(fieldDescription("#emb-url")).toContain("Used after saving: https://llm.invalid/v1 (generation model URL)");
-    expect(fieldDescription("#emb-key")).toContain("Uses the generation model key.");
+    expect(fieldDescription("#emb-url")).toContain("Currently used: SDK default URL");
+    expect(fieldDescription("#emb-key")).toContain("No embedding key is configured");
     await save();
     expect(mocks.saveModelConfig).toHaveBeenCalledWith({ llm_provider: "openai" });
+    expect(fieldDescription("#emb-key")).toContain("Uses the generation model key.");
   });
 
   it("requires a replacement generation key for embedding inheritance after leaving Responses", async () => {
@@ -315,7 +321,7 @@ describe("embedding connection hints", () => {
     await selectFormat("openai");
     expect(fieldDescription("#emb-key")).toContain("No embedding key is configured. Configure a separate key.");
     await edit("#llm-key", "new-chat-completions-key");
-    expect(fieldDescription("#emb-key")).toContain("Uses the generation model key.");
+    expect(fieldDescription("#emb-key")).toContain("No embedding key is configured. Configure a separate key.");
     expect(container.textContent).not.toContain("new-chat-completions-key");
   });
 
@@ -328,14 +334,14 @@ describe("embedding connection hints", () => {
     expect(fieldDescription("#emb-url")).not.toContain("302");
     expect(fieldDescription("#emb-url")).not.toContain("with the separate embedding key");
     await edit("#llm-url", "https://explicit-generation.invalid/v1");
-    expect(container.querySelector<HTMLInputElement>("#emb-url")!.placeholder).toBe("Leave blank to use generation URL");
-    expect(fieldDescription("#emb-url")).toContain("Used after saving: https://explicit-generation.invalid/v1 (generation model URL)");
+    expect(container.querySelector<HTMLInputElement>("#emb-url")!.placeholder).toBe("Leave blank to use default URL");
+    expect(fieldDescription("#emb-url")).toContain("Currently used: SDK default URL.");
     await edit("#llm-url", "   ");
     expect(container.querySelector<HTMLInputElement>("#emb-url")!.placeholder).toBe("Leave blank to use default URL");
     expect(fieldDescription("#emb-url")).toContain("Currently used: SDK default URL.");
   });
 
-  it("shows the localized inheritance hint with the actual Chinese draft endpoint", async () => {
+  it("localizes the inherited saved endpoint while generation has an unsaved draft", async () => {
     modelMessages = chinese.ModelConfig;
     mocks.getModelConfig.mockResolvedValue({ ...embeddingConfig, embedding_base_url: null });
     await mount();
@@ -343,10 +349,10 @@ describe("embedding connection hints", () => {
     expect(fieldDescription("#emb-url")).toContain("当前使用：https://llm.invalid/v1（来自生成模型地址）");
     expect(fieldDescription("#emb-url")).toContain("将使用生成模型地址，仍使用独立向量密钥。如向量模型使用其他服务，请填写对应的服务地址。");
     await edit("#llm-url", "https://changed-generation.invalid/v1");
-    expect(fieldDescription("#emb-url")).toContain("保存后使用：https://changed-generation.invalid/v1（来自生成模型地址）");
+    expect(fieldDescription("#emb-url")).toContain("当前使用：https://llm.invalid/v1（来自生成模型地址）");
     await edit("#llm-url", "   ");
-    expect(container.querySelector<HTMLInputElement>("#emb-url")!.placeholder).toBe("留空使用默认向量服务地址");
-    expect(fieldDescription("#emb-url")).toContain("保存后使用：SDK 默认地址。");
+    expect(container.querySelector<HTMLInputElement>("#emb-url")!.placeholder).toBe("留空使用生成模型地址");
+    expect(fieldDescription("#emb-url")).toContain("当前使用：https://llm.invalid/v1（来自生成模型地址）");
   });
 });
 
@@ -392,7 +398,133 @@ describe("generation connection tests", () => {
   });
 });
 
-describe("one page-wide model Save", () => {
+describe("independent model cards", () => {
+  it("renders five card-owned save actions and four connection tests", async () => {
+    await mount();
+    const buttons = [...container.querySelectorAll<HTMLButtonElement>('button[aria-label^="Save "]')];
+    expect(buttons.map(button => button.getAttribute("aria-label"))).toEqual([
+      "Save generationTitle", "Save embeddingTitle", "Save parserTitle",
+      "Save Chatbot LLM (optional)", "Save Query embedding (optional)",
+    ]);
+    expect(buttons.every(button => button.closest("section") && button.disabled)).toBe(true);
+    expect([...container.querySelectorAll("section button")].filter(button => button.textContent?.startsWith("Test "))).toHaveLength(4);
+  });
+
+  it.each([
+    ["generationTitle", { llm_model: "new-generation", llm_api_key: "generation-key" }, "#llm-key", "#emb-key", "embedding-key"],
+    ["embeddingTitle", { embedding_model: "new-embedding", embedding_dimensions: null, embedding_api_key: "embedding-key" }, "#emb-key", "#mineru-key", "parser-key"],
+    ["parserTitle", { mineru_api_key: "parser-key" }, "#mineru-key", "#llm-key", "generation-key"],
+  ] as const)("saves %s without submitting or clearing sibling drafts", async (target, patch, cleared, retained, secret) => {
+    await mount();
+    await edit("#llm-model", "new-generation"); await edit("#llm-key", "generation-key");
+    await edit("#emb-model", "new-embedding"); await edit("#emb-dims", ""); await edit("#emb-key", "embedding-key");
+    await edit("#mineru-key", "parser-key");
+    await edit('[aria-label="llm API Key"]', "chat-key");
+    await save(target);
+    expect(mocks.saveModelConfig).toHaveBeenCalledExactlyOnceWith(patch);
+    expect(container.querySelector<HTMLInputElement>(cleared)!.value).toBe("");
+    expect(container.querySelector<HTMLInputElement>(retained)!.value).toBe(secret);
+    expect(container.querySelector<HTMLInputElement>('[aria-label="llm API Key"]')!.value).toBe("chat-key");
+    expect(writes()).toHaveLength(0);
+    expect(saveButton(target).disabled).toBe(true);
+  });
+
+  it.each(["generationTitle", "embeddingTitle", "parserTitle"])("keeps failed %s drafts and keys for retry", async target => {
+    await mount();
+    await edit("#llm-key", "generation-key"); await edit("#emb-key", "embedding-key"); await edit("#mineru-key", "parser-key");
+    mocks.saveModelConfig.mockRejectedValueOnce(new Error("database unavailable"));
+    await save(target);
+    expect(saveButton(target).closest("section")!.querySelector('[role="alert"]')!.textContent).toContain("database unavailable");
+    expect(["#llm-key", "#emb-key", "#mineru-key"].map(selector => container.querySelector<HTMLInputElement>(selector)!.value))
+      .toEqual(["generation-key", "embedding-key", "parser-key"]);
+    expect(saveButton(target).disabled).toBe(false);
+    await save(target);
+    expect(mocks.saveModelConfig).toHaveBeenCalledTimes(2);
+    expect(saveButton(target).closest("section")!.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("allows concurrent generation and embedding saves without restoring stale sibling config", async () => {
+    let finishGeneration!: (value: unknown) => void;
+    mocks.saveModelConfig.mockImplementationOnce(() => new Promise(resolve => { finishGeneration = resolve; }));
+    await mount(); await edit("#llm-model", "saved-generation"); await edit("#llm-key", "generation-key");
+    await edit("#emb-model", "saved-embedding"); await edit("#emb-key", "embedding-key");
+    await save("generationTitle");
+    expect(container.querySelector("#llm-model")!.matches(":disabled")).toBe(true);
+    expect(container.querySelector("#emb-model")!.matches(":disabled")).toBe(false);
+    expect(saveButton("embeddingTitle").disabled).toBe(false);
+    await save("embeddingTitle");
+    await edit("#emb-model", "newer-embedding-draft");
+    await edit("#emb-key", "newer-embedding-key");
+    await act(async () => finishGeneration({ config: { ...original, llm_model: "saved-generation", llm_api_key_set: true } }));
+    expect(container.querySelector<HTMLInputElement>("#emb-model")!.value).toBe("newer-embedding-draft");
+    expect(container.querySelector<HTMLInputElement>("#emb-key")!.value).toBe("newer-embedding-key");
+    await edit("#emb-model", "saved-embedding"); await edit("#emb-key", "");
+    expect(saveButton("embeddingTitle").disabled).toBe(true);
+  });
+
+  it.each([
+    ["", "3", "Enter a model name"], ["embedding", "0", "whole number"],
+    ["embedding", "2.5", "whole number"], ["embedding", "8193", "whole number"],
+  ])("locates invalid embedding model=%s dimensions=%s without a generic API failure", async (model, dimensions, message) => {
+    await mount(); await edit("#emb-model", model); await edit("#emb-dims", dimensions);
+    await save("embeddingTitle");
+    const section = saveButton("embeddingTitle").closest("section")!;
+    expect(section.querySelector('[role="alert"]')!.textContent).toContain(message);
+    expect(document.activeElement?.id).toBe(model ? "emb-dims" : "emb-model");
+    const test = [...section.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Test embedding model")!;
+    await act(async () => test.click());
+    expect(section.querySelector('[role="status"]')!.textContent).toContain(message);
+    expect(mocks.testEmbeddingModelConfig).not.toHaveBeenCalled(); expect(mocks.saveModelConfig).not.toHaveBeenCalled();
+  });
+
+  it("preserves deployment locks for Responses fields while allowing embedding saves", async () => {
+    mocks.getModelConfig.mockResolvedValue({ ...embeddingConfig, llm_provider: "responses", locked_fields: ["llm_responses_endpoint"] });
+    mocks.getModelProviders.mockResolvedValue(embeddingProviders);
+    await mount();
+    expect(container.querySelector<HTMLInputElement>("#original-responses-endpoint")!.disabled).toBe(true);
+    await edit("#emb-url", "https://new-embedding.invalid/v1"); await save("embeddingTitle");
+    expect(mocks.saveModelConfig).toHaveBeenCalledExactlyOnceWith({ embedding_base_url: "https://new-embedding.invalid/v1" });
+  });
+  it("saves generation alone while preserving invalid embedding and parser secret drafts", async () => {
+    await mount();
+    await edit("#llm-model", "new-generation");
+    await edit("#llm-key", "synthetic-generation-key");
+    await edit("#emb-model", "");
+    await edit("#emb-dims", "0");
+    await edit("#emb-key", "synthetic-embedding-key");
+    await edit("#mineru-key", "synthetic-parser-key");
+    const button = container.querySelector<HTMLButtonElement>('[aria-label="Save generationTitle"]');
+    expect(button).not.toBeNull();
+    await act(async () => button!.click());
+    expect(mocks.saveModelConfig).toHaveBeenCalledExactlyOnceWith({
+      llm_model: "new-generation", llm_api_key: "synthetic-generation-key",
+    });
+    expect(container.querySelector<HTMLInputElement>("#llm-key")!.value).toBe("");
+    expect(container.querySelector<HTMLInputElement>("#emb-model")!.value).toBe("");
+    expect(container.querySelector<HTMLInputElement>("#emb-dims")!.value).toBe("0");
+    expect(container.querySelector<HTMLInputElement>("#emb-key")!.value).toBe("synthetic-embedding-key");
+    expect(container.querySelector<HTMLInputElement>("#mineru-key")!.value).toBe("synthetic-parser-key");
+  });
+
+  it("tests embedding without sending unsaved generation credentials or unrelated invalid fields", async () => {
+    await mount();
+    await edit("#llm-model", "");
+    await edit("#llm-url", "https://unsaved-generation.invalid/v1");
+    await edit("#llm-key", "synthetic-generation-secret");
+    await edit("#emb-model", "draft-embedding");
+    await edit("#emb-url", "");
+    await edit("#emb-key", "synthetic-embedding-secret");
+    const button = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(node => node.textContent === "Test embedding model")!;
+    await act(async () => button.click());
+    expect(mocks.testEmbeddingModelConfig).toHaveBeenCalledExactlyOnceWith({
+      embedding_model: "draft-embedding", embedding_base_url: "", embedding_dimensions: 3,
+      embedding_api_key: "synthetic-embedding-secret",
+    });
+  });
+});
+
+describe("individual card format compatibility", () => {
   it("tests the unsaved original embedding draft without saving and reports dimensions", async () => {
     let finish!: (result: { ok: boolean; message: string; dimensions: number }) => void;
     mocks.testEmbeddingModelConfig.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
@@ -405,7 +537,6 @@ describe("one page-wide model Save", () => {
     expect(mocks.testEmbeddingModelConfig).toHaveBeenCalledWith({
       embedding_model: "draft-embedding", embedding_base_url: "https://draft.invalid/v1",
       embedding_api_key: "draft-embedding-key", embedding_dimensions: 4,
-      llm_provider: "openai", llm_base_url: original.llm_base_url,
     });
     expect(button.disabled).toBe(true); expect(button.textContent).toBe("Testing…");
     expect(saveButton().disabled).toBe(true);
@@ -430,7 +561,7 @@ describe("one page-wide model Save", () => {
       .find(button => button.textContent === "Test embedding model")!;
     await act(async () => button.click());
     const draft = mocks.testEmbeddingModelConfig.mock.calls[0][0];
-    expect(draft.llm_provider).toBe("responses");
+    expect(draft.llm_provider).toBeUndefined();
     expect(draft.llm_api_key).toBeUndefined(); expect(draft.llm_base_url).toBeUndefined();
     expect(JSON.stringify(draft)).not.toContain("responses-private-key");
   });
@@ -505,7 +636,6 @@ describe("one page-wide model Save", () => {
     expect(saveButton().disabled).toBe(true);
     await act(async () => test.click());
     expect(mocks.testModelConfig).toHaveBeenLastCalledWith(expect.objectContaining({
-      llm_provider: "openai", llm_base_url: original.llm_base_url,
     }));
     expect(mocks.testModelConfig.mock.calls.at(-1)![0].llm_responses_endpoint).toBeUndefined();
     await selectFormat("responses");
@@ -527,203 +657,4 @@ describe("one page-wide model Save", () => {
     expect(container.querySelector<HTMLButtonElement>("#llm-api-format")!.disabled).toBe(true);
   });
 
-  it("renders one Save after every section and retains per-section Tests", async () => {
-    await mount();
-    const saves = [...container.querySelectorAll<HTMLButtonElement>("button")].filter(button => button.textContent === "save");
-    expect(saves).toHaveLength(1); expect(saves[0].closest("section")).toBeNull();
-    expect([...container.querySelectorAll("button")].at(-1)).toBe(saves[0]);
-    expect(container.querySelectorAll("section button").length).toBeGreaterThanOrEqual(3);
-  });
-  it.each(["llm", "embedding"] as const)("keeps the other optional endpoint editable and testable while %s is testing", async (first) => {
-    saved.llm.enabled = true; saved.embedding.enabled = true;
-    await mount();
-    type Target = "llm" | "embedding";
-    const other: Target = first === "llm" ? "embedding" : "llm";
-    const sections = [...container.querySelectorAll<HTMLElement>("section")].slice(-2);
-    const section = { llm: sections[0], embedding: sections[1] };
-    const controls = (target: Target) => [...section[target].querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>("input, button, select")];
-    const buttons = Object.fromEntries((["llm", "embedding"] as const).map(target => [target,
-      [...section[target].querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === (target === "llm" ? "Test generation model" : "Test embedding model"))!,
-    ])) as Record<Target, HTMLButtonElement>;
-    const finish: Partial<Record<Target, (response: FetchResponse) => void>> = {};
-    fetcher.mockImplementation((_url, request) => new Promise(resolve => {
-      finish[JSON.parse(request.body!).target as Target] = resolve;
-    }));
-
-    await act(async () => buttons[first].click());
-    expect(buttons[first].textContent).toBe("Testing…");
-    expect(controls(first).every(control => control.disabled)).toBe(true);
-    expect(controls(other).every(control => !control.disabled)).toBe(true);
-    expect(saveButton().disabled).toBe(true);
-    await edit(`[aria-label="${other} API Key"]`, "independent-draft-key");
-    await act(async () => buttons[other].click());
-    const requests = fetcher.mock.calls.filter(([, request]) => request.method === "POST").map(([, request]) => JSON.parse(request.body!));
-    expect(requests.map(request => request.target)).toEqual([first, other]);
-    expect(requests[1][other].api_key).toBe("independent-draft-key");
-    expect(controls(other).every(control => control.disabled)).toBe(true);
-
-    await act(async () => finish[first]!({ ok: true, json: async () => ({ message: `${first} connected` }) }));
-    expect(controls(first).every(control => !control.disabled)).toBe(true);
-    expect(controls(other).every(control => control.disabled)).toBe(true);
-    expect(section[first].querySelector('[role="status"]')!.textContent).toBe(`${first} connected`);
-    expect(buttons[other].textContent).toBe("Testing…");
-    expect(saveButton().disabled).toBe(true);
-
-    await act(async () => finish[other]!({ ok: false, json: async () => ({ error: { message: `${other} unavailable` } }) }));
-    expect(section[other].querySelector('[role="status"]')!.textContent).toBe(`${other} unavailable`);
-    expect(section[first].querySelector('[role="status"]')!.textContent).toBe(`${first} connected`);
-    expect(controls(other).every(control => !control.disabled)).toBe(true);
-    expect(saveButton().disabled).toBe(false);
-    expect(writes()).toHaveLength(0); expect(mocks.saveModelConfig).not.toHaveBeenCalled();
-  });
-  it("saves only changed original fields and both edited chatbot connections independently", async () => {
-    await mount();
-    await edit("#llm-model", "edited-original"); await edit('[aria-label="Model"]', "edited-chat");
-    await edit('[aria-label="embedding API Key"]', "new-query-key");
-    await save();
-    expect(mocks.order).toEqual(["original", "chatbot"]);
-    expect(mocks.saveModelConfig.mock.calls[0][0]).toEqual({ llm_model: "edited-original" });
-    expect(writes()).toHaveLength(1);
-    const body = JSON.parse(writes()[0][1].body!);
-    expect(body.llm.model).toBe("edited-chat"); expect(body.llm.api_key).toBe("");
-    expect(body.embedding.api_key).toBe("new-query-key"); expect(body.embedding.model).toBeUndefined();
-    expect(body.embedding.schema_dimensions).toBeUndefined();
-    expect(container.querySelector<HTMLInputElement>('[aria-label="embedding API Key"]')!.value).toBe("");
-    expect(mocks.success).toHaveBeenCalledTimes(2); expect(mocks.refreshCapabilities).toHaveBeenCalledTimes(2);
-    expect(saveButton().disabled).toBe(true);
-  });
-  it.each([['[aria-label="Model"]', "new-chat-model"], ['[aria-label="Query endpoint"]', "https://new-query.invalid/v1"]])(
-    "saves optional changes to %s without calling the extraction settings save", async (selector, value) => {
-      await mount(); await edit(selector, value); await save();
-      expect(mocks.saveModelConfig).not.toHaveBeenCalled(); expect(writes()).toHaveLength(1);
-      expect(mocks.success).toHaveBeenCalledWith("Chatbot connections saved.");
-      expect(saveButton().disabled).toBe(true);
-    });
-  it("skips unchanged original settings, including reverted drafts and blank keys", async () => {
-    await mount(); expect(saveButton().disabled).toBe(true);
-    await edit("#llm-model", "temporary-model"); expect(saveButton().disabled).toBe(false);
-    await edit("#llm-model", original.llm_model);
-    await edit("#llm-key", "temporary-key"); await edit("#llm-key", "");
-    expect(saveButton().disabled).toBe(true);
-    await edit('[aria-label="Model"]', "edited-chat"); await save();
-    expect(mocks.saveModelConfig).not.toHaveBeenCalled();
-  });
-  it("preserves explicit endpoint and dimension clears in the original delta", async () => {
-    await mount(); await edit("#emb-url", ""); await edit("#emb-dims", ""); await edit("#emb-key", "new-index-key"); await save();
-    expect(mocks.saveModelConfig).toHaveBeenCalledWith({ embedding_base_url: "", embedding_dimensions: null, embedding_api_key: "new-index-key" });
-  });
-  it("skips unchanged chatbot connections instead of creating UI overrides", async () => {
-    await mount(); await edit("#emb-url", "https://edited-original.invalid/v1"); await save();
-    expect(mocks.saveModelConfig).toHaveBeenCalledTimes(1); expect(writes()).toHaveLength(0);
-    expect(mocks.success).toHaveBeenCalledTimes(1);
-  });
-  it("retains failed chatbot drafts and keys for a successful retry after partial save", async () => {
-    await mount(); await edit("#llm-model", "edited-original"); await edit('[aria-label="llm API Key"]', "retained-chat-key");
-    failChatbot = true; await save();
-    expect(container.textContent).toContain("Original model settings saved.");
-    expect(container.querySelector('[role="alert"]')!.textContent).toContain("Chatbot connections could not be saved");
-    expect(container.querySelector<HTMLInputElement>('[aria-label="llm API Key"]')!.value).toBe("retained-chat-key");
-    expect(mocks.success).toHaveBeenCalledTimes(1); expect(saveButton().disabled).toBe(false);
-    failChatbot = false; await save();
-    expect(JSON.parse(writes()[1][1].body!).llm.api_key).toBe("retained-chat-key");
-    expect(mocks.saveModelConfig).toHaveBeenCalledTimes(1);
-    expect(mocks.success).toHaveBeenCalledTimes(2); expect(container.querySelector('[role="alert"]')).toBeNull();
-  });
-  it("saves chatbot changes even if original settings fail, then retries only the failed draft", async () => {
-    await mount(); await edit("#llm-model", "edited-original"); await edit('[aria-label="Model"]', "saved-chat");
-    mocks.saveModelConfig.mockRejectedValueOnce(new Error("database unavailable")); await save();
-    expect(writes()).toHaveLength(1); expect(mocks.success).toHaveBeenCalledWith("Chatbot connections saved.");
-    expect(container.querySelector('[role="alert"]')!.textContent).toContain("Original model settings could not be saved");
-    expect(container.querySelector<HTMLInputElement>("#llm-model")!.value).toBe("edited-original");
-    await save(); expect(writes()).toHaveLength(1); expect(mocks.saveModelConfig).toHaveBeenCalledTimes(2);
-    expect(container.querySelector('[role="alert"]')).toBeNull();
-  });
-  it("retains failed drafts even if the post-save identity refresh also fails", async () => {
-    await mount(); await edit("#llm-model", "edited-original"); await edit('[aria-label="Model"]', "retained-model");
-    const normalFetch = fetcher.getMockImplementation()!;
-    let failRefresh = true;
-    fetcher.mockImplementation((url, request) => request.method === "GET" && failRefresh
-      ? Promise.resolve({ ok: false, json: async () => ({ error: { message: "Shared identity refresh failed" } }) })
-      : normalFetch(url, request));
-    failChatbot = true; await save();
-    expect(container.querySelector<HTMLInputElement>('[aria-label="Model"]')!.value).toBe("retained-model");
-    failRefresh = false;
-    const retry = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Retry")!;
-    await act(async () => retry.click());
-    expect(container.querySelector<HTMLInputElement>('[aria-label="Model"]')!.value).toBe("retained-model");
-    failChatbot = false; await save();
-    expect(JSON.parse(writes()[1][1].body!).llm.model).toBe("retained-model");
-  });
-  it("allows original settings to save while chatbot deployment settings are locked", async () => {
-    saved.locked = true; await mount(); await edit("#llm-model", "edited-original"); expect(saveButton().disabled).toBe(false); await save();
-    expect(mocks.saveModelConfig).toHaveBeenCalledTimes(1); expect(writes()).toHaveLength(0);
-  });
-  it("allows original saves while chatbot settings fail to load and optional saves after retry", async () => {
-    const normalFetch = fetcher.getMockImplementation()!;
-    let failLoad = true;
-    fetcher.mockImplementation((url, request) => request.method === "GET" && failLoad
-      ? Promise.resolve({ ok: false, json: async () => ({ error: { message: "Unable to load" } }) })
-      : normalFetch(url, request));
-    await mount(); expect(saveButton().disabled).toBe(true);
-    await edit("#llm-model", "edited-original"); expect(saveButton().disabled).toBe(false); await save();
-    expect(mocks.saveModelConfig).toHaveBeenCalledTimes(1); expect(writes()).toHaveLength(0);
-    failLoad = false;
-    const retry = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Retry")!;
-    await act(async () => retry.click()); await edit('[aria-label="Model"]', "edited-chat"); await save();
-    expect(writes()).toHaveLength(1);
-  });
-  it("keeps chatbot changes editable, testable and saveable while an original write waits for extraction", async () => {
-    let finish!: (value: unknown) => void;
-    mocks.saveModelConfig.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
-    await mount(); await edit("#llm-model", "edited-original"); await edit('[aria-label="Model"]', "saved-chat"); await save();
-    expect(saveButton().disabled).toBe(true); expect(container.querySelector("fieldset")!.disabled).toBe(true);
-    expect(container.querySelectorAll("fieldset")[1].disabled).toBe(false);
-    expect(writes()).toHaveLength(1); expect(container.textContent).toContain("Chatbot connections saved.");
-    expect(container.textContent).toContain("Saving original model settings");
-    const optionalTest = [...container.querySelectorAll<HTMLButtonElement>("button")].filter(button => button.textContent === "Test generation model").at(-1)!;
-    expect(optionalTest.disabled).toBe(false);
-    await edit('[aria-label="Model"]', "second-chat-change"); expect(saveButton().disabled).toBe(false); await save();
-    expect(JSON.parse(writes()[1][1].body!).llm.model).toBe("second-chat-change");
-    expect(mocks.saveModelConfig).toHaveBeenCalledTimes(1);
-    await act(async () => finish({ config: { ...original, llm_model: "edited-original" } }));
-    expect(saveButton().disabled).toBe(true); expect(container.querySelector("fieldset")!.disabled).toBe(false);
-  });
-  it("allows chatbot saves when original settings fail to load", async () => {
-    mocks.getModelConfig.mockRejectedValueOnce(new Error("original load failed"));
-    await mount(); await edit('[aria-label="Model"]', "edited-chat"); await save();
-    expect(mocks.saveModelConfig).not.toHaveBeenCalled(); expect(writes()).toHaveLength(1);
-  });
-  it("initializes the chatbot baseline when an original save recovers its failed first load", async () => {
-    fetcher.mockResolvedValueOnce({ ok: false, json: async () => ({ error: { message: "Unable to load" } }) });
-    await mount(); await edit("#llm-model", "edited-original"); await save();
-    expect(container.querySelector('[aria-label="Model"]')).toBeTruthy();
-    await edit('[aria-label="Model"]', "edited-chat"); await save();
-    expect(JSON.parse(writes()[0][1].body!).llm.model).toBe("edited-chat");
-    expect(mocks.saveModelConfig).toHaveBeenCalledTimes(1);
-  });
-  it("omits deployment-locked original fields while saving editable embedding changes", async () => {
-    mocks.getModelConfig.mockResolvedValueOnce({ ...original, locked_fields: ["llm_model"] });
-    await mount(); await edit("#llm-model", "locked-draft"); expect(saveButton().disabled).toBe(true);
-    await edit("#emb-url", "https://new-index.invalid/v1"); await save();
-    expect(mocks.saveModelConfig).toHaveBeenCalledWith({ embedding_base_url: "https://new-index.invalid/v1" });
-  });
-  it("refreshes shared embedding identity after both independently saved drafts settle", async () => {
-    let finish!: () => void;
-    const normalFetch = fetcher.getMockImplementation()!;
-    fetcher.mockImplementation((url, request) => request.method === "PUT"
-      ? new Promise(resolve => { finish = () => resolve({ ok: true, json: async () => ({ config: structuredClone(initial) }) }); })
-      : normalFetch(url, request));
-    await mount(); await edit("#llm-model", "edited-original"); await edit('[aria-label="Model"]', "chat-model");
-    await edit('[aria-label="embedding API Key"]', "new-key"); await save();
-    saved.embedding.schema_dimensions = 7;
-    await act(async () => window.dispatchEvent(new Event("sag:stock-model-saved")));
-    expect(container.textContent).toContain("Schema dimensions: 7");
-    await act(async () => finish());
-    expect(container.textContent).toContain("Schema dimensions: 7");
-  });
-  it("reports a capability refresh failure as saved settings rather than a failed write", async () => {
-    await mount(); await edit('[aria-label="Model"]', "edited-chat"); mocks.refreshCapabilities.mockRejectedValueOnce(new Error("refresh unavailable")); await save();
-    expect(mocks.success).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[role="alert"]')!.textContent).toContain("Settings saved, but model information could not refresh");
-  });
 });

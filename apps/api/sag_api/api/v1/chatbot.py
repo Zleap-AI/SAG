@@ -9,12 +9,41 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sag_api.core.chatbot_config import OriginalEmbeddingDraft, TestDraft, Update
+from sag_api.core.chatbot_config import EmbeddingUpdate, LLMUpdate, OriginalEmbeddingDraft, TestDraft, Update
 from sag_api.core.db import get_session
 from sag_api.core.deps import get_current_user
 from sag_api.core.errors import ConfigurationError
 from sag_api.generation.chatbot import QueryLLM
+from sag_api.schemas.system import ModelConfigUpdate
 from sag_api.services import chatbot_service as rt
+
+_SAFE_DRAFT_PATHS = {
+    **{
+        ("body", name): name
+        for schema in (OriginalEmbeddingDraft, ModelConfigUpdate, TestDraft)
+        for name in schema.model_fields
+    },
+    **{("body", "llm", name): "llm." + name for name in LLMUpdate.model_fields},
+    **{("body", "embedding", name): "embedding." + name for name in EmbeddingUpdate.model_fields},
+}
+_SAFE_VALIDATION_MESSAGES = {
+    "missing": "is required",
+    "string_type": "must be text",
+    "string_too_short": "must not be empty",
+    "string_too_long": "is too long",
+    "int_type": "must be an integer",
+    "int_parsing": "must be an integer",
+    "int_from_float": "must be an integer",
+    "float_type": "must be a number",
+    "float_parsing": "must be a number",
+    "bool_type": "must be true or false",
+    "bool_parsing": "must be true or false",
+    "greater_than_equal": "is outside the allowed range",
+    "less_than_equal": "is outside the allowed range",
+    "literal_error": "has an unsupported value",
+    "extra_forbidden": "has an unexpected field",
+    "json_invalid": "must contain valid JSON",
+}
 
 
 class SecretSafeRoute(APIRoute):
@@ -24,13 +53,24 @@ class SecretSafeRoute(APIRoute):
         async def handle(request):
             try:
                 return await original(request)
-            except RequestValidationError:
+            except RequestValidationError as exc:
+                fields = []
+                for failure in exc.errors():
+                    # Never echo raw Pydantic messages, inputs, context or user-supplied key names.
+                    item = {
+                        "field": _SAFE_DRAFT_PATHS.get(tuple(failure.get("loc", ())), "request"),
+                        "message": _SAFE_VALIDATION_MESSAGES.get(failure.get("type"), "has an invalid value"),
+                    }
+                    if item not in fields:
+                        fields.append(item)
+                summary = "; ".join(f"{item['field']} ({item['message']})" for item in fields)
                 return JSONResponse(
                     status_code=422,
                     content={
                         "error": {
-                            "message": "Invalid connection draft; check field names and value types",
+                            "message": "Invalid connection draft: " + summary,
                             "code": "VALIDATION_ERROR",
+                            "fields": fields,
                         }
                     },
                 )
@@ -48,6 +88,7 @@ async def test_original_embedding(
 ):
     from zleap.sag.config import EmbeddingConfig
     from zleap.sag.core.adapters.defaults import OpenAIEmbeddingAdapter
+    from zleap.sag.exceptions import AIAuthError, AIError, AIInvalidRequestError, AITransientError
 
     updates = {
         key: (None if key.endswith("base_url") and value == "" else value)
@@ -82,6 +123,34 @@ async def test_original_embedding(
                 raise ValueError("Non-finite embedding vector")
         finally:
             await adapter.close()
+    except AIAuthError:
+        return {
+            "ok": False,
+            "code": "EMBEDDING_AUTH_FAILED",
+            "message": "Embedding authentication failed; check the saved embedding key or enter a key for this card",
+        }
+    except AIInvalidRequestError:
+        return {
+            "ok": False,
+            "code": "EMBEDDING_REQUEST_REJECTED",
+            "message": "Embedding request rejected; check the endpoint, model and supported request dimensions",
+        }
+    except AITransientError as exc:
+        timeout = exc.details.get("failure_kind") == "timeout"
+        return {
+            "ok": False,
+            "code": "EMBEDDING_TIMEOUT" if timeout else "EMBEDDING_UNAVAILABLE",
+            "message": "Embedding request timed out; check the endpoint and server availability"
+            if timeout else "Embedding service unavailable; check the endpoint, rate limits and server availability",
+        }
+    except (AIError, ValueError):
+        return {
+            "ok": False,
+            "code": "EMBEDDING_INVALID_RESPONSE",
+            "message": (
+                "Embedding returned an invalid response; check the returned vector format and configured dimensions"
+            ),
+        }
     except Exception:  # noqa: BLE001 -- provider bodies and credentials must stay private.
         return {
             "ok": False,

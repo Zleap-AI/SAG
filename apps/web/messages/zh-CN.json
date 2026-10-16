@@ -723,6 +723,12 @@
     "savingConnections": "正在保存聊天连接设置…"
   },
   "ModelConfig": {
+    "saveCard": "保存{name}",
+    "cardSaved": "{name}已保存。",
+    "cardSaveFailed": "{name}未能保存。{detail}",
+    "modelRequired": "请填写模型名称后重试。",
+    "dimensionsInvalid": "向量维度需为 1 至 8192 的整数，或留空使用模型默认值。",
+    "refreshFailed": "设置已保存，但模型信息未能刷新。请重新加载页面。",
     "title": "模型配置",
     "description": "生成、向量和解析模型参数。",
     "loadFailed": "无法加载模型配置",
@@ -777,7 +783,7 @@
     "retriesDescription": "请求失败后自动重试的次数。",
     "embeddingDescription": "用于文档向量化和语义检索。",
     "modelAndConnection": "模型与连接",
-    "embeddingConnectionDescription": "地址和密钥分别配置，留空时的使用规则见下方说明。",
+    "embeddingConnectionDescription": "地址和密钥分别配置。继承以已保存的生成模型设置为准；如需更换，请先保存生成模型。",
     "embeddingNativeConnectionDescription": "Responses API、Anthropic 与 Gemini 使用独立的向量连接；请配置 OpenAI-compatible 向量地址和 Key。",
     "embeddingAddressPlaceholder": "留空使用生成模型地址",
     "embeddingAddressDefaultPlaceholder": "留空使用默认向量服务地址",
@@ -974,7 +980,7 @@
   },
   "QuickSetup": {
     "generationModel": "对话模型",
-    "generationValue": "qwen3.6-flash",
+    "generationValue": "qwen3.8-flash",
     "embeddingModel": "资料检索模型",
     "embeddingValue": "{model} · 1024 维",
     "embedding302Provider": "302.AI",

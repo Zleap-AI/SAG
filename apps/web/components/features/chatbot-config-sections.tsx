@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Check, Plug, X } from "lucide-react";
+import { Check, Plug, Save, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { SettingsRow, SettingsSection } from "@/components/features/settings-section";
 import { Button } from "@/components/ui/button";
@@ -10,37 +10,47 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { useApp } from "@/components/features/app-shell";
+import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { ChatbotConfig as Config, ChatbotConnection as Connection, ModelProviderId, ModelProviderSpec } from "@/lib/types";
 import { OpenAIAPIFormatField, ResponsesBaseURLField, ResponsesConnectionFields } from "./responses-connection-fields";
-import type { ModelSettingsProps } from "./model-config-form";
 
 type Target = "llm" | "embedding";
 
-export function ChatbotConfigSections({ saveRef, onState }: ModelSettingsProps = {}) {
+export function ChatbotConfigSections() {
+  const { refreshCapabilities } = useApp();
   const c = useTranslations("ChatbotConfig");
   const t = useTranslations("ModelConfig");
   const [providers, setProviders] = React.useState<ModelProviderSpec[]>([]);
   const [config, setConfig] = React.useState<Config | null>(null);
   const [keys, setKeys] = React.useState<Record<Target, string>>({ llm: "", embedding: "" });
-  const [saving, setSaving] = React.useState(false);
+  const [saving, setSaving] = React.useState<Record<Target, boolean>>({ llm: false, embedding: false });
+  const pending = React.useRef<Record<Target, boolean>>({ llm: false, embedding: false });
+  const [saveResults, setSaveResults] = React.useState<Partial<Record<Target, { ok: boolean; message: string }>>>({});
   const [testing, setTesting] = React.useState<Record<Target, boolean>>({ llm: false, embedding: false });
   const [error, setError] = React.useState("");
   const [results, setResults] = React.useState<Partial<Record<Target, { ok: boolean; message: string }>>>({});
   const saved = React.useRef<Config | null>(null);
+  const loadVersion = React.useRef(0);
   const load = React.useCallback(async (retainEdits = false) => {
+    const version = ++loadVersion.current;
     try {
       const [result, catalog] = await Promise.all([
         api.getChatbotConfig(),
         retainEdits && saved.current ? Promise.resolve(null) : api.getModelProviders(),
       ]);
+      if (version !== loadVersion.current) return;
       const loaded = result.config;
       if (catalog) {
         if (!catalog.some(provider => provider.id === loaded.llm.provider)) throw new Error(c("loadFailed"));
         setProviders(catalog);
       }
       if (!retainEdits || !saved.current) saved.current = loaded;
+      else saved.current = { ...saved.current, locked: loaded.locked, encryption_configured: loaded.encryption_configured,
+        embedding: { ...saved.current.embedding, model: loaded.embedding.model,
+          schema_dimensions: loaded.embedding.schema_dimensions, request_dimensions: loaded.embedding.request_dimensions } };
       setConfig(current => retainEdits && current ? {
         ...current, locked: loaded.locked, encryption_configured: loaded.encryption_configured,
         embedding: { ...current.embedding, model: loaded.embedding.model,
@@ -48,7 +58,9 @@ export function ChatbotConfigSections({ saveRef, onState }: ModelSettingsProps =
       } : loaded);
       setError("");
     }
-    catch (e) { setError(e instanceof Error ? e.message : c("loadFailed")); }
+    catch (e) {
+      if (version === loadVersion.current) setError(e instanceof Error ? e.message : c("loadFailed"));
+    }
   }, [c]);
   React.useEffect(() => { void load(); }, [load]);
   // Refresh shared embedding identity/inherited tuning after saving the stock form.
@@ -71,30 +83,56 @@ export function ChatbotConfigSections({ saveRef, onState }: ModelSettingsProps =
       "responses_provider", "responses_endpoint", "responses_api_version", "responses_send_temperature");
     return Object.fromEntries(fields.map(field => [field, connection[field as keyof Connection]]));
   };
-  const changes = () => !config || !saved.current || config.locked ? {} : Object.fromEntries((["llm", "embedding"] as const).flatMap(target => {
+  const changes = (only?: Target) => !config || !saved.current || config.locked ? {} : Object.fromEntries((["llm", "embedding"] as const).flatMap(target => {
+      if (only && target !== only) return [];
       const values = draft(target, config[target]);
       return keys[target] || JSON.stringify(values) !== JSON.stringify(draft(target, saved.current![target]))
         ? [[target, { ...values, api_key: keys[target] }]] : [];
     }));
-  async function save() {
-    if (!config || !saved.current) throw new Error(c("loadFailed"));
-    const patch = changes();
+  const validate = (target: Target) => {
+    if (target === "llm" && config?.llm.enabled && !config.llm.model.trim()) {
+      document.getElementById("chatbot-llm-model")?.focus();
+      return t("modelRequired");
+    }
+    return "";
+  };
+  async function save(target: Target) {
+    if (!config || !saved.current || config.locked || pending.current[target] || testing[target]) return;
+    const patch = changes(target);
     if (!Object.keys(patch).length) return;
-    setSaving(true);
+    const validationError = validate(target);
+    if (validationError) { setSaveResults(current => ({ ...current, [target]: { ok: false, message: validationError } })); return; }
+    pending.current[target] = true;
+    setSaving(current => ({ ...current, [target]: true }));
+    setSaveResults(current => ({ ...current, [target]: undefined }));
     try {
       const result = await api.saveChatbotConfig(patch);
-      saved.current = result.config;
-      setConfig(result.config);
-      setKeys({ llm: "", embedding: "" });
-      setError("");
-    } finally { setSaving(false); }
+      // A full response may predate a sibling save or shared vector refresh.
+      const connection = target === "embedding" ? { ...result.config.embedding,
+        model: saved.current.embedding.model, schema_dimensions: saved.current.embedding.schema_dimensions,
+        request_dimensions: saved.current.embedding.request_dimensions } : result.config.llm;
+      saved.current = { ...saved.current, [target]: connection };
+      setConfig(current => current ? { ...current, [target]: connection } : current);
+      setKeys(current => ({ ...current, [target]: "" }));
+      const message = t("cardSaved", { name: c(target === "llm" ? "llmTitle" : "embeddingTitle") });
+      setSaveResults(current => ({ ...current, [target]: { ok: true, message } }));
+      toast.success(message);
+      try { await refreshCapabilities(); }
+      catch { setSaveResults(current => ({ ...current, [target]: { ok: false, message: t("refreshFailed") } })); }
+    } catch (error) {
+      setSaveResults(current => ({ ...current, [target]: { ok: false,
+        message: t("cardSaveFailed", { name: c(target === "llm" ? "llmTitle" : "embeddingTitle"),
+          detail: error instanceof Error ? error.message : t("saveFailed") }),
+      } }));
+    } finally {
+      pending.current[target] = false;
+      setSaving(current => ({ ...current, [target]: false }));
+    }
   }
-  React.useImperativeHandle(saveRef, () => ({ save }));
-  const changed = Object.keys(changes()).length > 0;
-  React.useEffect(() => { onState?.({ ready: Boolean(config && !saving && !testing.llm && !testing.embedding), changed }); }, [config, saving, testing, changed, onState]);
-
   const test = async (target: Target) => {
-    if (!config || config.locked || saving || testing[target]) return;
+    if (!config || config.locked || saving[target] || testing[target]) return;
+    const message = validate(target);
+    if (message) { setResults(current => ({ ...current, [target]: { ok: false, message } })); return; }
     setTesting(current => ({ ...current, [target]: true }));
     setResults(current => ({ ...current, [target]: undefined }));
     try {
@@ -111,7 +149,7 @@ export function ChatbotConfigSections({ saveRef, onState }: ModelSettingsProps =
   if (error && !config) return <div role="alert">{error}<Button type="button" variant="outline" onClick={() => void load()}>{c("retry")}</Button></div>;
   if (!config) return <p>{c("loading")}</p>;
 
-  const disabled = (target: Target) => config.locked || saving || testing[target];
+  const disabled = (target: Target) => config.locked || saving[target] || testing[target];
   const providerFamily = config.llm.provider === "responses" ? "openai" : config.llm.provider;
   const changeLlmProvider = (value: ModelProviderId) => {
     update("llm", "provider", value);
@@ -131,19 +169,32 @@ export function ChatbotConfigSections({ saveRef, onState }: ModelSettingsProps =
       disabled={disabled(target)} onChange={e => setKeys(current => ({ ...current, [target]: e.target.value }))}
       placeholder={config[target].api_key_set ? (c("keyConfigured")) : (c("keyPlaceholder"))} />
   </Field>;
-  const controls = (target: Target) => <div className="flex flex-wrap items-center justify-between gap-3">
-    <div role="status" className="min-h-5 min-w-0">
-      {results[target] && <span className={cn("inline-flex items-center gap-1.5 text-sm",
-        results[target]?.ok ? "text-success" : "text-destructive")}>
-        {results[target]?.ok ? <Check className="size-4" /> : <X className="size-4" />}
-        {results[target]?.message}
-      </span>}
+  const controls = (target: Target) => <div className="flex flex-col gap-3">
+    <div className="min-w-0 space-y-2">
+      <div role="status" className="min-h-5 min-w-0">
+        {results[target] && <span className={cn("inline-flex items-center gap-1.5 text-sm",
+          results[target]?.ok ? "text-success" : "text-destructive")}>
+          {results[target]?.ok ? <Check className="size-4" /> : <X className="size-4" />}
+          {results[target]?.message}
+        </span>}
+      </div>
+      {saveResults[target] && <p role={saveResults[target]?.ok ? "status" : "alert"}
+        className={cn("break-words text-sm", saveResults[target]?.ok ? "text-success" : "text-destructive")}>
+        {saveResults[target]?.message}
+      </p>}
     </div>
-    <Button type="button" variant="outline" disabled={disabled(target)} onClick={() => void test(target)}>
-      {testing[target] ? <Spinner /> : <Plug />}
-      {testing[target] ? t("testing") : target === "llm" ? t("testGeneration")
-        : t("testEmbedding")}
-    </Button>
+    <div className="flex flex-wrap justify-end gap-2">
+      <Button type="button" variant="outline" disabled={disabled(target)} onClick={() => void test(target)}>
+        {testing[target] ? <Spinner /> : <Plug />}
+        {testing[target] ? t("testing") : target === "llm" ? t("testGeneration")
+          : t("testEmbedding")}
+      </Button>
+      <Button type="button" aria-label={t("saveCard", { name: c(target === "llm" ? "llmTitle" : "embeddingTitle") })}
+        disabled={disabled(target) || !Object.keys(changes(target)).length} onClick={() => void save(target)}>
+        {saving[target] ? <Spinner /> : <Save />}
+        {saving[target] ? t("saving") : t("saveCard", { name: c(target === "llm" ? "llmTitle" : "embeddingTitle") })}
+      </Button>
+    </div>
   </div>;
   const enable = (target: Target) => <SettingsRow title={c("enable")} layout="inline">
     <Switch aria-label={`Enable chatbot ${target}`} checked={config[target].enabled} disabled={disabled(target)}
