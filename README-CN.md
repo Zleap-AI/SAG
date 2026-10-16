@@ -569,7 +569,11 @@ config = EngineConfig.from_env()
 
 这里列出的是应用/API 策略名称；应用将 `multi` 映射到 Python 引擎的 `full_expand`，将 `multi_es_fast` 映射到 `pruned_expand_rff`。可用性取决于存储能力：`multi_es_fast` 需要词法检索支持。
 
-JEV 在“设置 → 知识库 → 检索”配置完整评分 URL、模型和独立 API Key，再设为默认或在探索界面单次选择。`multi_jev` 映射到 `pruned_expand_jev`，需要词法检索支持（当前 LanceDB/Elasticsearch）。问题与候选证据会发送到该服务；现有文档无需重新入库。也可使用 `.env.example` 中的 `SAG_JEV_*` 配置，设置页已保存的值优先。
+JEV 在“设置 → 知识库 → 检索”选择 302.AI、TypeSafe 官方或自定义服务。未配置时，页面默认填入 302.AI 的完整评分 URL `https://api.302.ai/typesafeai/v1/systemone` 和模型 `jev-latest`，API Key 留空，由用户填写；官方预设使用 `https://api.typesafe.ai/v1/systemone`。自定义服务可编辑完整地址和模型，已有配置会保留，切换服务地址后需重新填写对应密钥。地址包含评分路径，系统不自动追加路径。[302 接口文档](https://doc.302.ai/517575517e0)、[官方 API](https://docs.typesafe.ai/api)。
+
+`jev-latest` 是最新稳定版别名，随稳定发布更新；也可手动填写服务支持的固定版本。[官方模型说明](https://docs.typesafe.ai/models)另提供预览版别名，其网关支持情况取决于服务商。“抽取语言”默认中文，控制 SAG 的抽取提示等处理，不是 JEV API 的语言参数，也不会自动翻译评分文本。
+
+保存服务配置后，再将 JEV 设为默认或在探索界面单次选择。`multi_jev` 映射到 `pruned_expand_jev`，需要词法检索支持（当前 LanceDB/Elasticsearch）。问题与候选证据会发送到该服务；现有文档无需重新入库。也可使用 `.env.example` 中的 `SAG_JEV_*` 配置，设置页已保存的值优先。
 
 JEV 精排默认限时 30 秒、失败即报错；用户可明确允许返回粗排结果，界面会标明降级。应用为该模式额外分配召回和多信源排队预算，保留精排顺序与分数。未显式覆盖检索策略的聊天助手继承全局默认；Dify 仍使用其独立策略设置。
 

@@ -31,6 +31,19 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
+const JEV_DEFAULT_MODEL = "jev-latest";
+const JEV_ENDPOINTS = {
+  "302": "https://api.302.ai/typesafeai/v1/systemone",
+  official: "https://api.typesafe.ai/v1/systemone",
+} as const;
+type JevProvider = keyof typeof JEV_ENDPOINTS | "custom";
+
+function providerForEndpoint(endpoint: string): JevProvider {
+  if (!endpoint.trim() || endpoint.trim() === JEV_ENDPOINTS["302"]) return "302";
+  if (endpoint.trim() === JEV_ENDPOINTS.official) return "official";
+  return "custom";
+}
+
 export function KnowledgeConfigForm() {
   const t = useTranslations("KnowledgeConfig");
   const strategies = useTranslations("SearchStrategies");
@@ -45,9 +58,10 @@ export function KnowledgeConfigForm() {
   const [strategy, setStrategy] = React.useState<ModelConfig["search_strategy"]>("multi");
   const [topK, setTopK] = React.useState(8);
   const [language, setLanguage] = React.useState<ModelConfig["sag_language"]>("zh");
-  const [jevEndpoint, setJevEndpoint] = React.useState("");
+  const [jevProvider, setJevProvider] = React.useState<JevProvider>("302");
+  const [jevEndpoint, setJevEndpoint] = React.useState<string>(JEV_ENDPOINTS["302"]);
   const [savedJevEndpoint, setSavedJevEndpoint] = React.useState("");
-  const [jevModel, setJevModel] = React.useState("jev-latest");
+  const [jevModel, setJevModel] = React.useState(JEV_DEFAULT_MODEL);
   const [jevKey, setJevKey] = React.useState("");
   const [jevKeySet, setJevKeySet] = React.useState(false);
   const [jevTimeout, setJevTimeout] = React.useState(30);
@@ -77,9 +91,10 @@ export function KnowledgeConfigForm() {
     setStrategy(config.search_strategy);
     setTopK(config.search_top_k);
     setLanguage(config.sag_language);
-    setJevEndpoint(config.jev_endpoint ?? "");
+    setJevProvider(providerForEndpoint(config.jev_endpoint ?? ""));
+    setJevEndpoint(config.jev_endpoint?.trim() ? config.jev_endpoint : JEV_ENDPOINTS["302"]);
     setSavedJevEndpoint(config.jev_endpoint ?? "");
-    setJevModel(config.jev_model ?? "jev-latest");
+    setJevModel(config.jev_model?.trim() ? config.jev_model : JEV_DEFAULT_MODEL);
     setJevKey("");
     setJevKeySet(config.jev_api_key_set ?? false);
     setJevTimeout(config.jev_ranking_timeout_seconds ?? 30);
@@ -100,6 +115,16 @@ export function KnowledgeConfigForm() {
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  function selectJevProvider(provider: JevProvider) {
+    setJevProvider(provider);
+    setJevTestResult(null);
+    if (provider === "custom") return;
+    const endpoint = JEV_ENDPOINTS[provider];
+    if (endpoint !== jevEndpoint.trim()) setJevKey("");
+    setJevEndpoint(endpoint);
+    setJevModel(JEV_DEFAULT_MODEL);
+  }
 
   function jevPatch(): ModelConfigPatch {
     return {
@@ -306,7 +331,7 @@ export function KnowledgeConfigForm() {
                 value={language}
                 onValueChange={(value) => setLanguage(value as ModelConfig["sag_language"])}
               >
-                <SelectTrigger id="kb-language">
+                <SelectTrigger id="kb-language" aria-describedby="kb-language-description">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -314,6 +339,7 @@ export function KnowledgeConfigForm() {
                   <SelectItem value="en">{t("english")}</SelectItem>
                 </SelectContent>
               </Select>
+              <FieldDescription id="kb-language-description">{t("extractionLanguageDescription")}</FieldDescription>
             </Field>
             <Field className="sm:col-span-2">
               <FieldLabel>{t("topK", { count: topK })}</FieldLabel>
@@ -333,21 +359,38 @@ export function KnowledgeConfigForm() {
         <SettingsRow title={t("jevTitle")} description={t("jevDescription")}>
           <fieldset disabled={jevUnsupported || saving || testingJev} className="grid min-w-0 gap-4 sm:grid-cols-2">
             <Field className="sm:col-span-2">
+              <FieldLabel htmlFor="kb-jev-provider">{t("jevProvider")}</FieldLabel>
+              <Select value={jevProvider} onValueChange={(value) => selectJevProvider(value as JevProvider)}>
+                <SelectTrigger id="kb-jev-provider"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="302">302.AI</SelectItem>
+                  <SelectItem value="official">{t("jevProviderOfficial")}</SelectItem>
+                  <SelectItem value="custom">{t("jevProviderCustom")}</SelectItem>
+                </SelectContent>
+              </Select>
+              <FieldDescription>{t("jevProviderDescription")}</FieldDescription>
+            </Field>
+            <Field className="sm:col-span-2">
               <FieldLabel htmlFor="kb-jev-endpoint">{t("jevEndpoint")}</FieldLabel>
               <Input id="kb-jev-endpoint" type="url" placeholder="https://…" value={jevEndpoint}
-                onChange={(event) => { setJevEndpoint(event.target.value); setJevTestResult(null); }} />
+                readOnly={jevProvider !== "custom"}
+                onChange={(event) => { setJevEndpoint(event.target.value); setJevKey(""); setJevTestResult(null); }} />
               <FieldDescription>{t("jevEndpointDescription")}</FieldDescription>
             </Field>
             <Field>
               <FieldLabel htmlFor="kb-jev-model">{t("jevModel")}</FieldLabel>
               <Input id="kb-jev-model" value={jevModel}
                 onChange={(event) => { setJevModel(event.target.value); setJevTestResult(null); }} />
+              <FieldDescription>{t("jevModelDescription")}</FieldDescription>
             </Field>
             <Field>
               <FieldLabel htmlFor="kb-jev-api-key">{t("jevKey")}</FieldLabel>
               <Input id="kb-jev-api-key" type="password" autoComplete="new-password" value={jevKey}
-                placeholder={jevKeySet && jevEndpoint.trim() === savedJevEndpoint ? t("jevKeyConfigured") : t("jevKeyOptional")}
+                placeholder={jevKeySet && jevEndpoint.trim() === savedJevEndpoint ? t("jevKeyConfigured")
+                  : jevProvider === "custom" ? t("jevKeyOptional")
+                    : t("jevKeyProviderPlaceholder", { provider: jevProvider === "302" ? "302.AI" : "TypeSafe" })}
                 onChange={(event) => { setJevKey(event.target.value); setJevTestResult(null); }} />
+              {jevProvider !== "custom" && <FieldDescription>{t("jevKeyProviderDescription", { provider: jevProvider === "302" ? "302.AI" : "TypeSafe" })}</FieldDescription>}
               <FieldDescription>{t("jevKeyDescription")}</FieldDescription>
             </Field>
             <Field>
