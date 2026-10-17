@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from zleap.sag import DataEngine
+from zleap.sag.exceptions import StateError
 
 from sag_api.core.config import Settings
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
@@ -478,6 +479,20 @@ class EngineManager:
             await session.execute(text("PRAGMA journal_mode=WAL"))
             await session.execute(text("PRAGMA busy_timeout=30000"))
 
+    @staticmethod
+    async def _close_unregistered_engine(engine: DataEngine) -> None:
+        try:
+            await engine.aclose()
+        finally:
+            # zleap-sag 0.13 can retain its public resource container when start()
+            # is cancelled before the engine considers itself started.
+            try:
+                resources = getattr(engine, "resources", None)
+            except StateError:
+                resources = None
+            if resources is not None:
+                await resources.aclose()
+
     async def _slot(self, source_config_id: str, source: Source | None = None) -> _Slot:
         slot = self._slots.get(source_config_id)
         if slot is not None and not slot.closing:
@@ -506,7 +521,7 @@ class EngineManager:
                         await self._ensure_universe_query_indexes(engine)
                     except BaseException:  # An unregistered engine also owns resources on cancellation.
                         try:
-                            await engine.aclose()
+                            await self._close_unregistered_engine(engine)
                         except BaseException:  # Preserve the original initialization error or cancellation.
                             log.exception(
                                 "初始化失败后的引擎关闭异常 source_config_id=%s",
