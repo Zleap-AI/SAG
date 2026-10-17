@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -41,14 +41,50 @@ _INSECURE_SECRETS = {
 
 async def _shutdown_runtime(app: FastAPI) -> None:
     """Stop components in dependency order without disposing under a live queue worker."""
-    await app.state.agent_runtime.stop()
-    await app.state.job_queue.stop()
-    await app.state.engine_manager.aclose_all()
+    warmup = getattr(app.state, "engine_warmup_task", None)
+    if warmup is not None:
+        warmup.cancel()
+        try:
+            await warmup
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.exception("预热任务退出失败，继续关闭运行时")
+    runtime = getattr(app.state, "agent_runtime", None)
+    if runtime is not None:
+        await runtime.stop()
+    queue = getattr(app.state, "job_queue", None)
+    if queue is not None:
+        await queue.stop()
+    manager = getattr(app.state, "engine_manager", None)
+    if manager is not None:
+        await manager.aclose_all()
     await dispose_db()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Own resources before the first startup await, including failures before
+    # the ASGI lifespan yields. Shutdown still stops at a live queue boundary.
+    try:
+        async with _running_lifespan(app):
+            yield
+    except BaseException:
+        try:
+            await _shutdown_runtime(app)
+        except BaseException:
+            log.exception("启动或运行失败后的清理异常，保留原始失败")
+        raise
+    else:
+        await _shutdown_runtime(app)
+    finally:
+        policy = getattr(app.state, "litellm_policy", None)
+        if policy is not None:
+            uninstall_litellm_policy(policy)
+
+
+@asynccontextmanager
+async def _running_lifespan(app: FastAPI):
     configure_logging("DEBUG" if settings.debug else "INFO")
     if settings.environment == "prod" and (
         settings.secret_key in _INSECURE_SECRETS or len(settings.secret_key.encode("utf-8")) < 32
@@ -94,7 +130,7 @@ async def lifespan(app: FastAPI):
 
     # zleap-sag 内部也调用 LiteLLM；全局 pre-call policy 让它与 Muse 生成链
     # 共享相同的 provider 参数，而不修改依赖包。
-    litellm_policy = install_litellm_policy(settings)
+    app.state.litellm_policy = install_litellm_policy(settings)
     app.state.engine_manager = EngineManager(settings)
     app.state.llm = LLMClient(settings)
     app.state.agent_runtime = AgentRuntime()
@@ -105,7 +141,7 @@ async def lifespan(app: FastAPI):
     await app.state.job_queue.start()
 
     # 后台预热最近使用的信源引擎（不阻塞启动；失败不影响服务）
-    warmup_task = asyncio.create_task(_warmup_engines(app.state.engine_manager))
+    app.state.engine_warmup_task = asyncio.create_task(_warmup_engines(app.state.engine_manager))
 
     log.info(
         "sag-api 已启动 · env=%s · llm_configured=%s · vector=%s",
@@ -114,24 +150,15 @@ async def lifespan(app: FastAPI):
         settings.sag_vector_provider,
     )
     source_mcp = getattr(app.state, "source_mcp", None)
-    try:
-        # MCP 端点的会话管理器需在 lifespan 内运行；失败仅关闭 /mcp，不影响其余服务
-        async with AsyncExitStack() as stack:
-            if source_mcp is not None:
-                try:
-                    await stack.enter_async_context(source_mcp.session_manager.run())
-                    log.info("MCP 端点已就绪 · /mcp/（全库）· 可选 ?source_id=<信源 id>")
-                except Exception as e:  # noqa: BLE001
-                    log.warning("MCP 会话管理器启动失败（/mcp 不可用）：%s", e)
-            yield
-    finally:
-        try:
-            warmup_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await warmup_task
-            await _shutdown_runtime(app)
-        finally:
-            uninstall_litellm_policy(litellm_policy)
+    # MCP 端点的会话管理器需在 lifespan 内运行；失败仅关闭 /mcp，不影响其余服务
+    async with AsyncExitStack() as stack:
+        if source_mcp is not None:
+            try:
+                await stack.enter_async_context(source_mcp.session_manager.run())
+                log.info("MCP 端点已就绪 · /mcp/（全库）· 可选 ?source_id=<信源 id>")
+            except Exception as e:  # noqa: BLE001
+                log.warning("MCP 会话管理器启动失败（/mcp 不可用）：%s", e)
+        yield
 
 
 async def _warmup_engines(engine_manager: EngineManager) -> None:
