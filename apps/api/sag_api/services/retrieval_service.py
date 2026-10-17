@@ -32,6 +32,19 @@ EventScoreMap = dict[tuple[str, str], float]
 DocumentSourceScope = dict[str, tuple[str, ...]]
 
 
+def event_scores_from_evidence(sections: list[RetrievedSection]) -> EventScoreMap:
+    """Keep selected event IDs in evidence order, excluding unscored chunk fallback."""
+    scores: EventScoreMap = {}
+    for section in sections:
+        if not section.source_config_id or section.metadata.get("score_source") == "query_chunk_fallback":
+            continue
+        for event_id in section.metadata.get("event_ids") or []:
+            if isinstance(event_id, str) and event_id.strip():
+                # Hydrated chunks expose aggregate scores, not raw event scores.
+                scores.setdefault((section.source_config_id, event_id.strip()), section.score)
+    return scores
+
+
 async def published_document_inputs(sources: list[SearchSource]) -> DocumentSourceScope:
     """Resolve only current qualified publication pointers, including paused candidates."""
     from sqlalchemy import select

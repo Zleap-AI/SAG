@@ -40,6 +40,7 @@ from sag_api.schemas.search import (
 from sag_api.services.eval.llm_judge import judge_pairwise
 from sag_api.services.retrieval_service import (
     EventScoreMap,
+    event_scores_from_evidence,
     published_document_inputs,
     recall_event_scores,
     retrieve_relevant_sections,
@@ -179,16 +180,7 @@ async def _retrieve_search_evidence(
     )
     if strategy == "multi_jev":
         outcome = await retrieval
-        scores: EventScoreMap = {}
-        for section in outcome.sections:
-            if not section.source_config_id or section.metadata.get("score_source") == "query_chunk_fallback":
-                continue
-            for event_id in section.metadata.get("event_ids") or []:
-                if isinstance(event_id, str) and event_id.strip():
-                    # Hydrated chunks carry aggregate evidence scores. Reuse
-                    # those for display; individual raw event scores are absent.
-                    scores.setdefault((section.source_config_id, event_id.strip()), section.score)
-        return outcome, scores, True
+        return outcome, event_scores_from_evidence(outcome.sections), True
     outcome, scores = await asyncio.gather(
         retrieval,
         recall_event_scores(

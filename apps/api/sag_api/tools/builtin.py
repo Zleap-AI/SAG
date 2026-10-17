@@ -24,6 +24,7 @@ from sag_api.enums import SEARCH_STRATEGIES, normalize_search_strategy
 from sag_api.generation import build_citations
 from sag_api.sag import RetrievedSection
 from sag_api.services.retrieval_service import (
+    event_scores_from_evidence,
     published_document_inputs,
     recall_event_scores,
     retrieve_relevant_sections,
@@ -276,12 +277,7 @@ class SearchContextTool(Tool):
             if section.source_id in published.get(section.source_config_id or "", ())
         ]
         if is_jev:
-            for section in sections:
-                if not section.source_config_id or section.metadata.get("score_source") == "query_chunk_fallback":
-                    continue
-                for event_id in section.metadata.get("event_ids") or []:
-                    if isinstance(event_id, str) and event_id.strip():
-                        event_scores.setdefault((section.source_config_id, event_id.strip()), section.score)
+            event_scores = event_scores_from_evidence(sections)
         graph_for_sections = getattr(ctx.engine_manager, "graph_for_sections", None)
         graph = (
             await graph_for_sections(
