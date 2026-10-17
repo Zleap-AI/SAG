@@ -621,7 +621,13 @@ class AgentRuntime:
                 )
                 for call, tool, arguments in executable
             ]
-            results = await asyncio.gather(*tasks)
+            try:
+                results = await asyncio.gather(*tasks)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
             executed.update((outcome.call.id, outcome) for outcome in results)
 
         outcomes: list[_ToolOutcome] = []
