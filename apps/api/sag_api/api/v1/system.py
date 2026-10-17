@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from functools import lru_cache
 from ipaddress import ip_address
 from pathlib import Path
@@ -21,6 +20,7 @@ from sag_api.db.models import Source, User
 from sag_api.generation import LLMClient
 from sag_api.mcp.server import MCP_TOOL_DETAILS, MCP_TOOL_NAMES
 from sag_api.sag.engine_manager import EngineManager
+from sag_api.sag.jev_probe import probe_jev_connection
 from sag_api.schemas.dsh_integration import (
     DshCapabilityDescriptor,
     DshConnectionDescriptor,
@@ -527,9 +527,6 @@ async def test_jev_model_config(
     _user: User = Depends(get_current_user),
 ) -> dict:
     """Check a JEV draft with synthetic evidence, without changing saved/runtime settings."""
-    from zleap.sag.core.ai.jev import JevClient
-    from zleap.sag.exceptions import AIAuthError, AIInvalidRequestError, AITransientError, LLMContextLengthError
-
     patch = body.model_dump(exclude_unset=True)
     updates = {key: value for key, value in patch.items() if key.startswith("jev_")}
     if not updates.get("jev_api_key"):
@@ -537,40 +534,7 @@ async def test_jev_model_config(
         if updates.get("jev_endpoint", settings.jev_endpoint) != settings.jev_endpoint:
             updates["jev_api_key"] = None
     active = type(settings).model_validate({**settings.model_dump(), **updates})
-    if not active.jev_endpoint:
-        return {"ok": False, "message": "尚未配置 JEV 完整服务地址"}
-    client = JevClient(
-        endpoint=active.jev_endpoint,
-        model=active.jev_model,
-        api_key=active.jev_api_key or "",
-        timeout=active.jev_ranking_timeout_seconds,
-        max_retries=0,
-    )
-    try:
-        await asyncio.wait_for(
-            client.score(
-                "In this synthetic example, where is Cedar's headquarters?",
-                [
-                    {"id": "0", "text": "In this synthetic example, Cedar is headquartered in Harbor City."},
-                    {"id": "1", "text": "A triangle is a shape with three sides."},
-                ],
-            ),
-            timeout=active.jev_ranking_timeout_seconds,
-        )
-        return {"ok": True, "message": f"JEV 连接成功 · {active.jev_model}"}
-    except AIAuthError:
-        return {"ok": False, "message": "JEV 凭据无效或没有权限"}
-    except LLMContextLengthError:
-        return {"ok": False, "message": "JEV 服务拒绝了测试请求：上下文超限"}
-    except AIInvalidRequestError:
-        return {"ok": False, "message": "JEV 模型或评分协议不受服务支持"}
-    except (TimeoutError, AITransientError):
-        return {"ok": False, "message": "JEV 连接超时、限流或服务暂时不可用"}
-    except Exception:  # noqa: BLE001
-        # Provider bodies and URLs may contain credentials; never echo the exception.
-        return {"ok": False, "message": "JEV 连接测试失败，请检查服务地址和评分协议"}
-    finally:
-        await client.aclose()
+    return (await probe_jev_connection(active)).model_dump()
 
 
 router.include_router(_model_config_router)
