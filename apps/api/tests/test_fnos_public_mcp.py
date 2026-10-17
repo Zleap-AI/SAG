@@ -139,6 +139,82 @@ async def test_public_proxy_returns_retryable_status_when_concurrency_is_exhaust
     assert saturated.headers["retry-after"] == "2"
 
 
+@pytest.mark.asyncio
+async def test_cancelled_public_proxy_request_restores_capacity(short_socket_file: Path) -> None:
+    recorder = _GatewayRecorder(release=asyncio.Event())
+    async with _gateway_server(short_socket_file, recorder):
+        app = create_public_mcp_app(short_socket_file, max_concurrency=1)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://public") as client:
+                first = asyncio.create_task(client.get("/mcp/", headers={"Authorization": "Bearer grant"}))
+                await asyncio.wait_for(recorder.received.wait(), timeout=1)
+                try:
+                    first.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await first
+                    recorder.release.set()
+                    second = await client.get("/mcp/", headers={"Authorization": "Bearer grant"})
+                    assert second.status_code == 200
+                finally:
+                    recorder.release.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish", ["cancelled_body", "response_start", "complete"])
+async def test_public_proxy_body_cleanup_survives_cancelled_response_scope(
+    short_socket_file: Path, finish
+) -> None:
+    import anyio
+    from starlette.requests import ClientDisconnect, Request
+
+    class PendingBody(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            yield b"first"
+
+        async def aclose(self):
+            await asyncio.sleep(0)
+            self.closed = True
+
+    body = PendingBody()
+    app = create_public_mcp_app(short_socket_file, max_concurrency=1)
+    async with app.router.lifespan_context(app):
+        await app.state.client.aclose()
+        app.state.client = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=body)),
+            base_url="http://gateway",
+        )
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        request = Request({
+            "type": "http", "method": "GET", "path": "/mcp", "query_string": b"",
+            "headers": [(b"authorization", b"Bearer grant")],
+        }, receive=receive)
+        endpoint = next(route.endpoint for route in app.routes if getattr(route, "path", "") == "/mcp")
+        response = await endpoint(request)
+        if finish == "response_start":
+            async def send(message):
+                if message["type"] == "http.response.start":
+                    raise OSError("browser disconnected before response headers")
+
+            with pytest.raises(ClientDisconnect):
+                await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
+        elif finish == "complete":
+            async def send(message):
+                pass
+
+            await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
+        else:
+            assert await anext(response.body_iterator) == b"first"
+            with anyio.CancelScope() as scope:
+                scope.cancel()
+                await response.body_iterator.aclose()
+        assert body.closed
+        assert app.state.semaphore._value == 1
+
+
 def test_mcp_proxy_cli_runs_the_public_listener(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[tuple[object, str, int]] = []
 
