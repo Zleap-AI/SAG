@@ -494,20 +494,20 @@ class EngineManager:
                         data_source_id=source_config_id,
                         health_check=False,
                     )
-                    with map_sag_errors(stage=ErrorStage.CONFIG):
-                        # 0.8.2:pgvector/oceanbase 等向量后端在 start() 前必须先
-                        # init_schema() 显式创建关系表与向量模式对象,否则 start()
-                        # 抛 StorageInitializationRequiredError。
-                        await self._ensure_engine_schema(engine)
-                        await engine.start()
-                        await self._configure_sqlite_document_store(engine)
                     try:
+                        with map_sag_errors(stage=ErrorStage.CONFIG):
+                            # 0.8.2:pgvector/oceanbase 等向量后端在 start() 前必须先
+                            # init_schema() 显式创建关系表与向量模式对象,否则 start()
+                            # 抛 StorageInitializationRequiredError。
+                            await self._ensure_engine_schema(engine)
+                            await engine.start()
+                            await self._configure_sqlite_document_store(engine)
                         await self._ensure_source_config(source_config_id, source, engine)
                         await self._ensure_universe_query_indexes(engine)
-                    except Exception:
+                    except BaseException:  # An unregistered engine also owns resources on cancellation.
                         try:
                             await engine.aclose()
-                        except Exception:  # noqa: BLE001 - preserve provisioning error
+                        except BaseException:  # Preserve the original initialization error or cancellation.
                             log.exception(
                                 "初始化失败后的引擎关闭异常 source_config_id=%s",
                                 source_config_id,
