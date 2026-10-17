@@ -18,7 +18,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from sag_api.core.config import settings
-from sag_api.core.errors import ServiceUnavailableError, UpstreamError
+from sag_api.core.errors import ApiError, ServiceUnavailableError, UpstreamError
 from sag_api.core.logging import get_logger
 from sag_api.db.models import Document
 from sag_api.enums import DocumentStatus, JobStatus, JobType
@@ -62,6 +62,8 @@ def _now() -> datetime:
 
 def _is_retryable(exc: Exception) -> bool:
     """瞬时故障（限流/超时/上游暂不可用）可重试；输入/配置类错误不重试。"""
+    if isinstance(exc, ApiError) and exc._retryable_explicit:
+        return exc.retryable
     return isinstance(
         exc,
         (ServiceUnavailableError, UpstreamError, OperationalError),

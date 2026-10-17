@@ -35,6 +35,9 @@ class ApiError(Exception):
         retryable: bool | None = None,
     ):
         self.message = message or self.__class__.__doc__ or "Internal error"
+        # Queue compatibility: legacy upstream failures retry by type, while a
+        # pipeline's explicit safety decision must always take precedence.
+        self._retryable_explicit = retryable is not None
         if code:
             self.code = code
         if layer is not None:

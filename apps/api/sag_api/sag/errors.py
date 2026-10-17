@@ -12,6 +12,7 @@ from zleap.sag.exceptions import (
     RetryableError,
     SagError,
 )
+from zleap.sag.pipeline.errors import PipelineError
 
 from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
 from sag_api.core.errors import (
@@ -21,6 +22,7 @@ from sag_api.core.errors import (
     UpstreamError,
     ValidationError,
 )
+from sag_api.core.resource_errors import descriptor_exhausted, exception_chain, resource_unavailable
 
 try:  # jsonschema 是 zleap-sag structured-output 校验的传递依赖
     from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
@@ -37,6 +39,28 @@ def map_sag_errors(*, stage: ErrorStage = ErrorStage.UNKNOWN):
     """
     try:
         yield
+    except PipelineError as e:
+        aliases = {"load": ErrorStage.PARSE, "index": ErrorStage.PERSIST, "search": ErrorStage.RETRIEVE}
+        try:
+            engine_stage = aliases.get(e.stage) or ErrorStage(e.stage)
+        except (ValueError, TypeError):
+            engine_stage = stage
+        retryable = e.retryable
+        if descriptor_exhausted(e):
+            # Opening a source has not mutated knowledge and may safely retry.
+            # Never override an explicit failed-compensation decision.
+            incomplete_rollback = any(
+                getattr(cause, "compensation_complete", None) is False
+                or getattr(cause, "code", None) in {"extraction_rollback_failed", "index_rollback_failed"}
+                for cause in exception_chain(e)
+            )
+            retryable = not incomplete_rollback and (retryable or e.code == "file_read_failed")
+            raise resource_unavailable(
+                code=e.code, stage=engine_stage, layer=ErrorLayer.ENGINE, retryable=retryable,
+            ) from e
+        raise UpstreamError(
+            str(e), code=e.code, layer=ErrorLayer.ENGINE, stage=engine_stage, retryable=retryable,
+        ) from e
     except ConfigError as e:
         raise ConfigurationError(str(e), layer=ErrorLayer.ENGINE, stage=stage) from e
     except ResourceNotFoundError as e:
@@ -60,4 +84,10 @@ def map_sag_errors(*, stage: ErrorStage = ErrorStage.UNKNOWN):
             stage=stage,
         ) from e
     except SagError as e:
+        if descriptor_exhausted(e):
+            raise resource_unavailable(stage=stage, layer=ErrorLayer.ENGINE) from e
         raise UpstreamError(str(e), layer=ErrorLayer.ENGINE, stage=stage) from e
+    except OSError as e:
+        if descriptor_exhausted(e):
+            raise resource_unavailable(stage=stage) from e
+        raise

@@ -23,6 +23,7 @@ from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
 from sag_api.core.errors import ApiError
 from sag_api.core.litellm_policy import install_litellm_policy, uninstall_litellm_policy
 from sag_api.core.logging import RequestContextMiddleware, configure_logging, get_logger
+from sag_api.core.resource_errors import descriptor_exhausted, resource_unavailable
 from sag_api.generation import LLMClient
 from sag_api.jobs import InProcessAsyncQueue
 from sag_api.sag import EngineManager
@@ -239,6 +240,12 @@ def create_app() -> FastAPI:
     async def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
         log.exception("未处理异常：%s", exc)
         request_id = getattr(request.state, "request_id", None)
+        if descriptor_exhausted(exc):
+            unavailable = resource_unavailable()
+            return JSONResponse(
+                status_code=unavailable.status_code,
+                content=unavailable.to_envelope(request_id=request_id),
+            )
         error: dict[str, object] = {
             "code": ErrorCode.INTERNAL_ERROR,
             "message": "服务器内部错误",
