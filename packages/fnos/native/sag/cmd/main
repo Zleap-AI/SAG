@@ -41,6 +41,57 @@ secret="${TRIM_PKGVAR}/internal-secret"
 
 log_error() { printf '%s\n' "$1" >> "${TRIM_TEMP_LOGFILE:-/dev/null}"; }
 
+# Run in the launcher shell, before any daemon is forked. The sag package
+# user can raise only the soft limit, up to the hard limit inherited from
+# fnpack. Its gateway children then pass the same limits to tenant workers.
+# SAG_NATIVE_NOFILE overrides the target; it never lowers an existing limit.
+configure_nofile() {
+  _sag_nofile_target="${SAG_NATIVE_NOFILE-4096}"
+  case "$_sag_nofile_target" in
+    ''|*[!0-9]*) _sag_nofile_target=invalid ;;
+  esac
+  if ! [ "$_sag_nofile_target" -gt 0 ] 2>/dev/null; then
+    log_error "SAG Native SAG_NATIVE_NOFILE must be a positive integer. Unset it to use 4096, or correct it and restart SAG."
+    return 1
+  fi
+  # Normalize decimal values before comparing the kernel's readback.
+  while [ "${_sag_nofile_target#0}" != "$_sag_nofile_target" ]; do
+    _sag_nofile_target="${_sag_nofile_target#0}"
+  done
+  _sag_nofile_soft="$(ulimit -S -n 2>/dev/null)" &&
+    _sag_nofile_hard="$(ulimit -H -n 2>/dev/null)" || {
+      log_error "SAG Native cannot read NOFILE limits. Check the package launch shell supports ulimit -S/-H -n and restart SAG."
+      return 1
+    }
+  _sag_nofile_effective="$_sag_nofile_target"
+  _sag_nofile_note=""
+  if [ "$_sag_nofile_hard" != unlimited ] && [ "$_sag_nofile_effective" -gt "$_sag_nofile_hard" ]; then
+    _sag_nofile_effective="$_sag_nofile_hard"
+    _sag_nofile_note=" (clamped to inherited hard limit)"
+  fi
+  if [ "$_sag_nofile_soft" = unlimited ]; then
+    _sag_nofile_effective=unlimited
+  elif [ "$_sag_nofile_soft" -gt "$_sag_nofile_effective" ]; then
+    _sag_nofile_effective="$_sag_nofile_soft"
+  fi
+  if [ "$_sag_nofile_soft" != "$_sag_nofile_effective" ]; then
+    # Explicit -S preserves hard; a standalone child setting its own limit
+    # would not affect this launcher or the daemons launched below.
+    if ! ulimit -S -n "$_sag_nofile_effective"; then
+      _sag_nofile_actual="$(ulimit -S -n 2>/dev/null)"
+      _sag_nofile_hard="$(ulimit -H -n 2>/dev/null)"
+      log_error "SAG Native cannot set NOFILE target=$_sag_nofile_target: effective=$_sag_nofile_actual hard=$_sag_nofile_hard. Check package launch limits and SAG_NATIVE_NOFILE, then restart SAG."
+      return 1
+    fi
+  fi
+  _sag_nofile_actual="$(ulimit -S -n 2>/dev/null)"
+  if [ "$_sag_nofile_actual" != "$_sag_nofile_effective" ]; then
+    log_error "SAG Native NOFILE verification failed: requested=$_sag_nofile_effective effective=$_sag_nofile_actual hard=$_sag_nofile_hard. Check package launch limits and restart SAG."
+    return 1
+  fi
+  printf 'SAG Native launcher NOFILE soft=%s target=%s effective=%s hard=%s%s\n' "$_sag_nofile_soft" "$_sag_nofile_target" "$_sag_nofile_actual" "$_sag_nofile_hard" "$_sag_nofile_note"
+}
+
 # drop_priv — exec "$@" as the sag package user. Uses setpriv when
 # available (present on fnOS 1.2.x; verified on the user's 1.2.0302),
 # and falls back to su -s /bin/sh sag -c '…' otherwise. runuser is
@@ -276,6 +327,8 @@ case "${1:-}" in
       log_error "SAG Native cannot write gateway/web log at $log_dir. UID=$(id -u 2>/dev/null || echo ?). Dir: $(ls -ld "$log_dir" 2>&1)."
       exit 1
     fi
+    _START_STEP="configure-nofile"
+    configure_nofile >> "$gateway_log" 2>&1 || exit 1
     # Warm the operator if the socket dir is not writable by us so the
     # eventual PermissionError in uvicorn is not a surprise.
     _START_STEP="check-socket-dir"
