@@ -157,7 +157,7 @@ async def test_search_tool_prefers_exact_body_window_over_semantic_boilerplate(p
 
     engine = HybridEngine()
     source = await publication_source("娱乐新闻", "sc-1", "document-1")
-    host_context = ToolContext(engine_manager=engine, sources=[source])
+    host_context = ToolContext(engine_manager=engine, sources=[source], persona={"search_strategy": "vector"})
     result = await SearchContextTool().invoke(
         {"query": "关于林俊杰最新动态 2024 2025", "top_k": 4},
         host_context,
@@ -178,7 +178,9 @@ async def test_search_tool_prefers_exact_body_window_over_semantic_boilerplate(p
     # of issuing a second graph query while constructing universe artifacts.
     collected_citations: list[dict] = []
     adapter_engine = HybridEngine()
-    adapter_context = ToolContext(engine_manager=adapter_engine, sources=[source])
+    adapter_context = ToolContext(
+        engine_manager=adapter_engine, sources=[source], persona={"search_strategy": "vector"},
+    )
     adapted = _adapt_tool(SearchContextTool(), adapter_context, collected_citations)
     runtime_result = await adapted.execute(
         {"query": "关于林俊杰最新动态 2024 2025", "top_k": 4},

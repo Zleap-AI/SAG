@@ -62,7 +62,7 @@ Upload a document once. SAG parses it, splits it into chunks, embeds it, extract
 | Capability | What it gives you |
 | --- | --- |
 | Knowledge ingestion | File and web sources, document parsing, chunking, embedding, event/entity extraction, background processing |
-| Search | Cross-source or source-scoped retrieval with Fast (`vector`), Fast (`multi_es_fast`), and Precise (`multi`) modes |
+| Search | Cross-source or source-scoped retrieval with Fast (`vector` / `multi_es_fast`), Precise (`multi`), and optional JEV reranking (`multi_jev`) modes |
 | Source tracing | Open any result or citation back to the exact original chunk |
 | Knowledge graph | Inspect events, entities, and their queryable associations |
 | Agent chat | Multi-turn answers grounded in selected sources, with clickable citations |
@@ -194,7 +194,7 @@ The UI and services still start without model credentials. Embeddings are requir
 
 `SAG_LLM_*` values in Docker Compose or `.env` provide the initial model configuration. After an administrator saves model settings in the web UI, the persisted Settings value is used for subsequent extraction and generation jobs without a restart.
 
-The default embedding model is `Qwen/Qwen3-Embedding-4B`. When upgrading an existing BGE index, retain `SAG_EMBEDDING_MODEL=bge-large-en-v1.5`. To switch models, wait for existing indexed documents to finish deleting, change the model, then import them again.
+The default generation model is `qwen3.8-flash`, and the default embedding model is `Qwen/Qwen3-Embedding-4B`. When upgrading an existing BGE index, retain `SAG_EMBEDDING_MODEL=bge-large-en-v1.5`. To switch models, wait for existing indexed documents to finish deleting, change the model, then import them again.
 
 To make the deployment configuration mandatory, set `SAG_LOCK_LLM_CONFIG=true`. SAG then shows the generation fields as locked in Settings and continues to use the `SAG_LLM_*` values. Change Docker Compose or `.env` and recreate the API container to update a locked configuration. API keys remain deployment-managed and are never returned by the Settings API.
 
@@ -486,7 +486,7 @@ async def main() -> None:
         llm=LLMConfig(
             api_key="sk-...",
             base_url="https://your-openai-compatible-host/v1",
-            model="qwen3.6-flash",
+            model="qwen3.8-flash",
         ),
         # When api_key/base_url are omitted, embedding reuses the LLM endpoint.
         embedding=EmbeddingConfig(model="Qwen/Qwen3-Embedding-4B"),
@@ -529,7 +529,7 @@ Minimal environment configuration:
 export SAG_STORAGE_MODE=normal
 export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://your-openai-compatible-host/v1
-export LLM_MODEL=qwen3.6-flash
+export LLM_MODEL=qwen3.8-flash
 export EMBEDDING_MODEL=Qwen/Qwen3-Embedding-4B
 ```
 
@@ -563,8 +563,17 @@ Pipeline request and result types are available from `zleap.sag.pipeline`: `Pars
 | Fast (vector) | `vector` | Direct retrieval by semantic similarity for a faster response |
 | Fast (multi_es-fast) | `multi_es_fast` | BM25 entity recall and event multi-hop retrieval, skipping LLM reranking |
 | Precise | `multi` | Combines entity relationships with LLM reranking for more complete results |
+| JEV reranking | `multi_jev` | Scores recalled and graph-expanded evidence through an independent JEV service |
 
 These are the application/API strategy names; the application maps `multi` to the Python engine's `full_expand` and `multi_es_fast` to `pruned_expand_rff`. Availability depends on storage capabilities: `multi_es_fast` requires lexical search support.
+
+Choose 302.AI, TypeSafe official, or a custom service in Settings → Knowledge → Retrieval. For an unconfigured service, the form prefills the complete 302.AI scoring URL `https://api.302.ai/typesafeai/v1/systemone` and model `jev-latest`, leaving the API key blank for the user. The official preset uses `https://api.typesafe.ai/v1/systemone`. Custom services accept a complete URL and model. Saved configuration is retained, and changing the service address requires its own key. Scoring URLs include their path; the application does not append one. See the [302 API documentation](https://doc.302.ai/517575517e0) and [official API](https://docs.typesafe.ai/api).
+
+`jev-latest` follows the latest stable release; users can also enter a version supported by their service. The [official model documentation](https://docs.typesafe.ai/models) describes a separate preview alias, whose gateway availability depends on the provider. Knowledge processing language is configured under Settings → Knowledge → General and defaults to Chinese; saved values are retained. It controls SAG ingestion extraction, query rewriting, and query entity extraction prompts, and is also used by the client's answer prompts. It is not a JEV API parameter and does not translate source or scoring text.
+
+After saving the service configuration, select JEV as the default or for an individual exploration. `multi_jev` maps to `pruned_expand_jev` and requires lexical search support (currently LanceDB/Elasticsearch). Queries and candidate evidence are sent to that service; existing documents do not need reindexing. `SAG_JEV_*` defaults are also listed in `.env.example`; saved UI configuration takes precedence.
+
+JEV ranking defaults to a 30-second deadline and returns an error on failure. Users can explicitly allow coarse results, which are marked as a fallback. The application also budgets for recall and source queueing while preserving ranking scores and order. Chat assistants inherit the global strategy unless their persona overrides it; Dify retains its independent setting.
 
 #### Storage backends
 

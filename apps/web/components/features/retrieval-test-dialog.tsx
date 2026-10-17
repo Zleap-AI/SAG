@@ -14,10 +14,12 @@ import {
 } from "@/lib/api";
 import {
   DEFAULT_SEARCH_STRATEGY,
+  getSearchStrategiesDisabled,
   SEARCH_STRATEGIES,
   type SearchStrategy,
 } from "@/lib/retrieval-config";
 import type { Section } from "@/lib/types";
+import { RetrievalStatus } from "@/components/features/retrieval-status";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -53,7 +55,7 @@ export function RetrievalTestDialog({
   const t = useTranslations("RetrievalTest");
   const strategies = useTranslations("SearchStrategies");
   const { capabilities } = useApp();
-  const disabledMap = capabilities?.search_strategies_disabled ?? {};
+  const disabledMap = getSearchStrategiesDisabled(capabilities, strategies("unsupportedBackend"));
 
   const enabledStrategies = SEARCH_STRATEGIES.filter(
     (item) => !disabledMap[item.value],
@@ -71,6 +73,7 @@ export function RetrievalTestDialog({
   const [strategyB, setStrategyB] = React.useState<SearchStrategy>(fallbackB);
   const [judge, setJudge] = React.useState(true);
   const [results, setResults] = React.useState<Section[] | null>(null);
+  const [resultStats, setResultStats] = React.useState<Record<string, unknown>>({});
   const [compareResults, setCompareResults] =
     React.useState<EvalCompareResponse | null>(null);
   const [busy, setBusy] = React.useState(false);
@@ -78,6 +81,7 @@ export function RetrievalTestDialog({
   React.useEffect(() => {
     if (!open) return;
     setResults(null);
+    setResultStats({});
     setCompareResults(null);
     setQuery("");
     // Keep the current mode toggle so re-opening isn't jarring, but re-seed
@@ -113,6 +117,7 @@ export function RetrievalTestDialog({
           top_k: topK,
         });
         setResults(response.sections);
+        setResultStats(response.stats);
         setCompareResults(null);
       }
     } catch (err) {
@@ -214,12 +219,15 @@ export function RetrievalTestDialog({
         </form>
 
         {!compare && results && (
-          <SingleColumn
-            results={results}
-            sectionLabel={t("section")}
-            emptyLabel={t("empty")}
-            countLabel={t("resultCount", { count: results.length })}
-          />
+          <div className="flex flex-col gap-2">
+            <RetrievalStatus stats={resultStats} />
+            <SingleColumn
+              results={results}
+              sectionLabel={t("section")}
+              emptyLabel={t("empty")}
+              countLabel={t("resultCount", { count: results.length })}
+            />
+          </div>
         )}
 
         {compare && compareResults && (
@@ -283,13 +291,16 @@ function StrategyPicker({
                 value={strategy}
                 disabled={Boolean(info) || sameAsOther}
               >
-                <span className="flex items-center gap-1.5">
-                  {strategies(labelKey)}
-                  {info && (
-                    <span className="text-[10px] text-muted-foreground">
-                      {strategies("disabledSuffix")}
-                    </span>
-                  )}
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span className="flex items-center gap-1.5">
+                    {strategies(labelKey)}
+                    {info && (
+                      <span className="text-[10px] text-muted-foreground">
+                        {strategies("disabledSuffix")}
+                      </span>
+                    )}
+                  </span>
+                  {info && <span className="max-w-72 text-[11px] leading-4 text-muted-foreground">{info.message}</span>}
                 </span>
               </SelectItem>
             );
@@ -415,6 +426,7 @@ function ColumnResult({
   if (!result) return null;
   return (
     <div className="flex flex-col gap-1.5">
+      <RetrievalStatus stats={result.stats} requestedStrategy={result.strategy} />
       <div className="flex items-center justify-between px-1 text-[11px] text-muted-foreground">
         <span className="font-medium text-foreground">{label}</span>
         <StatsPill stats={result.stats} />

@@ -24,6 +24,8 @@ SAG_DIFY_SEARCH_STRATEGY=vector
 
 此策略只影响 Dify 外部知识库接口，不影响 SAG Web 的检索策略。
 
+如需 JEV，先配置 `SAG_JEV_*`（或在 SAG 知识库设置页保存服务），再显式设置 `SAG_DIFY_SEARCH_STRATEGY=multi_jev`。该模式需要词法检索支持。成功精排时，Dify 的分数阈值只作用于 JEV 评分证据，向量补齐结果不会混入；允许粗排降级时，结果 metadata 的 `fallback_used`、`score_source` 和 `ranking_fallback_reason` 说明实际评分来源。切换评分模式后应重新校准分数阈值。
+
 ### 验证：配置进入 API 容器
 
 ~~~bash

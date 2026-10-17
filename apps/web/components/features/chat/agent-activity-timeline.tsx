@@ -8,6 +8,7 @@ import type { MessageStep } from "@/lib/types";
 import { toolScope } from "@/lib/agent-run-activity";
 import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
+import { RetrievalStatus } from "@/components/features/retrieval-status";
 
 export type AgentActivityStatus = "active" | "done" | "error";
 
@@ -226,6 +227,10 @@ export function AgentActivityTimeline({
           />
         )}
       </button>
+
+      {toolRuns.map((step, index) => step.name === "search_context" && step.details?.retrieval_stats
+        ? <RetrievalStatus key={step.id ?? `retrieval-${index}`} stats={step.details.retrieval_stats} />
+        : null)}
 
       {expanded && (
         <div className="ml-1.5 mt-1 border-l pl-3">

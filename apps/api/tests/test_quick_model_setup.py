@@ -21,6 +21,8 @@ _RESTORE = (
     "embedding_base_url",
     "embedding_api_key",
     "embedding_dimensions",
+    "embedding_schema_dimensions",
+    "embedding_request_dimensions",
     "document_parser",
     "mineru_provider",
     "mineru_base_url",
@@ -106,7 +108,7 @@ async def test_302_quick_model_setup(monkeypatch: pytest.MonkeyPatch):
                 expected_config = {
                     "llm_provider": "openai",
                     "llm_base_url": "https://api.302ai.cn/v1",
-                    "llm_model": "qwen3.6-flash",
+                    "llm_model": "qwen3.8-flash",
                     "llm_temperature": 0.3,
                     "llm_max_tokens": 20_000,
                     "llm_context_window": 128_000,
@@ -147,6 +149,7 @@ async def test_302_quick_model_setup(monkeypatch: pytest.MonkeyPatch):
                 assert runtime_settings.llm_api_key == fake_key
                 assert runtime_settings.embedding_api_key == fake_key
                 assert runtime_settings.mineru_api_key == fake_key
+                assert runtime_settings.llm_model == "qwen3.8-flash"
                 assert runtime_settings.embedding_model == "Qwen/Qwen3-Embedding-4B"
 
                 configured_status = await client.get(

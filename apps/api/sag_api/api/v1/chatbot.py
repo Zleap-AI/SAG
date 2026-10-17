@@ -1,6 +1,5 @@
 """Authenticated administrative connections. Draft tests never persist credentials."""
 
-import math
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -9,12 +8,43 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sag_api.core.chatbot_config import OriginalEmbeddingDraft, TestDraft, Update
+from sag_api.core.chatbot_config import EmbeddingUpdate, LLMUpdate, OriginalEmbeddingDraft, TestDraft, Update
+from sag_api.core.config import expand_embedding_dimensions
 from sag_api.core.db import get_session
 from sag_api.core.deps import get_current_user
 from sag_api.core.errors import ConfigurationError
 from sag_api.generation.chatbot import QueryLLM
+from sag_api.sag.embedding_probe import probe_embedding_connection
+from sag_api.schemas.system import ModelConfigUpdate
 from sag_api.services import chatbot_service as rt
+
+_SAFE_DRAFT_PATHS = {
+    **{
+        ("body", name): name
+        for schema in (OriginalEmbeddingDraft, ModelConfigUpdate, TestDraft)
+        for name in schema.model_fields
+    },
+    **{("body", "llm", name): "llm." + name for name in LLMUpdate.model_fields},
+    **{("body", "embedding", name): "embedding." + name for name in EmbeddingUpdate.model_fields},
+}
+_SAFE_VALIDATION_MESSAGES = {
+    "missing": "is required",
+    "string_type": "must be text",
+    "string_too_short": "must not be empty",
+    "string_too_long": "is too long",
+    "int_type": "must be an integer",
+    "int_parsing": "must be an integer",
+    "int_from_float": "must be an integer",
+    "float_type": "must be a number",
+    "float_parsing": "must be a number",
+    "bool_type": "must be true or false",
+    "bool_parsing": "must be true or false",
+    "greater_than_equal": "is outside the allowed range",
+    "less_than_equal": "is outside the allowed range",
+    "literal_error": "has an unsupported value",
+    "extra_forbidden": "has an unexpected field",
+    "json_invalid": "must contain valid JSON",
+}
 
 
 class SecretSafeRoute(APIRoute):
@@ -24,13 +54,24 @@ class SecretSafeRoute(APIRoute):
         async def handle(request):
             try:
                 return await original(request)
-            except RequestValidationError:
+            except RequestValidationError as exc:
+                fields = []
+                for failure in exc.errors():
+                    # Never echo raw Pydantic messages, inputs, context or user-supplied key names.
+                    item = {
+                        "field": _SAFE_DRAFT_PATHS.get(tuple(failure.get("loc", ())), "request"),
+                        "message": _SAFE_VALIDATION_MESSAGES.get(failure.get("type"), "has an invalid value"),
+                    }
+                    if item not in fields:
+                        fields.append(item)
+                summary = "; ".join(f"{item['field']} ({item['message']})" for item in fields)
                 return JSONResponse(
                     status_code=422,
                     content={
                         "error": {
-                            "message": "Invalid connection draft; check field names and value types",
+                            "message": "Invalid connection draft: " + summary,
                             "code": "VALIDATION_ERROR",
+                            "fields": fields,
                         }
                     },
                 )
@@ -46,14 +87,11 @@ async def test_original_embedding(
     body: OriginalEmbeddingDraft,
     _user: Annotated[object, Depends(get_current_user)],
 ):
-    from zleap.sag.config import EmbeddingConfig
-    from zleap.sag.core.adapters.defaults import OpenAIEmbeddingAdapter
-
-    updates = {
+    updates = expand_embedding_dimensions({
         key: (None if key.endswith("base_url") and value == "" else value)
         for key, value in body.model_dump(exclude_unset=True).items()
         if not (key.endswith("api_key") and not value)
-    }
+    })
     stock = rt.manager.stock
     active = stock.model_copy(update=updates, deep=True)
     if (
@@ -62,36 +100,7 @@ async def test_original_embedding(
         and not updates.get("llm_api_key")
     ):
         active.llm_api_key = None
-    if not active.effective_embedding_api_key:
-        return {"ok": False, "message": "No embedding API key configured"}
-    try:
-        # Use the original adapter directly; query connections cannot replace this test.
-        adapter = OpenAIEmbeddingAdapter(
-            config=EmbeddingConfig(
-                model=active.embedding_model,
-                api_key=active.effective_embedding_api_key,
-                base_url=active.effective_embedding_base_url,
-                schema_dimensions=active.effective_embedding_schema_dimensions,
-                request_dimensions=active.effective_embedding_request_dimensions,
-                timeout=active.embedding_timeout,
-            )
-        )
-        try:
-            vector = await adapter.generate("SAG embedding connection test")
-            if not all(math.isfinite(value) for value in vector):
-                raise ValueError("Non-finite embedding vector")
-        finally:
-            await adapter.close()
-    except Exception:  # noqa: BLE001 -- provider bodies and credentials must stay private.
-        return {
-            "ok": False,
-            "message": "Embedding test failed; check endpoint, model, credentials, dimensions and server availability",
-        }
-    return {
-        "ok": True,
-        "message": f"Embedding connection successful · {len(vector)} dimensions",
-        "dimensions": len(vector),
-    }
+    return await probe_embedding_connection(active)
 
 
 @router.get("/chatbot-config")

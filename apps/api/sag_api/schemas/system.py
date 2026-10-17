@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from sag_api.core.config import MAX_JEV_RANKING_TIMEOUT_SECONDS, normalize_jev_endpoint
 from sag_api.core.embedding_presets import EmbeddingSetupProvider
 from sag_api.core.model_providers import ModelProviderId
 from sag_api.core.responses import ResponsesProviderId
@@ -74,7 +75,13 @@ class ModelConfigUpdate(BaseModel):
     embedding_model: str | None = Field(default=None, min_length=1, max_length=200)
     embedding_base_url: str | None = Field(default=None, max_length=500)
     embedding_api_key: str | None = Field(default=None, max_length=500)
-    embedding_dimensions: int | None = Field(default=None, ge=1, le=8192)
+    embedding_dimensions: int | None = Field(default=None, ge=1, le=8192, strict=True)
+
+    jev_endpoint: str | None = Field(default=None, max_length=1000)
+    jev_model: str | None = Field(default=None, min_length=1, max_length=200)
+    jev_api_key: str | None = Field(default=None, max_length=8192, repr=False)
+    jev_ranking_timeout_seconds: float | None = Field(default=None, ge=0.1, le=MAX_JEV_RANKING_TIMEOUT_SECONDS)
+    jev_failure_policy: Literal["error", "fallback_to_score"] | None = None
 
     document_parser: Literal["auto", "markitdown", "mineru", "anydoc"] | None = None
     mineru_provider: Literal["302", "official", "self_hosted"] | None = None
@@ -90,6 +97,37 @@ class ModelConfigUpdate(BaseModel):
     search_strategy: SearchStrategy | None = None
     search_top_k: int | None = Field(default=None, ge=1, le=50)
     sag_language: Literal["zh", "en"] | None = None
+
+    @field_validator("llm_model", "embedding_model")
+    @classmethod
+    def reject_blank_model(cls, value: str | None) -> str:
+        if value is None or not value.strip():
+            raise ValueError("Model name cannot be blank")
+        return value
+
+    @field_validator("jev_endpoint")
+    @classmethod
+    def validate_jev_endpoint(cls, value: str | None) -> str | None:
+        return normalize_jev_endpoint(value)
+
+    @field_validator("jev_model")
+    @classmethod
+    def validate_jev_model(cls, value: str | None) -> str:
+        if value is None or not value.strip():
+            raise ValueError("JEV 模型名称不能为空")
+        return value.strip()
+
+    @field_validator("jev_api_key")
+    @classmethod
+    def normalize_jev_api_key(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
+
+    @field_validator("jev_ranking_timeout_seconds", "jev_failure_policy")
+    @classmethod
+    def reject_null_jev_options(cls, value):
+        if value is None:
+            raise ValueError("JEV 精排时限与失败策略不能为 null")
+        return value
 
     @field_validator(
         "document_parser",

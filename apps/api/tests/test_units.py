@@ -1,5 +1,6 @@
 """快速单元测试：无需网络 / 引擎。"""
 
+import os
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -44,6 +45,48 @@ def test_model_provider_registry_is_the_public_source_of_truth():
     assert responses.route_model("sag_responses/gpt-5") == "sag_responses/gpt-5"
     assert responses.protocol == "openai_responses"
     assert responses.can_reuse_embedding_credentials is False
+
+
+def test_new_installation_model_defaults_reach_engine_and_provider_catalog(monkeypatch):
+    for name in os.environ:
+        if name.upper().startswith(("SAG_LLM_", "SAG_EMBEDDING_")):
+            monkeypatch.delenv(name)
+
+    configured = Settings(_env_file=None)
+    config = build_engine_config(configured)
+    openai_provider = next(provider for provider in model_provider_catalog() if provider["id"] == "openai")
+
+    assert configured.llm_model == "qwen3.8-flash"
+    assert openai_provider["default_model"] == "qwen3.8-flash"
+    assert config.llm.model == "openai/qwen3.8-flash"
+    assert config.embedding.model == "Qwen/Qwen3-Embedding-4B"
+    assert config.embedding.schema_dimensions == 1024
+    assert config.embedding.request_dimensions == 1024
+
+
+@pytest.mark.parametrize("source", ["environment", "initializer"])
+def test_explicit_model_configuration_takes_precedence_over_defaults(source, monkeypatch):
+    overrides = {
+        "llm_provider": "openai",
+        "llm_model": "qwen3.6-flash",
+        "embedding_model": "bge-large-en-v1.5",
+        "embedding_schema_dimensions": 1024,
+        "embedding_request_dimensions": 1024,
+    }
+    for field, value in overrides.items():
+        monkeypatch.setenv(f"SAG_{field.upper()}", str(value))
+    if source == "initializer":
+        monkeypatch.setenv("SAG_LLM_MODEL", "environment-generation-model")
+        monkeypatch.setenv("SAG_EMBEDDING_MODEL", "environment-embedding-model")
+
+    configured = Settings(_env_file=None, **(overrides if source == "initializer" else {}))
+    config = build_engine_config(configured)
+
+    assert configured.llm_model == "qwen3.6-flash"
+    assert config.llm.model == "openai/qwen3.6-flash"
+    assert config.embedding.model == "bge-large-en-v1.5"
+    assert config.embedding.schema_dimensions == 1024
+    assert config.embedding.request_dimensions == 1024
 
 
 def test_build_engine_config_zero_infra():
@@ -526,7 +569,7 @@ async def test_llm_timeout_and_retries_reach_unified_client(monkeypatch):
 
     client = generation_llm.LLMClient(configured)
     assert await client.complete([{"role": "user", "content": "ping"}]) == "pong"
-    assert seen["model"] == "openai/qwen3.6-flash"
+    assert seen["model"] == "openai/qwen3.8-flash"
     assert seen["timeout"] == 45
     assert seen["num_retries"] == 3
     assert seen["reasoning_effort"] == "none"
@@ -535,7 +578,7 @@ async def test_llm_timeout_and_retries_reach_unified_client(monkeypatch):
 
     engine = build_engine_config(configured)
     assert engine.llm.provider == "litellm"
-    assert engine.llm.model == "openai/qwen3.6-flash"
+    assert engine.llm.model == "openai/qwen3.8-flash"
     assert engine.llm.timeout == 45
     assert engine.llm.max_retries == 3
 

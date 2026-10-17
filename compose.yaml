@@ -24,6 +24,11 @@ services:
       SAG_DIFY_API_KEY: ${SAG_DIFY_API_KEY:-}
       # Dify 专用检索策略；默认 vector 以降低外部知识库请求延迟。
       SAG_DIFY_SEARCH_STRATEGY: ${SAG_DIFY_SEARCH_STRATEGY:-vector}
+      SAG_JEV_ENDPOINT: ${SAG_JEV_ENDPOINT:-}
+      SAG_JEV_MODEL: ${SAG_JEV_MODEL:-jev-latest}
+      SAG_JEV_API_KEY: ${SAG_JEV_API_KEY:-}
+      SAG_JEV_RANKING_TIMEOUT_SECONDS: ${SAG_JEV_RANKING_TIMEOUT_SECONDS:-30}
+      SAG_JEV_FAILURE_POLICY: ${SAG_JEV_FAILURE_POLICY:-error}
       # 四个斜杠表示容器内绝对路径 /data/sag.db。
       SAG_DATABASE_URL: sqlite+aiosqlite:////data/sag.db
       SAG_DATA_DIR: /data/engine
@@ -45,7 +50,7 @@ services:
       # 不带冒号：未定义时用 302 默认值，显式留空时保留空值以使用原生 provider 官方端点。
       SAG_LLM_BASE_URL: ${SAG_LLM_BASE_URL-https://api.302ai.cn/v1}
       SAG_LLM_API_KEY: ${SAG_LLM_API_KEY:-}
-      SAG_LLM_MODEL: ${SAG_LLM_MODEL:-qwen3.6-flash}
+      SAG_LLM_MODEL: ${SAG_LLM_MODEL:-qwen3.8-flash}
       SAG_LLM_MAX_TOKENS: ${SAG_LLM_MAX_TOKENS:-20000}
       SAG_LLM_TIMEOUT_MS: ${SAG_LLM_TIMEOUT_MS:-60000}
       SAG_LLM_MAX_RETRIES: ${SAG_LLM_MAX_RETRIES:-2}

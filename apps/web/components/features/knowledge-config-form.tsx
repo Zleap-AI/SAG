@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { RotateCw, Save } from "lucide-react";
+import { FlaskConical, RotateCw, Save } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
@@ -22,7 +22,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { api, ApiError } from "@/lib/api";
-import { SEARCH_STRATEGIES } from "@/lib/retrieval-config";
+import { getSearchStrategiesDisabled, SEARCH_STRATEGIES } from "@/lib/retrieval-config";
 import type { ModelConfig, ModelConfigPatch } from "@/lib/types";
 import {
   Tooltip,
@@ -31,11 +31,23 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
+const JEV_DEFAULT_MODEL = "jev-latest";
+const JEV_ENDPOINTS = {
+  "302": "https://api.302.ai/typesafeai/v1/systemone",
+  official: "https://api.typesafe.ai/v1/systemone",
+} as const;
+type JevProvider = keyof typeof JEV_ENDPOINTS | "custom";
+
+function providerForEndpoint(endpoint: string): JevProvider {
+  if (!endpoint.trim() || endpoint.trim() === JEV_ENDPOINTS["302"]) return "302";
+  if (endpoint.trim() === JEV_ENDPOINTS.official) return "official";
+  return "custom";
+}
+
 export function KnowledgeConfigForm() {
   const t = useTranslations("KnowledgeConfig");
   const strategies = useTranslations("SearchStrategies");
   const { refreshCapabilities, capabilities } = useApp();
-  const disabledStrategies = capabilities?.search_strategies_disabled ?? {};
   const [loaded, setLoaded] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
@@ -46,6 +58,31 @@ export function KnowledgeConfigForm() {
   const [strategy, setStrategy] = React.useState<ModelConfig["search_strategy"]>("multi");
   const [topK, setTopK] = React.useState(8);
   const [language, setLanguage] = React.useState<ModelConfig["sag_language"]>("zh");
+  const [jevProvider, setJevProvider] = React.useState<JevProvider>("302");
+  const [jevEndpoint, setJevEndpoint] = React.useState<string>(JEV_ENDPOINTS["302"]);
+  const [savedJevEndpoint, setSavedJevEndpoint] = React.useState("");
+  const [jevModel, setJevModel] = React.useState(JEV_DEFAULT_MODEL);
+  const [jevKey, setJevKey] = React.useState("");
+  const [jevKeySet, setJevKeySet] = React.useState(false);
+  const [jevTimeout, setJevTimeout] = React.useState(30);
+  const [jevFailurePolicy, setJevFailurePolicy] =
+    React.useState<ModelConfig["jev_failure_policy"]>("error");
+  const [testingJev, setTestingJev] = React.useState(false);
+  const [jevTestResult, setJevTestResult] = React.useState<{ ok: boolean; message: string } | null>(null);
+  let validEndpoint = false;
+  try {
+    const url = new URL(jevEndpoint.trim());
+    validEndpoint = ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
+  } catch { /* An empty or incomplete draft cannot enable JEV. */ }
+  const jevDraftReady = validEndpoint && Boolean(jevModel.trim());
+  const disabledStrategies = getSearchStrategiesDisabled(capabilities, strategies("unsupportedBackend"), jevDraftReady);
+  const jevUnsupported = disabledStrategies.multi_jev?.reason === "unsupported_backend";
+  const invalidJevDraft = !jevUnsupported && (
+    (Boolean(jevEndpoint.trim()) && !jevDraftReady)
+    || !jevModel.trim()
+    || !Number.isFinite(jevTimeout) || jevTimeout < 0.1 || jevTimeout > 120
+    || (strategy === "multi_jev" && !jevDraftReady)
+  );
 
   const hydrate = React.useCallback((config: ModelConfig) => {
     setChunkMaxTokens(config.document_chunk_max_tokens ?? 1_000);
@@ -54,6 +91,15 @@ export function KnowledgeConfigForm() {
     setStrategy(config.search_strategy);
     setTopK(config.search_top_k);
     setLanguage(config.sag_language);
+    setJevProvider(providerForEndpoint(config.jev_endpoint ?? ""));
+    setJevEndpoint(config.jev_endpoint?.trim() ? config.jev_endpoint : JEV_ENDPOINTS["302"]);
+    setSavedJevEndpoint(config.jev_endpoint ?? "");
+    setJevModel(config.jev_model?.trim() ? config.jev_model : JEV_DEFAULT_MODEL);
+    setJevKey("");
+    setJevKeySet(config.jev_api_key_set ?? false);
+    setJevTimeout(config.jev_ranking_timeout_seconds ?? 30);
+    setJevFailurePolicy(config.jev_failure_policy ?? "error");
+    setJevTestResult(null);
     setLoaded(true);
   }, []);
 
@@ -70,6 +116,38 @@ export function KnowledgeConfigForm() {
     void load();
   }, [load]);
 
+  function selectJevProvider(provider: JevProvider) {
+    setJevProvider(provider);
+    setJevTestResult(null);
+    if (provider === "custom") return;
+    const endpoint = JEV_ENDPOINTS[provider];
+    if (endpoint !== jevEndpoint.trim()) setJevKey("");
+    setJevEndpoint(endpoint);
+    setJevModel(JEV_DEFAULT_MODEL);
+  }
+
+  function jevPatch(): ModelConfigPatch {
+    return {
+      jev_endpoint: jevEndpoint.trim() || null,
+      jev_model: jevModel.trim(),
+      jev_ranking_timeout_seconds: jevTimeout,
+      jev_failure_policy: jevFailurePolicy,
+      ...(jevKey.trim() ? { jev_api_key: jevKey.trim() } : {}),
+    };
+  }
+
+  async function testJev() {
+    setTestingJev(true);
+    setJevTestResult(null);
+    try {
+      setJevTestResult(await api.testJevModelConfig(jevPatch()));
+    } catch (error) {
+      setJevTestResult({ ok: false, message: error instanceof ApiError ? error.message : t("jevTestFailed") });
+    } finally {
+      setTestingJev(false);
+    }
+  }
+
   async function save() {
     setSaving(true);
     try {
@@ -80,6 +158,7 @@ export function KnowledgeConfigForm() {
         search_strategy: strategy,
         search_top_k: topK,
         sag_language: language,
+        ...(!jevUnsupported ? jevPatch() : {}),
       };
       const { config } = await api.saveModelConfig(patch);
       hydrate(config);
@@ -115,90 +194,125 @@ export function KnowledgeConfigForm() {
     return (
       <div className="flex flex-col gap-6">
         {[
-          [t("parsingTitle"), t("parsingLoading")],
-          [t("retrievalTitle"), t("retrievalLoading")],
-        ].map(([title, description]) => (
-          <SettingsSection key={title} title={title} description={description}>
-            <div className="grid gap-3 p-4 sm:grid-cols-2 sm:p-5">
-              <Skeleton className="h-16 w-full" />
-              <Skeleton className="h-16 w-full" />
+          ["general", t("generalTitle"), t("generalLoading")],
+          ["document-processing", t("parsingTitle"), t("parsingLoading")],
+          ["retrieval", t("retrievalTitle"), t("retrievalLoading")],
+        ].map(([id, title, description]) => {
+          const section = (
+            <SettingsSection key={id} title={title} description={description}>
+              <div className="grid gap-3 p-4 sm:grid-cols-2 sm:p-5">
+                <Skeleton className="h-16 w-full" />
+                <Skeleton className="h-16 w-full" />
+              </div>
+            </SettingsSection>
+          );
+          return id === "document-processing" ? (
+            <div key={id} data-settings-section="document-processing" tabIndex={-1} className="scroll-mt-6 outline-none">
+              {section}
             </div>
-          </SettingsSection>
-        ))}
+          ) : section;
+        })}
       </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-6">
-      <SettingsSection title={t("parsingTitle")} description={t("parsingDescription")}>
-        <SettingsRow title={t("chunkSettings")} description={t("chunkDescription")}>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel htmlFor="kb-chunk-mode">{t("chunkMode")}</FieldLabel>
-              <Select
-                value={chunkMode}
-                onValueChange={(value) =>
-                  setChunkMode(value as ModelConfig["document_chunk_mode"])
-                }
-              >
-                <SelectTrigger id="kb-chunk-mode">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="standard">{t("smartChunking")}</SelectItem>
-                  <SelectItem value="heading_strict">{t("strictHeadings")}</SelectItem>
-                </SelectContent>
-              </Select>
-              <FieldDescription>
-                {chunkMode === "heading_strict"
-                  ? t("strictHeadingsDescription")
-                  : t("smartChunkingDescription")}
-              </FieldDescription>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="kb-chunk-max-tokens">{t("maxTokens")}</FieldLabel>
-              <Input
-                id="kb-chunk-max-tokens"
-                type="number"
-                min={100}
-                max={100000}
-                step={100}
-                value={chunkMaxTokens}
-                onChange={(event) =>
-                  setChunkMaxTokens(
-                    Math.min(100000, Math.max(100, Number(event.target.value) || 100)),
-                  )
-                }
-              />
-              <FieldDescription>{t("maxTokensDescription")}</FieldDescription>
-            </Field>
-          </div>
-        </SettingsRow>
-
-        <SettingsRow title={t("extractionSettings")} description={t("extractionDescription")}>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel htmlFor="kb-extract-concurrency">{t("concurrency")}</FieldLabel>
-              <Input
-                id="kb-extract-concurrency"
-                type="number"
-                min={1}
-                max={50}
-                value={extractConcurrency}
-                onChange={(event) =>
-                  setExtractConcurrency(
-                    Math.min(50, Math.max(1, Number(event.target.value) || 1)),
-                  )
-                }
-              />
-              <FieldDescription>{t("concurrencyDescription")}</FieldDescription>
-            </Field>
-          </div>
+      <SettingsSection key="general" title={t("generalTitle")} description={t("generalDescription")}>
+        <SettingsRow
+          title={t("processingLanguage")}
+          description={<span id="kb-language-description">{t("processingLanguageDescription")}</span>}
+          layout="inline"
+          contentClassName="w-full sm:w-40"
+        >
+          <Field>
+            <FieldLabel htmlFor="kb-language" className="sr-only">{t("processingLanguage")}</FieldLabel>
+            <Select
+              value={language}
+              onValueChange={(value) => setLanguage(value as ModelConfig["sag_language"])}
+            >
+              <SelectTrigger id="kb-language" aria-describedby="kb-language-description">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="zh">{t("chinese")}</SelectItem>
+                <SelectItem value="en">{t("english")}</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("retrievalTitle")} description={t("retrievalDescription")}>
+      <div key="document-processing" data-settings-section="document-processing" tabIndex={-1} className="scroll-mt-6 outline-none">
+        <SettingsSection title={t("parsingTitle")} description={t("parsingDescription")}>
+          <SettingsRow title={t("chunkSettings")} description={t("chunkDescription")}>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field>
+                <FieldLabel htmlFor="kb-chunk-mode">{t("chunkMode")}</FieldLabel>
+                <Select
+                  value={chunkMode}
+                  onValueChange={(value) =>
+                    setChunkMode(value as ModelConfig["document_chunk_mode"])
+                  }
+                >
+                  <SelectTrigger id="kb-chunk-mode">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="standard">{t("smartChunking")}</SelectItem>
+                    <SelectItem value="heading_strict">{t("strictHeadings")}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  {chunkMode === "heading_strict"
+                    ? t("strictHeadingsDescription")
+                    : t("smartChunkingDescription")}
+                </FieldDescription>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="kb-chunk-max-tokens">{t("maxTokens")}</FieldLabel>
+                <Input
+                  id="kb-chunk-max-tokens"
+                  type="number"
+                  min={100}
+                  max={100000}
+                  step={100}
+                  value={chunkMaxTokens}
+                  onChange={(event) =>
+                    setChunkMaxTokens(
+                      Math.min(100000, Math.max(100, Number(event.target.value) || 100)),
+                    )
+                  }
+                />
+                <FieldDescription>{t("maxTokensDescription")}</FieldDescription>
+              </Field>
+            </div>
+          </SettingsRow>
+
+          <SettingsRow title={t("extractionSettings")} description={t("extractionDescription")}>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field>
+                <FieldLabel htmlFor="kb-extract-concurrency">{t("concurrency")}</FieldLabel>
+                <Input
+                  id="kb-extract-concurrency"
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={extractConcurrency}
+                  onChange={(event) =>
+                    setExtractConcurrency(
+                      Math.min(50, Math.max(1, Number(event.target.value) || 1)),
+                    )
+                  }
+                />
+                <FieldDescription>{t("concurrencyDescription")}</FieldDescription>
+              </Field>
+            </div>
+          </SettingsRow>
+        </SettingsSection>
+      </div>
+
+      <SettingsSection key="retrieval" title={t("retrievalTitle")} description={t("retrievalDescription")}>
         <SettingsRow title={t("retrievalRules")} description={t("retrievalRulesDescription")}>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field>
@@ -247,21 +361,6 @@ export function KnowledgeConfigForm() {
               </Select>
             </Field>
             <Field>
-              <FieldLabel htmlFor="kb-language">{t("extractionLanguage")}</FieldLabel>
-              <Select
-                value={language}
-                onValueChange={(value) => setLanguage(value as ModelConfig["sag_language"])}
-              >
-                <SelectTrigger id="kb-language">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="zh">{t("chinese")}</SelectItem>
-                  <SelectItem value="en">{t("english")}</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field className="sm:col-span-2">
               <FieldLabel>{t("topK", { count: topK })}</FieldLabel>
               <div className="flex h-9 items-center">
                 <Slider
@@ -276,10 +375,78 @@ export function KnowledgeConfigForm() {
             </Field>
           </div>
         </SettingsRow>
+        <SettingsRow title={t("jevTitle")} description={t("jevDescription")}>
+          <fieldset disabled={jevUnsupported || saving || testingJev} className="grid min-w-0 gap-4 sm:grid-cols-2">
+            <Field className="sm:col-span-2">
+              <FieldLabel htmlFor="kb-jev-provider">{t("jevProvider")}</FieldLabel>
+              <Select value={jevProvider} onValueChange={(value) => selectJevProvider(value as JevProvider)}>
+                <SelectTrigger id="kb-jev-provider"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="302">302.AI</SelectItem>
+                  <SelectItem value="official">{t("jevProviderOfficial")}</SelectItem>
+                  <SelectItem value="custom">{t("jevProviderCustom")}</SelectItem>
+                </SelectContent>
+              </Select>
+              <FieldDescription>{t("jevProviderDescription")}</FieldDescription>
+            </Field>
+            <Field className="sm:col-span-2">
+              <FieldLabel htmlFor="kb-jev-endpoint">{t("jevEndpoint")}</FieldLabel>
+              <Input id="kb-jev-endpoint" type="url" placeholder="https://…" value={jevEndpoint}
+                readOnly={jevProvider !== "custom"}
+                onChange={(event) => { setJevEndpoint(event.target.value); setJevKey(""); setJevTestResult(null); }} />
+              <FieldDescription>{t("jevEndpointDescription")}</FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="kb-jev-model">{t("jevModel")}</FieldLabel>
+              <Input id="kb-jev-model" value={jevModel}
+                onChange={(event) => { setJevModel(event.target.value); setJevTestResult(null); }} />
+              <FieldDescription>{t("jevModelDescription")}</FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="kb-jev-api-key">{t("jevKey")}</FieldLabel>
+              <Input id="kb-jev-api-key" type="password" autoComplete="new-password" value={jevKey}
+                placeholder={jevKeySet && jevEndpoint.trim() === savedJevEndpoint ? t("jevKeyConfigured")
+                  : jevProvider === "custom" ? t("jevKeyOptional")
+                    : t("jevKeyProviderPlaceholder", { provider: jevProvider === "302" ? "302.AI" : "TypeSafe" })}
+                onChange={(event) => { setJevKey(event.target.value); setJevTestResult(null); }} />
+              {jevProvider !== "custom" && <FieldDescription>{t("jevKeyProviderDescription", { provider: jevProvider === "302" ? "302.AI" : "TypeSafe" })}</FieldDescription>}
+              <FieldDescription>{t("jevKeyDescription")}</FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="kb-jev-timeout">{t("jevTimeout")}</FieldLabel>
+              <Input id="kb-jev-timeout" type="number" min={0.1} max={120} step={0.1} value={jevTimeout}
+                onChange={(event) => { setJevTimeout(Number(event.target.value)); setJevTestResult(null); }} />
+              <FieldDescription>{t("jevTimeoutDescription")}</FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="kb-jev-failure-policy">{t("jevFailurePolicy")}</FieldLabel>
+              <Select value={jevFailurePolicy} onValueChange={(value) => {
+                setJevFailurePolicy(value as ModelConfig["jev_failure_policy"]); setJevTestResult(null);
+              }}>
+                <SelectTrigger id="kb-jev-failure-policy"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="error">{t("jevError")}</SelectItem>
+                  <SelectItem value="fallback_to_score">{t("jevFallback")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+          </fieldset>
+          {jevUnsupported && <p className="text-sm text-muted-foreground">{strategies("unsupportedBackend")}</p>}
+          {invalidJevDraft && <p role="alert" className="text-sm text-destructive">{t("jevInvalidDraft")}</p>}
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <Button type="button" variant="outline" size="sm" onClick={() => void testJev()}
+              disabled={jevUnsupported || !jevDraftReady || invalidJevDraft || saving || testingJev}>
+              {testingJev ? <Spinner /> : <FlaskConical />}
+              {testingJev ? t("jevTesting") : t("jevTest")}
+            </Button>
+            {jevTestResult && <p role={jevTestResult.ok ? "status" : "alert"}
+              className={jevTestResult.ok ? "text-sm text-muted-foreground" : "text-sm text-destructive"}>{jevTestResult.message}</p>}
+          </div>
+        </SettingsRow>
       </SettingsSection>
 
       <div className="flex justify-end border-t pt-4">
-        <Button type="button" onClick={save} disabled={saving}>
+        <Button type="button" onClick={save} disabled={saving || testingJev || invalidJevDraft || Boolean(disabledStrategies[strategy])}>
           {saving ? <Spinner /> : <Save />}
           {saving ? t("saving") : t("save")}
         </Button>

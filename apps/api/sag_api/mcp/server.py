@@ -226,7 +226,10 @@ def build_source_mcp(
             normalized,
             top_k=max(1, min(top_k, 50)),
         )
-        return _sections_to_text(outcome.sections, selected)
+        text = _sections_to_text(outcome.sections, selected)
+        if outcome.stats.get("requested_strategy") == "multi_jev" and outcome.stats.get("fallback_used"):
+            text = "（JEV 精排未完成，本次返回粗排结果）\n" + text
+        return text
 
     @mcp.tool(
         title=MCP_TOOL_LABELS["get_entity"],

@@ -7,7 +7,7 @@ import os
 from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from sag_api.core.config import Settings
 from sag_api.core.errors import ConfigurationError
@@ -125,6 +125,14 @@ class Update(Draft):
 class TestDraft(Update):
     target: str
 
+    @model_validator(mode="before")
+    @classmethod
+    def only_test_target(cls, value):
+        if isinstance(value, dict) and value.get("target") in ("llm", "embedding"):
+            other = "embedding" if value["target"] == "llm" else "llm"
+            return {key: item for key, item in value.items() if key != other}
+        return value
+
 
 class OriginalEmbeddingDraft(Draft):
     """Original embedding settings and optional generation credential reuse."""
@@ -137,20 +145,32 @@ class OriginalEmbeddingDraft(Draft):
     llm_base_url: str | None = Field(default=None, max_length=500)
     llm_api_key: str | None = Field(default=None, repr=False, max_length=8192)
 
-    @model_validator(mode="after")
-    def validate_connection(self):
-        for name in ("embedding_model", "llm_provider"):
-            if name in self.model_fields_set and getattr(self, name) is None:
-                raise ValueError("Model and provider cannot be null")
-        for name in ("embedding_base_url", "llm_base_url"):
-            validate_url(getattr(self, name) or "")
-        for name in ("embedding_model", "embedding_api_key", "llm_api_key"):
-            value = getattr(self, name) or ""
-            if "\n" in value or "\r" in value:
-                raise ValueError("Model and API keys must be single-line values")
-        if self.embedding_model is not None and not self.embedding_model.strip():
+    @field_validator("embedding_model", "llm_provider")
+    @classmethod
+    def reject_null_identity(cls, value):
+        if value is None:
+            raise ValueError("Model and provider cannot be null")
+        return value
+
+    @field_validator("embedding_model")
+    @classmethod
+    def reject_blank_model(cls, value):
+        if not value.strip():
             raise ValueError("Embedding model cannot be blank")
-        return self
+        return value
+
+    @field_validator("embedding_base_url", "llm_base_url")
+    @classmethod
+    def validate_endpoint(cls, value):
+        validate_url(value or "")
+        return value
+
+    @field_validator("embedding_model", "embedding_api_key", "llm_api_key")
+    @classmethod
+    def reject_multiline(cls, value):
+        if value and ("\n" in value or "\r" in value):
+            raise ValueError("Model and API keys must be single-line values")
+        return value
 
 
 class QuerySettings(Settings):

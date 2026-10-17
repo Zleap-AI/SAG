@@ -28,6 +28,7 @@ from sag_api.core.responses import ResponsesProviderId
 from sag_api.enums import SearchStrategy, normalize_search_strategy
 
 _DEFAULT_LLM_PROVIDER = get_model_provider("openai")
+MAX_JEV_RANKING_TIMEOUT_SECONDS = 120.0
 
 # zleap-sag 0.13.0 之前的默认向量维度：未显式配置时用它预建向量 schema，
 # 保持既有知识库的向量空间不变（存量 LanceDB 向量与该维度绑定）。
@@ -43,6 +44,38 @@ def _embedding_request_dimensions_unsupported(base_url: str | None, model: str) 
     """该服务商/模型组合是否拒绝请求体里的 `dimensions` 参数。"""
     hostname = (urlsplit(base_url or "").hostname or "").lower()
     return (hostname, model.strip().lower()) == _EMBEDDING_REQUEST_DIMENSIONS_UNSUPPORTED
+
+
+def expand_embedding_dimensions(updates: dict) -> dict:
+    """An explicit UI dimension overrides both split fields, including when cleared."""
+    expanded = dict(updates)
+    if "embedding_dimensions" in updates:
+        expanded["embedding_schema_dimensions"] = updates["embedding_dimensions"]
+        expanded["embedding_request_dimensions"] = updates["embedding_dimensions"]
+    return expanded
+
+
+def normalize_jev_endpoint(value: str | None) -> str | None:
+    """Keep the full scoring URL while rejecting credentials and unusable URLs."""
+    if value is None or not value.strip():
+        return None
+    endpoint = value.strip()
+    try:
+        parsed = urlsplit(endpoint)
+        port = parsed.port
+    except ValueError:
+        raise ValueError("JEV 服务地址必须是有效的完整 HTTP(S) URL") from None
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or any(char.isspace() for char in endpoint)
+        or port == 0
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        raise ValueError("JEV 服务地址必须是完整 HTTP(S) URL，不能包含用户凭证或 fragment")
+    return endpoint
 
 
 class Settings(BaseSettings):
@@ -180,6 +213,13 @@ class Settings(BaseSettings):
     llm_responses_api_version: str = ""
     llm_responses_send_temperature: bool = False
     llm_responses_thinking_config: str | None = None
+
+    # JEV is an independent scoring connection, enabled only by its search profile.
+    jev_endpoint: str | None = Field(default=None, max_length=1000)
+    jev_model: str = Field(default="jev-latest", min_length=1, max_length=200)
+    jev_api_key: str | None = Field(default=None, repr=False, max_length=8192)
+    jev_ranking_timeout_seconds: float = Field(default=30.0, ge=0.1, le=MAX_JEV_RANKING_TIMEOUT_SECONDS)
+    jev_failure_policy: Literal["error", "fallback_to_score"] = "error"
 
     # Optional chatbot/query connections; extraction and indexing retain the original clients.
     chatbot_llm_enabled: bool = False
@@ -350,6 +390,24 @@ class Settings(BaseSettings):
     def _normalize_legacy_search_strategy(cls, value: object) -> object:
         # 兼容升级前的环境变量；公开 API 已不再接受 atomic。
         return normalize_search_strategy(value) if isinstance(value, str) else value
+
+    @field_validator("jev_endpoint")
+    @classmethod
+    def _validate_jev_endpoint(cls, value: str | None) -> str | None:
+        return normalize_jev_endpoint(value)
+
+    @field_validator("jev_model")
+    @classmethod
+    def _validate_jev_model(cls, value: str) -> str:
+        model = value.strip()
+        if not model:
+            raise ValueError("JEV 模型名称不能为空")
+        return model
+
+    @field_validator("jev_api_key")
+    @classmethod
+    def _normalize_jev_api_key(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
 
     @field_validator("timezone")
     @classmethod

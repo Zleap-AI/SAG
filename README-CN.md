@@ -62,7 +62,7 @@ SAG 不是传统 RAG 与 GraphRAG 的融合，而是一套替代二者的原创�
 | 能力 | 解决的问题 |
 | --- | --- |
 | 知识导入 | 文件与网页信源、文档解析、分块、向量化、事件/实体抽取、后台处理 |
-| 检索 | 跨信源或指定信源检索，支持快速（`vector`）、快速（`multi_es_fast`）与精确（`multi`）模式 |
+| 检索 | 跨信源或指定信源检索，支持快速（`vector` / `multi_es_fast`）、精确（`multi`）与可选 JEV 精排（`multi_jev`）模式 |
 | 原文溯源 | 每条检索结果和引用都能打开对应的原文块 |
 | 知识图谱 | 查看事件、实体及其可查询的关联关系 |
 | Agent 对话 | 基于指定信源进行多轮问答，并提供可点击引用 |
@@ -194,7 +194,7 @@ DeepSeek 使用 Flash 非思考模式。两种快速配置均可选择 302.AI、
 
 Docker Compose 或 `.env` 中的 `SAG_LLM_*` 用于提供首次启动时的模型默认值。管理员在 Web 设置页保存模型配置后，后续抽取和生成任务会直接使用已持久化的设置，无需重启服务。
 
-默认向量模型为 `Qwen/Qwen3-Embedding-4B`。升级已有 BGE 索引时，请保留 `SAG_EMBEDDING_MODEL=bge-large-en-v1.5`；如需切换模型，请先完成已有索引文档的删除，再更换模型并重新导入。
+默认生成模型为 `qwen3.8-flash`，默认向量模型为 `Qwen/Qwen3-Embedding-4B`。升级已有 BGE 索引时，请保留 `SAG_EMBEDDING_MODEL=bge-large-en-v1.5`；如需切换模型，请先完成已有索引文档的删除，再更换模型并重新导入。
 
 如需由部署环境强制统一配置，请设置 `SAG_LOCK_LLM_CONFIG=true`。SAG 会在设置页明确显示生成模型字段已锁定，并持续使用 `SAG_LLM_*` 的值。此时请修改 Docker Compose 或 `.env`，再重新创建 API 容器使改动生效。API Key 始终由部署环境管理，Settings API 不会返回密钥明文。
 
@@ -488,7 +488,7 @@ async def main() -> None:
         llm=LLMConfig(
             api_key="sk-...",
             base_url="https://your-openai-compatible-host/v1",
-            model="qwen3.6-flash",
+            model="qwen3.8-flash",
         ),
         # 不填写 api_key/base_url 时，Embedding 会复用 LLM 接口。
         embedding=EmbeddingConfig(model="Qwen/Qwen3-Embedding-4B"),
@@ -531,7 +531,7 @@ asyncio.run(main())
 export SAG_STORAGE_MODE=normal
 export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://your-openai-compatible-host/v1
-export LLM_MODEL=qwen3.6-flash
+export LLM_MODEL=qwen3.8-flash
 export EMBEDDING_MODEL=Qwen/Qwen3-Embedding-4B
 ```
 
@@ -565,8 +565,17 @@ config = EngineConfig.from_env()
 | 快速（vector） | `vector` | 基于语义相似度直接召回，响应更快 |
 | 快速（multi_es-fast） | `multi_es_fast` | BM25 实体召回与事件多跳检索，跳过 LLM 精排 |
 | 精确 | `multi` | 结合实体关系与 LLM 精排，结果更完整 |
+| JEV 精排 | `multi_jev` | 召回与图扩展后，通过独立 JEV 服务为候选证据评分 |
 
 这里列出的是应用/API 策略名称；应用将 `multi` 映射到 Python 引擎的 `full_expand`，将 `multi_es_fast` 映射到 `pruned_expand_rff`。可用性取决于存储能力：`multi_es_fast` 需要词法检索支持。
+
+JEV 在“设置 → 知识库 → 检索”选择 302.AI、TypeSafe 官方或自定义服务。未配置时，页面默认填入 302.AI 的完整评分 URL `https://api.302.ai/typesafeai/v1/systemone` 和模型 `jev-latest`，API Key 留空，由用户填写；官方预设使用 `https://api.typesafe.ai/v1/systemone`。自定义服务可编辑完整地址和模型，已有配置会保留，切换服务地址后需重新填写对应密钥。地址包含评分路径，系统不自动追加路径。[302 接口文档](https://doc.302.ai/517575517e0)、[官方 API](https://docs.typesafe.ai/api)。
+
+`jev-latest` 是最新稳定版别名，随稳定发布更新；也可手动填写服务支持的固定版本。[官方模型说明](https://docs.typesafe.ai/models)另提供预览版别名，其网关支持情况取决于服务商。“知识处理语言”位于“设置 → 知识库 → 通用”，默认中文，保留已保存的值；用于 SAG 入库抽取、查询改写、查询实体抽取等提示词，客户端问答提示也使用此配置。它不是 JEV API 参数，不会自动翻译原文或评分文本。
+
+保存服务配置后，再将 JEV 设为默认或在探索界面单次选择。`multi_jev` 映射到 `pruned_expand_jev`，需要词法检索支持（当前 LanceDB/Elasticsearch）。问题与候选证据会发送到该服务；现有文档无需重新入库。也可使用 `.env.example` 中的 `SAG_JEV_*` 配置，设置页已保存的值优先。
+
+JEV 精排默认限时 30 秒、失败即报错；用户可明确允许返回粗排结果，界面会标明降级。应用为该模式额外分配召回和多信源排队预算，保留精排顺序与分数。未显式覆盖检索策略的聊天助手继承全局默认；Dify 仍使用其独立策略设置。
 
 #### 存储后端
 
