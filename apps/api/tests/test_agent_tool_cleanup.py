@@ -52,8 +52,9 @@ class _CountingStore(MemoryRunStore):
 class _SocketTool:
     """Keep real resources alive until asynchronous cleanup is allowed to finish."""
 
-    def __init__(self, name: str, *, slow_cleanup: bool = True) -> None:
+    def __init__(self, name: str, *, slow_cleanup: bool = True, checkpoint_kind: str | None = None) -> None:
         self.name = name
+        self.checkpoint_kind = checkpoint_kind
         self.entered = asyncio.Event()
         self.cleanup_started = asyncio.Event()
         self.cleanup_allowed = asyncio.Event()
@@ -77,6 +78,14 @@ class _SocketTool:
         try:
             self.entered.set()
             await self.blocked.wait()
+            if self.checkpoint_kind == "progress":
+                await _context.progress("checkpoint")
+            elif self.checkpoint_kind == "token":
+                _context.cancellation.raise_if_cancelled()
+            elif self.checkpoint_kind == "wait":
+                await _context.cancellation.wait()
+            elif self.checkpoint_kind == "cancel":
+                _context.cancellation.cancel()
             return ToolResult(content="released")
         finally:
             self.cleanup_started.set()
@@ -293,6 +302,130 @@ async def test_cancel_during_tool_timeout_cleanup_does_not_interrupt_resource_re
         slow.assert_closed()
     finally:
         await _cleanup(runtime, (slow,), before)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execution_mode", [ToolExecutionMode.PARALLEL, ToolExecutionMode.SEQUENTIAL])
+async def test_timeout_after_cancel_does_not_interrupt_cleanup(execution_mode):
+    before = asyncio.all_tasks()
+    slow = _SocketTool("slow")
+    store = _CountingStore()
+    runtime = AgentRuntime(RuntimeConfig(store=store, tool_execution=execution_mode))
+    events = []
+    runtime.subscribe(events.append)
+    await runtime.start()
+    try:
+        handle = runtime.run(
+            Agent(name="cancel before timeout", model=_ToolModel("slow"), tools=(slow.as_tool(timeout=0.02),)),
+            "go",
+        )
+        await asyncio.wait_for(slow.entered.wait(), timeout=2)
+        assert not slow.cleanup_started.is_set()
+        handle.cancel()
+        await asyncio.wait_for(slow.cleanup_started.wait(), timeout=2)
+        # The timeout deadline must pass while cancellation cleanup is blocked.
+        await asyncio.sleep(0.04)
+        assert not slow.interrupted, "the later timeout cancelled cleanup a second time"
+        _assert_pending(handle, events, store)
+        assert slow.sockets is not None and all(item.fileno() >= 0 for item in slow.sockets)
+
+        slow.cleanup_allowed.set()
+        await _assert_cancelled_once(handle, events, store)
+        slow.assert_closed()
+    finally:
+        await _cleanup(runtime, (slow,), before)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execution_mode", [ToolExecutionMode.PARALLEL, ToolExecutionMode.SEQUENTIAL])
+@pytest.mark.parametrize("checkpoint_kind", ["progress", "token", "wait", "cancel"])
+async def test_cooperative_cancel_checkpoint_does_not_cancel_async_cleanup_again(execution_mode, checkpoint_kind):
+    before = asyncio.all_tasks()
+    slow = _SocketTool("slow", checkpoint_kind=checkpoint_kind)
+    store = _CountingStore()
+    runtime = AgentRuntime(RuntimeConfig(store=store, tool_execution=execution_mode))
+    events = []
+    runtime.subscribe(events.append)
+    await runtime.start()
+    try:
+        handle = runtime.run(
+            Agent(name="cooperative cancellation", model=_ToolModel("slow"), tools=(slow.as_tool(),)),
+            "go",
+        )
+        await asyncio.wait_for(slow.entered.wait(), timeout=2)
+        # Queue the executor first; it observes the cancelled run token before
+        # the scheduled physical cancellation reaches the run task.
+        slow.blocked.set()
+        handle.cancel()
+        await asyncio.wait_for(slow.cleanup_started.wait(), timeout=2)
+        await _settle_callbacks()
+        assert not slow.interrupted, "physical cancellation interrupted cooperative cancellation cleanup"
+        _assert_pending(handle, events, store)
+
+        slow.cleanup_allowed.set()
+        await _assert_cancelled_once(handle, events, store)
+        slow.assert_closed()
+    finally:
+        await _cleanup(runtime, (slow,), before)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execution_mode", [ToolExecutionMode.PARALLEL, ToolExecutionMode.SEQUENTIAL])
+async def test_child_cancellation_watcher_does_not_suppress_executor_cleanup(execution_mode):
+    before = asyncio.all_tasks()
+    slow = _SocketTool("slow")
+    store = _CountingStore()
+    runtime = AgentRuntime(RuntimeConfig(store=store, tool_execution=execution_mode))
+    events = []
+    watchers = []
+    watcher_started = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+
+    async def execute(arguments, context):
+        async def watch_cancellation():
+            watcher_started.set()
+            await context.cancellation.wait()
+            cancellation_seen.set()
+
+        watcher = asyncio.create_task(watch_cancellation())
+        watchers.append(watcher)
+        try:
+            await watcher_started.wait()
+            return await slow.execute(arguments, context)
+        finally:
+            if not watcher.done():
+                watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
+
+    runtime.subscribe(events.append)
+    await runtime.start()
+    try:
+        handle = runtime.run(
+            Agent(
+                name="cancellation watcher",
+                model=_ToolModel("slow"),
+                tools=(AgentTool(ToolSpec(name="slow", description="Hold sockets", timeout_seconds=0.03), execute),),
+            ),
+            "go",
+        )
+        await asyncio.wait_for(slow.entered.wait(), timeout=2)
+        handle.cancel()
+        await asyncio.wait_for(cancellation_seen.wait(), timeout=2)
+        await asyncio.wait_for(slow.cleanup_started.wait(), timeout=0.1)
+        await _settle_callbacks()
+        _assert_pending(handle, events, store)
+        assert not slow.interrupted
+
+        slow.cleanup_allowed.set()
+        await _assert_cancelled_once(handle, events, store)
+        slow.assert_closed()
+        assert all(watcher.done() for watcher in watchers)
+    finally:
+        await _cleanup(runtime, (slow,), before)
+        for watcher in watchers:
+            if not watcher.done():
+                watcher.cancel()
+        await asyncio.gather(*watchers, return_exceptions=True)
 
 
 @pytest.mark.asyncio
