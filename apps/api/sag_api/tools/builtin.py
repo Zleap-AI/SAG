@@ -248,31 +248,46 @@ class SearchContextTool(Tool):
         limit = max(1, min(int(top_k or 8), 50))
         source_refs = {s.sag_source_config_id: {"id": s.id, "name": s.name} for s in ctx.sources}
         sources_by_config = {source.sag_source_config_id: source for source in ctx.sources}
-        outcome, event_scores = await asyncio.gather(
-            retrieve_relevant_sections(
-                ctx.engine_manager,
-                ctx.sources,
-                query,
-                strategy=strategy,
-                top_k=limit,
-            ),
-            recall_event_scores(
-                ctx.engine_manager,
-                query,
-                sources_by_config,
-                limit=limit,
-            ),
+        retrieval = retrieve_relevant_sections(
+            ctx.engine_manager,
+            ctx.sources,
+            query,
+            strategy=strategy,
+            top_k=limit,
         )
+        is_jev = strategy == "multi_jev"
+        if is_jev:
+            outcome = await retrieval
+            event_scores: dict[tuple[str, str], float] = {}
+        else:
+            outcome, event_scores = await asyncio.gather(
+                retrieval,
+                recall_event_scores(
+                    ctx.engine_manager,
+                    query,
+                    sources_by_config,
+                    limit=limit,
+                ),
+            )
         published = await published_document_inputs(ctx.sources)
         sections = [
             section
             for section in outcome.sections
             if section.source_id in published.get(section.source_config_id or "", ())
         ]
+        if is_jev:
+            for section in sections:
+                if not section.source_config_id or section.metadata.get("score_source") == "query_chunk_fallback":
+                    continue
+                for event_id in section.metadata.get("event_ids") or []:
+                    if isinstance(event_id, str) and event_id.strip():
+                        event_scores.setdefault((section.source_config_id, event_id.strip()), section.score)
         graph_for_sections = getattr(ctx.engine_manager, "graph_for_sections", None)
         graph = (
             await graph_for_sections(
-                sections,
+                # JEV already selected the event evidence. Chunk hydration or
+                # independent event recall would add events it never ranked.
+                [] if is_jev else sections,
                 sources_by_config,
                 source_ids_by_config=published,
                 # graph_for_sections allocates the first event of each chunk
@@ -285,7 +300,14 @@ class SearchContextTool(Tool):
             if (sections or event_scores) and callable(graph_for_sections)
             else None
         )
-        if strategy != "multi_jev" and graph is not None and graph.events:
+        if is_jev and graph is not None:
+            # Graph hydration sorts numeric scores; evidence channels may use
+            # different scales, so retain the engine's section/event order.
+            event_order = {key: index for index, key in enumerate(event_scores)}
+            graph.events.sort(
+                key=lambda event: event_order.get((event.source_config_id, event.id), len(event_order))
+            )
+        if not is_jev and graph is not None and graph.events:
             sections = await _prioritize_event_evidence(
                 ctx.engine_manager,
                 sections,
