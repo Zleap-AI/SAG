@@ -146,6 +146,22 @@ test("rendered x86 and ARM packages satisfy the native package contract", async 
   }
 });
 
+test("rendered package rejects a launcher that skips the NOFILE bootstrap", async (t) => {
+  const root = await renderedPackage(t, "x86");
+  const main = path.join(root, "cmd/main");
+  const source = await readFile(main, "utf8");
+  await writeFile(main, source.replace(/^[ \t]+configure_nofile[ \t]+[^\n]*$/m, ""));
+  await expectRejected(root, "x86", /launcher.*NOFILE.*before.*daemon/i);
+});
+
+test("rendered package rejects a launcher that could lower the hard NOFILE limit", async (t) => {
+  const root = await renderedPackage(t, "x86");
+  const main = path.join(root, "cmd/main");
+  const source = await readFile(main, "utf8");
+  await writeFile(main, source.replace('ulimit -S -n "$_sag_nofile_effective"', 'ulimit -n "$_sag_nofile_effective"'));
+  await expectRejected(root, "x86", /launcher.*NOFILE.*soft/i);
+});
+
 test("rendered package rejects the legacy numbered fnOS suffix", async (t) => {
   const root = await renderedPackage(t, "x86");
   const manifestPath = path.join(root, "manifest");

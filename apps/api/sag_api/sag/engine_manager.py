@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from zleap.sag import DataEngine
+from zleap.sag.exceptions import StateError
 
 from sag_api.core.config import Settings
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
@@ -478,6 +479,20 @@ class EngineManager:
             await session.execute(text("PRAGMA journal_mode=WAL"))
             await session.execute(text("PRAGMA busy_timeout=30000"))
 
+    @staticmethod
+    async def _close_unregistered_engine(engine: DataEngine) -> None:
+        try:
+            await engine.aclose()
+        finally:
+            # zleap-sag 0.13 can retain its public resource container when start()
+            # is cancelled before the engine considers itself started.
+            try:
+                resources = getattr(engine, "resources", None)
+            except StateError:
+                resources = None
+            if resources is not None:
+                await resources.aclose()
+
     async def _slot(self, source_config_id: str, source: Source | None = None) -> _Slot:
         slot = self._slots.get(source_config_id)
         if slot is not None and not slot.closing:
@@ -494,20 +509,20 @@ class EngineManager:
                         data_source_id=source_config_id,
                         health_check=False,
                     )
-                    with map_sag_errors(stage=ErrorStage.CONFIG):
-                        # 0.8.2:pgvector/oceanbase 等向量后端在 start() 前必须先
-                        # init_schema() 显式创建关系表与向量模式对象,否则 start()
-                        # 抛 StorageInitializationRequiredError。
-                        await self._ensure_engine_schema(engine)
-                        await engine.start()
-                        await self._configure_sqlite_document_store(engine)
                     try:
+                        with map_sag_errors(stage=ErrorStage.CONFIG):
+                            # 0.8.2:pgvector/oceanbase 等向量后端在 start() 前必须先
+                            # init_schema() 显式创建关系表与向量模式对象,否则 start()
+                            # 抛 StorageInitializationRequiredError。
+                            await self._ensure_engine_schema(engine)
+                            await engine.start()
+                            await self._configure_sqlite_document_store(engine)
                         await self._ensure_source_config(source_config_id, source, engine)
                         await self._ensure_universe_query_indexes(engine)
-                    except Exception:
+                    except BaseException:  # An unregistered engine also owns resources on cancellation.
                         try:
-                            await engine.aclose()
-                        except Exception:  # noqa: BLE001 - preserve provisioning error
+                            await self._close_unregistered_engine(engine)
+                        except BaseException:  # Preserve the original initialization error or cancellation.
                             log.exception(
                                 "初始化失败后的引擎关闭异常 source_config_id=%s",
                                 source_config_id,

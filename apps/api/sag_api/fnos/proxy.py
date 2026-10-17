@@ -3,8 +3,57 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
+
+import anyio
+import httpx
+from starlette.responses import StreamingResponse
+from starlette.types import Receive, Scope, Send
+
+
+class ProxyStreamingResponse(StreamingResponse):
+    """Own an upstream response even if ASGI sending fails before its body starts."""
+
+    def __init__(
+        self,
+        upstream: httpx.Response,
+        *,
+        headers: dict[str, str],
+        release: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        self._upstream = upstream
+        self._release = release
+        self._upstream_closed = False
+        super().__init__(self._body(), status_code=upstream.status_code, headers=headers)
+
+    async def _close_upstream(self) -> None:
+        if self._upstream_closed:
+            return
+        self._upstream_closed = True
+        with anyio.CancelScope(shield=True):
+            try:
+                await self._upstream.aclose()
+            finally:
+                if self._release is not None:
+                    await self._release()
+
+    async def _body(self):
+        try:
+            try:
+                async for chunk in self._upstream.aiter_raw():
+                    yield chunk
+            except httpx.StreamConsumed:
+                # Buffered upstream errors and mock transports can arrive consumed.
+                yield self._upstream.content
+        finally:
+            await self._close_upstream()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._close_upstream()
 
 
 class HeaderPolicyError(ValueError):
@@ -110,12 +159,13 @@ async def proxy_websocket(
 
     client_task = asyncio.create_task(client_to_worker())
     worker_task = asyncio.create_task(worker_to_client())
-    done, pending = await asyncio.wait(
-        {client_task, worker_task},
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    for task in pending:
-        task.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
-    for task in done:
-        task.result()
+    tasks = {client_task, worker_task}
+    try:
+        done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

@@ -163,6 +163,21 @@ export async function validateNativeTemplate(root, platform) {
 
   await assertUpgradeConsentWizard(root, "upgrade");
   await assertUpgradeConsentWizard(root, "install");
+  const launcher = await readFile(path.join(root, "cmd/main"), "utf8");
+  // The diagnostic probe builder replaces main with its own standalone
+  // probe; it does not start the production gateway, web or tenant workers.
+  const runtimeProbe = launcher.includes('"$server/fnos-native-probe.py" serve --socket "$TRIM_APPDEST/app.sock" --output "$TRIM_PKGVAR/native-p0.json"');
+  if (!runtimeProbe) {
+    const nofileBootstrap = launcher.indexOf('    configure_nofile >> "$gateway_log" 2>&1 || exit 1');
+    const firstDaemon = launcher.indexOf('    _START_STEP="start-web"');
+    if (nofileBootstrap < 0 || firstDaemon < 0 || nofileBootstrap > firstDaemon) {
+      fail("launcher must configure NOFILE before starting any daemon");
+    }
+    if (!launcher.includes('ulimit -S -n "$_sag_nofile_effective"')
+        || /ulimit\s+(?:-H\s+)?-n\s+(?:["'$]|[0-9]+(?:\s|$))/m.test(launcher)) {
+      fail("launcher NOFILE bootstrap must change only the soft limit");
+    }
+  }
   const install = await readFile(path.join(root, "cmd/install_callback"), "utf8");
   if (!install.includes("SAG_INSTALL_FROM_UPGRADE") || !install.includes("$command_dir/upgrade_init")) {
     fail("install_callback must apply the upgrade backup and consent gate to retained data");

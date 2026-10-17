@@ -407,6 +407,7 @@ async def process_document(
             layer.value,
             stage.value,
             public_message,
+            exc_info=True,
         )
         await session.commit()
         raise

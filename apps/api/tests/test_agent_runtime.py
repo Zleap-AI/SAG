@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import socket
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,58 @@ class ScriptedModel:
 
 async def collect(handle):
     return [event async for event in handle]
+
+
+@pytest.mark.asyncio
+async def test_parallel_tool_store_failure_joins_peer_before_run_finishes():
+    entered = asyncio.Event()
+    sockets = []
+
+    class FailingStore(MemoryRunStore):
+        async def append(self, event):
+            if event.type == EventType.TOOL_FAILED:
+                raise OSError("event store unavailable")
+            await super().append(event)
+
+    async def fail(_arguments, _context):
+        await entered.wait()
+        raise ValueError("invalid tool request")
+
+    async def hold(_arguments, _context):
+        pair = socket.socketpair()
+        sockets.extend(pair)
+        try:
+            entered.set()
+            await asyncio.Event().wait()
+        finally:
+            for item in pair:
+                item.close()
+
+    model = ScriptedModel([ModelChunk(tool_calls=(
+        ToolCall(id="fail", name="fail"), ToolCall(id="hold", name="hold"),
+    ))])
+    tools = (
+        AgentTool(ToolSpec(name="fail", description="Fail"), fail),
+        AgentTool(ToolSpec(name="hold", description="Hold a socket"), hold),
+    )
+    before = asyncio.all_tasks()
+    runtime = AgentRuntime(RuntimeConfig(store=FailingStore()))
+    await runtime.start()
+    try:
+        handle = runtime.run(Agent(name="parallel", model=model, tools=tools), "go")
+        result = await asyncio.wait_for(handle.result(), timeout=1)
+        await runtime.stop()
+        assert result.status == RunStatus.FAILED
+        assert result.error.code == "run_store_error"
+        assert "event store unavailable" in result.error.message
+        assert len(sockets) == 2
+        assert [item.fileno() for item in sockets] == [-1, -1]
+    finally:
+        remaining = asyncio.all_tasks() - before
+        for task in remaining:
+            task.cancel()
+        await asyncio.gather(*remaining, return_exceptions=True)
+        await runtime.stop()
 
 
 @pytest.mark.asyncio

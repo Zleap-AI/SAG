@@ -409,6 +409,126 @@ async def test_websocket_proxy_relays_text_binary_and_worker_close_code() -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("during_body,fail_response_start", [(False, False), (True, False), (True, True)])
+async def test_cancelled_gateway_send_releases_real_worker_lease(tmp_path, during_body, fail_response_start) -> None:
+    from types import SimpleNamespace
+
+    from sag_api.fnos.gateway import create_gateway_app
+    from sag_api.fnos.supervisor import WorkerSupervisor
+
+    entered = asyncio.Event()
+
+    class PendingBody(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            yield b"first"
+            entered.set()
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            await asyncio.sleep(0)
+            self.closed = True
+
+    body = PendingBody()
+
+    async def upstream(request):
+        if request.url.path == "/api/v1/system/ready":
+            return httpx.Response(200)
+        if during_body:
+            return httpx.Response(200, stream=body)
+        entered.set()
+        await asyncio.Event().wait()
+
+    async def spawn(_identity, _paths):
+        process = SimpleNamespace(returncode=None)
+        process.terminate = lambda: setattr(process, "returncode", 0)
+
+        async def wait():
+            return process.returncode
+
+        process.wait = wait
+        return process, httpx.AsyncClient(transport=httpx.MockTransport(upstream), base_url="http://worker")
+
+    supervisor = WorkerSupervisor(
+        tmp_path / "data", tmp_path / "temp", process_factory=SimpleNamespace(spawn=spawn)
+    )
+    app = create_gateway_app(supervisor, InternalIdentitySigner(b"s" * 32), "http://127.0.0.1:3091")
+    async with app.router.lifespan_context(app):
+        if fail_response_start:
+            from starlette.requests import ClientDisconnect
+
+            async def receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            async def send(message):
+                if message["type"] == "http.response.start":
+                    raise OSError("browser disconnected before response headers")
+
+            scope = {
+                "type": "http", "asgi": {"spec_version": "2.4"}, "method": "GET",
+                "path": "/app/sag/api/v1/sources", "query_string": b"", "scheme": "http",
+                "headers": [(name.lower().encode(), value.encode()) for name, value in FNOS_A.items()],
+            }
+            with pytest.raises((OSError, ClientDisconnect)):
+                await app(scope, receive, send)
+            assert [handle.in_flight for handle in supervisor._workers.values()] == [0]
+            assert body.closed
+            assert not entered.is_set()
+            return
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway") as client:
+            task = asyncio.create_task(client.get("/app/sag/api/v1/sources", headers=FNOS_A))
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert [handle.in_flight for handle in supervisor._workers.values()] == [0]
+            if during_body:
+                assert body.closed
+
+
+@pytest.mark.asyncio
+async def test_cancelled_websocket_proxy_joins_both_relay_tasks() -> None:
+    import tempfile
+
+    from websockets.asyncio.client import unix_connect
+    from websockets.asyncio.server import unix_serve
+
+    entered = asyncio.Event()
+    receive_closed = asyncio.Event()
+
+    class WaitingClient(_ClientWebSocket):
+        async def receive(self):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                receive_closed.set()
+
+    async def handler(socket):
+        await socket.wait_closed()
+
+    # pytest's temporary path can exceed macOS' UDS path limit.
+    with tempfile.TemporaryDirectory(prefix="sagws-", dir="/tmp") as short:
+        socket_file = Path(short) / "relay.sock"
+        async with unix_serve(handler, str(socket_file)):
+            async with unix_connect(str(socket_file), uri="ws://localhost/test") as worker:
+                before = asyncio.all_tasks()
+                task = asyncio.create_task(proxy_websocket(WaitingClient(), worker, "/test", {}))
+                await asyncio.wait_for(entered.wait(), timeout=1)
+                try:
+                    task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                    assert receive_closed.is_set()
+                finally:
+                    remaining = asyncio.all_tasks() - before
+                    for child in remaining:
+                        child.cancel()
+                    await asyncio.gather(*remaining, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("username", ["Alice", "钱浩", "Renée", "%E9%92%B1", ""])
 @pytest.mark.parametrize("username_isolation", [False, True])
 async def test_non_ascii_gateway_headers_reach_authenticated_me(

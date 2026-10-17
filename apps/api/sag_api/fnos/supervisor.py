@@ -89,15 +89,19 @@ class SubprocessWorkerFactory:
             env=worker_env,
             start_new_session=True,
         )
-        client = httpx.AsyncClient(
-            transport=httpx.AsyncHTTPTransport(uds=str(paths.socket_file)),
-            base_url="http://worker",
-            # Cold-worker provisioning (first-time LanceDB dir + tokenizer + engine
-            # schema) can take ~10s. Default httpx read timeout is 5s and produces
-            # a 500 ReadTimeout at the gateway. Give write-path requests headroom
-            # while keeping connect/pool checks tight.
-            timeout=httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0),
-        )
+        try:
+            client = httpx.AsyncClient(
+                transport=httpx.AsyncHTTPTransport(uds=str(paths.socket_file)),
+                base_url="http://worker",
+                # Cold-worker provisioning (first-time LanceDB dir + tokenizer + engine
+                # schema) can take ~10s. Default httpx read timeout is 5s and produces
+                # a 500 ReadTimeout at the gateway. Give write-path requests headroom
+                # while keeping connect/pool checks tight.
+                timeout=httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0),
+            )
+        except BaseException:
+            await WorkerSupervisor._stop_process(process)
+            raise
         return process, client
 
 
@@ -213,14 +217,18 @@ class WorkerSupervisor:
                 phase = "ready"
                 await self._wait_until_ready(process, client)
             except BaseException as error:
-                if starting.handle is not None:
-                    await self._stop_handle_once(starting.handle)
-                else:
-                    starting.paths.socket_file.unlink(missing_ok=True)
-                async with self._registry_lock:
-                    self._starting.pop(key, None)
-                    self._discard_teardown_locked(starting.handle)
-                    starting.done.set()
+                try:
+                    if starting.handle is not None:
+                        await self._stop_handle_once(starting.handle)
+                    else:
+                        starting.paths.socket_file.unlink(missing_ok=True)
+                except Exception:
+                    log.exception("fnOS worker startup cleanup failed uid=%s key=%s", identity.uid, key)
+                finally:
+                    async with self._registry_lock:
+                        self._starting.pop(key, None)
+                        self._discard_teardown_locked(starting.handle)
+                        starting.done.set()
                 if isinstance(error, asyncio.CancelledError):
                     raise
                 log.warning(
@@ -332,12 +340,19 @@ class WorkerSupervisor:
             self._workers.clear()
             handles.extend(self._stopping.values())
             starting = list(self._starting.values())
-        for handle in handles:
-            await self._stop_handle_once(handle)
         for state in starting:
             if state.handle is not None:
-                await self._stop_handle_once(state.handle)
+                handles.append(state.handle)
+        first_error: Exception | None = None
+        for handle in handles:
+            try:
+                await self._stop_handle_once(handle)
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
         await asyncio.gather(*(state.done.wait() for state in starting))
+        if first_error is not None:
+            raise first_error
 
     def _discard_teardown_locked(self, handle: WorkerHandle | None) -> None:
         if handle is None:
@@ -357,9 +372,11 @@ class WorkerSupervisor:
         await asyncio.shield(task)
 
     async def _stop_handle(self, handle: WorkerHandle) -> None:
-        await self._close_client(handle.client)
-        await self._stop_process(handle.process)
-        handle.socket_file.unlink(missing_ok=True)
+        try:
+            await self._close_client(handle.client)
+        finally:
+            await self._stop_process(handle.process)
+            handle.socket_file.unlink(missing_ok=True)
 
     @staticmethod
     async def _close_client(client: Any | None) -> None:
