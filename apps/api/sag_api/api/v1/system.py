@@ -398,6 +398,10 @@ async def update_model_config(
     """保存运行期配置；仅在模型/向量配置实际变化时安全重建引擎。"""
     patch = body.model_dump(exclude_unset=True)
     before = settings_service.effective_model_config()
+    before_embedding_dimensions = (
+        settings.effective_embedding_schema_dimensions,
+        settings.effective_embedding_request_dimensions,
+    )
     config = await settings_service.save_model_config(session, patch)
 
     # 解析器/检索参数保存无需打断暖引擎；只有引擎配置真的变化才安全重建。
@@ -415,12 +419,17 @@ async def update_model_config(
         "llm_max_retries",
         "embedding_model",
         "embedding_base_url",
-        "embedding_dimensions",
         "jev_endpoint",
         "jev_model",
         "sag_language",
     }
     engine_changed = any(before.get(key) != config.get(key) for key in engine_fields)
+    # The public alias only exposes schema dimensions; a legacy split request
+    # policy can change while that alias stays equal (or the reverse on clear).
+    engine_changed = engine_changed or before_embedding_dimensions != (
+        settings.effective_embedding_schema_dimensions,
+        settings.effective_embedding_request_dimensions,
+    )
     engine_changed = engine_changed or bool(patch.get("llm_api_key") or patch.get("embedding_api_key"))
     engine_changed = engine_changed or bool(patch.get("jev_api_key"))
     await request.app.state.knowledge_runtime.apply_settings(
