@@ -179,6 +179,7 @@ class RunHandle:
         self._task: asyncio.Task[None] | None = None
         self._status = RunStatus.QUEUED
         self._consumer_started = False
+        self._cancel_requested = False
 
     @property
     def status(self) -> RunStatus:
@@ -189,8 +190,9 @@ class RunHandle:
         return self._result.done()
 
     def cancel(self) -> None:
-        if self.done:
+        if self.done or self._cancel_requested:
             return
+        self._cancel_requested = True
         self.context.cancellation.cancel()
         self._gate.cancel_all()
         if self._task is not None:
@@ -611,23 +613,11 @@ class AgentRuntime:
         )
         executed: dict[str, _ToolOutcome] = {}
         if sequential:
-            for call, tool, arguments in executable:
-                executed[call.id] = await self._execute_tool(handle, call, tool, arguments, turn)
+            for entry in executable:
+                outcome = (await self._execute_tool_group(handle, [entry], turn))[0]
+                executed[outcome.call.id] = outcome
         else:
-            tasks = [
-                asyncio.create_task(
-                    self._execute_tool(handle, call, tool, arguments, turn),
-                    name=f"agent-tool-{call.id[:12]}",
-                )
-                for call, tool, arguments in executable
-            ]
-            try:
-                results = await asyncio.gather(*tasks)
-            finally:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+            results = await self._execute_tool_group(handle, executable, turn)
             executed.update((outcome.call.id, outcome) for outcome in results)
 
         outcomes: list[_ToolOutcome] = []
@@ -637,6 +627,45 @@ class AgentRuntime:
             else:
                 outcomes.append(executed[value[0].id])
         return outcomes
+
+    async def _execute_tool_group(
+        self,
+        handle: RunHandle,
+        executable: Sequence[tuple[ToolCall, AgentTool, Mapping[str, Any]]],
+        turn: int,
+    ) -> list[_ToolOutcome]:
+        # One owner creates, cancels and joins tool tasks in both execution modes.
+        # Observing them with wait() never forwards parent cancellation implicitly.
+        tasks = [
+            asyncio.create_task(
+                self._execute_tool(handle, call, tool, arguments, turn),
+                name=f"agent-tool-{call.id[:12]}",
+            )
+            for call, tool, arguments in executable
+        ]
+        pending = set(tasks)
+        try:
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    task.result()
+        finally:
+            for task in pending:
+                # A tool timeout may already be awaiting asynchronous cleanup.
+                if not task.done() and not task.cancelling():
+                    task.cancel()
+            while pending:
+                try:
+                    _, pending = await asyncio.wait(pending)
+                except asyncio.CancelledError:
+                    # An error/cancellation already determines this group's exit.
+                    # Later cancellation must not interrupt its tools' cleanup
+                    # or replace that original failure.
+                    pending = {task for task in pending if not task.done()}
+            for task in tasks:
+                if not task.cancelled():
+                    task.exception()
+        return [task.result() for task in tasks]
 
     async def _preflight_tool(
         self,
@@ -756,8 +785,12 @@ class AgentRuntime:
 
         try:
             timeout = tool.spec.timeout_seconds or self.config.tool_timeout_seconds
-            result = await asyncio.wait_for(
-                tool.execute(
+            if timeout <= 0:
+                raise TimeoutError
+            # Keep the executor inside the task owned by _execute_tool_group,
+            # including on Python 3.11 where wait_for creates a separate task.
+            async with asyncio.timeout(timeout):
+                result = await tool.execute(
                     arguments,
                     ToolContext(
                         run_id=handle.run_id,
@@ -766,9 +799,7 @@ class AgentRuntime:
                         cancellation=handle.context.cancellation,
                         _on_progress=on_progress,
                     ),
-                ),
-                timeout=timeout,
-            )
+                )
             if self.config.after_tool_call is not None:
                 value = self.config.after_tool_call(call, tool, result, None, handle.context)
                 replacement = await value if inspect.isawaitable(value) else value
