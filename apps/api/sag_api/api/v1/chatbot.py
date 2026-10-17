@@ -1,6 +1,5 @@
 """Authenticated administrative connections. Draft tests never persist credentials."""
 
-import math
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -15,6 +14,7 @@ from sag_api.core.db import get_session
 from sag_api.core.deps import get_current_user
 from sag_api.core.errors import ConfigurationError
 from sag_api.generation.chatbot import QueryLLM
+from sag_api.sag.embedding_probe import probe_embedding_connection
 from sag_api.schemas.system import ModelConfigUpdate
 from sag_api.services import chatbot_service as rt
 
@@ -87,10 +87,6 @@ async def test_original_embedding(
     body: OriginalEmbeddingDraft,
     _user: Annotated[object, Depends(get_current_user)],
 ):
-    from zleap.sag.config import EmbeddingConfig
-    from zleap.sag.core.adapters.defaults import OpenAIEmbeddingAdapter
-    from zleap.sag.exceptions import AIAuthError, AIError, AIInvalidRequestError, AITransientError
-
     updates = expand_embedding_dimensions({
         key: (None if key.endswith("base_url") and value == "" else value)
         for key, value in body.model_dump(exclude_unset=True).items()
@@ -104,64 +100,7 @@ async def test_original_embedding(
         and not updates.get("llm_api_key")
     ):
         active.llm_api_key = None
-    if not active.effective_embedding_api_key:
-        return {"ok": False, "message": "No embedding API key configured"}
-    try:
-        # Use the original adapter directly; query connections cannot replace this test.
-        adapter = OpenAIEmbeddingAdapter(
-            config=EmbeddingConfig(
-                model=active.embedding_model,
-                api_key=active.effective_embedding_api_key,
-                base_url=active.effective_embedding_base_url,
-                schema_dimensions=active.effective_embedding_schema_dimensions,
-                request_dimensions=active.effective_embedding_request_dimensions,
-                timeout=active.embedding_timeout,
-            )
-        )
-        try:
-            vector = await adapter.generate("SAG embedding connection test")
-            if not all(math.isfinite(value) for value in vector):
-                raise ValueError("Non-finite embedding vector")
-        finally:
-            await adapter.close()
-    except AIAuthError:
-        return {
-            "ok": False,
-            "code": "EMBEDDING_AUTH_FAILED",
-            "message": "Embedding authentication failed; check the saved embedding key or enter a key for this card",
-        }
-    except AIInvalidRequestError:
-        return {
-            "ok": False,
-            "code": "EMBEDDING_REQUEST_REJECTED",
-            "message": "Embedding request rejected; check the endpoint, model and supported request dimensions",
-        }
-    except AITransientError as exc:
-        timeout = exc.details.get("failure_kind") == "timeout"
-        return {
-            "ok": False,
-            "code": "EMBEDDING_TIMEOUT" if timeout else "EMBEDDING_UNAVAILABLE",
-            "message": "Embedding request timed out; check the endpoint and server availability"
-            if timeout else "Embedding service unavailable; check the endpoint, rate limits and server availability",
-        }
-    except (AIError, ValueError):
-        return {
-            "ok": False,
-            "code": "EMBEDDING_INVALID_RESPONSE",
-            "message": (
-                "Embedding returned an invalid response; check the returned vector format and configured dimensions"
-            ),
-        }
-    except Exception:  # noqa: BLE001 -- provider bodies and credentials must stay private.
-        return {
-            "ok": False,
-            "message": "Embedding test failed; check endpoint, model, credentials, dimensions and server availability",
-        }
-    return {
-        "ok": True,
-        "message": f"Embedding connection successful · {len(vector)} dimensions",
-        "dimensions": len(vector),
-    }
+    return await probe_embedding_connection(active)
 
 
 @router.get("/chatbot-config")
