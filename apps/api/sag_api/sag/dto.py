@@ -27,6 +27,7 @@ class RetrievedSection(BaseModel):
     rank: int = 0
     source_id: str | None = None
     source_config_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def from_section(cls, s: Any) -> RetrievedSection:
@@ -45,6 +46,11 @@ class RetrievedSection(BaseModel):
             rank=int(s.get("rank") or metadata.get("rank") or 0),
             source_id=s.get("source_id"),
             source_config_id=s.get("source_config_id") or s.get("data_source_id"),
+            metadata={
+                key: metadata[key]
+                for key in ("event_ids", "recall_channel", "score_source")
+                if key in metadata
+            },
         )
 
 

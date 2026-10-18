@@ -64,6 +64,10 @@ async def card_client(isolate, database, monkeypatch):
             {"embedding_base_url": "https://embedding-card.invalid/v1"},
             {"embedding_base_url": "https://embedding-card.invalid/v1"},
         ),
+        (
+            {"jev_endpoint": "https://jev-card.invalid/score"},
+            {"jev_endpoint": "https://jev-card.invalid/score", "jev_api_key": None},
+        ),
     ],
 )
 async def test_original_card_partial_save_preserves_other_cards(card_client, isolate, database, patch, stored):

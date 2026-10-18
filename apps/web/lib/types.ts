@@ -277,6 +277,11 @@ export interface ModelConfig {
   document_chunk_max_tokens: number;
   document_chunk_mode: "standard" | "heading_strict";
   search_strategy: SearchStrategy;
+  jev_endpoint: string | null;
+  jev_model: string;
+  jev_api_key_set: boolean;
+  jev_ranking_timeout_seconds: number;
+  jev_failure_policy: "error" | "fallback_to_score";
   search_top_k: number;
   sag_language: "zh" | "en";
   sources: Partial<Record<Exclude<keyof ModelConfig, "sources" | "locked_fields">, "default" | "database" | "environment_policy">>;
@@ -311,6 +316,11 @@ export type ModelConfigPatch = Partial<{
   document_chunk_max_tokens: number;
   document_chunk_mode: "standard" | "heading_strict";
   search_strategy: SearchStrategy;
+  jev_endpoint: string | null;
+  jev_model: string;
+  jev_api_key: string;
+  jev_ranking_timeout_seconds: number;
+  jev_failure_policy: "error" | "fallback_to_score";
   search_top_k: number;
   sag_language: "zh" | "en";
 }>;
@@ -397,6 +407,7 @@ export interface MessageStep {
       source_name?: string;
     }[];
     output_preview?: string;
+    retrieval_stats?: Record<string, unknown>;
   };
   ms?: number;
   count?: number;

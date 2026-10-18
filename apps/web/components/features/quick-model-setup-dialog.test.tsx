@@ -28,6 +28,7 @@ const config: ModelConfig = {
   mineru_provider: "302", mineru_base_url: null, mineru_version: "2.5",
   mineru_official_model: "vlm", mineru_api_key_set: false, effective_document_parser: "anydoc",
   document_extract_concurrency: 4, document_chunk_max_tokens: 512, document_chunk_mode: "standard",
+  jev_endpoint: null, jev_model: "jev-latest", jev_api_key_set: false, jev_ranking_timeout_seconds: 30, jev_failure_policy: "error",
   search_strategy: "vector", search_top_k: 10, sag_language: "zh", sources: {}, locked_fields: [],
 };
 

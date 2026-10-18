@@ -500,3 +500,22 @@ describe("StorageBootstrapGate interactions", () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 });
+
+
+describe("existing workspace configuration independence", () => {
+  it.each([
+    new ApiError(500, "settings_unavailable", "settings temporarily unavailable"),
+    new ApiError(0, "network", "settings request offline"),
+  ])("enters a ready authenticated workspace without reading model settings: %s", async error => {
+    setToken("existing-owner-token");
+    vi.spyOn(api, "storageBootstrap").mockResolvedValue(status("ready"));
+    const config = vi.spyOn(api, "getModelConfig").mockRejectedValue(error);
+    const mounted = await mountGate();
+    try {
+      expect(mounted.container.textContent).toContain("应用已挂载");
+      expect(config).not.toHaveBeenCalled();
+    } finally {
+      await unmount(mounted.root, mounted.container);
+    }
+  });
+});

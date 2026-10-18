@@ -29,6 +29,7 @@ const STRATEGY_ICONS: Record<SearchStrategy, ComponentType<{ className?: string 
   vector: Zap,
   multi_es_fast: ShieldQuestion,
   multi: Sparkles,
+  multi_jev: Sparkles,
 };
 
 export function SearchStrategyControl({

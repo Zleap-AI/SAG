@@ -131,6 +131,7 @@ const embeddingConfig: ModelConfig = {
   mineru_version: "2.5", mineru_official_model: "vlm", mineru_api_key_set: false,
   effective_document_parser: "markitdown", document_extract_concurrency: 5,
   document_chunk_max_tokens: 512, document_chunk_mode: "standard",
+  jev_endpoint: null, jev_model: "jev-latest", jev_api_key_set: false, jev_ranking_timeout_seconds: 30, jev_failure_policy: "error",
   search_strategy: "vector", search_top_k: 5, sag_language: "zh", sources: {},
 };
 const embeddingProviders: ModelProviderSpec[] = [

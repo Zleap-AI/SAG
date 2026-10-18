@@ -5,8 +5,13 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 from zleap.sag.exceptions import (
+    AIAuthError,
+    AIError,
+    AIInvalidRequestError,
+    AITransientError,
     ConfigError,
     InvalidInputError,
+    LLMContextLengthError,
     NonRetryableError,
     OperationConflictError,
     ResourceNotFoundError,
@@ -14,6 +19,7 @@ from zleap.sag.exceptions import (
     SagError,
 )
 from zleap.sag.operations import OperationResult
+from zleap.sag.pipeline.errors import SearchStageError
 
 from sag_api.core.error_taxonomy import ErrorCode, ErrorLayer, ErrorStage
 from sag_api.core.errors import (
@@ -43,14 +49,41 @@ def operation_failure(result: OperationResult, *, stage: ErrorStage) -> Upstream
 
 
 @contextmanager
-def map_sag_errors(*, stage: ErrorStage = ErrorStage.UNKNOWN):
+def map_sag_errors(*, stage: ErrorStage = ErrorStage.UNKNOWN, search_strategy: str | None = None):
     """在此上下文内发生的引擎异常会被翻译成带 layer/stage 的 ApiError。
 
     ``stage`` 由调用方按当前链路环节传入（如 process_document 主要覆盖
     extract，search 覆盖 retrieve），使翻译出的错误携带准确的环节标记。
+    ``search_strategy`` 是实际请求策略，仅用于识别没有 provider 标记的 JEV 超时。
     """
     try:
         yield
+    except SearchStageError as e:
+        cause = e.__cause__
+        seen: set[int] = set()
+        timed_out = False
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            timed_out = timed_out or isinstance(cause, TimeoutError)
+            if getattr(cause, "provider", None) == "jev":
+                if isinstance(cause, AIAuthError):
+                    raise ConfigurationError(
+                        "JEV 鉴权失败，请检查服务地址和 API Key", layer=ErrorLayer.ENGINE, stage=stage,
+                    ) from e
+                if isinstance(cause, AITransientError):
+                    raise ServiceUnavailableError(
+                        "JEV 精排服务暂不可用，请稍后重试", layer=ErrorLayer.ENGINE, stage=stage,
+                    ) from e
+                if isinstance(cause, (AIInvalidRequestError, LLMContextLengthError)):
+                    raise ValidationError(
+                        "JEV 精排请求被拒绝，请检查模型和候选内容限制", layer=ErrorLayer.ENGINE, stage=stage,
+                    ) from e
+                if isinstance(cause, AIError):
+                    raise UpstreamError("JEV 精排返回无效结果", layer=ErrorLayer.ENGINE, stage=stage) from e
+            cause = cause.__cause__
+        if timed_out and search_strategy == "multi_jev":
+            raise ServiceUnavailableError("JEV 检索超时，请稍后重试", layer=ErrorLayer.ENGINE, stage=stage) from e
+        raise UpstreamError(str(e), layer=ErrorLayer.ENGINE, stage=stage, retryable=e.retryable) from e
     except ConfigError as e:
         raise ConfigurationError(str(e), layer=ErrorLayer.ENGINE, stage=stage) from e
     except ResourceNotFoundError as e:

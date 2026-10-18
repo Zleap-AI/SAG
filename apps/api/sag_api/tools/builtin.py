@@ -19,9 +19,11 @@ import httpx
 from sag_api.connectors.web import extract_web_markdown, extract_web_title
 from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
+from sag_api.enums import SEARCH_STRATEGIES, normalize_search_strategy
 from sag_api.generation import build_citations
 from sag_api.sag import RetrievedSection
 from sag_api.services.retrieval_service import (
+    event_scores_from_evidence,
     published_document_inputs,
     recall_event_scores,
     retrieve_relevant_sections,
@@ -39,7 +41,6 @@ _WEB_PAGE_TEXT_LIMIT = 12_000
 _WEB_PAGE_MAX_REDIRECTS = 3
 _WEB_PAGE_CONTENT_TYPES = ("text/html", "text/plain", "application/xhtml+xml")
 _WEB_PAGE_PORTS = frozenset({80, 443, 8080, 8443})
-_DEFAULT_KNOWLEDGE_SEARCH_STRATEGY = "vector"
 _RECENT_QUERY_MARKERS = (
     "今天",
     "今日",
@@ -76,6 +77,21 @@ def _events_by_section(events: list | None) -> dict[tuple[str, str], list]:
         if source_config_id and chunk_id:
             grouped.setdefault((source_config_id, chunk_id), []).append(event)
     return grouped
+
+
+def knowledge_search_strategy(persona: dict[str, Any], configuration: Any = settings) -> str:
+    """Keep the legacy vector default unless the user explicitly enables JEV."""
+    default = "multi_jev" if configuration.search_strategy == "multi_jev" else "vector"
+    value = persona.get("search_strategy") or default
+    if default == "multi_jev" and (
+        not isinstance(value, str) or normalize_search_strategy(value) not in SEARCH_STRATEGIES
+    ):
+        # The engine falls back to global JEV for unknown modes. Resolve that
+        # here too so the tool's budget and evidence handling use the same mode.
+        return default
+    # Existing persona values, including legacy aliases, retain the engine's
+    # resolution rules; preparing an unused tool must not add validation gates.
+    return value
 
 
 def _format_sections(sections: list, offset: int = 0, events: list | None = None) -> str:
@@ -232,37 +248,46 @@ class SearchContextTool(Tool):
         if not query or not ctx.sources:
             return ToolResult(content="（无相关资料）", citations=[], data={"section_count": 0})
         persona = ctx.persona or {}
+        strategy = knowledge_search_strategy(persona, getattr(ctx.engine_manager, "_settings", settings))
         top_k = args.get("top_k") or persona.get("top_k")
         limit = max(1, min(int(top_k or 8), 50))
         source_refs = {s.sag_source_config_id: {"id": s.id, "name": s.name} for s in ctx.sources}
         sources_by_config = {source.sag_source_config_id: source for source in ctx.sources}
-        outcome, event_scores = await asyncio.gather(
-            retrieve_relevant_sections(
-                ctx.engine_manager,
-                ctx.sources,
-                query,
-                # 问答工具有独立的执行预算（SAG_AGENT_TOOL_TIMEOUT_SECONDS）。
-                # 默认采用与搜索页“快速”一致的批量向量召回，并叠加并行词法与事项召回；人格可显式覆盖。
-                strategy=persona.get("search_strategy") or _DEFAULT_KNOWLEDGE_SEARCH_STRATEGY,
-                top_k=limit,
-            ),
-            recall_event_scores(
-                ctx.engine_manager,
-                query,
-                sources_by_config,
-                limit=limit,
-            ),
+        retrieval = retrieve_relevant_sections(
+            ctx.engine_manager,
+            ctx.sources,
+            query,
+            strategy=strategy,
+            top_k=limit,
         )
+        is_jev = strategy == "multi_jev"
+        if is_jev:
+            outcome = await retrieval
+            event_scores: dict[tuple[str, str], float] = {}
+        else:
+            outcome, event_scores = await asyncio.gather(
+                retrieval,
+                recall_event_scores(
+                    ctx.engine_manager,
+                    query,
+                    sources_by_config,
+                    limit=limit,
+                ),
+            )
         published = await published_document_inputs(ctx.sources)
         sections = [
             section
             for section in outcome.sections
             if section.source_id in published.get(section.source_config_id or "", ())
         ]
+        if is_jev:
+            event_scores = event_scores_from_evidence(sections)
         graph_for_sections = getattr(ctx.engine_manager, "graph_for_sections", None)
         graph = (
             await graph_for_sections(
-                sections,
+                # JEV already selected the event evidence. Chunk hydration or
+                # independent event recall would add events it never ranked.
+                [] if is_jev else sections,
                 sources_by_config,
                 source_ids_by_config=published,
                 # graph_for_sections allocates the first event of each chunk
@@ -275,7 +300,14 @@ class SearchContextTool(Tool):
             if (sections or event_scores) and callable(graph_for_sections)
             else None
         )
-        if graph is not None and graph.events:
+        if is_jev and graph is not None:
+            # Graph hydration sorts numeric scores; evidence channels may use
+            # different scales, so retain the engine's section/event order.
+            event_order = {key: index for index, key in enumerate(event_scores)}
+            graph.events.sort(
+                key=lambda event: event_order.get((event.source_config_id, event.id), len(event_order))
+            )
+        if not is_jev and graph is not None and graph.events:
             sections = await _prioritize_event_evidence(
                 ctx.engine_manager,
                 sections,
@@ -291,12 +323,11 @@ class SearchContextTool(Tool):
         citations = build_citations(sections, source_refs, list(graph.events) if graph is not None else None)
         for c in citations:
             c["n"] = c["n"] + offset
+        content = _format_sections(sections, offset, list(graph.events) if graph is not None else None)
+        if strategy == "multi_jev" and outcome.stats.get("fallback_used"):
+            content = "（JEV 精排未完成，本次返回粗排结果）\n" + content
         return ToolResult(
-            content=_format_sections(
-                sections,
-                offset,
-                list(graph.events) if graph is not None else None,
-            ),
+            content=content,
             citations=citations,
             data={
                 "sections": sections,
@@ -306,6 +337,7 @@ class SearchContextTool(Tool):
                 "candidate_count": int(outcome.stats.get("candidates") or len(sections)),
                 "event_count": len(graph.events) if graph is not None else 0,
                 "event_candidates": len(event_scores),
+                "retrieval_stats": outcome.stats,
                 "_graph": graph,
             },
         )

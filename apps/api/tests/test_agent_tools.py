@@ -16,7 +16,13 @@ from sag_api.sag import GraphEventInfo, RetrievedSection, SearchOutcome, SourceG
 from sag_api.services.agent_service import _adapt_tool, _enabled_tool_names
 from sag_api.tools import registry
 from sag_api.tools.base import Tool, ToolContext, ToolMeta, ToolResult
-from sag_api.tools.builtin import GetTimeTool, OpenWebPageTool, SearchContextTool, WebSearchTool
+from sag_api.tools.builtin import (
+    GetTimeTool,
+    OpenWebPageTool,
+    SearchContextTool,
+    WebSearchTool,
+    knowledge_search_strategy,
+)
 
 ECHO_CITATION = {
     "n": 1,
@@ -78,6 +84,118 @@ class ExternalEvidenceTool(Tool):
 
 
 registry.register(ExternalEvidenceTool())
+
+
+@pytest.mark.parametrize("strategy", ["vector", "multi", "multi_es_fast"])
+@pytest.mark.parametrize("persona", [
+    {}, {"search_strategy": ""}, {"search_strategy": False}, {"search_strategy": None},
+])
+def test_existing_assistant_default_stays_vector_until_jev_is_selected(strategy, persona):
+    assert knowledge_search_strategy(persona, SimpleNamespace(search_strategy=strategy)) == "vector"
+
+
+@pytest.mark.parametrize("persona", [
+    {}, {"search_strategy": ""}, {"search_strategy": False}, {"search_strategy": None},
+])
+def test_unset_assistant_strategy_follows_explicit_global_jev_selection(persona):
+    assert knowledge_search_strategy(persona, SimpleNamespace(search_strategy="multi_jev")) == "multi_jev"
+
+
+@pytest.mark.parametrize("strategy", ["vector", "multi", "multi_es_fast", "atomic", "multi_jev", "typo"])
+def test_explicit_assistant_strategy_keeps_existing_engine_resolution(strategy):
+    configuration = SimpleNamespace(search_strategy="multi")
+    assert knowledge_search_strategy({"search_strategy": strategy}, configuration) == strategy
+
+
+@pytest.mark.parametrize(("strategy", "expected"), [
+    ("typo", "multi"), ("atomic", "multi"), ("vector", "vector"), ("multi_es_fast", "multi_es_fast"),
+])
+def test_explicit_assistant_modes_retain_engine_alias_and_fallback_behavior(strategy, expected):
+    from sag_api.core.config import Settings
+    from sag_api.sag.engine_manager import EngineManager
+
+    engine = EngineManager(Settings(_env_file=None, search_strategy="multi", sag_vector_provider="lancedb"))
+    requested = knowledge_search_strategy({"search_strategy": strategy}, engine._settings)
+    assert engine._effective_search_strategy(requested) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy", ["", False, None, "typo"])
+async def test_legacy_persona_does_not_block_tool_preparation_or_chat_without_sources(strategy):
+    tool = _adapt_tool(
+        SearchContextTool(),
+        ToolContext(engine_manager=SimpleNamespace(_settings=SimpleNamespace(search_strategy="multi")),
+                    persona={"search_strategy": strategy}),
+        [],
+    )
+    assert tool.spec.timeout_seconds is None
+    result = await tool.execute(
+        {"query": "你好"}, SimpleNamespace(cancellation=SimpleNamespace(raise_if_cancelled=lambda: None)),
+    )
+    assert result.content == "（无相关资料）"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("global_strategy", "persona", "expected"), [
+    ("multi", {}, "vector"),
+    ("multi_es_fast", {"search_strategy": ""}, "vector"),
+    ("multi", {"search_strategy": False}, "vector"),
+    ("multi", {"search_strategy": None}, "vector"),
+    ("multi_jev", {}, "multi_jev"),
+    ("multi_jev", {"search_strategy": "vector"}, "vector"),
+    ("vector", {"search_strategy": "multi_jev"}, "multi_jev"),
+    ("multi", {"search_strategy": "atomic"}, "multi"),
+    ("multi", {"search_strategy": "typo"}, "multi"),
+])
+async def test_search_tool_preserves_old_modes_and_only_adds_opted_in_jev(
+    monkeypatch, publication_source, global_strategy, persona, expected,
+):
+    from sag_api.core.config import Settings
+    from sag_api.sag.engine_manager import EngineManager
+    from sag_api.tools import builtin
+
+    engine = EngineManager(Settings(
+        _env_file=None, search_strategy=global_strategy, sag_vector_provider="lancedb",
+        jev_endpoint="https://jev.invalid/score",
+    ))
+    source = await publication_source("compatibility", "config-compatibility", "document-compatibility")
+    selected = []
+    event_calls = []
+
+    async def retrieve(manager, sources, query, *, strategy, top_k):
+        assert manager is engine and sources == [source]
+        selected.append(manager._effective_search_strategy(strategy))
+        return SearchOutcome(query=query, sections=[])
+
+    async def events(*_args, **_kwargs):
+        event_calls.append(True)
+        return {}
+
+    monkeypatch.setattr(builtin, "retrieve_relevant_sections", retrieve)
+    monkeypatch.setattr(builtin, "recall_event_scores", events)
+    result = await SearchContextTool().invoke(
+        {"query": "查询旧资料"}, ToolContext(engine_manager=engine, sources=[source], persona=persona),
+    )
+    assert selected == [expected]
+    assert bool(event_calls) is (expected != "multi_jev")
+    assert result.data["section_count"] == 0
+
+
+def test_unknown_legacy_strategy_gets_jev_budget_after_explicit_global_jev_selection():
+    from sag_api.core.config import MAX_JEV_RANKING_TIMEOUT_SECONDS, Settings
+    from sag_api.sag.engine_manager import EngineManager
+
+    engine = EngineManager(Settings(
+        _env_file=None, search_strategy="multi_jev", sag_vector_provider="lancedb",
+        jev_endpoint="https://jev.invalid/score", agent_tool_timeout_seconds=5,
+    ))
+    adapted = _adapt_tool(
+        SearchContextTool(),
+        ToolContext(engine_manager=engine, persona={"search_strategy": "retired_custom_mode"}),
+        [],
+    )
+    assert adapted.spec.timeout_seconds is not None
+    assert adapted.spec.timeout_seconds >= 2 * MAX_JEV_RANKING_TIMEOUT_SECONDS
 
 
 class StubWebSearchTool(Tool):
@@ -157,7 +275,7 @@ async def test_search_tool_prefers_exact_body_window_over_semantic_boilerplate(p
 
     engine = HybridEngine()
     source = await publication_source("娱乐新闻", "sc-1", "document-1")
-    host_context = ToolContext(engine_manager=engine, sources=[source])
+    host_context = ToolContext(engine_manager=engine, sources=[source], persona={"search_strategy": "vector"})
     result = await SearchContextTool().invoke(
         {"query": "关于林俊杰最新动态 2024 2025", "top_k": 4},
         host_context,
@@ -178,7 +296,9 @@ async def test_search_tool_prefers_exact_body_window_over_semantic_boilerplate(p
     # of issuing a second graph query while constructing universe artifacts.
     collected_citations: list[dict] = []
     adapter_engine = HybridEngine()
-    adapter_context = ToolContext(engine_manager=adapter_engine, sources=[source])
+    adapter_context = ToolContext(
+        engine_manager=adapter_engine, sources=[source], persona={"search_strategy": "vector"},
+    )
     adapted = _adapt_tool(SearchContextTool(), adapter_context, collected_citations)
     runtime_result = await adapted.execute(
         {"query": "关于林俊杰最新动态 2024 2025", "top_k": 4},
@@ -726,4 +846,29 @@ async def test_no_tools_agent_uses_one_model_turn():
             )
             assert r.status_code == 200, r.text
             assert r.json()["choices"][0]["message"]["content"] == "最终答案"
+            assert fake.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy", ["", False, None, "typo"])
+async def test_legacy_persona_can_chat_without_calling_its_search_tool(strategy):
+    from sag_api.main import app
+
+    transport = httpx.ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        fake = FakeLLM()
+        app.state.llm = fake
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            auth = await _register(client, f"legacy-persona-{strategy}@t.com")
+            response = await client.post("/api/v1/agents", headers=auth, json={
+                "name": "旧配置助手", "persona": {"tools": ["search_context"], "search_strategy": strategy},
+            })
+            assert response.status_code == 201, response.text
+            agent = response.json()
+            answer = await client.post(
+                f"/api/v1/openai/{agent['id']}/chat/completions", headers=auth,
+                json={"messages": [{"role": "user", "content": "你好"}]},
+            )
+            assert answer.status_code == 200, answer.text
+            assert answer.json()["choices"][0]["message"]["content"] == "最终答案"
             assert fake.calls == 1

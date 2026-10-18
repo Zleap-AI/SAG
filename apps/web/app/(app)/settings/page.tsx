@@ -114,13 +114,7 @@ function SettingsPageContent() {
         </TabsContent>
 
         <TabsContent value="knowledge" className="m-0 animate-fade-in">
-          <div
-            data-settings-section="document-processing"
-            tabIndex={-1}
-            className="scroll-mt-6 outline-none"
-          >
-            <KnowledgeConfigForm />
-          </div>
+          <KnowledgeConfigForm />
         </TabsContent>
 
         <TabsContent value="integrations" className="m-0 animate-fade-in">

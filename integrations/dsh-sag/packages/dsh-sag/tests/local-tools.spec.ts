@@ -88,6 +88,46 @@ function fakeFs(bytes = new TextEncoder().encode('# note')) {
 }
 
 describe('local SAG tools', () => {
+  it('lets SAG bound a long JEV search while forwarding host cancellation', async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const api = gateway()
+    api.search.mockImplementation((_request, signal) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve({ query: 'q', summary: '', stats: {}, evidences: [] }), 35_000)
+      signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason) }, { once: true })
+    }))
+    const tool = createSearchTool(managerWith(api), config)
+    const deadline = tool.timeoutMs === undefined ? undefined
+      : setTimeout(() => controller.abort(new DOMException('Host tool deadline', 'TimeoutError')), tool.timeoutMs)
+    try {
+      const result = tool.execute({ query: 'q', strategy: 'multi_jev' }, { ...exec, signal: controller.signal })
+        .then(value => ({ value, error: null }), error => ({ value: null, error }))
+      await vi.advanceTimersByTimeAsync(35_000)
+      const completed = await result
+      expect(completed.error).toBeNull()
+      expect(completed.value).toMatchObject({ query: 'q', evidences: [] })
+      expect(api.search).toHaveBeenCalledWith({ query: 'q', strategy: 'multi_jev' }, controller.signal)
+    } finally {
+      if (deadline !== undefined) clearTimeout(deadline)
+      vi.useRealTimers()
+    }
+  })
+
+  it('accepts JEV mode and tells the caller when scoring fell back', async () => {
+    const api = gateway()
+    api.search.mockResolvedValue({ query: 'q', summary: '', evidences: [], stats: {
+      requested_strategy: 'multi_jev', effective_strategy: 'multi_jev', fallback_used: true,
+      ranking: { method: 'jev', fallback_reason: 'ranking_timeout' },
+    } })
+    const tool = createSearchTool(managerWith(api), config)
+    validateJsonSchemaValue(tool.parameters, { query: 'q', strategy: 'multi_jev' })
+    const result = await tool.execute({ query: 'q', strategy: 'multi_jev' }, exec)
+    expect(api.search).toHaveBeenCalledWith({ query: 'q', strategy: 'multi_jev' }, exec.signal)
+    expect(result).toMatchObject({ retrieval: { requestedStrategy: 'multi_jev', effectiveStrategy: 'multi_jev', fallbackUsed: true } })
+    const output = tool.output.render({ query: 'q', strategy: 'multi_jev' }, result as JsonValue)
+    expect(output[0]).toMatchObject({ type: 'text', text: expect.stringContaining('JEV scoring did not complete') })
+  })
+
   it('publishes eleven explicit tool names with read and write scheduling intent', () => {
     const api = gateway()
     const manager = managerWith(api)
@@ -108,8 +148,8 @@ describe('local SAG tools', () => {
     ])
     const localSearch = tools.find(tool => tool.name === 'sag_search')!
     expect(Object.keys(localSearch.parameters.properties)).toEqual(['query', 'source_ids', 'strategy', 'limit'])
-    expect(localSearch.parameters.properties.strategy).toMatchObject({ enum: ['vector', 'multi', 'multi_es_fast'] })
-    expect(Object.keys((localSearch.output.schema as { properties: Record<string, unknown> }).properties)).toEqual(['query', 'evidences'])
+    expect(localSearch.parameters.properties.strategy).toMatchObject({ enum: ['vector', 'multi', 'multi_es_fast', 'multi_jev'] })
+    expect(Object.keys((localSearch.output.schema as { properties: Record<string, unknown> }).properties)).toEqual(['query', 'retrieval', 'evidences'])
     expect(JSON.stringify(localSearch.output.schema)).not.toContain('namespaceId')
     const localRead = tools.find(tool => tool.name === 'sag_read')!
     expect(Object.keys(localRead.parameters.properties)).toEqual(['evidence_ref', 'offset', 'max_chars'])

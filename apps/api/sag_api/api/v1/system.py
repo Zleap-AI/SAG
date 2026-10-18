@@ -20,6 +20,7 @@ from sag_api.db.models import Source, User
 from sag_api.generation import LLMClient
 from sag_api.mcp.server import MCP_TOOL_DETAILS, MCP_TOOL_NAMES
 from sag_api.sag.engine_manager import EngineManager
+from sag_api.sag.jev_probe import probe_jev_connection
 from sag_api.schemas.dsh_integration import (
     DshCapabilityDescriptor,
     DshConnectionDescriptor,
@@ -418,6 +419,8 @@ async def update_model_config(
         "llm_max_retries",
         "embedding_model",
         "embedding_base_url",
+        "jev_endpoint",
+        "jev_model",
         "sag_language",
     }
     engine_changed = any(before.get(key) != config.get(key) for key in engine_fields)
@@ -428,6 +431,7 @@ async def update_model_config(
         settings.effective_embedding_request_dimensions,
     )
     engine_changed = engine_changed or bool(patch.get("llm_api_key") or patch.get("embedding_api_key"))
+    engine_changed = engine_changed or bool(patch.get("jev_api_key"))
     await request.app.state.knowledge_runtime.apply_settings(
         settings,
         reset_engines=engine_changed,
@@ -515,6 +519,22 @@ async def test_model_config(
                 "Generation connection test failed; check endpoint, provider, model, credentials and availability"
             ),
         }
+
+
+@_model_config_router.post("/model-config/jev/test")
+async def test_jev_model_config(
+    body: ModelConfigUpdate,
+    _user: User = Depends(get_current_user),
+) -> dict:
+    """Check a JEV draft with synthetic evidence, without changing saved/runtime settings."""
+    patch = body.model_dump(exclude_unset=True)
+    updates = {key: value for key, value in patch.items() if key.startswith("jev_")}
+    if not updates.get("jev_api_key"):
+        updates.pop("jev_api_key", None)
+        if updates.get("jev_endpoint", settings.jev_endpoint) != settings.jev_endpoint:
+            updates["jev_api_key"] = None
+    active = type(settings).model_validate({**settings.model_dump(), **updates})
+    return (await probe_jev_connection(active)).model_dump()
 
 
 router.include_router(_model_config_router)

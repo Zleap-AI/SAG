@@ -24,6 +24,7 @@ from sag_api.db.models import Agent, AgentBinding, Message, Source, Thread
 from sag_api.enums import BindingTargetType, MessageRole, MessageStatus
 from sag_api.generation import build_agent_messages, build_prompt_preview
 from sag_api.generation.prompt import estimate_tokens
+from sag_api.sag import EngineManager
 from sag_api.services.chatbot_service import query_operation
 from sag_api.services.source_service import search_source_candidates
 
@@ -147,6 +148,8 @@ async def create_agent(session: AsyncSession, *, name: str, avatar: str = "", pe
     name = name.strip()
     if not name:
         raise ValidationError("Agent 名称不能为空")
+    if persona is not None and persona.get("search_strategy") == "multi_jev":
+        EngineManager.require_jev_capabilities(settings)
     agent = Agent(name=name, avatar=avatar or name[:1], persona=persona or {})
     session.add(agent)
     await session.commit()
@@ -163,6 +166,8 @@ async def update_agent(
     persona: dict | None = None,
 ) -> Agent:
     agent = await get_agent(session, agent_id)
+    if persona is not None and persona.get("search_strategy") == "multi_jev":
+        EngineManager.require_jev_capabilities(settings)
     if name is not None:
         agent.name = name
     if avatar is not None:

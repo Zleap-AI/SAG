@@ -21,6 +21,7 @@ from zleap.sag.operations import DeleteDataSourceRequest, DeleteSourceRequest, O
 
 from sag_api.core.config import Settings
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
+from sag_api.core.errors import ConfigurationError, ServiceUnavailableError
 from sag_api.core.logging import get_logger
 from sag_api.enums import (
     SEARCH_STRATEGIES,
@@ -41,7 +42,7 @@ from sag_api.sag.dto import (
 from sag_api.sag.engine_access import EngineAccess
 from sag_api.sag.errors import map_sag_errors
 from sag_api.sag.incremental_processor import IncrementalDocumentProcessor, ProgressCallback
-from sag_api.sag.search_reader import SearchReader
+from sag_api.sag.search_reader import SearchReader, search_source_timeout_seconds
 from sag_api.sag.universe_cursor import (
     decode_universe_cursor,
     encode_universe_cursor,
@@ -123,9 +124,12 @@ class _EngineLifecycleGate:
         self._waiting_writers = 0
 
     @asynccontextmanager
-    async def read(self):
+    async def read(self, *, timeout: float | None = None):
         async with self._condition:
-            await self._condition.wait_for(lambda: not self._writer and self._waiting_writers == 0)
+            # Bound admission only; work inside the lease owns its own deadline.
+            await asyncio.wait_for(
+                self._condition.wait_for(lambda: not self._writer and self._waiting_writers == 0), timeout,
+            )
             self._readers += 1
         try:
             yield
@@ -168,6 +172,10 @@ class EngineManager:
         # serialized across source slots; server databases retain full concurrency.
         self._sqlite_document_mutation_lock = asyncio.Lock()
         self._lifecycle_gate = _EngineLifecycleGate()
+        # Freeze settings across a complete fan-out, including queued sources.
+        # Lock order: search configuration -> create lock -> lifecycle gate.
+        # Inner per-source search/use never re-enters this configuration gate.
+        self._search_configuration_gate = _EngineLifecycleGate()
         self._cache_size = max(1, settings.engine_cache_size)
         self._schema_ready = False
         self._universe_indexes_ready = False
@@ -306,6 +314,7 @@ class EngineManager:
         "vector": "vector",
         "multi": "full_expand",
         "multi_es_fast": "pruned_expand_rff",
+        "multi_jev": "pruned_expand_jev",
     }
 
     _VECTOR_PROVIDER_LEXICAL_SUPPORT: dict[str, bool] = {
@@ -324,12 +333,22 @@ class EngineManager:
         for capability in requirements:
             if capability == "lexical_search" and not self._vector_provider_supports_lexical():
                 missing.append(capability)
+            elif capability == "jev" and not self._settings.jev_endpoint:
+                missing.append(capability)
         return tuple(missing)
 
     def _effective_search_strategy(self, requested: str | None) -> str:
         """校验请求的门面策略。未识别或能力不满足时按配置策略回退,再兜底 vector。"""
         raw = requested or self._settings.search_strategy
         strategy = normalize_search_strategy(raw)
+        if strategy == "multi_jev":
+            missing = self._strategy_missing_capabilities(strategy)
+            if missing:
+                # Explicit/default JEV selection must never silently change mode.
+                capability = "lexical_search" if "lexical_search" in missing else "jev"
+                reason, message = self._capability_disabled_reason(capability, self._settings.sag_vector_provider)
+                raise ConfigurationError(message, code=reason, stage=ErrorStage.RETRIEVE)
+            return strategy
         if strategy in SEARCH_STRATEGIES:
             missing = self._strategy_missing_capabilities(strategy)
             if not missing:
@@ -359,8 +378,10 @@ class EngineManager:
         if capability == "lexical_search":
             return (
                 "vector_provider_lacks_lexical",
-                f"当前向量存储 ({provider}) 不支持 BM25 词法检索,无法启用 multi_es 系列策略。",
+                f"当前向量存储 ({provider}) 不支持 BM25 词法检索，无法启用该检索模式。",
             )
+        if capability == "jev":
+            return ("jev_not_configured", "尚未配置 JEV 精排服务，请先保存服务地址。")
         return None
 
     @classmethod
@@ -376,8 +397,11 @@ class EngineManager:
         for strategy in sorted(SEARCH_STRATEGIES):
             requirements = SEARCH_STRATEGY_REQUIREMENTS.get(strategy, frozenset())
             missing: list[tuple[str, str]] = []
-            for capability in requirements:
-                if capability == "lexical_search" and not supports_lexical:
+            for capability in sorted(requirements, key=lambda value: value != "lexical_search"):
+                if (
+                    capability == "lexical_search" and not supports_lexical
+                    or capability == "jev" and not settings.jev_endpoint
+                ):
                     reason = cls._capability_disabled_reason(capability, provider)
                     if reason is not None:
                         missing.append(reason)
@@ -388,6 +412,13 @@ class EngineManager:
             else:
                 enabled.append(strategy)
         return {"enabled": enabled, "disabled": disabled}
+
+    @classmethod
+    def require_jev_capabilities(cls, settings: Settings) -> None:
+        """Reject explicit JEV activation before publishing incompatible settings."""
+        unavailable = cls.strategies_capability_report(settings)["disabled"].get("multi_jev")
+        if unavailable is not None:
+            raise ConfigurationError(unavailable["message"], code=unavailable["reason"])
 
     def _config_for(self, source: Source | None) -> Any:
         overrides = None
@@ -859,14 +890,26 @@ class EngineManager:
         source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
         include_ranked_candidates: bool = False,
     ) -> SearchOutcome:
-        return await self._search.search_many(
-            targets,
-            query,
-            strategy=strategy,
-            top_k=top_k,
-            source_ids_by_config=source_ids_by_config,
-            include_ranked_candidates=include_ranked_candidates,
+        admission_timeout = (
+            search_source_timeout_seconds(self._settings, strategy)
+            if (strategy or self._settings.search_strategy) == "multi_jev" else None
         )
+        try:
+            async with self._search_configuration_gate.read(timeout=admission_timeout):
+                return await self._search.search_many(
+                    targets,
+                    query,
+                    strategy=strategy,
+                    top_k=top_k,
+                    source_ids_by_config=source_ids_by_config,
+                    include_ranked_candidates=include_ranked_candidates,
+                )
+        except TimeoutError as error:
+            if admission_timeout is not None:
+                raise ServiceUnavailableError(
+                    "JEV 检索超时，请稍后重试", layer=ErrorLayer.ENGINE, stage=ErrorStage.RETRIEVE,
+                ) from error
+            raise
 
     async def _search_chunk_vectors(
         self,
@@ -1140,12 +1183,13 @@ class EngineManager:
 
     async def apply_settings(self, settings: Any, *, reset_engines: bool) -> None:
         """Publish runtime settings and reset slots in the same admission barrier."""
-        async with self._create_lock:
-            async with self._lifecycle_gate.write():
-                for field_name in settings.__class__.model_fields:
-                    setattr(self._settings, field_name, getattr(settings, field_name))
-                if reset_engines:
-                    await self._close_all_slots()
+        async with self._search_configuration_gate.write():
+            async with self._create_lock:
+                async with self._lifecycle_gate.write():
+                    for field_name in settings.__class__.model_fields:
+                        setattr(self._settings, field_name, getattr(settings, field_name))
+                    if reset_engines:
+                        await self._close_all_slots()
 
     async def _close_all_slots(self) -> None:
         # Caller owns the create lock and lifecycle writer; don't acquire them twice.

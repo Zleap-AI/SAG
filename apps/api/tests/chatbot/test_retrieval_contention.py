@@ -43,6 +43,9 @@ async def test_search_during_extraction(
 ):
     stock = settings.model_copy(deep=True)
     stock.data_dir = str(tmp_path / "engine")
+    # This case exercises the vector read path while another source is writing.
+    # SearchContextTool now inherits the configured default instead of forcing vector.
+    stock.search_strategy = "vector"
     postgres_url = os.environ.get("SAG_CHATBOT_TEST_POSTGRES_URL")
     if postgres_url:
         url = make_url(postgres_url)

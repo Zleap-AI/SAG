@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from math import ceil
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -340,6 +341,27 @@ def _enabled_tool_names(agent, *, has_sources: bool = False, knowledge_only: boo
 
 
 def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict]) -> AgentTool:
+    name = host_tool.meta.name
+    timeout_seconds = None
+    if name == "search_context":
+        from sag_api.core.config import MAX_JEV_RANKING_TIMEOUT_SECONDS, settings
+        from sag_api.tools.builtin import knowledge_search_strategy
+
+        configuration = getattr(host_context.engine_manager, "_settings", settings)
+        strategy = knowledge_search_strategy(host_context.persona, configuration)
+        # Keep this run's mode stable while the model prepares the tool call.
+        host_context = replace(host_context, persona={**host_context.persona, "search_strategy": strategy})
+        if strategy == "multi_jev":
+            source_count = min(len(host_context.sources), configuration.search_source_candidate_limit)
+            waves = max(1, ceil(source_count / configuration.search_source_concurrency))
+            recall_timeout = max(1.0, configuration.search_source_timeout)
+            # Settings may raise the ranking deadline after this tool is prepared.
+            # The engine still enforces the current, usually much shorter budget.
+            timeout_seconds = max(
+                configuration.agent_tool_timeout_seconds,
+                (waves + 1) * (recall_timeout + MAX_JEV_RANKING_TIMEOUT_SECONDS) + recall_timeout,
+            )
+
     async def execute(
         arguments: Mapping[str, Any],
         context,
@@ -407,6 +429,10 @@ def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict])
         elif result.content:
             details["output_preview"] = result.content[:800]
         artifacts: dict[str, Any] = {"citations": result.citations}
+        retrieval_stats = result.data.get("retrieval_stats")
+        if host_tool.meta.name == "search_context" and isinstance(retrieval_stats, dict):
+            details["retrieval_stats"] = retrieval_stats
+            artifacts["retrieval_stats"] = retrieval_stats
         if external_references:
             details["external_references"] = external_references[:6]
             artifacts["external_references"] = external_references
@@ -479,7 +505,6 @@ def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict])
             artifacts=artifacts,
         )
 
-    name = host_tool.meta.name
     return AgentTool(
         spec=ToolSpec(
             name=name,
@@ -489,6 +514,7 @@ def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict])
             risk=ToolRisk.READ_ONLY,
             # Citation numbering currently depends on source-order execution.
             execution_mode=ToolExecutionMode.SEQUENTIAL,
+            timeout_seconds=timeout_seconds,
         ),
         executor=execute,
     )

@@ -11,6 +11,7 @@ from typing import Any, Literal, Protocol
 
 from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
+from sag_api.enums import normalize_search_strategy
 from sag_api.sag import RetrievedSection, SearchOutcome
 from sag_api.services.query_analysis import (
     QueryAnalysis,
@@ -29,6 +30,19 @@ class SearchSource(Protocol):
 
 EventScoreMap = dict[tuple[str, str], float]
 DocumentSourceScope = dict[str, tuple[str, ...]]
+
+
+def event_scores_from_evidence(sections: list[RetrievedSection]) -> EventScoreMap:
+    """Keep selected event IDs in evidence order, excluding unscored chunk fallback."""
+    scores: EventScoreMap = {}
+    for section in sections:
+        if not section.source_config_id or section.metadata.get("score_source") == "query_chunk_fallback":
+            continue
+        for event_id in section.metadata.get("event_ids") or []:
+            if isinstance(event_id, str) and event_id.strip():
+                # Hydrated chunks expose aggregate scores, not raw event scores.
+                scores.setdefault((section.source_config_id, event_id.strip()), section.score)
+    return scores
 
 
 async def published_document_inputs(sources: list[SearchSource]) -> DocumentSourceScope:
@@ -304,6 +318,47 @@ async def retrieve_relevant_sections(
     """One retrieval contract for search UI and the Agent's search_context tool."""
 
     total_start = time.perf_counter()
+    configuration = getattr(engine_manager, "_settings", settings)
+    requested_strategy = strategy or configuration.search_strategy
+    mode = normalize_search_strategy(requested_strategy)
+    if mode == "multi_jev":
+        # The profile owns recall and final scoring. Adding application lexical
+        # hits afterwards would mix unscored evidence into the ranked list.
+        requested_limit = max(1, min(int(top_k or configuration.search_top_k), 50))
+        published = await published_document_inputs(sources)
+        visible_sources = [source for source in sources if published.get(source.sag_source_config_id)]
+        options: dict[str, Any] = {
+            "strategy": mode,
+            "top_k": requested_limit,
+            "source_ids_by_config": published,
+        }
+        if include_ranked_candidates:
+            options["include_ranked_candidates"] = True
+        engine_start = time.perf_counter()
+        outcome = await engine_manager.search_many(
+            [(source.sag_source_config_id, source) for source in visible_sources], query, **options,
+        )
+        current = await published_document_inputs(visible_sources)
+        visible_sections = [
+            section for section in outcome.sections
+            if section.source_id and section.source_id in current.get(section.source_config_id or "", ())
+        ]
+        return SearchOutcome(query=outcome.query or query, sections=visible_sections[:requested_limit], stats={
+            **outcome.stats,
+            "requested_strategy": requested_strategy,
+            "requested_top_k": requested_limit,
+            "candidate_top_k": requested_limit,
+            "candidates": len(outcome.sections),
+            "relevant": len(visible_sections),
+            "filtered_irrelevant": 0,
+            "lexical_candidates": 0,
+            "has_more": len(visible_sections) > requested_limit,
+            "publication_filtered": len(outcome.sections) - len(visible_sections),
+            "latency_engine_ms": round((time.perf_counter() - engine_start) * 1000, 2),
+            "latency_rerank_ms": 0.0,
+            "latency_total_ms": round((time.perf_counter() - total_start) * 1000, 2),
+        })
+
     analysis = analyze_query(
         query,
         segmentation_enabled=settings.search_chinese_segmentation_enabled,
@@ -315,7 +370,7 @@ async def retrieve_relevant_sections(
     targets = [(source.sag_source_config_id, source) for source in sources]
     engine_start = time.perf_counter()
     search_options: dict[str, Any] = {
-        "strategy": strategy,
+        "strategy": mode,
         "top_k": candidate_limit,
     }
     if include_ranked_candidates:
@@ -355,6 +410,7 @@ async def retrieve_relevant_sections(
     total_latency_ms = round((time.perf_counter() - total_start) * 1000, 2)
     stats = {
         **outcome.stats,
+        "requested_strategy": requested_strategy,
         "requested_top_k": requested_limit,
         "candidate_top_k": candidate_limit,
         "candidates": reranked.candidate_count,
