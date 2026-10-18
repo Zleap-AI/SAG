@@ -765,8 +765,7 @@ export const api = {
       },
     ),
   testEmbeddingModelConfig: (b?: Pick<ModelConfigPatch,
-    "embedding_model" | "embedding_base_url" | "embedding_api_key" | "embedding_dimensions" |
-    "llm_provider" | "llm_base_url" | "llm_api_key">) =>
+    "embedding_model" | "embedding_base_url" | "embedding_api_key" | "embedding_dimensions">) =>
     request<{ ok: boolean; message: string; dimensions?: number }>(
       "/api/v1/system/model-config/embedding/test",
       { method: "POST", body: JSON.stringify(b ?? {}) },

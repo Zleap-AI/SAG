@@ -216,3 +216,64 @@ async def test_original_model_probe_uses_original_connection(isolate, monkeypatc
         result = await client.post("/api/v1/system/model-config/test")
     assert result.status_code == 200 and result.json()["ok"]
     assert requests[0]["api_key"] == "stock-key" and requests[0]["model"] == "openai/stock-model"
+
+
+@pytest.mark.parametrize(
+    "target,other_draft",
+    [
+        ("llm", {"enabled": "invalid-type", "api_key": "unrelated-secret"}),
+        ("llm", {"enabled": True, "base_url": ""}),
+        ("embedding", {"enabled": "invalid-type", "api_key": "unrelated-secret"}),
+        ("embedding", {"enabled": True, "model": ""}),
+    ],
+)
+async def test_connection_probe_only_validates_its_target(client, isolate, database, monkeypatch, target, other_draft):
+    from litellm import ModelResponse
+    from openai import AsyncOpenAI
+    from sqlalchemy import select
+
+    from sag_api.db.models import Setting
+
+    app, http = client
+    app.dependency_overrides[get_current_user] = lambda: object()
+    calls = []
+
+    async def complete(**kwargs):
+        calls.append("llm")
+        return ModelResponse(model=kwargs["model"], choices=[{"message": {"role": "assistant", "content": "ok"}}])
+
+    def handle(request):
+        calls.append("embedding")
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0, 2.0, 3.0]}]})
+
+    def create(**kwargs):
+        return AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)))
+
+    monkeypatch.setattr("sag_api.generation.llm._litellm_completion", complete)
+    monkeypatch.setattr("openai.AsyncOpenAI", create)
+    draft = (
+        {"enabled": True, "model": "card-model", "api_key": "target-secret"}
+        if target == "llm"
+        else {"enabled": True, "base_url": "https://card.invalid/v1", "api_key": "target-secret"}
+    )
+    other = "embedding" if target == "llm" else "llm"
+    before = isolate.stock.model_dump()
+    result = await http.post(
+        "/api/v1/system/chatbot-config/test", json={"target": target, target: draft, other: other_draft}
+    )
+    assert result.status_code == 200 and result.json()["ok"], result.text
+    assert calls == [target]
+    assert isolate.stock.model_dump() == before and isolate.persisted == {}
+    async with database() as session:
+        assert await session.scalar(select(Setting)) is None
+
+
+async def test_connection_probe_still_rejects_unknown_top_level_fields(client):
+    app, http = client
+    app.dependency_overrides[get_current_user] = lambda: object()
+    response = await http.post(
+        "/api/v1/system/chatbot-config/test",
+        json={"target": "embedding", "unknown-secret-name": {"api_key": "unknown-secret-value"}},
+    )
+    assert response.status_code == 422
+    assert "unknown-secret" not in response.text

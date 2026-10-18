@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -14,7 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from sag_api.core.config import Settings
+from sag_api.core.config import Settings, expand_embedding_dimensions
 from sag_api.core.config import settings as _settings
 from sag_api.core.embedding_presets import QUICK_SETUP_EMBEDDINGS, EmbeddingSetupProvider
 from sag_api.core.errors import ConfigurationError, ConflictError
@@ -22,11 +23,14 @@ from sag_api.core.logging import get_logger
 from sag_api.core.model_providers import get_model_provider
 from sag_api.db.models import Document, Setting
 from sag_api.enums import SEARCH_STRATEGIES, normalize_search_strategy
+from sag_api.schemas.system import ModelConfigUpdate
 
 _SCOPE = "global"
 _KEY = "model_config"
 _PREFERENCES_KEY = "system_preferences"
 log = get_logger("settings")
+# Runtime settings are process-local; serialize each read/merge/commit/publication.
+_MODEL_CONFIG_SAVE_LOCK = asyncio.Lock()
 
 # 允许运行期覆盖的字段（值已由请求 schema 校验/转型）
 _FIELDS = frozenset(
@@ -63,6 +67,9 @@ _FIELDS = frozenset(
         "sag_language",
     }
 )
+# New explicit dimension saves pin both meanings in the existing JSON row. Old
+# rows with only the alias retain their original split-environment precedence.
+_PERSISTED_FIELDS = _FIELDS | {"embedding_schema_dimensions", "embedding_request_dimensions"}
 _SECRET_FIELDS = frozenset({"llm_api_key", "embedding_api_key", "mineru_api_key"})
 _NULLABLE_FIELDS = frozenset({"llm_base_url", "embedding_base_url", "embedding_dimensions", "mineru_base_url"})
 _LOCKABLE_LLM_FIELDS = frozenset(
@@ -136,11 +143,8 @@ def _embedding_identity(settings: Settings, patch: dict) -> tuple[str, int]:
     UI/API 仍只暴露单一 `embedding_dimensions` 字段，它同时映射到 schema 与请求
     两项。未随 patch 传入时取配置的生效 schema 维度（含新字段与旧别名）。
     """
-    model = str(patch.get("embedding_model", settings.embedding_model))
-    if "embedding_dimensions" in patch:
-        dimensions = patch["embedding_dimensions"]
-        return model, int(dimensions or settings.effective_embedding_schema_dimensions)
-    return model, settings.effective_embedding_schema_dimensions
+    proposed = settings.model_copy(update=expand_embedding_dimensions(patch))
+    return str(proposed.embedding_model), proposed.effective_embedding_schema_dimensions
 
 
 async def _reject_incompatible_embedding_change(
@@ -225,7 +229,7 @@ def apply_overrides(settings: Settings, overrides: dict) -> None:
     normalized = _normalize_overrides(overrides)
     locked_fields = _LOCKABLE_LLM_FIELDS if settings.lock_llm_config else frozenset()
     for key, value in normalized.items():
-        if key in _FIELDS and key not in locked_fields:
+        if key in _PERSISTED_FIELDS and key not in locked_fields:
             setattr(settings, key, value)
     if settings is _settings:
         for key in _MODEL_CONFIG_SOURCES:
@@ -341,7 +345,11 @@ def effective_model_config() -> dict:
         "llm_api_key_set": bool(_settings.llm_api_key),
         "embedding_model": _settings.embedding_model,
         "embedding_base_url": _settings.embedding_base_url,
-        "embedding_dimensions": _settings.embedding_dimensions,
+        "embedding_dimensions": (
+            _settings.effective_embedding_schema_dimensions
+            if _settings.embedding_schema_dimensions is not None
+            else _settings.embedding_dimensions
+        ),
         "embedding_api_key_set": bool(_settings.embedding_api_key),
         "document_parser": _settings.document_parser,
         "effective_document_parser": _settings.effective_document_parser,
@@ -392,6 +400,20 @@ async def save_model_config(session: AsyncSession, patch: dict) -> dict:
     - 密钥字段值为空 → 忽略（保留原密钥，避免误清空）；空值仅经显式非空覆盖；
     - 可空字段（base_url / dimensions）值为空 → 置 None（清除）。
     """
+    async with _MODEL_CONFIG_SAVE_LOCK:
+        return await _save_model_config_locked(session, patch)
+
+
+async def _save_model_config_locked(session: AsyncSession, patch: dict) -> dict:
+    # Validate this card's explicit writes only. Re-validating the entire saved
+    # profile here would change older accepted values in unrelated model cards.
+    try:
+        patch = ModelConfigUpdate.model_validate(patch).model_dump(exclude_unset=True)
+    except ValueError:
+        raise ConfigurationError("Invalid model configuration; check the service settings") from None
+    if any(value is None and key not in _NULLABLE_FIELDS | _SECRET_FIELDS for key, value in patch.items()):
+        raise ConfigurationError("模型配置字段不能为 null，请填写有效值")
+    before = _settings
     await _reject_incompatible_embedding_change(session, patch)
     row = await _load_row(session)
     raw = dict(row.value) if row and isinstance(row.value, dict) else {}
@@ -411,6 +433,8 @@ async def save_model_config(session: AsyncSession, patch: dict) -> dict:
             continue
         stored[key] = value
 
+    if "embedding_dimensions" in patch:
+        stored.update(expand_embedding_dimensions({"embedding_dimensions": stored["embedding_dimensions"]}))
     stored = _normalize_overrides(stored)
     candidate = {**_settings.model_dump(), **stored}
     if _settings.lock_llm_config:
@@ -426,8 +450,8 @@ async def save_model_config(session: AsyncSession, patch: dict) -> dict:
     if (
         not _settings.lock_llm_config
         and not patch.get("llm_api_key")
-        and (candidate["llm_provider"] == "responses" or _settings.llm_provider == "responses")
-        and any(candidate[field] != getattr(_settings, field) for field in identity)
+        and (candidate["llm_provider"] == "responses" or before.llm_provider == "responses")
+        and any(field in patch and candidate[field] != getattr(before, field) for field in identity)
     ):
         stored["llm_api_key"] = ""
 

@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sag_api.api.v1.chatbot import SecretSafeRoute
 from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal, get_session
 from sag_api.core.deps import get_current_user, get_current_user_or_connector
@@ -34,6 +35,7 @@ from sag_api.schemas.system import (
 from sag_api.services import dsh_integration_service, settings_service
 
 router = APIRouter(prefix="/system", tags=["system"])
+_model_config_router = APIRouter(route_class=SecretSafeRoute)
 log = get_logger("system")
 
 DSH_CAPABILITIES = (
@@ -385,7 +387,7 @@ async def quick_setup_deepseek(
     return {"config": config, "capabilities": _capabilities(current=True)}
 
 
-@router.put("/model-config")
+@_model_config_router.put("/model-config")
 async def update_model_config(
     body: ModelConfigUpdate,
     request: Request,
@@ -395,6 +397,10 @@ async def update_model_config(
     """保存运行期配置；仅在模型/向量配置实际变化时安全重建引擎。"""
     patch = body.model_dump(exclude_unset=True)
     before = settings_service.effective_model_config()
+    before_embedding_dimensions = (
+        settings.effective_embedding_schema_dimensions,
+        settings.effective_embedding_request_dimensions,
+    )
     config = await settings_service.save_model_config(session, patch)
 
     # 解析器/检索参数保存无需打断暖引擎；只有引擎配置真的变化才安全重建。
@@ -412,10 +418,15 @@ async def update_model_config(
         "llm_max_retries",
         "embedding_model",
         "embedding_base_url",
-        "embedding_dimensions",
         "sag_language",
     }
     engine_changed = any(before.get(key) != config.get(key) for key in engine_fields)
+    # The public alias only exposes schema dimensions; a legacy split request
+    # policy can change while that alias stays equal (or the reverse on clear).
+    engine_changed = engine_changed or before_embedding_dimensions != (
+        settings.effective_embedding_schema_dimensions,
+        settings.effective_embedding_request_dimensions,
+    )
     engine_changed = engine_changed or bool(patch.get("llm_api_key") or patch.get("embedding_api_key"))
     await request.app.state.knowledge_runtime.apply_settings(
         settings,
@@ -436,7 +447,7 @@ async def configure_302_mineru(
     return {"config": config, "capabilities": _capabilities(current=True)}
 
 
-@router.post("/model-config/test")
+@_model_config_router.post("/model-config/test")
 async def test_model_config(
     request: Request,
     body: ModelConfigUpdate | None = None,
@@ -482,6 +493,28 @@ async def test_model_config(
             "message": f"连接成功 · {active.llm_provider} / {active.llm_model}",
         }
     except ApiError as e:
-        return {"ok": False, "message": e.message}
-    except Exception as e:  # noqa: BLE001
-        return {"ok": False, "message": str(e)}
+        messages = {
+            "llm_auth_error": "Generation authentication failed; check this card's API key and model permissions",
+            "llm_bad_request": "Generation request rejected; check this card's provider, endpoint, model and options",
+            "llm_unavailable": (
+                "Generation service unavailable; check the endpoint, rate limits and server availability"
+            ),
+            "llm_empty_response": "Generation service returned an empty response; check the model and protocol",
+        }
+        return {
+            "ok": False,
+            "message": messages.get(
+                e.code,
+                "Generation connection test failed; check endpoint, provider, model, credentials and availability",
+            ),
+        }
+    except Exception:  # noqa: BLE001 -- provider exceptions can contain credentials and response bodies.
+        return {
+            "ok": False,
+            "message": (
+                "Generation connection test failed; check endpoint, provider, model, credentials and availability"
+            ),
+        }
+
+
+router.include_router(_model_config_router)

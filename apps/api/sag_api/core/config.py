@@ -45,6 +45,15 @@ def _embedding_request_dimensions_unsupported(base_url: str | None, model: str) 
     return (hostname, model.strip().lower()) == _EMBEDDING_REQUEST_DIMENSIONS_UNSUPPORTED
 
 
+def expand_embedding_dimensions(updates: dict) -> dict:
+    """An explicit UI dimension overrides both split fields, including when cleared."""
+    expanded = dict(updates)
+    if "embedding_dimensions" in updates:
+        expanded["embedding_schema_dimensions"] = updates["embedding_dimensions"]
+        expanded["embedding_request_dimensions"] = updates["embedding_dimensions"]
+    return expanded
+
+
 class Settings(BaseSettings):
     _active_data_dir: str | None = PrivateAttr(default=None)
 
@@ -160,7 +169,9 @@ class Settings(BaseSettings):
     llm_provider: ModelProviderId = _DEFAULT_LLM_PROVIDER.id
     llm_base_url: str | None = _DEFAULT_LLM_PROVIDER.default_base_url
     llm_api_key: str | None = None
-    llm_model: str = _DEFAULT_LLM_PROVIDER.default_model
+    # Keep the implicit runtime default stable for existing env-only deployments.
+    # New setup forms and provider presets explicitly save the current model.
+    llm_model: str = "qwen3.6-flash"
     llm_temperature: float = _DEFAULT_LLM_PROVIDER.default_temperature
     llm_max_tokens: int = 20_000
     llm_context_window: int = _DEFAULT_LLM_PROVIDER.default_context_window

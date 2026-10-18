@@ -57,11 +57,11 @@ options are inherited only when the original and chatbot protocols match.
 
 ## Saving and credentials
 
-The existing page-wide Save writes original model settings and optional connections
-independently. Unchanged original settings are skipped. An original write waiting
-for active extraction does not block optional saves/tests. Partial success is shown
-per group, and failed drafts remain available for retry. Connection Tests use the
-unsaved draft without activating or persisting it.
+Each model card has its own Save button. Saving or testing a card validates only
+that card and preserves other cards' drafts. An original write waiting for active
+extraction does not block optional saves/tests. Results are shown per card, and
+failed drafts remain available for retry. Connection Tests use the unsaved draft
+without activating or persisting it.
 
 The original **Embedding model** section also has a Test button. Its authenticated
 `POST /api/v1/system/model-config/embedding/test` endpoint accepts an unsaved

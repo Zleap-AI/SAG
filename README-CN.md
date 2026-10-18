@@ -194,7 +194,7 @@ DeepSeek 使用 Flash 非思考模式。两种快速配置均可选择 302.AI、
 
 Docker Compose 或 `.env` 中的 `SAG_LLM_*` 用于提供首次启动时的模型默认值。管理员在 Web 设置页保存模型配置后，后续抽取和生成任务会直接使用已持久化的设置，无需重启服务。
 
-默认向量模型为 `Qwen/Qwen3-Embedding-4B`。升级已有 BGE 索引时，请保留 `SAG_EMBEDDING_MODEL=bge-large-en-v1.5`；如需切换模型，请先完成已有索引文档的删除，再更换模型并重新导入。
+新配置入口建议生成模型 `qwen3.8-flash`、向量模型 `Qwen/Qwen3-Embedding-4B`。升级会保留已保存的模型设置和显式环境配置；未显式设置生成模型的部署仍沿用原运行默认值 `qwen3.6-flash`。升级已有 BGE 索引时，请保留 `SAG_EMBEDDING_MODEL=bge-large-en-v1.5`；如需切换模型，请先完成已有索引文档的删除，再更换模型并重新导入。
 
 如需由部署环境强制统一配置，请设置 `SAG_LOCK_LLM_CONFIG=true`。SAG 会在设置页明确显示生成模型字段已锁定，并持续使用 `SAG_LLM_*` 的值。此时请修改 Docker Compose 或 `.env`，再重新创建 API 容器使改动生效。API Key 始终由部署环境管理，Settings API 不会返回密钥明文。
 
@@ -488,7 +488,7 @@ async def main() -> None:
         llm=LLMConfig(
             api_key="sk-...",
             base_url="https://your-openai-compatible-host/v1",
-            model="qwen3.6-flash",
+            model="qwen3.8-flash",
         ),
         # 不填写 api_key/base_url 时，Embedding 会复用 LLM 接口。
         embedding=EmbeddingConfig(model="Qwen/Qwen3-Embedding-4B"),
@@ -531,7 +531,7 @@ asyncio.run(main())
 export SAG_STORAGE_MODE=normal
 export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://your-openai-compatible-host/v1
-export LLM_MODEL=qwen3.6-flash
+export LLM_MODEL=qwen3.8-flash
 export EMBEDDING_MODEL=Qwen/Qwen3-Embedding-4B
 ```
 

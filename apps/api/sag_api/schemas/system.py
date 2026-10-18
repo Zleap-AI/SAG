@@ -74,7 +74,7 @@ class ModelConfigUpdate(BaseModel):
     embedding_model: str | None = Field(default=None, min_length=1, max_length=200)
     embedding_base_url: str | None = Field(default=None, max_length=500)
     embedding_api_key: str | None = Field(default=None, max_length=500)
-    embedding_dimensions: int | None = Field(default=None, ge=1, le=8192)
+    embedding_dimensions: int | None = Field(default=None, ge=1, le=8192, strict=True)
 
     document_parser: Literal["auto", "markitdown", "mineru", "anydoc"] | None = None
     mineru_provider: Literal["302", "official", "self_hosted"] | None = None
@@ -90,6 +90,13 @@ class ModelConfigUpdate(BaseModel):
     search_strategy: SearchStrategy | None = None
     search_top_k: int | None = Field(default=None, ge=1, le=50)
     sag_language: Literal["zh", "en"] | None = None
+
+    @field_validator("llm_model", "embedding_model")
+    @classmethod
+    def reject_blank_model(cls, value: str | None) -> str:
+        if value is None or not value.strip():
+            raise ValueError("Model name cannot be blank")
+        return value
 
     @field_validator(
         "document_parser",
