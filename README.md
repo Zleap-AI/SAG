@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://arxiv.org/abs/2606.15971"><img alt="Paper" src="https://img.shields.io/badge/paper-arXiv%3A2606.15971-18181b" /></a>
   <a href="https://pypi.org/project/zleap-sag/"><img alt="PyPI" src="https://img.shields.io/pypi/v/zleap-sag?label=zleap--sag&color=18181b" /></a>
-  <img alt="SAG version" src="https://img.shields.io/badge/SAG-v1.8.11-18181b" />
+  <img alt="SAG version" src="https://img.shields.io/badge/SAG-v1.9.0-18181b" />
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776ab" />
   <img alt="Node" src="https://img.shields.io/badge/Node-20%2B-339933" />
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-18181b" /></a>
@@ -461,12 +461,12 @@ The Electron client packages the same Next.js application together with the loca
 
 ### Use `zleap-sag` directly
 
-[`zleap-sag`](https://pypi.org/project/zleap-sag/) is the continuously maintained Python engine behind the SAG application. Distribution name: `zleap-sag`; import path: `zleap.sag`; Python: 3.11+; license: MIT. The application currently requires `zleap-sag==0.13.0`.
+[`zleap-sag`](https://pypi.org/project/zleap-sag/) is the continuously maintained Python engine behind the SAG application. Distribution name: `zleap-sag`; import path: `zleap.sag`; Python: 3.11+; license: MIT. The application currently requires `zleap-sag==0.15.0`.
 
 Install the zero-infrastructure local stack:
 
 ```bash
-pip install zleap-sag==0.13.0
+pip install zleap-sag==0.15.0
 ```
 
 With an existing `knowledge.md` and working model credentials, run the complete ingest → extract → search lifecycle:

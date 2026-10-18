@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://arxiv.org/abs/2606.15971"><img alt="论文" src="https://img.shields.io/badge/paper-arXiv%3A2606.15971-18181b" /></a>
   <a href="https://pypi.org/project/zleap-sag/"><img alt="PyPI" src="https://img.shields.io/pypi/v/zleap-sag?label=zleap--sag&color=18181b" /></a>
-  <img alt="SAG 版本" src="https://img.shields.io/badge/SAG-v1.8.11-18181b" />
+  <img alt="SAG 版本" src="https://img.shields.io/badge/SAG-v1.9.0-18181b" />
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776ab" />
   <img alt="Node" src="https://img.shields.io/badge/Node-20%2B-339933" />
   <a href="LICENSE"><img alt="许可" src="https://img.shields.io/badge/license-MIT-18181b" /></a>
@@ -463,12 +463,12 @@ Electron 客户端将同一套 Next.js 应用与本地 FastAPI 后端一起打�
 
 ### 直接使用 `zleap-sag`
 
-[`zleap-sag`](https://pypi.org/project/zleap-sag/) 是 SAG 应用底层持续维护的 Python 引擎。发行包名为 `zleap-sag`，导入路径为 `zleap.sag`，要求 Python 3.11+，采用 MIT 许可。当前应用要求 `zleap-sag==0.13.0`。
+[`zleap-sag`](https://pypi.org/project/zleap-sag/) 是 SAG 应用底层持续维护的 Python 引擎。发行包名为 `zleap-sag`，导入路径为 `zleap.sag`，要求 Python 3.11+，采用 MIT 许可。当前应用要求 `zleap-sag==0.15.0`。
 
 安装默认的零基础设施版本：
 
 ```bash
-pip install zleap-sag==0.13.0
+pip install zleap-sag==0.15.0
 ```
 
 准备已有的 `knowledge.md` 和可用的模型凭据后，运行完整的导入 → 抽取 → 检索流程：
