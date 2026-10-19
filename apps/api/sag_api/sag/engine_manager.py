@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from zleap.sag import DataEngine
+from zleap.sag.exceptions import StateError
 
 from sag_api.core.config import Settings
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
@@ -478,6 +479,54 @@ class EngineManager:
             await session.execute(text("PRAGMA journal_mode=WAL"))
             await session.execute(text("PRAGMA busy_timeout=30000"))
 
+    @staticmethod
+    async def _finish_cleanup(cleanup: Coroutine[Any, Any, None]) -> None:
+        """Own cleanup until completion, then propagate the first caller cancellation."""
+        task = asyncio.create_task(cleanup)
+        caller = asyncio.current_task()
+        initial_requests = caller.cancelling() if caller is not None else 0
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                await asyncio.shield(task)
+                break
+            except asyncio.CancelledError as error:
+                if cancellation is None and caller is not None and caller.cancelling() > initial_requests:
+                    cancellation = error
+                if task.cancelled():
+                    if cancellation is None:
+                        task.result()  # Preserve the cleanup's original cancellation.
+                    break
+                if cancellation is None:
+                    cancellation = error
+            except Exception:  # noqa: BLE001 - cancellation still takes precedence after cleanup.
+                if cancellation is None:
+                    raise
+                log.exception("取消请求后的引擎关闭异常")
+                break
+        if cancellation is not None:
+            raise cancellation
+
+    @staticmethod
+    async def _close_slot(slot: _Slot) -> None:
+        await slot.idle.wait()
+        async with slot.lock:
+            await slot.engine.aclose()
+
+    @staticmethod
+    async def _close_unregistered_engine(engine: DataEngine) -> None:
+        try:
+            await engine.aclose()
+        finally:
+            # zleap-sag 0.13 can retain its public resource container when start()
+            # is cancelled before the engine considers itself started.
+            try:
+                resources = getattr(engine, "resources", None)
+            except StateError:
+                resources = None
+            if resources is not None:
+                await resources.aclose()
+
     async def _slot(self, source_config_id: str, source: Source | None = None) -> _Slot:
         slot = self._slots.get(source_config_id)
         if slot is not None and not slot.closing:
@@ -494,20 +543,20 @@ class EngineManager:
                         data_source_id=source_config_id,
                         health_check=False,
                     )
-                    with map_sag_errors(stage=ErrorStage.CONFIG):
-                        # 0.8.2:pgvector/oceanbase 等向量后端在 start() 前必须先
-                        # init_schema() 显式创建关系表与向量模式对象,否则 start()
-                        # 抛 StorageInitializationRequiredError。
-                        await self._ensure_engine_schema(engine)
-                        await engine.start()
-                        await self._configure_sqlite_document_store(engine)
                     try:
+                        with map_sag_errors(stage=ErrorStage.CONFIG):
+                            # 0.8.2:pgvector/oceanbase 等向量后端在 start() 前必须先
+                            # init_schema() 显式创建关系表与向量模式对象,否则 start()
+                            # 抛 StorageInitializationRequiredError。
+                            await self._ensure_engine_schema(engine)
+                            await engine.start()
+                            await self._configure_sqlite_document_store(engine)
                         await self._ensure_source_config(source_config_id, source, engine)
                         await self._ensure_universe_query_indexes(engine)
-                    except Exception:
+                    except BaseException:  # An unregistered engine also owns resources on cancellation.
                         try:
-                            await engine.aclose()
-                        except Exception:  # noqa: BLE001 - preserve provisioning error
+                            await self._finish_cleanup(self._close_unregistered_engine(engine))
+                        except BaseException:  # Preserve the original initialization error or cancellation.
                             log.exception(
                                 "初始化失败后的引擎关闭异常 source_config_id=%s",
                                 source_config_id,
@@ -557,9 +606,7 @@ class EngineManager:
             slot = self._slots.pop(victim)
             slot.closing = True
             try:
-                await slot.idle.wait()
-                async with slot.lock:
-                    await slot.engine.aclose()
+                await self._finish_cleanup(self._close_slot(slot))
                 log.info("LRU 逐出引擎 source_config_id=%s（缓存上限 %d）", victim, self._cache_size)
             except Exception as e:  # noqa: BLE001
                 log.warning("逐出引擎失败 %s: %s", victim, e)
@@ -1109,9 +1156,7 @@ class EngineManager:
                     return
                 slot.closing = True
                 try:
-                    await slot.idle.wait()
-                    async with slot.lock:  # 等待在途操作结束
-                        await slot.engine.aclose()
+                    await self._finish_cleanup(self._close_slot(slot))
                 except Exception as e:  # noqa: BLE001
                     log.warning("释放引擎失败 %s: %s", source_config_id, e)
 
@@ -1123,10 +1168,20 @@ class EngineManager:
                 for _, slot in slots:
                     slot.closing = True
                 self._slots.clear()
-                for scid, slot in slots:
-                    try:
-                        await slot.idle.wait()
-                        async with slot.lock:
-                            await slot.engine.aclose()
-                    except Exception as e:  # noqa: BLE001
-                        log.warning("关闭引擎失败 %s: %s", scid, e)
+
+                async def close_slots() -> None:
+                    # One owned operation must drain the entire detached batch;
+                    # a caller cancellation must not skip the remaining slots.
+                    cancellation: asyncio.CancelledError | None = None
+                    for scid, slot in slots:
+                        try:
+                            await self._close_slot(slot)
+                        except asyncio.CancelledError as error:
+                            if cancellation is None:
+                                cancellation = error
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("关闭引擎失败 %s: %s", scid, e)
+                    if cancellation is not None:
+                        raise cancellation
+
+                await self._finish_cleanup(close_slots())

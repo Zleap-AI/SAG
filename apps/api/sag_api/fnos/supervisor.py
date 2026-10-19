@@ -89,15 +89,19 @@ class SubprocessWorkerFactory:
             env=worker_env,
             start_new_session=True,
         )
-        client = httpx.AsyncClient(
-            transport=httpx.AsyncHTTPTransport(uds=str(paths.socket_file)),
-            base_url="http://worker",
-            # Cold-worker provisioning (first-time LanceDB dir + tokenizer + engine
-            # schema) can take ~10s. Default httpx read timeout is 5s and produces
-            # a 500 ReadTimeout at the gateway. Give write-path requests headroom
-            # while keeping connect/pool checks tight.
-            timeout=httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0),
-        )
+        try:
+            client = httpx.AsyncClient(
+                transport=httpx.AsyncHTTPTransport(uds=str(paths.socket_file)),
+                base_url="http://worker",
+                # Cold-worker provisioning (first-time LanceDB dir + tokenizer + engine
+                # schema) can take ~10s. Default httpx read timeout is 5s and produces
+                # a 500 ReadTimeout at the gateway. Give write-path requests headroom
+                # while keeping connect/pool checks tight.
+                timeout=httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0),
+            )
+        except BaseException:
+            await WorkerSupervisor._stop_process(process)
+            raise
         return process, client
 
 
@@ -158,6 +162,7 @@ class WorkerSupervisor:
         self._starting: dict[str, _StartingWorker] = {}
         self._stopping: dict[str, WorkerHandle] = {}
         self._teardown_tasks: dict[str, tuple[WorkerHandle, asyncio.Task[None]]] = {}
+        self._shutdown_task: asyncio.Task[None] | None = None
         self._start_locks: dict[str, asyncio.Lock] = {}
         self._closed = False
 
@@ -179,12 +184,12 @@ class WorkerSupervisor:
 
         async with start_lock:
             async with self._registry_lock:
+                if self._closed:
+                    raise RuntimeError("worker supervisor is closed")
                 existing = self._workers.get(key)
                 if existing is not None:
                     existing.in_flight += 1
                     return WorkerLease(self, existing)
-                if self._closed:
-                    raise RuntimeError("worker supervisor is closed")
                 if len(self._workers) + len(self._starting) + len(self._stopping) >= self._max_workers:
                     raise WorkerCapacityError()
                 paths = WorkspacePaths.for_identity(self.data_root, self.temp_root, identity)
@@ -213,14 +218,18 @@ class WorkerSupervisor:
                 phase = "ready"
                 await self._wait_until_ready(process, client)
             except BaseException as error:
-                if starting.handle is not None:
-                    await self._stop_handle_once(starting.handle)
-                else:
-                    starting.paths.socket_file.unlink(missing_ok=True)
-                async with self._registry_lock:
-                    self._starting.pop(key, None)
-                    self._discard_teardown_locked(starting.handle)
-                    starting.done.set()
+                try:
+                    if starting.handle is not None:
+                        await self._stop_handle_once(starting.handle)
+                    else:
+                        starting.paths.socket_file.unlink(missing_ok=True)
+                except Exception:
+                    log.exception("fnOS worker startup cleanup failed uid=%s key=%s", identity.uid, key)
+                finally:
+                    async with self._registry_lock:
+                        self._starting.pop(key, None)
+                        self._discard_teardown_locked(starting.handle)
+                        starting.done.set()
                 if isinstance(error, asyncio.CancelledError):
                     raise
                 log.warning(
@@ -328,16 +337,31 @@ class WorkerSupervisor:
         """Stop every currently known child worker."""
         async with self._registry_lock:
             self._closed = True
+            if self._shutdown_task is None:
+                self._shutdown_task = asyncio.create_task(self._close_workers())
+            task = self._shutdown_task
+        await self._join_teardown(task)
+
+    async def _close_workers(self) -> None:
+        async with self._registry_lock:
             handles = list(self._workers.values())
             self._workers.clear()
             handles.extend(self._stopping.values())
+            handles.extend(handle for handle, _ in self._teardown_tasks.values())
             starting = list(self._starting.values())
-        for handle in handles:
-            await self._stop_handle_once(handle)
         for state in starting:
             if state.handle is not None:
-                await self._stop_handle_once(state.handle)
+                handles.append(state.handle)
+        first_error: BaseException | None = None
+        for handle in handles:
+            try:
+                await self._stop_handle_once(handle)
+            except (Exception, asyncio.CancelledError) as error:
+                if first_error is None:
+                    first_error = error
         await asyncio.gather(*(state.done.wait() for state in starting))
+        if first_error is not None:
+            raise first_error
 
     def _discard_teardown_locked(self, handle: WorkerHandle | None) -> None:
         if handle is None:
@@ -354,12 +378,41 @@ class WorkerSupervisor:
             else:
                 task = asyncio.create_task(self._stop_handle(handle))
                 self._teardown_tasks[handle.key] = (handle, task)
-        await asyncio.shield(task)
+        await self._join_teardown(task)
+
+    @staticmethod
+    async def _join_teardown(task: asyncio.Task[None]) -> None:
+        """Keep teardown owned until it finishes, then preserve caller cancellation."""
+        caller = asyncio.current_task()
+        initial_requests = caller.cancelling() if caller is not None else 0
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                await asyncio.shield(task)
+                break
+            except asyncio.CancelledError as error:
+                if cancellation is None and caller is not None and caller.cancelling() > initial_requests:
+                    cancellation = error
+                if task.cancelled():
+                    if cancellation is None:
+                        task.result()
+                    break
+                if cancellation is None:
+                    cancellation = error
+            except Exception:
+                if cancellation is None:
+                    raise
+                log.exception("fnOS worker teardown failed after caller cancellation")
+                break
+        if cancellation is not None:
+            raise cancellation
 
     async def _stop_handle(self, handle: WorkerHandle) -> None:
-        await self._close_client(handle.client)
-        await self._stop_process(handle.process)
-        handle.socket_file.unlink(missing_ok=True)
+        try:
+            await self._close_client(handle.client)
+        finally:
+            await self._stop_process(handle.process)
+            handle.socket_file.unlink(missing_ok=True)
 
     @staticmethod
     async def _close_client(client: Any | None) -> None:

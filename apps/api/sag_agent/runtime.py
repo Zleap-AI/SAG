@@ -5,7 +5,8 @@ import inspect
 import logging
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -44,6 +45,73 @@ class MaxTurnsExceeded(AgentRuntimeError):
 
 class RunStoreError(AgentRuntimeError):
     pass
+
+
+class _ToolCancellation(CancellationToken):
+    """Share the run signal and record cooperative tool cancellation before cleanup."""
+
+    def __init__(self, parent: CancellationToken) -> None:
+        self._parent = parent
+        self._cooperative_exit = False
+        self._executor_task: asyncio.Task[Any] | None = None
+
+    def bind_executor(self, task: asyncio.Task[Any] | None = None) -> None:
+        self._executor_task = task if task is not None else asyncio.current_task()
+
+    def _mark_cooperative_exit(self) -> None:
+        if self._executor_task is not None and asyncio.current_task() is self._executor_task:
+            self._cooperative_exit = True
+
+    @property
+    def cancelled(self) -> bool:
+        return self._parent.cancelled
+
+    def cancel(self) -> None:
+        self._mark_cooperative_exit()
+        self._parent.cancel()
+
+    async def wait(self) -> None:
+        await self._parent.wait()
+        self._mark_cooperative_exit()
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancelled:
+            self._mark_cooperative_exit()
+            raise asyncio.CancelledError
+
+    def cancel_task(self, task: asyncio.Task[Any]) -> bool:
+        if self._cooperative_exit or task.done() or task.cancelling():
+            return False
+        if self._executor_task is not None and self._executor_task.cancelling():
+            return False
+        return task.cancel()
+
+
+@asynccontextmanager
+async def _tool_timeout(seconds: float, cancellation: _ToolCancellation) -> AsyncIterator[None]:
+    if seconds <= 0:
+        raise TimeoutError
+    task = asyncio.current_task()
+    if task is None:
+        raise RuntimeError("Tool execution requires a running task")
+    initial_cancelling = task.cancelling()
+    timed_out = False
+
+    def expire() -> None:
+        nonlocal timed_out
+        timed_out = cancellation.cancel_task(task)
+
+    deadline = asyncio.get_running_loop().call_later(seconds, expire)
+    try:
+        yield
+    except asyncio.CancelledError as error:
+        if timed_out and task.cancelling() <= initial_cancelling + 1:
+            raise TimeoutError from error
+        raise
+    finally:
+        deadline.cancel()
+        if timed_out:
+            task.uncancel()
 
 
 @dataclass(slots=True)
@@ -179,6 +247,7 @@ class RunHandle:
         self._task: asyncio.Task[None] | None = None
         self._status = RunStatus.QUEUED
         self._consumer_started = False
+        self._cancel_requested = False
 
     @property
     def status(self) -> RunStatus:
@@ -189,8 +258,9 @@ class RunHandle:
         return self._result.done()
 
     def cancel(self) -> None:
-        if self.done:
+        if self.done or self._cancel_requested:
             return
+        self._cancel_requested = True
         self.context.cancellation.cancel()
         self._gate.cancel_all()
         if self._task is not None:
@@ -611,17 +681,11 @@ class AgentRuntime:
         )
         executed: dict[str, _ToolOutcome] = {}
         if sequential:
-            for call, tool, arguments in executable:
-                executed[call.id] = await self._execute_tool(handle, call, tool, arguments, turn)
+            for entry in executable:
+                outcome = (await self._execute_tool_group(handle, [entry], turn))[0]
+                executed[outcome.call.id] = outcome
         else:
-            tasks = [
-                asyncio.create_task(
-                    self._execute_tool(handle, call, tool, arguments, turn),
-                    name=f"agent-tool-{call.id[:12]}",
-                )
-                for call, tool, arguments in executable
-            ]
-            results = await asyncio.gather(*tasks)
+            results = await self._execute_tool_group(handle, executable, turn)
             executed.update((outcome.call.id, outcome) for outcome in results)
 
         outcomes: list[_ToolOutcome] = []
@@ -631,6 +695,44 @@ class AgentRuntime:
             else:
                 outcomes.append(executed[value[0].id])
         return outcomes
+
+    async def _execute_tool_group(
+        self,
+        handle: RunHandle,
+        executable: Sequence[tuple[ToolCall, AgentTool, Mapping[str, Any]]],
+        turn: int,
+    ) -> list[_ToolOutcome]:
+        # One owner creates, cancels and joins tool tasks in both execution modes.
+        # Observing them with wait() never forwards parent cancellation implicitly.
+        tasks = {}
+        for call, tool, arguments in executable:
+            cancellation = _ToolCancellation(handle.context.cancellation)
+            task = asyncio.create_task(
+                self._execute_tool(handle, call, tool, arguments, turn, cancellation),
+                name=f"agent-tool-{call.id[:12]}",
+            )
+            tasks[task] = cancellation
+        pending = set(tasks)
+        try:
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    task.result()
+        finally:
+            for task in pending:
+                tasks[task].cancel_task(task)
+            while pending:
+                try:
+                    _, pending = await asyncio.wait(pending)
+                except asyncio.CancelledError:
+                    # An error/cancellation already determines this group's exit.
+                    # Later cancellation must not interrupt its tools' cleanup
+                    # or replace that original failure.
+                    pending = {task for task in pending if not task.done()}
+            for task in tasks:
+                if not task.cancelled():
+                    task.exception()
+        return [task.result() for task in tasks]
 
     async def _preflight_tool(
         self,
@@ -731,11 +833,13 @@ class AgentRuntime:
         tool: AgentTool,
         arguments: Mapping[str, Any],
         turn: int,
+        cancellation: _ToolCancellation,
     ) -> _ToolOutcome:
+        cancellation.bind_executor()
         started = time.perf_counter()
 
         async def on_progress(progress: ToolProgress) -> None:
-            handle.context.cancellation.raise_if_cancelled()
+            cancellation.raise_if_cancelled()
             await self._emit(
                 handle,
                 EventType.TOOL_PROGRESS,
@@ -750,19 +854,19 @@ class AgentRuntime:
 
         try:
             timeout = tool.spec.timeout_seconds or self.config.tool_timeout_seconds
-            result = await asyncio.wait_for(
-                tool.execute(
+            # Deadline and batch cancellation use the same single-cancel policy.
+            async with _tool_timeout(timeout, cancellation):
+                result = await tool.execute(
                     arguments,
                     ToolContext(
                         run_id=handle.run_id,
                         tool_call_id=call.id,
                         data=handle.context.data,
-                        cancellation=handle.context.cancellation,
+                        cancellation=cancellation,
                         _on_progress=on_progress,
+                        _on_executor_task=cancellation.bind_executor,
                     ),
-                ),
-                timeout=timeout,
-            )
+                )
             if self.config.after_tool_call is not None:
                 value = self.config.after_tool_call(call, tool, result, None, handle.context)
                 replacement = await value if inspect.isawaitable(value) else value

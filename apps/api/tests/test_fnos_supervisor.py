@@ -17,6 +17,44 @@ from sag_api.enums import JobStatus, JobType
 from sag_api.fnos.identity import GatewayIdentity
 
 
+@pytest.mark.asyncio
+async def test_client_construction_failure_stops_already_spawned_child(monkeypatch, tmp_path) -> None:
+    import errno
+    import sys
+
+    from sag_api.fnos import supervisor as module
+    from sag_api.fnos.workspace import WorkspacePaths
+
+    original_spawn = asyncio.create_subprocess_exec
+    children = []
+
+    async def spawn_sleeping_child(*_args, **_kwargs):
+        process = await original_spawn(sys.executable, "-c", "import time; time.sleep(60)")
+        children.append(process)
+        return process
+
+    def fail_client(**_kwargs):
+        raise OSError(errno.EMFILE, "Too many open files")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn_sleeping_child)
+    monkeypatch.setattr(module.httpx, "AsyncClient", fail_client)
+    identity = GatewayIdentity(1000, "Alice", False)
+    paths = WorkspacePaths.for_identity(tmp_path / "data", tmp_path / "temp", identity)
+    paths.prepare()
+    try:
+        with pytest.raises(OSError, match="Too many open files"):
+            await module.SubprocessWorkerFactory().spawn(identity, paths)
+        # An unowned live child would survive the failed acquire and consume
+        # resources while subsequent requests start more children.
+        assert len(children) == 1
+        await asyncio.wait_for(asyncio.shield(children[0].wait()), timeout=0.3)
+    finally:
+        for process in children:
+            if process.returncode is None:
+                process.kill()
+            await process.wait()
+
+
 @pytest.fixture(autouse=True)
 def _pure_uid_isolation_by_default(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("SAG_FNOS_USERNAME_ISOLATION", raising=False)

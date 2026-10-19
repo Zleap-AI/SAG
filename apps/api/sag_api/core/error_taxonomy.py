@@ -62,6 +62,9 @@ class ErrorCode(StrEnum):
     SERVICE_UNAVAILABLE = "service_unavailable"
     """暂时不可用，可重试，如限流 / 超时（503）。"""
 
+    RESOURCE_EXHAUSTED = "resource_exhausted"
+    """本进程或系统的文件描述符耗尽（503）。"""
+
     # —— LLM / 结构化输出 ——
     LLM_UNAVAILABLE = "llm_unavailable"
     """LLM 暂时性失败：超时 / 限流 / 5xx，可重试。"""
