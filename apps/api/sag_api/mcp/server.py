@@ -19,6 +19,8 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from sag_api.core.config import settings
+from sag_api.core.retrieval_policy import knowledge_search_strategy
 from sag_api.services.retrieval_service import retrieve_relevant_sections
 
 if TYPE_CHECKING:
@@ -232,9 +234,15 @@ def build_source_mcp(
             scope.engine_manager,
             selected,
             normalized,
+            strategy=knowledge_search_strategy(None, settings),
             top_k=max(1, min(top_k, 50)),
         )
         result = _sections_to_text(outcome.sections, selected)
+        if outcome.stats.get("fallback_used"):
+            ranking = outcome.stats.get("ranking") or {}
+            reason = str(ranking.get("fallback_reason") or "").lower()
+            message = "精排超时" if "timeout" in reason or "deadline" in reason else "精排服务暂不可用"
+            result = f"（{message}，本次已降级为基础评分。）\n" + result
         if outcome.stats.get("knowledge_pending"):
             return "（部分知识尚未重新入库，当前结果可能不完整。）\n" + result
         return result

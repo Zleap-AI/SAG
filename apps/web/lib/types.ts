@@ -1,4 +1,4 @@
-import type { SearchStrategy } from "./retrieval-config";
+import type { SearchStrategy, SearchStrategyDisabledMap } from "./retrieval-config";
 
 export interface User {
   id: string;
@@ -308,6 +308,11 @@ export interface ModelConfig {
   mineru_version: "2.0" | "2.5";
   mineru_official_model: "pipeline" | "vlm";
   mineru_api_key_set: boolean;
+  jev_endpoint?: string | null;
+  jev_model?: string;
+  jev_api_key_set?: boolean;
+  jev_ranking_timeout_seconds?: number;
+  jev_failure_policy?: "error" | "fallback_to_score";
   effective_document_parser: EffectiveDocumentParser;
   document_extract_concurrency: number;
   document_chunk_max_tokens: number;
@@ -337,6 +342,11 @@ export type ModelConfigPatch = Partial<{
   mineru_version: "2.0" | "2.5";
   mineru_official_model: "pipeline" | "vlm";
   mineru_api_key: string;
+  jev_endpoint: string | null;
+  jev_model: string;
+  jev_api_key: string;
+  jev_ranking_timeout_seconds: number;
+  jev_failure_policy: "error" | "fallback_to_score";
   document_extract_concurrency: number;
   document_chunk_max_tokens: number;
   document_chunk_mode: "standard" | "heading_strict";
@@ -423,6 +433,7 @@ export interface MessageStep {
   args?: string;
   arguments?: Record<string, unknown>;
   details?: {
+    retrieval?: Record<string, unknown>;
     count?: number;
     scope?: "knowledge" | "internet";
     sources?: { id?: string; name?: string }[];
@@ -824,6 +835,8 @@ export interface ExplorationDetail {
 }
 
 export interface Capabilities {
+  search_strategies?: SearchStrategy[];
+  search_strategies_disabled?: SearchStrategyDisabledMap;
   auth_mode?: "legacy" | "password" | "single_user" | "fnos";
   llm_configured: boolean;
   web_search_configured?: boolean;

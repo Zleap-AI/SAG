@@ -129,6 +129,11 @@ async def test_302_quick_model_setup(monkeypatch: pytest.MonkeyPatch):
                     "search_strategy": "vector",
                     "search_top_k": 8,
                     "sag_language": "zh",
+                    "jev_endpoint": None,
+                    "jev_model": "jev-latest",
+                    "jev_api_key_set": False,
+                    "jev_ranking_timeout_seconds": 30.0,
+                    "jev_failure_policy": "error",
                 }
                 assert body["capabilities"]["llm_configured"] is True
                 assert body["capabilities"]["llm_provider"] == "openai"

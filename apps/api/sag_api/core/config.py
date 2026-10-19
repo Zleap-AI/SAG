@@ -26,6 +26,35 @@ from sag_api.enums import SearchStrategy, normalize_search_strategy
 
 _DEFAULT_LLM_PROVIDER = get_model_provider("openai")
 _DEFAULT_EMBEDDING_DIMENSIONS = 1024
+MAX_JEV_RANKING_TIMEOUT_SECONDS = 120.0
+
+
+def normalize_jev_endpoint(value: str | None) -> str | None:
+    """Preserve the complete scoring URL; reject credentials and unusable URLs."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("JEV 服务地址必须是有效的完整 HTTP(S) URL")
+    if not value.strip():
+        return None
+    endpoint = value.strip()
+    try:
+        parsed = urlsplit(endpoint)
+        port = parsed.port
+    except ValueError:
+        raise ValueError("JEV 服务地址必须是有效的完整 HTTP(S) URL") from None
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or any(char.isspace() for char in endpoint)
+        or port == 0
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        raise ValueError("JEV 服务地址必须是完整 HTTP(S) URL，不能包含用户凭证或 fragment")
+    return endpoint
+
 
 
 class Settings(BaseSettings):
@@ -35,6 +64,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        hide_input_in_errors=True,
     )
 
     # ── 应用 ────────────────────────────────────────────────────────────
@@ -130,6 +160,13 @@ class Settings(BaseSettings):
     # 未配置时对 qwen 系模型通过 LiteLLM reasoning_effort=none 统一关闭思考。
     llm_extra_body: dict | None = None
 
+    # Independent scoring credentials; saving this connection never enables its strategy.
+    jev_endpoint: str | None = Field(default=None, max_length=1000)
+    jev_model: str = Field(default="jev-latest", min_length=1, max_length=200)
+    jev_api_key: str | None = Field(default=None, max_length=8192, repr=False)
+    jev_ranking_timeout_seconds: float = Field(default=30.0, ge=0.1, le=MAX_JEV_RANKING_TIMEOUT_SECONDS)
+    jev_failure_policy: Literal["error", "fallback_to_score"] = "error"
+
     # ── Embedding（OpenAI-compatible；仅 OpenAI provider 可复用生成配置）───────
     embedding_model: str = "bge-large-en-v1.5"
     embedding_base_url: str | None = "https://api.302ai.cn/v1"
@@ -219,6 +256,46 @@ class Settings(BaseSettings):
     def _normalize_legacy_search_strategy(cls, value: object) -> object:
         # 兼容升级前的环境变量；公开 API 已不再接受 atomic。
         return normalize_search_strategy(value) if isinstance(value, str) else value
+
+    @field_validator("jev_endpoint")
+    @classmethod
+    def _validate_jev_endpoint(cls, value: str | None) -> str | None:
+        return normalize_jev_endpoint(value)
+
+    @field_validator("jev_model")
+    @classmethod
+    def _validate_jev_model(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("JEV 模型名称不能为空")
+        return value.strip()
+
+    @field_validator("jev_api_key")
+    @classmethod
+    def _normalize_jev_api_key(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
+
+    @property
+    def jev_configured(self) -> bool:
+        """Validate the complete group, including legacy DB values assigned without validation."""
+        try:
+            endpoint = normalize_jev_endpoint(self.jev_endpoint)
+        except (TypeError, ValueError):
+            return False
+        return bool(
+            endpoint
+            and len(self.jev_endpoint) <= 1000
+            and isinstance(self.jev_api_key, str)
+            and self.jev_api_key.strip()
+            and len(self.jev_api_key) <= 8192
+            and isinstance(self.jev_model, str)
+            and self.jev_model.strip()
+            and len(self.jev_model) <= 200
+            and isinstance(self.jev_ranking_timeout_seconds, (int, float))
+            and not isinstance(self.jev_ranking_timeout_seconds, bool)
+            and 0.1 <= self.jev_ranking_timeout_seconds <= MAX_JEV_RANKING_TIMEOUT_SECONDS
+            and isinstance(self.jev_failure_policy, str)
+            and self.jev_failure_policy in {"error", "fallback_to_score"}
+        )
 
     @field_validator("timezone")
     @classmethod

@@ -164,6 +164,9 @@ def create_gateway_app(
                     params=upstream_params,
                     headers=upstream_headers,
                     content=request.stream(),
+                    # Retrieval/probe budgets belong to the worker; JEV may
+                    # legitimately take longer than the readiness client's 60s.
+                    timeout=httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0),
                 )
                 response = await lease.handle.client.send(upstream, stream=True)
             except BaseException:

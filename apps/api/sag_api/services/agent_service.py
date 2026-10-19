@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -27,6 +27,8 @@ from sag_agent import (
 from sag_agent import (
     ToolResult as RuntimeToolResult,
 )
+from sag_api.core.config import settings
+from sag_api.core.retrieval_policy import knowledge_search_strategy, search_request_timeout_seconds
 from sag_api.enums import MessageStatus
 from sag_api.generation import LLMClient, build_prompt_preview
 from sag_api.sag import EngineManager, SourceGraphInfo
@@ -354,7 +356,62 @@ def _enabled_tool_names(agent, *, has_sources: bool = False, knowledge_only: boo
     return list(dict.fromkeys([*_ALWAYS_TOOLS, *knowledge_tools, *web_tools, *configured]))
 
 
+def _retrieval_details(stats: Mapping[str, Any], sources: list) -> dict[str, Any]:
+    """Expose retrieval state without raw upstream diagnostics or settings."""
+    result: dict[str, Any] = {}
+    for key in ("requested_strategy", "effective_strategy"):
+        if stats.get(key) in {"vector", "multi", "multi_jev"}:
+            result[key] = stats[key]
+    if isinstance(stats.get("fallback_used"), bool):
+        result["fallback_used"] = stats["fallback_used"]
+    ranking = stats.get("ranking")
+    if isinstance(ranking, Mapping):
+        safe_ranking = {}
+        if ranking.get("method") in {"jev", "score", "event_score", "none"}:
+            safe_ranking["method"] = ranking["method"]
+        reason = ranking.get("fallback_reason")
+        if reason:
+            safe_ranking["fallback_reason"] = (
+                "timeout" if re.search("timeout|deadline", str(reason), re.IGNORECASE) else "unavailable"
+            )
+        elif "fallback_reason" in ranking:
+            safe_ranking["fallback_reason"] = None
+        for key in ("scored_chunks", "query_chunk_fallback_chunks"):
+            value = ranking.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                safe_ranking[key] = value
+        if safe_ranking:
+            result["ranking"] = safe_ranking
+    source_stats = stats.get("source_stats")
+    if isinstance(source_stats, (list, Mapping)):
+        by_config = {source.sag_source_config_id: source.id for source in sources}
+        entries = source_stats.values() if isinstance(source_stats, Mapping) else source_stats
+        safe_sources = []
+        for item in entries:
+            if not isinstance(item, Mapping):
+                continue
+            safe = _retrieval_details({key: value for key, value in item.items() if key != "source_stats"}, [])
+            source_id = by_config.get(item.get("source_config_id"))
+            if source_id:
+                safe["source_id"] = source_id
+            if safe:
+                safe_sources.append(safe)
+        result["source_stats"] = safe_sources
+    return result
+
+
 def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict]) -> AgentTool:
+    name = host_tool.meta.name
+    strategy = knowledge_search_strategy(host_context.persona, settings)
+    if name == "search_context":
+        # Keep the chosen strategy aligned with this run's tool deadline if
+        # global settings change while the model is deciding to call it.
+        host_context = replace(
+            host_context,
+            persona={**host_context.persona, "search_strategy": strategy},
+            jev_ranking_timeout_seconds=(settings.jev_ranking_timeout_seconds if strategy == "multi_jev" else None),
+        )
+
     async def execute(
         arguments: Mapping[str, Any],
         context,
@@ -387,6 +444,9 @@ def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict])
             for citation in result.citations[:6]
         ]
         details: dict[str, Any] = {"count": count}
+        retrieval_stats = result.data.get("retrieval_stats")
+        if isinstance(retrieval_stats, Mapping):
+            details["retrieval"] = _retrieval_details(retrieval_stats, host_context.sources)
         if host_tool.meta.name in _KNOWLEDGE_TOOLS:
             details["scope"] = "knowledge"
             details["sources"] = [
@@ -484,7 +544,14 @@ def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict])
             artifacts=artifacts,
         )
 
-    name = host_tool.meta.name
+    timeout = (
+        search_request_timeout_seconds(
+            settings, strategy, len(host_context.sources),
+            jev_ranking_timeout_seconds=host_context.jev_ranking_timeout_seconds,
+        ) + 5.0
+        if name == "search_context" and strategy == "multi_jev"
+        else None
+    )
     return AgentTool(
         spec=ToolSpec(
             name=name,
@@ -494,6 +561,7 @@ def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict])
             risk=ToolRisk.READ_ONLY,
             # Citation numbering currently depends on source-order execution.
             execution_mode=ToolExecutionMode.SEQUENTIAL,
+            timeout_seconds=timeout,
         ),
         executor=execute,
     )

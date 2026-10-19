@@ -439,7 +439,10 @@
     "multiDescription": "结合实体关系与 LLM 精排，结果更完整。",
     "mode": "检索模式",
     "modeAria": "检索模式：{strategy}",
-    "default": "默认"
+    "default": "默认",
+    "multiJevLabel": "JEV 精排",
+    "multiJevDescription": "扩展关联证据后，使用配置的 JEV 服务评分相关性。",
+    "unsupportedBackend": "当前服务端未声明支持 JEV，请升级服务端后使用此模式。"
   },
   "RetrievalTest": {
     "failed": "检索失败",
@@ -450,7 +453,9 @@
     "run": "检索",
     "resultCount": "召回 {count, number} 条",
     "empty": "没有召回任何内容。换个说法，或确认文档已处理完成。",
-    "section": "片段"
+    "section": "片段",
+    "strategy": "检索策略",
+    "inheritStrategy": "沿用已保存的全局策略"
   },
   "KnowledgeConfig": {
     "title": "知识库配置",
@@ -488,7 +493,30 @@
     "topK": "召回条数 · {count, number}",
     "topKAria": "召回条数",
     "saving": "保存中…",
-    "save": "保存并生效"
+    "save": "保存并生效",
+    "jevTitle": "JEV 精排服务",
+    "jevDescription": "选择 JEV 模式时，会将问题与候选证据发送至此服务评分。仅保存连接不会开启此模式。",
+    "jevProvider": "服务商",
+    "jevProviderOfficial": "TypeSafe 官方",
+    "jevProviderCustom": "自定义",
+    "jevProviderDescription": "预设会填入完整评分地址和稳定版模型名；选择自定义可编辑地址。",
+    "jevEndpoint": "完整评分 URL",
+    "jevEndpointDescription": "填写完整 HTTP(S) 评分地址，系统不会自动追加路径。",
+    "jevModel": "模型",
+    "jevModelDescription": "jev-latest 跟随 JEV 最新稳定版，也可填写服务商支持的模型名。",
+    "jevKey": "独立 JEV API Key",
+    "jevKeyConfigured": "已配置，留空保持不变",
+    "jevKeyPlaceholder": "填写独立 JEV API Key",
+    "jevKeyDescription": "测试或启用 JEV 必须配置独立密钥，不继承生成模型密钥。更改地址会清除原密钥；此版本暂不支持匿名服务。",
+    "jevTimeout": "精排预算（秒）",
+    "jevTimeoutDescription": "0.1 至 120 秒，仅用于评分，与整体检索时限独立。",
+    "jevFailurePolicy": "精排失败时",
+    "jevError": "报错",
+    "jevFallback": "允许返回粗排结果",
+    "jevTest": "测试 JEV 连接",
+    "jevTesting": "测试中…",
+    "jevTestFailed": "JEV 连接测试失败",
+    "jevInvalidDraft": "测试或启用 JEV 时，请填写有效的完整 HTTP(S) URL、模型、独立密钥，以及 0.1 至 120 秒的精排预算。"
   },
   "ModelConfig": {
     "title": "模型配置",
@@ -1452,5 +1480,17 @@
     "includesQA": "问答交互关键事件",
     "includesErrors": "错误与异常信息",
     "includesEnv": "系统环境信息"
+  },
+  "RetrievalStatus": {
+    "requested": "请求模式：{mode}",
+    "actual": "实际模式：{mode}",
+    "coarse": "粗排",
+    "jevComplete": "JEV 已评分 {count, number} 个候选。",
+    "unscored": "未评分的向量候选",
+    "unscoredCandidates": "{count, number} 个向量候选未经 JEV 评分。",
+    "jevFallback": "本次未完成 JEV 精排，已返回粗排结果。",
+    "fallbackTimeout": "评分服务超出精排预算。",
+    "fallbackUnavailable": "评分服务未能完成打分，请检查连接或重试。",
+    "partial": "部分结果：部分信源未完成检索。"
   }
 }

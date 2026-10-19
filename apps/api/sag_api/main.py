@@ -261,6 +261,15 @@ def create_app() -> FastAPI:
                     }
                 },
             )
+        if request.url.path.startswith("/api/v1/system/model-config"):
+            # Validation input may contain API Keys or credentials embedded in a URL.
+            return JSONResponse(
+                status_code=422,
+                content={"detail": [
+                    {key: error[key] for key in ("type", "loc", "msg") if key in error}
+                    for error in exc.errors()
+                ]},
+            )
         return await request_validation_exception_handler(request, exc)
 
     @app.exception_handler(Exception)

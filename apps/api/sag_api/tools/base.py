@@ -46,6 +46,8 @@ class ToolContext:
     agent: Agent | None = None
     # 全局证据编号偏移：循环在每次派发前设置，保证 [n] 跨轮递增不重号
     citation_offset: int = 0
+    # Bound this run's ranking budget; connection settings are resolved when queried.
+    jev_ranking_timeout_seconds: float | None = None
 
 
 @dataclass

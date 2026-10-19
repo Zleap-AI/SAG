@@ -103,6 +103,9 @@ def create_public_mcp_app(gateway_socket: Path, *, max_concurrency: int = 2) -> 
                 params=upstream_query,
                 headers=_request_headers(request, token),
                 content=request.stream(),
+                # The worker bounds retrieval and owns cancellation/cleanup;
+                # this forwarding hop must not impose a shorter read deadline.
+                timeout=httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0),
             )
             upstream_response = await app.state.client.send(upstream, stream=True)
         except BaseException as error:

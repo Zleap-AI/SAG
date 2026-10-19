@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable, Coroutine
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -21,7 +21,9 @@ from zleap.sag.exceptions import StateError
 
 from sag_api.core.config import Settings
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
+from sag_api.core.errors import ConfigurationError, ServiceUnavailableError
 from sag_api.core.logging import get_logger
+from sag_api.core.retrieval_policy import search_request_timeout_seconds
 from sag_api.enums import (
     SEARCH_STRATEGIES,
     SEARCH_STRATEGY_REQUIREMENTS,
@@ -168,6 +170,7 @@ class EngineManager:
         # serialized across source slots; server databases retain full concurrency.
         self._sqlite_document_mutation_lock = asyncio.Lock()
         self._lifecycle_gate = _EngineLifecycleGate()
+        self._configuration_gate = _EngineLifecycleGate()
         self._cache_size = max(1, settings.engine_cache_size)
         self._schema_ready = False
         self._universe_indexes_ready = False
@@ -306,6 +309,7 @@ class EngineManager:
         "vector": "vector",
         "multi": "full_expand",
         "multi_es_fast": "pruned_expand_rff",
+        "multi_jev": "pruned_expand_jev",
     }
 
     _VECTOR_PROVIDER_LEXICAL_SUPPORT: dict[str, bool] = {
@@ -324,6 +328,8 @@ class EngineManager:
         for capability in requirements:
             if capability == "lexical_search" and not self._vector_provider_supports_lexical():
                 missing.append(capability)
+            if capability == "jev" and not self._settings.jev_configured:
+                missing.append(capability)
         return tuple(missing)
 
     def _effective_search_strategy(self, requested: str | None) -> str:
@@ -336,6 +342,9 @@ class EngineManager:
                 if strategy != raw:
                     log.info("旧检索策略 %s 已按精确模式 multi 执行", raw)
                 return strategy
+            if strategy == "multi_jev":
+                reason = self.strategies_capability_report(self._settings)["disabled"][strategy]
+                raise ConfigurationError(reason["message"], stage=ErrorStage.RETRIEVE)
             log.warning(
                 "策略 %s 所需能力缺失(%s, provider=%s),按后台默认策略回退",
                 strategy,
@@ -345,6 +354,9 @@ class EngineManager:
         else:
             log.warning("忽略不支持的检索策略 %s", raw)
         fallback = normalize_search_strategy(self._settings.search_strategy)
+        if fallback == "multi_jev" and self._strategy_missing_capabilities(fallback):
+            reason = self.strategies_capability_report(self._settings)["disabled"][fallback]
+            raise ConfigurationError(reason["message"], stage=ErrorStage.RETRIEVE)
         if fallback not in SEARCH_STRATEGIES or self._strategy_missing_capabilities(fallback):
             fallback = "vector"
         return fallback
@@ -359,8 +371,10 @@ class EngineManager:
         if capability == "lexical_search":
             return (
                 "vector_provider_lacks_lexical",
-                f"当前向量存储 ({provider}) 不支持 BM25 词法检索,无法启用 multi_es 系列策略。",
+                f"当前向量存储 ({provider}) 不支持 BM25 词法检索,无法启用该检索策略。",
             )
+        if capability == "jev":
+            return ("jev_connection_not_configured", "请先配置 JEV 完整服务地址和独立 API Key。")
         return None
 
     @classmethod
@@ -376,8 +390,11 @@ class EngineManager:
         for strategy in sorted(SEARCH_STRATEGIES):
             requirements = SEARCH_STRATEGY_REQUIREMENTS.get(strategy, frozenset())
             missing: list[tuple[str, str]] = []
-            for capability in requirements:
-                if capability == "lexical_search" and not supports_lexical:
+            for capability in sorted(requirements, key=lambda value: value != "lexical_search"):
+                if (
+                    (capability == "lexical_search" and not supports_lexical)
+                    or (capability == "jev" and not settings.jev_configured)
+                ):
                     reason = cls._capability_disabled_reason(capability, provider)
                     if reason is not None:
                         missing.append(reason)
@@ -874,7 +891,9 @@ class EngineManager:
         source: Source | None,
         strategy: str,
         top_k: int,
+        source_ids: tuple[str, ...] | None = None,
         include_ranked_candidates: bool = False,
+        jev_ranking_timeout_seconds: float | None = None,
     ) -> SearchOutcome:
         return await self._search._search_raw(
             source_config_id,
@@ -882,7 +901,9 @@ class EngineManager:
             source=source,
             strategy=strategy,
             top_k=top_k,
+            source_ids=source_ids,
             include_ranked_candidates=include_ranked_candidates,
+            jev_ranking_timeout_seconds=jev_ranking_timeout_seconds,
         )
 
     async def search(
@@ -893,7 +914,9 @@ class EngineManager:
         source: Source | None = None,
         strategy: str | None = None,
         top_k: int | None = None,
+        source_ids: tuple[str, ...] | None = None,
         include_ranked_candidates: bool = False,
+        jev_ranking_timeout_seconds: float | None = None,
     ) -> SearchOutcome:
         return await self._search.search(
             source_config_id,
@@ -901,8 +924,14 @@ class EngineManager:
             source=source,
             strategy=strategy,
             top_k=top_k,
+            source_ids=source_ids,
             include_ranked_candidates=include_ranked_candidates,
+            jev_ranking_timeout_seconds=jev_ranking_timeout_seconds,
         )
+
+    def configuration_update(self):
+        """Drain complete retrieval fanouts before changing settings and engine clients."""
+        return self._configuration_gate.write()
 
     async def search_many(
         self,
@@ -912,16 +941,44 @@ class EngineManager:
         strategy: str | None = None,
         top_k: int | None = None,
         exclude_source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
+        source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
         include_ranked_candidates: bool = False,
+        jev_ranking_timeout_seconds: float | None = None,
     ) -> SearchOutcome:
-        return await self._search.search_many(
-            targets,
-            query,
-            strategy=strategy,
-            top_k=top_k,
-            exclude_source_ids_by_config=exclude_source_ids_by_config,
-            include_ranked_candidates=include_ranked_candidates,
-        )
+        strategy = self._effective_search_strategy(strategy)
+        timeout = None
+        if strategy == "multi_jev":
+            # Pin the budget before waiting for a configuration writer. A later
+            # settings change must not extend this request's remaining lifetime.
+            jev_ranking_timeout_seconds = min(
+                self._settings.jev_ranking_timeout_seconds,
+                jev_ranking_timeout_seconds if jev_ranking_timeout_seconds is not None
+                else self._settings.jev_ranking_timeout_seconds,
+            )
+            if targets:
+                timeout = search_request_timeout_seconds(
+                    self._settings, strategy, len(targets),
+                    jev_ranking_timeout_seconds=jev_ranking_timeout_seconds,
+                )
+        lease = self._configuration_gate.read() if targets or strategy != "multi_jev" else nullcontext()
+        try:
+            # The fanout owns and drains cancellation before this scope reports
+            # expiry, so a timeout cannot publish a terminal state over live I/O.
+            async with asyncio.timeout(timeout), lease:
+                return await self._search.search_many(
+                    targets,
+                    query,
+                    strategy=strategy,
+                    top_k=top_k,
+                    exclude_source_ids_by_config=exclude_source_ids_by_config,
+                    source_ids_by_config=source_ids_by_config,
+                    include_ranked_candidates=include_ranked_candidates,
+                    jev_ranking_timeout_seconds=jev_ranking_timeout_seconds,
+                )
+        except TimeoutError as error:
+            if strategy != "multi_jev":
+                raise
+            raise ServiceUnavailableError("JEV 检索超时，请稍后重试", stage=ErrorStage.RETRIEVE) from error
 
     async def _search_chunk_vectors(
         self,

@@ -153,6 +153,36 @@ class _PreparedGlobalSearch:
     response: SearchResponse
 
 
+async def _retrieve_with_event_scores(
+    engine_manager: EngineManager,
+    sources: list[Source],
+    body: SearchRequest | GlobalSearchRequest,
+) -> tuple[SearchOutcome, EventScoreMap]:
+    strategy = body.strategy or settings.search_strategy
+    retrieval = retrieve_relevant_sections(
+        engine_manager,
+        sources,
+        body.query,
+        strategy=strategy,
+        top_k=body.top_k,
+        include_ranked_candidates=body.include_ranked_candidates,
+    )
+    if strategy == "multi_jev":
+        # Native retrieval owns JEV scores and evidence order. The graph below
+        # only decorates those sections, without independent event recall.
+        return await retrieval, {}
+    outcome, event_scores = await asyncio.gather(
+        retrieval,
+        recall_event_scores(
+            engine_manager,
+            body.query,
+            {source.sag_source_config_id: source for source in sources},
+            limit=body.top_k,
+        ),
+    )
+    return outcome, event_scores
+
+
 async def _prepare_global_search(
     session: AsyncSession,
     engine_manager: EngineManager,
@@ -173,22 +203,7 @@ async def _prepare_global_search(
         )
 
     refs = {source.sag_source_config_id: source for source in sources}
-    outcome, event_scores = await asyncio.gather(
-        retrieve_relevant_sections(
-            engine_manager,
-            sources,
-            body.query,
-            strategy=body.strategy,
-            top_k=body.top_k,
-            include_ranked_candidates=body.include_ranked_candidates,
-        ),
-        recall_event_scores(
-            engine_manager,
-            body.query,
-            refs,
-            limit=body.top_k,
-        ),
-    )
+    outcome, event_scores = await _retrieve_with_event_scores(engine_manager, sources, body)
     graph_fields = await _event_graph_fields(
         engine_manager,
         outcome.sections,
@@ -282,22 +297,7 @@ async def search(
 ) -> SearchResponse:
     source = await get_source(session, source_id)
     refs = {source.sag_source_config_id: source}
-    outcome, event_scores = await asyncio.gather(
-        retrieve_relevant_sections(
-            engine_manager,
-            [source],
-            body.query,
-            strategy=body.strategy,
-            top_k=body.top_k,
-            include_ranked_candidates=body.include_ranked_candidates,
-        ),
-        recall_event_scores(
-            engine_manager,
-            body.query,
-            refs,
-            limit=body.top_k,
-        ),
-    )
+    outcome, event_scores = await _retrieve_with_event_scores(engine_manager, [source], body)
     for section in outcome.sections:
         section.source_config_id = section.source_config_id or source.sag_source_config_id
     graph_fields = await _event_graph_fields(

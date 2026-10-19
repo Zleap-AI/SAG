@@ -100,6 +100,23 @@ async def test_public_proxy_forwards_bearer_mcp_to_uds_gateway(public_client) ->
 
 
 @pytest.mark.asyncio
+async def test_public_proxy_preserves_backend_deadline_and_other_transport_limits(short_socket_file: Path) -> None:
+    observed = []
+
+    async def capture(request):
+        observed.append(request.extensions["timeout"])
+
+    async with _gateway_server(short_socket_file, _GatewayRecorder()):
+        app = create_public_mcp_app(short_socket_file)
+        async with app.router.lifespan_context(app):
+            app.state.client.event_hooks["request"].append(capture)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://public") as client:
+                response = await client.post("/mcp/", headers={"Authorization": "Bearer grant"}, json={})
+    assert response.status_code == 200
+    assert observed == [{"connect": 5.0, "read": None, "write": 30.0, "pool": 5.0}]
+
+
+@pytest.mark.asyncio
 async def test_public_proxy_converts_hermes_token_and_strips_it_from_upstream_query(public_client) -> None:
     client, gateway = public_client
 

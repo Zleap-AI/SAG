@@ -246,6 +246,20 @@ async def test_worker_proxy_keeps_query_and_signed_identity_but_strips_client_au
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/v1/search", "/api/v1/system/model-config/jev/test", "/mcp/"])
+async def test_worker_proxy_uses_backend_deadline_without_a_shorter_read_timeout(
+    gateway_client: httpx.AsyncClient, worker: _Worker, path: str,
+) -> None:
+    worker.client.timeout = httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0)
+    response = await gateway_client.post(f"/app/sag{path}", headers=FNOS_A, json={"query": "q"})
+
+    assert response.status_code == 200
+    assert worker.requests[-1].extensions["timeout"] == {
+        "connect": 5.0, "read": None, "write": 30.0, "pool": 5.0,
+    }
+
+
+@pytest.mark.asyncio
 async def test_valid_fnos_mcp_grant_selects_its_user_worker_and_forwards_bearer(
     gateway_client: httpx.AsyncClient, worker: _Worker, gateway: FastAPI
 ) -> None:
