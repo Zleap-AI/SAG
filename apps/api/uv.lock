@@ -3428,6 +3428,7 @@ dependencies = [
 
 [package.optional-dependencies]
 desktop = [
+    { name = "certifi" },
     { name = "pyinstaller" },
 ]
 dev = [
@@ -3448,6 +3449,7 @@ requires-dist = [
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.4" },
     { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29" },
     { name = "bcrypt", specifier = ">=4.1" },
+    { name = "certifi", marker = "extra == 'desktop'", specifier = ">=2024.8.30" },
     { name = "charset-normalizer", specifier = ">=3.3,<4" },
     { name = "cryptography", specifier = ">=46.0.5,<51" },
     { name = "fastapi", specifier = ">=0.115" },

@@ -39,6 +39,22 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
 
+  desktop-windows-certificates:
+    name: Windows CA · 冻结运行时回归
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: apps/api/uv.lock
+      - name: 安装证书与冻结测试依赖
+        run: python -m pip install "pytest>=8.2" aiohttp "certifi>=2024.8.30" "pyinstaller>=6.16,<7"
+      - name: 验证原生冻结程序的默认证书与自定义配置
+        run: python -m pytest --noconftest -q apps/api/tests/test_desktop_certificates.py
+
   backend:
     name: 后端 · ruff + pytest
     runs-on: ubuntu-latest

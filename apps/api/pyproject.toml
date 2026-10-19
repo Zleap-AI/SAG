@@ -46,6 +46,7 @@ dev = [
     "ruff>=0.5",
 ]
 desktop = [
+    "certifi>=2024.8.30",
     "pyinstaller>=6.16,<7",
 ]
 
