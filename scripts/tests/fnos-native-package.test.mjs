@@ -289,6 +289,17 @@ test("rendered native package rejects unresolved builder tokens", async (t) => {
   await expectRejected(root, "x86", /unresolved.*SAG/i);
 });
 
+test("SDK internal SAG markers are data, while application builder tokens remain invalid", async (t) => {
+  const root = await renderedPackage(t, "x86");
+  const vendor = path.join(root, "app/server/vendor/zleap/sag/modules/extract");
+  await mkdir(vendor, { recursive: true });
+  await writeFile(path.join(vendor, "extractor.py"), 'non_time = key("__SAG_FIXED_REFERENCE_TIME__")\n');
+  const { validateNativeTemplate } = await loadValidator();
+  await validateNativeTemplate(root, "x86");
+  await writeFile(path.join(root, "app/unresolved.txt"), "__SAG_PLATFORM__");
+  await expectRejected(root, "x86", /unresolved.*SAG/i);
+});
+
 test("rendered native package rejects a missing required icon", async (t) => {
   const root = await renderedPackage(t, "x86");
   await unlink(path.join(root, "app/ui/images/icon_256.png"));
@@ -499,16 +510,19 @@ test("native consent wizard covers retained-data install and warns of reset", as
   const install = JSON.parse(await readFile(path.join(repoRoot, "packages/fnos/native/sag/wizard/install"), "utf8"));
   assert.deepEqual(install, upgrade);
   assert.match(install[0].items[0].helpText, /重置.*重新上传/);
+  assert.match(install[0].items[0].helpText, /0\.13.*保留/);
+  assert.match(install[0].items[0].helpText, /全新安装.*不涉及重置/);
 });
 
-for (const defect of ["missing", "no-reset-warning"]) {
+for (const defect of ["missing", "no-reset-warning", "no-preservation-warning"]) {
   test(`native package rejects install consent: ${defect}`, async (t) => {
     const root = await renderedPackage(t, "x86");
     const filename = path.join(root, "wizard/install");
     if (defect === "missing") await unlink(filename);
     else {
       const wizard = JSON.parse(await readFile(filename, "utf8"));
-      wizard[0].items[0].helpText = "普通更新";
+      wizard[0].items[0].helpText = defect === "no-preservation-warning"
+        ? "现有知识库将被重置，需要重新上传文档。" : "普通更新";
       await writeFile(filename, JSON.stringify(wizard));
     }
     await expectRejected(root, "x86", /install|reset|re-upload/i);

@@ -1,6 +1,6 @@
-"""zleap-sag 0.8.2 管线适配层。
+"""zleap-sag 0.15.0 的兼容管线适配层。
 
-0.8.2 将 load/extract 收敛为显式管线,本模块是 SAG 文档处理(ingest+extract)
+自 0.8.2 起 load/extract 收敛为显式管线,本模块保留 SAG 文档处理(ingest+extract)
 与 zleap 管线公开 API 之间的适配:
 
 - ``engine.ingest(...)``:Parse → Chunk → Index,返回 ``ChunkSetRef``
