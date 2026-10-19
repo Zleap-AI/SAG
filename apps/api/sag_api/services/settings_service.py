@@ -104,20 +104,22 @@ def _normalize_overrides(overrides: dict) -> dict:
         value = normalized.get(field)
         if isinstance(value, str):
             normalized[field] = _LEGACY_302_BASE_URLS.get(value.rstrip("/"), value)
-    if normalized.get("mineru_provider") is None:
+    if normalized.get("mineru_provider") is None and "mineru_base_url" in normalized:
+        # Only infer a provider for legacy rows that persisted a MinerU URL;
+        # unrelated settings must preserve SAG_MINERU_PROVIDER from the environment.
         mineru_url = str(normalized.get("mineru_base_url") or "")
         mineru_host = (urlparse(mineru_url).hostname or "").lower()
         normalized["mineru_provider"] = (
             "official" if mineru_host == "mineru.net" else "302"
         )
     elif (
-        normalized["mineru_provider"] == "official"
+        normalized.get("mineru_provider") == "official"
         and str(normalized.get("mineru_base_url") or "").rstrip("/")
         == "https://api.302ai.cn"
     ):
         normalized["mineru_base_url"] = _OFFICIAL_MINERU_BASE_URL
     elif (
-        normalized["mineru_provider"] == "302"
+        normalized.get("mineru_provider") == "302"
         and (urlparse(str(normalized.get("mineru_base_url") or "")).hostname or "").lower()
         == "mineru.net"
     ):
