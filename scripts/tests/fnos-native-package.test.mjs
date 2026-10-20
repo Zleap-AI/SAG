@@ -146,6 +146,22 @@ test("rendered x86 and ARM packages satisfy the native package contract", async 
   }
 });
 
+test("rendered package rejects a launcher that skips the NOFILE bootstrap", async (t) => {
+  const root = await renderedPackage(t, "x86");
+  const main = path.join(root, "cmd/main");
+  const source = await readFile(main, "utf8");
+  await writeFile(main, source.replace(/^[ \t]+configure_nofile[ \t]+[^\n]*$/m, ""));
+  await expectRejected(root, "x86", /launcher.*NOFILE.*before.*daemon/i);
+});
+
+test("rendered package rejects a launcher that could lower the hard NOFILE limit", async (t) => {
+  const root = await renderedPackage(t, "x86");
+  const main = path.join(root, "cmd/main");
+  const source = await readFile(main, "utf8");
+  await writeFile(main, source.replace('ulimit -S -n "$_sag_nofile_effective"', 'ulimit -n "$_sag_nofile_effective"'));
+  await expectRejected(root, "x86", /launcher.*NOFILE.*soft/i);
+});
+
 test("rendered package rejects the legacy numbered fnOS suffix", async (t) => {
   const root = await renderedPackage(t, "x86");
   const manifestPath = path.join(root, "manifest");
@@ -270,6 +286,17 @@ test("rendered native package rejects platform all", async (t) => {
 test("rendered native package rejects unresolved builder tokens", async (t) => {
   const root = await renderedPackage(t, "x86");
   await writeFile(path.join(root, "manifest"), `${await readFile(path.join(root, "manifest"), "utf8")}desc=__SAG_PLATFORM__\n`);
+  await expectRejected(root, "x86", /unresolved.*SAG/i);
+});
+
+test("SDK internal SAG markers are data, while application builder tokens remain invalid", async (t) => {
+  const root = await renderedPackage(t, "x86");
+  const vendor = path.join(root, "app/server/vendor/zleap/sag/modules/extract");
+  await mkdir(vendor, { recursive: true });
+  await writeFile(path.join(vendor, "extractor.py"), 'non_time = key("__SAG_FIXED_REFERENCE_TIME__")\n');
+  const { validateNativeTemplate } = await loadValidator();
+  await validateNativeTemplate(root, "x86");
+  await writeFile(path.join(root, "app/unresolved.txt"), "__SAG_PLATFORM__");
   await expectRejected(root, "x86", /unresolved.*SAG/i);
 });
 
@@ -483,16 +510,19 @@ test("native consent wizard covers retained-data install and warns of reset", as
   const install = JSON.parse(await readFile(path.join(repoRoot, "packages/fnos/native/sag/wizard/install"), "utf8"));
   assert.deepEqual(install, upgrade);
   assert.match(install[0].items[0].helpText, /重置.*重新上传/);
+  assert.match(install[0].items[0].helpText, /0\.13.*保留/);
+  assert.match(install[0].items[0].helpText, /全新安装.*不涉及重置/);
 });
 
-for (const defect of ["missing", "no-reset-warning"]) {
+for (const defect of ["missing", "no-reset-warning", "no-preservation-warning"]) {
   test(`native package rejects install consent: ${defect}`, async (t) => {
     const root = await renderedPackage(t, "x86");
     const filename = path.join(root, "wizard/install");
     if (defect === "missing") await unlink(filename);
     else {
       const wizard = JSON.parse(await readFile(filename, "utf8"));
-      wizard[0].items[0].helpText = "普通更新";
+      wizard[0].items[0].helpText = defect === "no-preservation-warning"
+        ? "现有知识库将被重置，需要重新上传文档。" : "普通更新";
       await writeFile(filename, JSON.stringify(wizard));
     }
     await expectRejected(root, "x86", /install|reset|re-upload/i);

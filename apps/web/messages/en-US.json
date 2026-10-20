@@ -439,7 +439,10 @@
     "multiDescription": "Combine entity relationships with LLM reranking for more complete results.",
     "mode": "Retrieval mode",
     "modeAria": "Retrieval mode: {strategy}",
-    "default": "Default"
+    "default": "Default",
+    "multiJevLabel": "JEV reranking",
+    "multiJevDescription": "Expand related evidence and rank relevance with the configured JEV service.",
+    "unsupportedBackend": "This server does not declare JEV support. Upgrade the server to use this mode."
   },
   "RetrievalTest": {
     "failed": "Retrieval failed",
@@ -450,7 +453,9 @@
     "run": "Retrieve",
     "resultCount": "{count, plural, one {# result} other {# results}}",
     "empty": "No content was retrieved. Rephrase the query or confirm that document processing is complete.",
-    "section": "Passage"
+    "section": "Passage",
+    "strategy": "Retrieval strategy",
+    "inheritStrategy": "Use the saved global strategy"
   },
   "KnowledgeConfig": {
     "title": "Knowledge settings",
@@ -488,7 +493,30 @@
     "topK": "Results · {count, number}",
     "topKAria": "Number of results",
     "saving": "Saving…",
-    "save": "Save and apply"
+    "save": "Save and apply",
+    "jevTitle": "JEV reranking service",
+    "jevDescription": "JEV mode sends your question and candidate evidence to this service for relevance scoring. Saving this connection does not enable JEV mode.",
+    "jevProvider": "Provider",
+    "jevProviderOfficial": "TypeSafe official",
+    "jevProviderCustom": "Custom",
+    "jevProviderDescription": "Presets fill the complete scoring URL and stable model name. Choose Custom to edit the URL.",
+    "jevEndpoint": "Complete scoring URL",
+    "jevEndpointDescription": "Use the complete HTTP(S) scoring URL. No path is appended automatically.",
+    "jevModel": "Model",
+    "jevModelDescription": "jev-latest follows the latest stable JEV model. You can use another supported model name.",
+    "jevKey": "Independent JEV API Key",
+    "jevKeyConfigured": "Configured; leave blank to keep it",
+    "jevKeyPlaceholder": "Enter an independent JEV API Key",
+    "jevKeyDescription": "A key is required to test or enable JEV. It never inherits the generation model key. Changing the URL clears the old key; anonymous services are not supported in this version.",
+    "jevTimeout": "Ranking budget (seconds)",
+    "jevTimeoutDescription": "0.1 to 120 seconds for ranking, separate from the overall search deadline.",
+    "jevFailurePolicy": "On ranking failure",
+    "jevError": "Return an error",
+    "jevFallback": "Allow coarse results",
+    "jevTest": "Test JEV connection",
+    "jevTesting": "Testing…",
+    "jevTestFailed": "JEV connection test failed",
+    "jevInvalidDraft": "To test or enable JEV, enter a valid complete HTTP(S) URL, model, independent key and a ranking budget from 0.1 to 120 seconds."
   },
   "ModelConfig": {
     "title": "Model settings",
@@ -539,8 +567,22 @@
     "retriesDescription": "Automatic retry attempts after a failed request.",
     "embeddingDescription": "Used for document embeddings and semantic retrieval.",
     "modelAndConnection": "Model and connection",
-    "embeddingConnectionDescription": "Leave the endpoint or key blank to reuse the generation model settings.",
+    "embeddingConnectionDescription": "Configure the URL and key independently. The hints below show which settings will be used.",
     "embeddingNativeConnectionDescription": "Anthropic and Gemini do not share this embedding format. Configure a separate OpenAI-compatible embedding endpoint and key.",
+    "embeddingAddressPlaceholder": "Leave blank to use generation URL",
+    "embeddingAddressDefaultPlaceholder": "Leave blank to use default URL",
+    "separateEmbeddingAddress": "Configure a separate embedding endpoint",
+    "embeddingAddressCurrent": "Currently used",
+    "embeddingAddressAfterSave": "Used after saving",
+    "embeddingAddressIndependent": "{status}: {address} (separate embedding URL).",
+    "embeddingAddressInherited": "{status}: {address} (generation model URL).",
+    "embeddingAddressDefault": "{status}: SDK default URL.",
+    "embeddingAddressNativeDefault": "{status}: SDK default URL. The generation model URL is not inherited; enter your embedding service’s URL.",
+    "embeddingKeyNew": "After saving, the new separate embedding key will be used.",
+    "embeddingKeySaved": "A separate embedding key is already saved. Leave blank to keep it.",
+    "embeddingKeyInherited": "Uses the generation model key.",
+    "embeddingKeyRequired": "No embedding key is configured. Configure a separate key.",
+    "embeddingInheritedAddressIndependentKey": "The generation model URL will be used with the separate embedding key. If your embedding model uses another service, enter that service’s URL.",
     "dimensions": "Vector dimensions (optional)",
     "modelDefault": "Use model default",
     "optionalBaseUrl": "Base URL (optional)",
@@ -1438,5 +1480,17 @@
     "includesQA": "Key Q&A interaction events",
     "includesErrors": "Error and exception information",
     "includesEnv": "System environment information"
+  },
+  "RetrievalStatus": {
+    "requested": "Requested: {mode}",
+    "actual": "Used: {mode}",
+    "coarse": "coarse ranking",
+    "jevComplete": "JEV scored {count, number} candidates.",
+    "unscored": "unscored vector candidates",
+    "unscoredCandidates": "{count, number} vector candidates have not been scored by JEV.",
+    "jevFallback": "JEV reranking did not complete; coarse results were returned.",
+    "fallbackTimeout": "The ranking service exceeded its time budget.",
+    "fallbackUnavailable": "The ranking service could not complete scoring. Check the connection or retry.",
+    "partial": "Partial results: some sources did not complete retrieval."
   }
 }

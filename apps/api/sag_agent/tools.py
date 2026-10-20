@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ class ToolContext:
     data: Any
     cancellation: CancellationToken
     _on_progress: ProgressCallback
+    _on_executor_task: Callable[[asyncio.Task[Any] | None], None] | None = None
 
     async def progress(
         self,
@@ -60,7 +62,15 @@ class AgentTool:
         context: ToolContext,
     ) -> ToolResult:
         value = self.executor(arguments, context)
-        if inspect.isawaitable(value):
+        if isinstance(value, asyncio.Task) and context._on_executor_task is not None:
+            # A synchronous executor may return a Task with its own cleanup.
+            # Track that task only while awaiting it; observers remain separate.
+            context._on_executor_task(value)
+            try:
+                value = await value
+            finally:
+                context._on_executor_task(None)
+        elif inspect.isawaitable(value):
             value = await value
         if not isinstance(value, ToolResult):
             raise TypeError(f"tool {self.spec.name!r} must return ToolResult")

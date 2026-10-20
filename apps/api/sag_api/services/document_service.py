@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -18,6 +18,12 @@ from sag_api.db.models import Document, Job, Source
 from sag_api.enums import DocumentStatus, JobStatus, JobType
 from sag_api.jobs import JobQueue
 from sag_api.jobs.scheduling import DELETE_PRIORITY, RESUME_PRIORITY, set_scheduler
+from sag_api.parsing.text import is_text_preview
+
+if TYPE_CHECKING:
+    from sag_api.sag import EngineManager
+
+_RAW_READABLE_SUFFIXES = {".md", ".markdown"}
 
 
 @dataclass(frozen=True)
@@ -85,6 +91,30 @@ async def get_public_document(
     }:
         raise NotFoundError("文档不存在")
     return document
+
+
+async def read_document_lines(
+    document: Document,
+    source: Source,
+    engine_manager: EngineManager,
+) -> list[str] | None:
+    """Read text originals directly and binary documents from parsed Markdown."""
+    path = document.storage_path
+    suffix = os.path.splitext(document.filename)[1].lower()
+    raw_readable = suffix in _RAW_READABLE_SUFFIXES or is_text_preview(
+        document.filename, document.content_type
+    )
+    if raw_readable and path and os.path.isfile(path):
+        with open(path, encoding="utf-8", errors="replace") as file:
+            return file.readlines()
+    if not document.sag_source_id:
+        return None
+    markdown = await engine_manager.get_document_markdown(
+        source.sag_source_config_id,
+        document.sag_source_id,
+        source=source,
+    )
+    return markdown.splitlines(keepends=True) if markdown else None
 
 
 async def create_document_from_upload(

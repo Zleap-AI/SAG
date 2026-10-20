@@ -19,6 +19,7 @@ import httpx
 from sag_api.connectors.web import extract_web_markdown, extract_web_title
 from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
+from sag_api.core.retrieval_policy import knowledge_search_strategy
 from sag_api.generation import build_citations
 from sag_api.sag import RetrievedSection
 from sag_api.services.retrieval_service import recall_event_scores, retrieve_relevant_sections
@@ -35,7 +36,6 @@ _WEB_PAGE_TEXT_LIMIT = 12_000
 _WEB_PAGE_MAX_REDIRECTS = 3
 _WEB_PAGE_CONTENT_TYPES = ("text/html", "text/plain", "application/xhtml+xml")
 _WEB_PAGE_PORTS = frozenset({80, 443, 8080, 8443})
-_DEFAULT_KNOWLEDGE_SEARCH_STRATEGY = "vector"
 _RECENT_QUERY_MARKERS = (
     "今天",
     "今日",
@@ -224,23 +224,35 @@ class SearchContextTool(Tool):
         limit = max(1, min(int(top_k or 8), 50))
         source_refs = {s.sag_source_config_id: {"id": s.id, "name": s.name} for s in ctx.sources}
         sources_by_config = {source.sag_source_config_id: source for source in ctx.sources}
-        outcome, event_scores = await asyncio.gather(
-            retrieve_relevant_sections(
-                ctx.engine_manager,
-                ctx.sources,
-                query,
-                # 问答工具有独立的 30 秒执行预算。默认采用与搜索页“快速”
-                # 一致的批量向量召回，并叠加并行词法与事项召回；人格可显式覆盖。
-                strategy=persona.get("search_strategy") or _DEFAULT_KNOWLEDGE_SEARCH_STRATEGY,
-                top_k=limit,
-            ),
-            recall_event_scores(
-                ctx.engine_manager,
-                query,
-                sources_by_config,
-                limit=limit,
-            ),
+        strategy = knowledge_search_strategy(persona, settings)
+        ranking_budget = (
+            {"jev_ranking_timeout_seconds": ctx.jev_ranking_timeout_seconds}
+            if strategy == "multi_jev" and ctx.jev_ranking_timeout_seconds is not None
+            else {}
         )
+        retrieval = retrieve_relevant_sections(
+            ctx.engine_manager,
+            ctx.sources,
+            query,
+            strategy=strategy,
+            top_k=limit,
+            **ranking_budget,
+        )
+        if strategy == "multi_jev":
+            # Native JEV has already selected and scored its evidence. Graph
+            # decoration must not introduce an independently recalled channel.
+            outcome = await retrieval
+            event_scores = {}
+        else:
+            outcome, event_scores = await asyncio.gather(
+                retrieval,
+                recall_event_scores(
+                    ctx.engine_manager,
+                    query,
+                    sources_by_config,
+                    limit=limit,
+                ),
+            )
         sections = outcome.sections
         graph_for_sections = getattr(ctx.engine_manager, "graph_for_sections", None)
         graph = (
@@ -257,7 +269,7 @@ class SearchContextTool(Tool):
             if (sections or event_scores) and callable(graph_for_sections)
             else None
         )
-        if graph is not None and graph.events:
+        if strategy != "multi_jev" and graph is not None and graph.events:
             sections = await _prioritize_event_evidence(
                 ctx.engine_manager,
                 sections,
@@ -281,6 +293,7 @@ class SearchContextTool(Tool):
             ),
             citations=citations,
             data={
+                "retrieval_stats": outcome.stats,
                 "sections": sections,
                 "section_count": len(sections),
                 "lexical_count": int(outcome.stats.get("lexical_candidates") or 0),

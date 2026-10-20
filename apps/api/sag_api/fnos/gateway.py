@@ -9,15 +9,17 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+import anyio
 import httpx
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 from websockets.asyncio.client import unix_connect
 
 from sag_api.core.errors import AuthError
 from sag_api.fnos.identity import InternalIdentitySigner, parse_gateway_identity
 from sag_api.fnos.proxy import (
     HeaderPolicyError,
+    ProxyStreamingResponse,
     bearer_token,
     filtered_request_headers,
     filtered_response_headers,
@@ -73,25 +75,12 @@ def create_gateway_app(
         finally:
             reaper.cancel()
             await asyncio.gather(reaper, return_exceptions=True)
-            await web_client.aclose()
-            await supervisor.close()
+            try:
+                await web_client.aclose()
+            finally:
+                await supervisor.close()
 
     app = FastAPI(lifespan=lifespan)
-
-    async def stream_response(response: httpx.Response, lease=None):
-        """Relay bytes without releasing the Worker while its response is active."""
-        try:
-            try:
-                async for chunk in response.aiter_raw():
-                    yield chunk
-            except httpx.StreamConsumed:
-                # Mock transports and already-buffered error responses may have
-                # consumed their stream before this boundary receives them.
-                yield response.content
-        finally:
-            await response.aclose()
-            if lease is not None:
-                await _release_lease(lease)
 
     async def _release_lease(lease) -> None:
         release = getattr(lease, "release", None)
@@ -175,15 +164,19 @@ def create_gateway_app(
                     params=upstream_params,
                     headers=upstream_headers,
                     content=request.stream(),
+                    # Retrieval/probe budgets belong to the worker; JEV may
+                    # legitimately take longer than the readiness client's 60s.
+                    timeout=httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0),
                 )
                 response = await lease.handle.client.send(upstream, stream=True)
-            except Exception:
-                await _release_lease(lease)
+            except BaseException:
+                with anyio.CancelScope(shield=True):
+                    await _release_lease(lease)
                 raise
             response_headers = filtered_response_headers(response.headers.raw)
-            return StreamingResponse(
-                stream_response(response, lease),
-                status_code=response.status_code,
+            return ProxyStreamingResponse(
+                response,
+                release=lambda: _release_lease(lease),
                 headers={
                     name.decode("latin-1"): value.decode("latin-1")
                     for name, value in response_headers
@@ -203,9 +196,8 @@ def create_gateway_app(
             or path.startswith(f"{prefix}/icon")
         ):
             log.warning("fnOS resource proxy failed path=%s status=%s", path, response.status_code)
-        return StreamingResponse(
-            stream_response(response),
-            status_code=response.status_code,
+        return ProxyStreamingResponse(
+            response,
             headers={
                 name.decode("latin-1"): value.decode("latin-1")
                 for name, value in filtered_response_headers(response.headers.raw)

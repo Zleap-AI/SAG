@@ -71,6 +71,9 @@ async function walk(root, relativePath = "") {
 async function assertNoDockerOrTokens(root) {
   for (const relativePath of await walk(root)) {
     if (path.basename(relativePath) === "docker-compose.yaml") fail("rendered package must not contain docker-compose.yaml");
+    // Wheels are copied verbatim, never rendered by this builder. SDK 0.15
+    // uses __SAG_FIXED_REFERENCE_TIME__ as an extraction data marker.
+    if (relativePath.startsWith(`app${path.sep}server${path.sep}vendor${path.sep}`)) continue;
     const content = await readFile(path.join(root, relativePath));
     if (content.includes(Buffer.from("__SAG_"))) fail(`rendered package contains unresolved __SAG_*__ token in ${relativePath}`);
   }
@@ -87,6 +90,9 @@ async function assertUpgradeConsentWizard(root, filename) {
   if (warning.type !== "tips" || typeof warning.helpText !== "string"
       || !warning.helpText.includes("重置") || !warning.helpText.includes("重新上传")) {
     fail("consent wizard must warn about knowledge reset and re-upload");
+  }
+  if (!/0\.13.*保留/.test(warning.helpText) || !/全新安装.*不涉及重置/.test(warning.helpText)) {
+    fail("consent wizard must distinguish migrated data preservation from reset and fresh install");
   }
   if (choice.type !== "radio" || choice.field !== "SAG_ACCEPT_REINGEST_UPGRADE"
       || !choice.label || choice.initValue !== "false"
@@ -163,6 +169,21 @@ export async function validateNativeTemplate(root, platform) {
 
   await assertUpgradeConsentWizard(root, "upgrade");
   await assertUpgradeConsentWizard(root, "install");
+  const launcher = await readFile(path.join(root, "cmd/main"), "utf8");
+  // The diagnostic probe builder replaces main with its own standalone
+  // probe; it does not start the production gateway, web or tenant workers.
+  const runtimeProbe = launcher.includes('"$server/fnos-native-probe.py" serve --socket "$TRIM_APPDEST/app.sock" --output "$TRIM_PKGVAR/native-p0.json"');
+  if (!runtimeProbe) {
+    const nofileBootstrap = launcher.indexOf('    configure_nofile >> "$gateway_log" 2>&1 || exit 1');
+    const firstDaemon = launcher.indexOf('    _START_STEP="start-web"');
+    if (nofileBootstrap < 0 || firstDaemon < 0 || nofileBootstrap > firstDaemon) {
+      fail("launcher must configure NOFILE before starting any daemon");
+    }
+    if (!launcher.includes('ulimit -S -n "$_sag_nofile_effective"')
+        || /ulimit\s+(?:-H\s+)?-n\s+(?:["'$]|[0-9]+(?:\s|$))/m.test(launcher)) {
+      fail("launcher NOFILE bootstrap must change only the soft limit");
+    }
+  }
   const install = await readFile(path.join(root, "cmd/install_callback"), "utf8");
   if (!install.includes("SAG_INSTALL_FROM_UPGRADE") || !install.includes("$command_dir/upgrade_init")) {
     fail("install_callback must apply the upgrade backup and consent gate to retained data");

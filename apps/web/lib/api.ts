@@ -120,6 +120,11 @@ type SearchStreamTimeout = "first-result" | "idle";
 const SEARCH_FIRST_RESULT_TIMEOUT_MS = 30_000;
 const SEARCH_STREAM_IDLE_TIMEOUT_MS = 45_000;
 
+function usesServerSearchDeadline(strategy?: SearchStrategy): boolean {
+  // An omitted strategy can inherit the global JEV configuration.
+  return strategy === undefined || strategy === "multi_jev";
+}
+
 function isSearchResponse(value: unknown): value is SearchResponse {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<SearchResponse>;
@@ -188,7 +193,9 @@ async function streamGlobalSearch(
         : clientErrorMessage("searchIdleTimeout"),
     );
 
-  armStreamTimeout("first-result", SEARCH_FIRST_RESULT_TIMEOUT_MS);
+  if (!usesServerSearchDeadline(body.strategy)) {
+    armStreamTimeout("first-result", SEARCH_FIRST_RESULT_TIMEOUT_MS);
+  }
   const searchStartMs = Date.now();
   let response: Response;
   try {
@@ -403,7 +410,8 @@ async function streamGlobalSearch(
   return completed;
 }
 
-async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, options: RequestInit & { timeoutMs?: number | null; retryOnUnavailable?: boolean } = {}): Promise<T> {
+  const { timeoutMs = 30_000, retryOnUnavailable = true, ...opts } = options;
   const token = getToken();
   const headers: Record<string, string> = {
     ...(opts.headers as Record<string, string>),
@@ -415,11 +423,10 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   if (!headers["Accept-Language"])
     headers["Accept-Language"] = readClientLocale();
 
-  // 30s 超时护栏（SSE 流式接口不走此函数，不受影响）
-  const timeoutSignal = AbortSignal.timeout(30_000);
-  const signal = opts.signal
+  const timeoutSignal = timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs);
+  const signal = opts.signal && timeoutSignal
     ? AbortSignal.any([opts.signal, timeoutSignal])
-    : timeoutSignal;
+    : opts.signal ?? timeoutSignal;
 
   const method = opts.method ?? "GET";
   const startMs = Date.now();
@@ -428,7 +435,7 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
     for (let attempt = 0; ; attempt += 1) {
       res = await fetch(`${API_BASE}${path}`, { ...opts, headers, signal });
       const retryAfter = Number(res.headers.get("retry-after"));
-      if (res.status !== 503 || attempt >= 2 || !Number.isFinite(retryAfter) || retryAfter < 0) break;
+      if (!retryOnUnavailable || res.status !== 503 || attempt >= 2 || !Number.isFinite(retryAfter) || retryAfter < 0) break;
       await new Promise((resolve) => window.setTimeout(resolve, Math.min(retryAfter, 3) * 1000));
     }
   } catch (e) {
@@ -442,7 +449,7 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
       duration_ms: durationMs,
       error_code: isTimeout ? "timeout" : isAbort ? "aborted" : "network",
       error_message: isTimeout
-        ? "Request timed out after 30s"
+        ? `Request timed out after ${timeoutMs}ms`
         : isAbort
           ? "Request was cancelled"
           : "Network error — server unreachable or DNS failure",
@@ -602,6 +609,13 @@ export const api = {
         body: b ? JSON.stringify(b) : undefined,
       },
     ),
+  testJevModelConfig: (b: ModelConfigPatch, signal?: AbortSignal) =>
+    request<{ ok: boolean; message: string }>("/api/v1/system/model-config/jev/test", {
+      method: "POST", body: JSON.stringify(b), signal,
+      retryOnUnavailable: false,
+      timeoutMs: b.jev_ranking_timeout_seconds === undefined
+        ? null : b.jev_ranking_timeout_seconds * 1000 + 5_000,
+    }),
 
   // 信源
   listSources: () => request<Source[]>("/api/v1/sources"),
@@ -846,6 +860,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(b),
       signal,
+      timeoutMs: usesServerSearchDeadline(b.strategy) ? null : undefined,
     }),
   streamGlobalSearch,
 

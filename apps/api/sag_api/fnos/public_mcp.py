@@ -14,9 +14,9 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
-from sag_api.fnos.proxy import bearer_token, filtered_response_headers
+from sag_api.fnos.proxy import ProxyStreamingResponse, bearer_token, filtered_response_headers
 
 _FORWARDED_METHODS = ["GET", "POST", "DELETE", "HEAD", "OPTIONS"]
 _DROP_REQUEST_HEADERS = {
@@ -103,23 +103,23 @@ def create_public_mcp_app(gateway_socket: Path, *, max_concurrency: int = 2) -> 
                 params=upstream_query,
                 headers=_request_headers(request, token),
                 content=request.stream(),
+                # The worker bounds retrieval and owns cancellation/cleanup;
+                # this forwarding hop must not impose a shorter read deadline.
+                timeout=httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0),
             )
             upstream_response = await app.state.client.send(upstream, stream=True)
-        except httpx.HTTPError:
+        except BaseException as error:
             semaphore.release()
-            return JSONResponse({"detail": "SAG MCP gateway is unavailable"}, status_code=502)
+            if isinstance(error, httpx.HTTPError):
+                return JSONResponse({"detail": "SAG MCP gateway is unavailable"}, status_code=502)
+            raise
 
-        async def body():
-            try:
-                async for chunk in upstream_response.aiter_raw():
-                    yield chunk
-            finally:
-                await upstream_response.aclose()
-                semaphore.release()
+        async def release_capacity():
+            semaphore.release()
 
-        return StreamingResponse(
-            body(),
-            status_code=upstream_response.status_code,
+        return ProxyStreamingResponse(
+            upstream_response,
+            release=release_capacity,
             headers=_response_headers(upstream_response.headers.raw),
         )
 

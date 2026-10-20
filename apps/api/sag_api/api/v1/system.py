@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal, get_session
 from sag_api.core.deps import get_current_user, get_fnos_identity
-from sag_api.core.errors import ApiError, ConflictError, NotFoundError
+from sag_api.core.errors import ApiError, ConfigurationError, ConflictError, NotFoundError
 from sag_api.core.logging import get_logger
 from sag_api.core.model_providers import model_provider_catalog
 from sag_api.db.models import FnOSMcpGrant, Source, User
@@ -19,6 +19,7 @@ from sag_api.fnos.identity import GatewayIdentity, derive_fnos_internal_key
 from sag_api.generation import LLMClient
 from sag_api.mcp.server import MCP_TOOL_DETAILS, MCP_TOOL_NAMES
 from sag_api.sag import EngineManager
+from sag_api.sag.jev_probe import JevConnectionTestResult, probe_jev_connection
 from sag_api.schemas.system import (
     FnOSMcpGrantCreate,
     ModelConfigUpdate,
@@ -281,9 +282,10 @@ async def quick_setup_302(
     if not status["required"]:
         raise ConflictError("模型配置已存在，请在设置中修改")
 
-    config = await settings_service.save_302_quick_setup(session, body.api_key)
-    await request.app.state.engine_manager.aclose_all()
-    return {"config": config, "capabilities": _capabilities()}
+    async with request.app.state.engine_manager.configuration_update():
+        config = await settings_service.save_302_quick_setup(session, body.api_key)
+        await request.app.state.engine_manager.aclose_all()
+        return {"config": config, "capabilities": _capabilities()}
 
 
 @router.put("/model-config")
@@ -295,28 +297,41 @@ async def update_model_config(
 ) -> dict:
     """保存运行期配置；仅在模型/向量配置实际变化时安全重建引擎。"""
     patch = body.model_dump(exclude_unset=True)
-    before = settings_service.effective_model_config()
-    config = await settings_service.save_model_config(session, patch)
+    async with request.app.state.engine_manager.configuration_update():
+        candidate = settings_service.model_config_preview(settings, patch)
+        changes_jev = any(key.startswith("jev_") for key in patch)
+        if candidate.search_strategy == "multi_jev" and (changes_jev or patch.get("search_strategy") == "multi_jev"):
+            report = EngineManager.strategies_capability_report(candidate)
+            unavailable = report["disabled"].get("multi_jev")
+            if unavailable:
+                raise ConfigurationError(unavailable["message"])
+        before = settings_service.effective_model_config()
+        config = await settings_service.save_model_config(session, patch)
 
-    # 解析器/检索参数保存无需打断暖引擎；只有引擎配置真的变化才安全重建。
-    engine_fields = {
-        "llm_provider",
-        "llm_base_url",
-        "llm_model",
-        "llm_temperature",
-        "llm_max_tokens",
-        "llm_timeout_ms",
-        "llm_max_retries",
-        "embedding_model",
-        "embedding_base_url",
-        "embedding_dimensions",
-        "sag_language",
-    }
-    engine_changed = any(before.get(key) != config.get(key) for key in engine_fields)
-    engine_changed = engine_changed or bool(patch.get("llm_api_key") or patch.get("embedding_api_key"))
-    if engine_changed:
-        await request.app.state.engine_manager.aclose_all()
-    return {"config": config, "capabilities": _capabilities()}
+        # 解析器/检索参数保存无需打断暖引擎；只有引擎配置真的变化才安全重建。
+        engine_fields = {
+            "llm_provider",
+            "llm_base_url",
+            "llm_model",
+            "llm_temperature",
+            "llm_max_tokens",
+            "llm_timeout_ms",
+            "llm_max_retries",
+            "embedding_model",
+            "embedding_base_url",
+            "embedding_dimensions",
+            "sag_language",
+            "jev_endpoint",
+            "jev_model",
+            "jev_ranking_timeout_seconds",
+        }
+        engine_changed = any(before.get(key) != config.get(key) for key in engine_fields)
+        engine_changed = engine_changed or bool(
+            patch.get("llm_api_key") or patch.get("embedding_api_key") or patch.get("jev_api_key")
+        )
+        if engine_changed:
+            await request.app.state.engine_manager.aclose_all()
+        return {"config": config, "capabilities": _capabilities()}
 
 
 @router.post("/model-config/mineru/302")
@@ -361,3 +376,13 @@ async def test_model_config(
         return {"ok": False, "message": e.message}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "message": str(e)}
+
+
+@router.post("/model-config/jev/test")
+async def test_jev_model_config(
+    body: ModelConfigUpdate | None = None,
+    _user: User = Depends(get_current_user),
+) -> JevConnectionTestResult:
+    """Probe synthetic evidence using a draft, without modifying tenant settings."""
+    patch = body.model_dump(exclude_unset=True) if body is not None else {}
+    return await probe_jev_connection(settings_service.model_config_preview(settings, patch))

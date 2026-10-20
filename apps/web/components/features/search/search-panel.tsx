@@ -43,6 +43,7 @@ import {
   sectionCitation,
 } from "@/components/features/search/search-panel-sections";
 import { SearchStrategyControl } from "@/components/features/search-strategy-control";
+import { RetrievalStatus } from "@/components/features/retrieval-status";
 import { EmptyState } from "@/components/features/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Toggle } from "@/components/ui/toggle";
@@ -592,6 +593,7 @@ export function SearchPanel({
               </div>
             </div>
           </div>
+          <RetrievalStatus stats={search.result.stats} />
           {Number(search.result.stats.knowledge_pending || 0) > 0 && (
             <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-foreground">
               {t("knowledgePendingDescription")}

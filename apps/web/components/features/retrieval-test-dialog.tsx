@@ -6,7 +6,10 @@ import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 import { api, ApiError } from "@/lib/api";
-import type { Section } from "@/lib/types";
+import type { SearchResponse } from "@/lib/types";
+import { useApp } from "@/components/features/app-shell";
+import { RetrievalStatus } from "@/components/features/retrieval-status";
+import { getSearchStrategiesDisabled, SEARCH_STRATEGIES, type SearchStrategy } from "@/lib/retrieval-config";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -18,6 +21,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export function RetrievalTestDialog({
   sourceId,
@@ -31,14 +35,20 @@ export function RetrievalTestDialog({
   onOpenChange: (o: boolean) => void;
 }) {
   const t = useTranslations("RetrievalTest");
+  const strategies = useTranslations("SearchStrategies");
+  const { capabilities } = useApp();
+  const disabled = getSearchStrategiesDisabled(capabilities, strategies("unsupportedBackend"));
+  const [strategy, setStrategy] = React.useState<SearchStrategy | undefined>();
   const [query, setQuery] = React.useState("");
   const [topK, setTopK] = React.useState(8);
-  const [results, setResults] = React.useState<Section[] | null>(null);
+  const [result, setResult] = React.useState<SearchResponse | null>(null);
+  const results = result?.sections;
   const [busy, setBusy] = React.useState(false);
 
   React.useEffect(() => {
     if (!open) return;
-    setResults(null);
+    setResult(null);
+    setStrategy(undefined);
     setQuery("");
   }, [open]);
 
@@ -47,8 +57,8 @@ export function RetrievalTestDialog({
     if (!query.trim()) return;
     setBusy(true);
     try {
-      const r = await api.globalSearch({ query, source_ids: [sourceId], top_k: topK });
-      setResults(r.sections);
+      const r = await api.globalSearch({ query, source_ids: [sourceId], top_k: topK, ...(strategy ? { strategy } : {}) });
+      setResult(r);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : t("failed"));
     } finally {
@@ -69,8 +79,8 @@ export function RetrievalTestDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={run} className="flex items-end gap-2">
-          <div className="flex flex-1 flex-col gap-1.5">
+        <form onSubmit={run} className="flex flex-wrap items-end gap-2">
+          <div className="flex min-w-40 flex-1 flex-col gap-1.5">
             <Label htmlFor="rt-q">{t("query")}</Label>
             <Input
               id="rt-q"
@@ -95,7 +105,20 @@ export function RetrievalTestDialog({
             {busy ? <Spinner /> : <Search className="size-4" />}
             {t("run")}
           </Button>
+          <div className="flex w-full flex-col gap-1.5">
+            <Label htmlFor="rt-strategy">{t("strategy")}</Label>
+            <Select value={strategy ?? "global"} onValueChange={value => setStrategy(value === "global" ? undefined : value as SearchStrategy)} disabled={busy}>
+              <SelectTrigger id="rt-strategy"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="global">{t("inheritStrategy")}</SelectItem>
+                {SEARCH_STRATEGIES.map(item => <SelectItem key={item.value} value={item.value} disabled={Boolean(disabled[item.value])}>{strategies(item.labelKey)}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            {strategy && disabled[strategy] && <p className="text-xs text-muted-foreground">{disabled[strategy]?.message}</p>}
+          </div>
         </form>
+
+        {result && <RetrievalStatus stats={result.stats} requestedStrategy={strategy} />}
 
         {results && (
           <div className="flex flex-col gap-2">

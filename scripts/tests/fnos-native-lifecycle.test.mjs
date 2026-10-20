@@ -334,9 +334,15 @@ test("native lifecycle validates the gateway health endpoint over its UDS", asyn
 });
 
 test("client-side chat navigation leaves base-path prefixing to the Next router", async () => {
-  const source = await readFile(chatPage, "utf8");
-  assert.match(source, /router\.push\("\/chat"\)/);
-  assert.doesNotMatch(source, /router\.push\(appPath\("\/chat"\)\)/);
+  const [page, sidebar] = await Promise.all([
+    readFile(chatPage, "utf8"), readFile(appSidebar, "utf8"),
+  ]);
+  // The sidebar owns creating the draft and routing to it. ChatPage only updates
+  // browser history once the first message has created a persistent thread.
+  assert.match(sidebar, /router\.push\("\/chat"\)/);
+  assert.doesNotMatch(sidebar, /router\.push\(appPath\("\/chat"\)\)/);
+  assert.match(page, /const nextPath = appPath\(`\/chat\/\$\{threadId\}`\)/);
+  assert.match(page, /window\.history\.replaceState\(window\.history\.state, "", nextPath\)/);
 });
 
 test("Native sidebar icon uses the deployed application prefix", async () => {

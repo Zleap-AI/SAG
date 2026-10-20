@@ -2,6 +2,7 @@
 
 import { Check, ChevronDown, Sparkles, Zap } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { useApp } from "@/components/features/app-shell";
 
 import {
   DropdownMenu,
@@ -13,6 +14,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   getSearchStrategy,
+  getSearchStrategiesDisabled,
   SEARCH_STRATEGIES,
   type SearchStrategy,
 } from "@/lib/retrieval-config";
@@ -20,6 +22,7 @@ import {
 const STRATEGY_ICONS = {
   vector: Zap,
   multi: Sparkles,
+  multi_jev: Sparkles,
 } as const;
 
 export function SearchStrategyControl({
@@ -32,6 +35,8 @@ export function SearchStrategyControl({
   onValueChange: (value: SearchStrategy) => void;
 }) {
   const t = useTranslations("SearchStrategies");
+  const { capabilities } = useApp();
+  const disabled = getSearchStrategiesDisabled(capabilities, t("unsupportedBackend"));
   const currentStrategy = getSearchStrategy(value);
   const CurrentIcon = STRATEGY_ICONS[currentStrategy.value];
 
@@ -59,6 +64,7 @@ export function SearchStrategyControl({
           return (
             <DropdownMenuItem
               key={strategy.value}
+              disabled={Boolean(disabled[strategy.value])}
               onSelect={() => onValueChange(strategy.value)}
               className="items-start gap-2.5 px-2 py-2"
             >
@@ -73,7 +79,7 @@ export function SearchStrategyControl({
                   )}
                 </span>
                 <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">
-                  {t(strategy.descriptionKey)}
+                  {disabled[strategy.value]?.message ?? t(strategy.descriptionKey)}
                 </span>
               </span>
               <Check

@@ -39,6 +39,11 @@ _FIELDS = frozenset(
         "llm_context_window",
         "llm_timeout_ms",
         "llm_max_retries",
+        "jev_endpoint",
+        "jev_model",
+        "jev_api_key",
+        "jev_ranking_timeout_seconds",
+        "jev_failure_policy",
         "embedding_model",
         "embedding_base_url",
         "embedding_api_key",
@@ -57,8 +62,13 @@ _FIELDS = frozenset(
         "sag_language",
     }
 )
-_SECRET_FIELDS = frozenset({"llm_api_key", "embedding_api_key", "mineru_api_key"})
-_NULLABLE_FIELDS = frozenset({"llm_base_url", "embedding_base_url", "embedding_dimensions", "mineru_base_url"})
+_SECRET_FIELDS = frozenset({"llm_api_key", "embedding_api_key", "mineru_api_key", "jev_api_key"})
+_NULLABLE_FIELDS = frozenset({
+    "llm_base_url", "embedding_base_url", "embedding_dimensions", "mineru_base_url", "jev_endpoint",
+})
+_JEV_FIELDS = frozenset({
+    "jev_endpoint", "jev_model", "jev_api_key", "jev_ranking_timeout_seconds", "jev_failure_policy",
+})
 
 _OPENAI_COMPATIBLE = get_model_provider("openai")
 
@@ -100,24 +110,34 @@ async def _load_row(session: AsyncSession, key: str = _KEY) -> Setting | None:
 def _normalize_overrides(overrides: dict) -> dict:
     """清理持久化配置，确保已下线或非法策略不会进入运行时。"""
     normalized = dict(overrides)
+    if "jev_api_key" in normalized and "jev_endpoint" not in normalized:
+        # Legacy key-only rows have no trustworthy endpoint binding. Re-enter the
+        # connection rather than sending that Key to a changed environment URL.
+        normalized["jev_endpoint"] = None
+        normalized["jev_api_key"] = None
+    elif "jev_endpoint" in normalized and "jev_api_key" not in normalized:
+        # An endpoint-only row must not borrow a new environment connection's Key.
+        normalized["jev_api_key"] = None
     for field in ("llm_base_url", "embedding_base_url", "mineru_base_url"):
         value = normalized.get(field)
         if isinstance(value, str):
             normalized[field] = _LEGACY_302_BASE_URLS.get(value.rstrip("/"), value)
-    if normalized.get("mineru_provider") is None:
+    if normalized.get("mineru_provider") is None and "mineru_base_url" in normalized:
+        # Only infer a provider for legacy rows that persisted a MinerU URL;
+        # unrelated settings must preserve SAG_MINERU_PROVIDER from the environment.
         mineru_url = str(normalized.get("mineru_base_url") or "")
         mineru_host = (urlparse(mineru_url).hostname or "").lower()
         normalized["mineru_provider"] = (
             "official" if mineru_host == "mineru.net" else "302"
         )
     elif (
-        normalized["mineru_provider"] == "official"
+        normalized.get("mineru_provider") == "official"
         and str(normalized.get("mineru_base_url") or "").rstrip("/")
         == "https://api.302ai.cn"
     ):
         normalized["mineru_base_url"] = _OFFICIAL_MINERU_BASE_URL
     elif (
-        normalized["mineru_provider"] == "302"
+        normalized.get("mineru_provider") == "302"
         and (urlparse(str(normalized.get("mineru_base_url") or "")).hostname or "").lower()
         == "mineru.net"
     ):
@@ -153,7 +173,7 @@ async def model_setup_status(session: AsyncSession) -> dict[str, bool]:
 
 
 def apply_overrides(settings: Settings, overrides: dict) -> None:
-    """把存储的覆盖值就地写回 settings 单例（请求 schema 已保证类型合法）。"""
+    """把存储的覆盖值就地写回；旧 JEV 草稿由能力判断拒绝，不阻止用户修复。"""
     for key, value in _normalize_overrides(overrides).items():
         if key in _FIELDS:
             setattr(settings, key, value)
@@ -225,6 +245,11 @@ def effective_model_config() -> dict:
         "llm_timeout_ms": _settings.llm_timeout_ms,
         "llm_max_retries": _settings.llm_max_retries,
         "llm_api_key_set": bool(_settings.llm_api_key),
+        "jev_endpoint": _settings.jev_endpoint,
+        "jev_model": _settings.jev_model,
+        "jev_api_key_set": bool(_settings.jev_api_key),
+        "jev_ranking_timeout_seconds": _settings.jev_ranking_timeout_seconds,
+        "jev_failure_policy": _settings.jev_failure_policy,
         "embedding_model": _settings.embedding_model,
         "embedding_base_url": _settings.embedding_base_url,
         "embedding_dimensions": _settings.embedding_dimensions,
@@ -267,6 +292,41 @@ async def save_system_preferences(session: AsyncSession, patch: dict) -> dict[st
     return effective_system_preferences()
 
 
+def _merge_model_config(configuration: Settings, stored: dict, patch: dict) -> dict:
+    """Apply partial updates while binding each JEV Key to its saved endpoint."""
+    merged = dict(stored)
+    if _JEV_FIELDS & patch.keys():
+        # Pin both halves, including inherited environment values, whenever the
+        # tenant edits JEV. An unrelated model-card save must not capture them.
+        merged["jev_endpoint"] = configuration.jev_endpoint
+        merged["jev_api_key"] = configuration.jev_api_key
+    if "jev_endpoint" in patch:
+        endpoint = patch["jev_endpoint"] or None
+        previous_endpoint = configuration.jev_endpoint
+        if endpoint != previous_endpoint:
+            # Persist None too: an environment Key must not reappear after restart.
+            merged["jev_api_key"] = None
+    for key, value in patch.items():
+        if key not in _FIELDS:
+            continue
+        if key == "jev_api_key" and isinstance(value, str):
+            value = value.strip()
+        if key in _SECRET_FIELDS:
+            if value:
+                merged[key] = str(value)
+            continue
+        if key in _NULLABLE_FIELDS and (value is None or value == ""):
+            merged[key] = None
+            continue
+        merged[key] = value
+    return _normalize_overrides(merged)
+
+
+def model_config_preview(configuration: Settings, patch: dict) -> Settings:
+    """Build an isolated draft using the same endpoint/Key rules as saving."""
+    return configuration.model_copy(update=_merge_model_config(configuration, {}, patch))
+
+
 async def save_model_config(session: AsyncSession, patch: dict) -> dict:
     """合并保存模型配置：入库 + 覆盖 settings 单例；返回生效配置（脱敏）。
 
@@ -279,19 +339,7 @@ async def save_model_config(session: AsyncSession, patch: dict) -> dict:
     raw = dict(row.value) if row and isinstance(row.value, dict) else {}
     stored = _normalize_overrides(raw)
 
-    for key, value in patch.items():
-        if key not in _FIELDS:
-            continue
-        if key in _SECRET_FIELDS:
-            if value:  # 仅非空才更新；空/None 保留原值
-                stored[key] = str(value)
-            continue
-        if key in _NULLABLE_FIELDS and (value is None or value == ""):
-            stored[key] = None
-            continue
-        stored[key] = value
-
-    stored = _normalize_overrides(stored)
+    stored = _merge_model_config(_settings, stored, patch)
 
     if row is None:
         session.add(Setting(scope=_SCOPE, key=_KEY, value=stored))

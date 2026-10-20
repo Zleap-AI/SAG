@@ -189,6 +189,32 @@ def _document_source_exclusions(
     }
 
 
+async def _visible_document_inputs(
+    sources: list[SearchSource], hidden: _HiddenDerivatives,
+) -> DocumentSourceExclusions:
+    """Positive engine input scope; empty means no query, never unbounded recall."""
+    from sqlalchemy import select
+
+    from sag_api.core.db import SessionLocal
+    from sag_api.db.models import Document
+    from sag_api.enums import DocumentStatus
+
+    config_by_source = {source.id: source.sag_source_config_id for source in sources}
+    allowed: dict[str, set[str]] = {config_id: set() for config_id in config_by_source.values()}
+    if config_by_source:
+        async with SessionLocal() as session:
+            rows = (await session.execute(select(Document.source_id, Document.sag_source_id).where(
+                Document.source_id.in_(config_by_source),
+                Document.sag_source_id.is_not(None),
+                Document.status.not_in([DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED]),
+            ))).all()
+        for source_id, input_id in rows:
+            config_id = config_by_source[source_id]
+            if input_id and (config_id, input_id) not in hidden.source_keys:
+                allowed[config_id].add(input_id)
+    return {config_id: tuple(sorted(input_ids)) for config_id, input_ids in allowed.items()}
+
+
 _BOILERPLATE = (
     "新浪首页",
     "权利保护声明",
@@ -428,9 +454,13 @@ async def retrieve_relevant_sections(
     strategy: str | None = None,
     top_k: int | None = None,
     include_ranked_candidates: bool = False,
+    jev_ranking_timeout_seconds: float | None = None,
 ) -> SearchOutcome:
     """One retrieval contract for search UI and the Agent's search_context tool."""
 
+    # Resolve once: a strategy switch while materializing visibility must not
+    # turn an ordinary unscoped request into a JEV scorer request.
+    strategy = strategy or settings.search_strategy
     total_start = time.perf_counter()
     analysis = analyze_query(
         query,
@@ -438,6 +468,10 @@ async def retrieve_relevant_sections(
     )
     requested_limit = max(1, min(int(top_k or settings.search_top_k), 50))
     candidate_limit = min(50, max(requested_limit * 3, requested_limit + 8))
+    if include_ranked_candidates and strategy == "multi_jev":
+        # SDK 0.15 snapshots up to 20 ranked events before top_k. Hydrate
+        # enough chunks to associate every diagnostic with its document input.
+        candidate_limit = max(20, candidate_limit)
     targets = [(source.sag_source_config_id, source) for source in sources]
     engine_start = time.perf_counter()
     hidden = await _hidden_document_derivatives(sources)
@@ -457,6 +491,37 @@ async def retrieve_relevant_sections(
         and exclusions
     ):
         search_options["exclude_source_ids_by_config"] = exclusions
+    if (strategy or settings.search_strategy) == "multi_jev":
+        if jev_ranking_timeout_seconds is not None:
+            search_options["jev_ranking_timeout_seconds"] = jev_ranking_timeout_seconds
+        allowed = await _visible_document_inputs(sources, hidden)
+        outcome = await engine_manager.search_many(targets, query, **search_options, source_ids_by_config=allowed)
+        # Re-read after scoring: a logical delete/replacement may have committed in flight.
+        hidden = await _hidden_document_derivatives(sources)
+        allowed_after = await _visible_document_inputs(sources, hidden)
+        sections = [section for section in outcome.sections
+                    if section.source_id in allowed_after.get(section.source_config_id or "", ())]
+        visible_stats = dict(outcome.stats)
+        if "ranked_candidates" in visible_stats:
+            candidates = []
+            for raw in visible_stats["ranked_candidates"]:
+                candidate = dict(raw)
+                input_id = candidate.pop("_source_input_id", None)
+                if input_id in allowed_after.get(candidate.get("source_config_id", ""), ()):
+                    candidates.append(candidate)
+            visible_stats["ranked_candidates"] = candidates
+        return SearchOutcome(query=outcome.query or query, sections=sections[:requested_limit], stats={
+            **visible_stats,
+            "requested_top_k": requested_limit, "candidate_top_k": candidate_limit,
+            "candidates": len(outcome.sections), "relevant": len(sections),
+            "filtered_irrelevant": 0, "lexical_candidates": 0,
+            "has_more": len(sections) > requested_limit,
+            "logically_deleted_filtered": len(outcome.sections) - len(sections),
+            "knowledge_pending": hidden.pending_knowledge,
+            "latency_engine_ms": round((time.perf_counter() - engine_start) * 1000, 2),
+            "latency_rerank_ms": 0,
+            "latency_total_ms": round((time.perf_counter() - total_start) * 1000, 2),
+        })
     outcome, lexical_recall = await asyncio.gather(
         engine_manager.search_many(targets, query, **search_options),
         _lexical_sections(
