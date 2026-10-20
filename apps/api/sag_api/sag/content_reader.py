@@ -64,9 +64,7 @@ class ContentReader:
                 continue
             if math.isfinite(score):
                 direct_event_scores[(source_config_id, event_id)] = max(0.0, min(1.0, score))
-        direct_event_ids_by_config: dict[str, set[str]] = {}
-        for source_config_id, event_id in direct_event_scores:
-            direct_event_ids_by_config.setdefault(source_config_id, set()).add(event_id)
+        native_event_order: dict[tuple[str, str], int] = {}
         chunk_scores: dict[tuple[str, str], float] = {}
         chunk_ids_by_config: dict[str, set[str]] = {}
         for section in sections:
@@ -74,10 +72,23 @@ class ContentReader:
             chunk_id = (section.chunk_id or "").strip()
             if not source_config_id or not chunk_id:
                 continue
+            if section.metadata.get("score_source") in {"jev", "event_score", "query_chunk_fallback"}:
+                # SDK 0.15 orders event_ids by native score and gives the chunk
+                # their maximum score. Only the first event has a known score;
+                # expanding the chunk would attribute that score to other events.
+                event_ids = section.metadata.get("event_ids") or []
+                if event_ids:
+                    event_key = (source_config_id, event_ids[0])
+                    native_event_order.setdefault(event_key, len(native_event_order))
+                    direct_event_scores[event_key] = section.score
+                continue
             key = (source_config_id, chunk_id)
             chunk_scores[key] = max(chunk_scores.get(key, 0.0), section.score)
             chunk_ids_by_config.setdefault(source_config_id, set()).add(chunk_id)
 
+        direct_event_ids_by_config: dict[str, set[str]] = {}
+        for source_config_id, event_id in direct_event_scores:
+            direct_event_ids_by_config.setdefault(source_config_id, set()).add(event_id)
         requested_config_ids = set(chunk_ids_by_config) | set(direct_event_ids_by_config)
         if not requested_config_ids:
             return SourceGraphInfo()
@@ -181,6 +192,7 @@ class ContentReader:
             direct_rows = sorted(
                 (row for row in event_rows if (row["source_config_id"], row["id"]) in direct_event_scores),
                 key=lambda row: (
+                    native_event_order.get((row["source_config_id"], row["id"]), len(native_event_order)),
                     -direct_event_scores[(row["source_config_id"], row["id"])],
                     int(row["rank"] or 0),
                     row["id"],
@@ -216,7 +228,7 @@ class ContentReader:
             ]:
                 normalized_title = re.sub(r"\s+", "", str(row["title"] or "")).casefold()
                 title_key = (row["source_config_id"], normalized_title or row["id"])
-                if title_key in seen_titles:
+                if title_key in seen_titles and (row["source_config_id"], row["id"]) not in native_event_order:
                     continue
                 seen_titles.add(title_key)
                 event_rows.append(row)

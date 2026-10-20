@@ -8,6 +8,7 @@ all run unchanged; assertions inspect the scorer's actual inbound JSON.
 import asyncio
 import re
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -153,6 +154,109 @@ async def assert_scorer_sockets_closed(state):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("include_ranked_candidates", [False, True])
+async def test_rest_graph_uses_native_primary_event_without_copying_its_score_to_other_events(
+    native_jev, monkeypatch, include_ranked_candidates,
+):
+    from sag_api.api.v1 import search as api
+    from sag_api.schemas.search import SearchRequest
+
+    state = native_jev
+    doc = await state.add("a", "WIRE_GRAPH")
+    monkeypatch.setattr(api, "get_source", AsyncMock(return_value=doc.source))
+    monkeypatch.setattr(api, "synthesize_search_answer", AsyncMock(return_value=""))
+    monkeypatch.setattr(api, "recall_event_scores", AsyncMock(side_effect=AssertionError("independent recall")))
+    async with SessionLocal() as session:
+        result = await api.search(
+            doc.source.id,
+            SearchRequest(query="private evidence", strategy="multi_jev", top_k=1,
+                          include_ranked_candidates=include_ranked_candidates),
+            None, session, state.owner, None,
+        )
+
+    assert [section.chunk_id for section in result.sections] == doc.checkpoint.chunk_ids
+    section = result.sections[0]
+    assert len(section.metadata["event_ids"]) == 2
+    assert [event.id for event in result.events] == [section.metadata["event_ids"][0]]
+    assert [event.title for event in result.events] == ["WIRE_GRAPH_HIGH"]
+    assert result.events[0].score == section.score == pytest.approx(0.82)
+    assert ("ranked_candidates" in result.stats) is include_ranked_candidates
+    assert len(state.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_context_and_citations_use_the_native_primary_event(native_jev, monkeypatch):
+    from sag_api.tools import builtin
+    from sag_api.tools.base import ToolContext
+
+    state = native_jev
+    doc = await state.add("a", "WIRE_AGENT_GRAPH")
+    monkeypatch.setattr(builtin, "recall_event_scores", AsyncMock(side_effect=AssertionError("independent recall")))
+    result = await builtin.SearchContextTool().invoke(
+        {"query": "private evidence", "top_k": 1},
+        ToolContext(engine_manager=state.owner, sources=[doc.source], persona={"search_strategy": "multi_jev"}),
+    )
+
+    assert "事项：WIRE_AGENT_GRAPH_HIGH" in result.content
+    assert "WIRE_AGENT_GRAPH_LOW" not in result.content
+    assert [event.title for event in result.data["_graph"].events] == ["WIRE_AGENT_GRAPH_HIGH"]
+    assert result.data["_graph"].events[0].score == pytest.approx(0.82)
+    assert [ref["title"] for ref in result.citations[0]["event_refs"]] == ["WIRE_AGENT_GRAPH_HIGH"]
+    assert result.citations[0]["score"] == pytest.approx(0.82)
+    assert len(state.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["chunk_fallback", "missing_primary", "deleted_primary"])
+async def test_native_graph_does_not_substitute_other_chunk_events(native_jev, case):
+    from sqlalchemy import update
+    from zleap.sag.db.models import SourceEvent
+
+    state = native_jev
+    doc = await state.add("a", "WIRE_NO_SUBSTITUTE")
+    result = await state.owner.search(
+        doc.source.sag_source_config_id, "private evidence", source=doc.source, strategy="multi_jev",
+    )
+    section = result.sections[0]
+    if case == "chunk_fallback":
+        section.metadata = {"score_source": "query_chunk_fallback"}
+    elif case == "missing_primary":
+        section.metadata["event_ids"][0] = str(uuid4())
+    else:
+        factory = await state.owner._relational_session_factory(doc.source.sag_source_config_id)
+        async with factory() as session:
+            await session.execute(update(SourceEvent).where(
+                SourceEvent.id == section.metadata["event_ids"][0],
+            ).values(status="DELETED"))
+            await session.commit()
+    graph = await state.owner.graph_for_sections([section], {doc.source.sag_source_config_id: doc.source})
+    assert graph.events == []
+    assert graph.entities == []
+    assert graph.associations == []
+
+
+@pytest.mark.asyncio
+async def test_native_graph_retains_primary_events_with_the_same_title_in_distinct_chunks(native_jev):
+    from sqlalchemy import update
+    from zleap.sag.db.models import SourceEvent
+
+    state = native_jev
+    first = await state.add("a", "WIRE_FIRST_CHUNK")
+    await state.add("a", "WIRE_SECOND_CHUNK")
+    config_id = first.source.sag_source_config_id
+    result = await state.owner.search(config_id, "private evidence", source=first.source, strategy="multi_jev")
+    primary_ids = [section.metadata["event_ids"][0] for section in result.sections]
+    assert len(primary_ids) == 2
+    factory = await state.owner._relational_session_factory(config_id)
+    async with factory() as session:
+        await session.execute(update(SourceEvent).where(SourceEvent.id.in_(primary_ids)).values(title="Repeated title"))
+        await session.commit()
+    graph = await state.owner.graph_for_sections(result.sections, {config_id: first.source})
+    assert [event.id for event in graph.events] == primary_ids
+    assert [event.score for event in graph.events] == [section.score for section in result.sections]
+
+
+@pytest.mark.asyncio
 async def test_native_scores_project_multiple_events_and_keep_unscored_chunks_last(native_jev):
     state = native_jev
     scored = await state.add("a", "WIRE_SCORED")
@@ -241,6 +345,15 @@ async def test_mixed_source_success_error_fallback_and_no_event_scores_have_dist
     assert by_source[degraded.source.sag_source_config_id]["fallback_reason"]
     assert by_source[unscored.source.sag_source_config_id]["fallback_reason"] is None
     assert len(state.requests) == 2
+    graph = await state.owner.graph_for_sections(
+        result.sections, {source.sag_source_config_id: source for source in state.sources.values()},
+    )
+    # A fallback score can be numerically higher than a JEV score; decoration
+    # must keep the native evidence order and omit unscored chunk expansion.
+    assert [event.id for event in graph.events] == [
+        section.metadata["event_ids"][0] for section in result.sections[:2]
+    ]
+    assert [event.score for event in graph.events] == [section.score for section in result.sections[:2]]
     await assert_scorer_sockets_closed(state)
 
 
