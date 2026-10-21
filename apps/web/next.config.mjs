@@ -6,6 +6,9 @@ const withNextIntl = createNextIntlPlugin("./i18n/request.ts");
 const nextConfig = {
   reactStrictMode: true,
   output: "standalone",
+  // Packaged Desktop resources are signed and must stay immutable at runtime.
+  // The image optimizer writes to distDir/cache/images; serve bundled images directly.
+  images: { unoptimized: process.env.SAG_DESKTOP_BUILD === "true" },
   // Keep development HMR artifacts isolated from `next build` output.
   distDir: process.env.NODE_ENV === "development" ? ".next-dev" : ".next",
   eslint: { ignoreDuringBuilds: true },

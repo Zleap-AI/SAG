@@ -13,6 +13,7 @@ const child = spawn("npm", ["run", "build"], {
   cwd: webRoot,
   env: {
     ...process.env,
+    SAG_DESKTOP_BUILD: "true",
     NEXT_PUBLIC_API_BASE: `http://localhost:${apiPort}`,
     NEXT_PUBLIC_ENABLE_WINDOW_SCALING: "false",
   },

@@ -35,6 +35,8 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - run: npm ci
+      - name: 安装图片策略回归所需 Web 依赖
+        run: npm ci --prefix ../web
       - run: npm test
       - run: npm run typecheck
       - run: npm run build
