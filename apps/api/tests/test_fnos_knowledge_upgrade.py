@@ -1,8 +1,17 @@
 """Reset legacy knowledge once while retaining recovery files and user configuration."""
 
+import tarfile
+from pathlib import Path
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+
+def legacy_engine(path):
+    path.mkdir()
+    with tarfile.open(Path(__file__).parent / "fixtures/fnos_071/native-071.tar.gz") as archive:
+        (path / "sag.db").write_bytes(archive.extractfile("users/1000/engine/sag.db").read())
 
 
 @pytest.mark.asyncio
@@ -18,7 +27,7 @@ async def test_reset_preserves_files_settings_chats_and_is_idempotent(tmp_path, 
         await connection.run_sync(Base.metadata.create_all)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     legacy = tmp_path / "engine"
-    legacy.mkdir()
+    legacy_engine(legacy)
     (legacy / "index").write_bytes(b"old engine")
     uploads = tmp_path / "uploads"
     uploads.mkdir()
@@ -42,7 +51,7 @@ async def test_reset_preserves_files_settings_chats_and_is_idempotent(tmp_path, 
         if previous_marker:
             session.add(Setting(scope="global", key="fnos_knowledge_engine_0_13", value={"engine": "0.13.0"}))
         await session.commit()
-        assert await reset_legacy_knowledge(session, legacy) == 1
+        assert await reset_legacy_knowledge(session, legacy, allow_legacy_reset=True) == 1
         for model in [Source, Document, Job, AgentBinding]:
             assert (await session.scalars(select(model))).all() == []
         message = await session.scalar(select(Message))
@@ -105,6 +114,7 @@ async def test_failed_reset_commit_does_not_lose_knowledge_or_write_marker(tmp_p
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
+    legacy_engine(tmp_path / "engine")
     async with sessions() as session:
         session.add(Source(name="Old", sag_source_config_id="old"))
         await session.commit()
@@ -112,7 +122,7 @@ async def test_failed_reset_commit_does_not_lose_knowledge_or_write_marker(tmp_p
             raise RuntimeError("commit interrupted")
         monkeypatch.setattr(session, "commit", fail_commit)
         with pytest.raises(RuntimeError, match="commit interrupted"):
-            await reset_legacy_knowledge(session, tmp_path / "missing-engine")
+            await reset_legacy_knowledge(session, tmp_path / "engine", allow_legacy_reset=True)
         await session.rollback()
     async with sessions() as session:
         assert len((await session.scalars(select(Source))).all()) == 1

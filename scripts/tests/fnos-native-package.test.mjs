@@ -162,6 +162,13 @@ test("rendered package rejects a launcher that could lower the hard NOFILE limit
   await expectRejected(root, "x86", /launcher.*NOFILE.*soft/i);
 });
 
+test("native package rejects an upgrade that bypasses the offline lifecycle boundary", async (t) => {
+  const root = await renderedPackage(t, "x86");
+  const filename = path.join(root, "cmd/main");
+  await writeFile(filename, (await readFile(filename, "utf8")).replace("-m sag_api.fnos.package_upgrade", "-m sag_api.fnos.worker"));
+  await expectRejected(root, "x86", /offline knowledge upgrade/i);
+});
+
 test("rendered package rejects the legacy numbered fnOS suffix", async (t) => {
   const root = await renderedPackage(t, "x86");
   const manifestPath = path.join(root, "manifest");
@@ -291,6 +298,11 @@ test("rendered native package rejects unresolved builder tokens", async (t) => {
 
 test("SDK internal SAG markers are data, while application builder tokens remain invalid", async (t) => {
   const root = await renderedPackage(t, "x86");
+  await mkdir(path.join(root, "app/server/sag_api/fnos"), { recursive: true });
+  await cp(path.join(repoRoot, "apps/api/sag_api/fnos/knowledge_compatibility.py"),
+    path.join(root, "app/server/sag_api/fnos/knowledge_compatibility.py"));
+  await cp(path.join(repoRoot, "apps/api/sag_api/fnos/knowledge_compatibility.py"),
+    path.join(root, "cmd/knowledge_compatibility.py"));
   const vendor = path.join(root, "app/server/vendor/zleap/sag/modules/extract");
   await mkdir(vendor, { recursive: true });
   await writeFile(path.join(vendor, "extractor.py"), 'non_time = key("__SAG_FIXED_REFERENCE_TIME__")\n');
@@ -474,25 +486,22 @@ test("probe builder embeds the probe and vendor payload inside app.tgz", {
 });
 
 
-for (const defect of ["missing", "invalid-json", "wrong-key", "wrong-type", "default-accept", "no-default-decline", "boolean-option", "legacy-title", "missing-refusal-rule"]) {
-  test(`native package rejects upgrade consent wizard: ${defect}`, async (t) => {
+for (const phase of ["install", "upgrade"]) {
+  for (const body of ["[]", "{}", JSON.stringify([{stepTitle:"升级",items:[{type:"checkbox",field:"SAG_KNOWLEDGE_UPGRADE_MODE"}]}])]) {
+    test(`native package rejects a static ${phase} data-choice page: ${body}`, async (t) => {
+      const root = await renderedPackage(t, "x86");
+      await writeFile(path.join(root, "wizard", phase), body);
+      await expectRejected(root, "x86", phase === "install" ? /wizard.*must be absent/i : /upgrade.*read-only.*notice/i);
+    });
+  }
+}
+
+for (const callback of ["install_callback", "upgrade_init", "upgrade_callback"]) {
+  test(`native package rejects historical wizard authorization in ${callback}`, async (t) => {
     const root = await renderedPackage(t, "x86");
-    const wizardPath = path.join(root, "wizard/upgrade");
-    if (defect === "missing") await unlink(wizardPath);
-    else if (defect === "invalid-json") await writeFile(wizardPath, "{");
-    else {
-      const wizard = JSON.parse(await readFile(wizardPath, "utf8"));
-      const item = wizard[0].items[1];
-      if (defect === "wrong-key") item.field = "SAG_WRONG_ACCEPT";
-      if (defect === "wrong-type") item.type = "textfield";
-      if (defect === "default-accept") item.initValue = "true";
-      if (defect === "no-default-decline") delete item.initValue;
-      if (defect === "missing-refusal-rule") delete item.rules;
-      if (defect === "boolean-option") item.options[1].value = true;
-      if (defect === "legacy-title") { wizard[0].step_title = wizard[0].stepTitle; delete wizard[0].stepTitle; }
-      await writeFile(wizardPath, JSON.stringify(wizard));
-    }
-    await expectRejected(root, "x86", /wizard|wizard\/upgrade/i);
+    const filename = path.join(root, "cmd", callback);
+    await writeFile(filename, (await readFile(filename, "utf8")) + '\ncase "$SAG_KNOWLEDGE_UPGRADE_MODE" in rebuild-legacy-071) : ;; esac\n');
+    await expectRejected(root, "x86", /historical package wizard consent/i);
   });
 }
 
@@ -505,42 +514,59 @@ for (const file of ["cmd/upgrade_init", "cmd/upgrade_callback", "cmd/install_cal
 }
 
 
-test("native consent wizard covers retained-data install and warns of reset", async () => {
-  const upgrade = JSON.parse(await readFile(path.join(repoRoot, "packages/fnos/native/sag/wizard/upgrade"), "utf8"));
-  const install = JSON.parse(await readFile(path.join(repoRoot, "packages/fnos/native/sag/wizard/install"), "utf8"));
-  assert.deepEqual(install, upgrade);
-  assert.match(install[0].items[0].helpText, /重置.*重新上传/);
-  assert.match(install[0].items[0].helpText, /0\.13.*保留/);
-  assert.match(install[0].items[0].helpText, /全新安装.*不涉及重置/);
+test("rendered production server requires the shared knowledge compatibility checker", async (t) => {
+  const root = await renderedPackage(t, "x86");
+  await mkdir(path.join(root, "app/server/sag_api/fnos"), { recursive: true });
+  await expectRejected(root, "x86", /compatibility checker/i);
 });
 
-for (const defect of ["missing", "no-reset-warning", "no-preservation-warning"]) {
-  test(`native package rejects install consent: ${defect}`, async (t) => {
+for (const defect of ["missing", "different-source"]) {
+  test(`production package rejects a ${defect} pre-payload compatibility checker`, async (t) => {
     const root = await renderedPackage(t, "x86");
-    const filename = path.join(root, "wizard/install");
-    if (defect === "missing") await unlink(filename);
-    else {
-      const wizard = JSON.parse(await readFile(filename, "utf8"));
-      wizard[0].items[0].helpText = defect === "no-preservation-warning"
-        ? "现有知识库将被重置，需要重新上传文档。" : "普通更新";
-      await writeFile(filename, JSON.stringify(wizard));
-    }
-    await expectRejected(root, "x86", /install|reset|re-upload/i);
+    const source = path.join(repoRoot, "apps/api/sag_api/fnos/knowledge_compatibility.py");
+    await mkdir(path.join(root, "app/server/sag_api/fnos"), { recursive: true });
+    await cp(source, path.join(root, "app/server/sag_api/fnos/knowledge_compatibility.py"));
+    if (defect === "different-source") await writeFile(path.join(root, "cmd/knowledge_compatibility.py"), "print('compatible')\n");
+    await expectRejected(root, "x86", /cmd compatibility checker.*match/i);
   });
 }
 
-// fnOS only discovers these filenames and exports each item's field value.
-// See https://developer.fnnas.com/docs/core-concepts/wizard
-for (const phase of ["install", "upgrade"]) {
-  test(`fnOS discovers ${phase} reset consent with an explicit string value`, async () => {
-    const wizard = JSON.parse(await readFile(path.join(repoRoot, `packages/fnos/native/sag/wizard/${phase}`), "utf8"));
-    assert.ok(wizard[0].stepTitle);
-    const choice = wizard[0].items.find((item) => item.field === "SAG_ACCEPT_REINGEST_UPGRADE");
-    assert.equal(choice.type, "radio");
-    assert.equal(choice.initValue, "false");
-    const allowed = new RegExp(choice.rules[0].pattern);
-    assert.equal(allowed.test(choice.initValue), false, "decline must block Next");
-    assert.equal(allowed.test("true"), true);
-    assert.deepEqual(choice.options.map((option) => option.value), ["false", "true"]);
+test("production builder stages the same classifier beside cmd and inside the new payload", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "fnos-builder-classifier-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const fixtureRoot = path.join(directory, "repo");
+  await mkdir(path.join(fixtureRoot, "scripts"), { recursive: true });
+  for (const name of ["build-fnos-native-package.mjs", "validate-fnos-native-package.mjs", "fnos-version.mjs"]) {
+    await cp(path.join(repoRoot, "scripts", name), path.join(fixtureRoot, "scripts", name));
+  }
+  await cp(template, path.join(fixtureRoot, "packages/fnos/native/sag"), { recursive: true });
+  const source = path.join(repoRoot, "apps/api/sag_api/fnos/knowledge_compatibility.py");
+  await mkdir(path.join(fixtureRoot, "apps/api/sag_api/fnos"), { recursive: true });
+  await cp(source, path.join(fixtureRoot, "apps/api/sag_api/fnos/knowledge_compatibility.py"));
+  for (const name of ["apps/api/sag_agent", "apps/web/.next/static", "apps/web/public", "vendor", "web/.next", "bin"]) {
+    await mkdir(path.join(fixtureRoot, name), { recursive: true });
+  }
+  await writeFile(path.join(fixtureRoot, "web/.next/required-server-files.json"), JSON.stringify({ config: { basePath: "/app/sag" } }));
+  const captured = path.join(directory, "classifier.py");
+  const fnpack = path.join(fixtureRoot, "bin/fnpack");
+  // Substitute the external packer only. Execute the production builder and
+  // validator against real staged files before it can cross that boundary.
+  await writeFile(fnpack, `#!/bin/sh\nset -eu\ncmp cmd/knowledge_compatibility.py app/server/sag_api/fnos/knowledge_compatibility.py\ncp cmd/knowledge_compatibility.py "$CLASSIFIER_CAPTURE"\n: > sag.fpk\n`, { mode: 0o755 });
+  const result = spawnSync(process.execPath, [path.join(fixtureRoot, "scripts/build-fnos-native-package.mjs"),
+    "--platform", "x86", "--vendor", path.join(fixtureRoot, "vendor"), "--web", path.join(fixtureRoot, "web"),
+    "--version", "1.5.13-fnos", "--output", path.join(directory, "candidate.fpk")], {
+    env: { ...process.env, PATH: `${path.join(fixtureRoot, "bin")}:${process.env.PATH}`, CLASSIFIER_CAPTURE: captured },
+    encoding: "utf8", timeout: 15000,
   });
-}
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(await readFile(captured), await readFile(source));
+});
+
+test("fresh install has no wizard and package upgrades have one read-only notice", async () => {
+  await assert.rejects(access(path.join(template, "wizard", "install")), { code: "ENOENT" });
+  const steps = JSON.parse(await readFile(path.join(template, "wizard", "upgrade"), "utf8"));
+  assert.equal(steps.length, 1);
+  assert.deepEqual(steps[0].items.map(item => item.type), ["tips"]);
+  assert.ok(steps[0].items[0].helpText.length > 0);
+  assert.doesNotMatch(JSON.stringify(steps), /0\.(7|13|15)\.|SAG_KNOWLEDGE_UPGRADE_MODE/);
+});

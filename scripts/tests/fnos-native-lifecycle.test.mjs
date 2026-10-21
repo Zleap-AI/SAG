@@ -203,9 +203,9 @@ test("install_callback does not require ownership-changing commands", async () =
 // upgrade_callback — delegates to install_callback so the same
 // perm/ownership guarantees hold on the upgrade path.
 // -----------------------------------------------------------------
-test("upgrade_callback delegates to the new upgrade_init for backup and permission fixup", async () => {
+test("upgrade_callback delegates rebuilding to the offline lifecycle owner", async () => {
   const source = await readFile(path.join(cmd, "upgrade_callback"), "utf8");
-  assert.match(source, /SAG_UPGRADE_KEEP_STOPPED=true "\$command_dir\/upgrade_init"/);
+  assert.match(source, /"\$command_dir\/main" upgrade-knowledge/);
 });
 
 test("upgrade_callback stops a prior service before the upgraded package is started", async (t) => {
@@ -227,10 +227,10 @@ test("upgrade_callback stops a prior service before the upgraded package is star
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual((await readFile(trace, "utf8")).trim().split("\n"), ["main:stop", "install_callback", "main:status", "main:stop"]);
+  assert.deepEqual((await readFile(trace, "utf8")).trim().split("\n"), ["main:upgrade-knowledge"]);
 });
 
-test("upgrade_callback also refuses existing Native users without migration consent", async (t) => {
+test("upgrade_callback delegates unidentifiable retained data to the offline owner", async (t) => {
   const fixture = await mkdtemp(path.join(os.tmpdir(), "sag-native-upgrade-callback-"));
   t.after(() => rm(fixture, { recursive: true, force: true }));
   const commandDir = path.join(fixture, "cmd");
@@ -242,7 +242,8 @@ test("upgrade_callback also refuses existing Native users without migration cons
   await writeFile(path.join(pkgvar, "users", "1000", "marker"), "legacy");
   await writeFile(logFile, "");
   await cp(path.join(cmd, "upgrade_callback"), path.join(commandDir, "upgrade_callback"));
-  await writeFile(path.join(commandDir, "main"), "#!/bin/sh\nprintf 'main:%s\\n' \"$1\" >> \"$TRACE\"\n");
+  await cp(path.join(root, "apps/api/sag_api/fnos/knowledge_compatibility.py"), path.join(commandDir, "knowledge_compatibility.py"));
+  await writeFile(path.join(commandDir, "main"), '#!/bin/sh\nprintf "main:%s\\n" "$1" >> "$TRACE"\nexec python3 "$(dirname "$0")/knowledge_compatibility.py" --root "$TRIM_PKGVAR/users"\n');
   await writeFile(path.join(commandDir, "install_callback"), "#!/bin/sh\nprintf 'install_callback\\n' >> \"$TRACE\"\n");
   await chmod(path.join(commandDir, "main"), 0o755);
   await chmod(path.join(commandDir, "install_callback"), 0o755);
@@ -251,8 +252,8 @@ test("upgrade_callback also refuses existing Native users without migration cons
     env: { ...process.env, TRIM_PKGVAR: pkgvar, TRIM_TEMP_LOGFILE: logFile, TRACE: trace },
   });
   assert.notEqual(result.status, 0);
-  assert.equal(existsSync(trace), false);
-  assert.match(await readFile(logFile, "utf8"), /consent|reset/i);
+  assert.equal(await readFile(trace, "utf8"), "main:upgrade-knowledge\n");
+  assert.match(await readFile(logFile, "utf8"), /knowledge update failed/);
 });
 
 test("upgrade_callback under strict /bin/sh (dash on fnOS)", () => {
@@ -413,10 +414,13 @@ async function stageUpgradeFixture(t) {
   const pkgvar = path.join(fixture, "pkgvar");
   const pkgetc = path.join(fixture, "pkgetc");
   await mkdir(cmdDir);
+  await cp(path.join(root, "apps/api/sag_api/fnos/knowledge_compatibility.py"), path.join(cmdDir, "knowledge_compatibility.py"));
   await mkdir(appdest);
   await mkdir(pkgvar);
   await mkdir(pkgetc);
   await mkdir(path.join(appdest, "runtime"));
+  await mkdir(path.join(appdest, "server/sag_api/fnos"), { recursive: true });
+  await cp(path.join(root, "apps/api/sag_api/fnos/knowledge_compatibility.py"), path.join(appdest, "server/sag_api/fnos/knowledge_compatibility.py"));
   const upgradeSrc = await readFile(path.join(cmd, "upgrade_init"), "utf8");
   await writeFile(path.join(cmdDir, "upgrade_init"), upgradeSrc);
   await chmod(path.join(cmdDir, "upgrade_init"), 0o755);
@@ -428,8 +432,15 @@ async function stageUpgradeFixture(t) {
     TRIM_PKGVAR: pkgvar,
     TRIM_PKGETC: pkgetc,
     TRIM_TEMP_LOGFILE: logFile,
+    TRIM_APP_STATUS: "UPGRADE",
   };
   return { fixture, cmdDir, appdest, pkgvar, pkgetc, logFile, env };
+}
+
+function stageLegacyUsers(pkgvar) {
+  const archive = path.join(root, "apps/api/tests/fixtures/fnos_071/native-071.tar.gz");
+  const result = spawnSync("python3", ["-c", "import sys,tarfile; tarfile.open(sys.argv[1]).extractall(sys.argv[2])", archive, pkgvar], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
 }
 
 async function writeStubMain(cmdDir, { statusExit }) {
@@ -471,20 +482,6 @@ test("upgrade_init delegates identity-secret provisioning to install_callback (n
 test("upgrade_init redirects TRIM_TEMP_LOGFILE while probing main status", async () => {
   const source = await readFile(path.join(cmd, "upgrade_init"), "utf8");
   assert.match(source, /TRIM_TEMP_LOGFILE=\/dev\/null[^\n]*"\$main" status/);
-});
-
-test("upgrade_init requires explicit engine migration consent before touching installed users", async (t) => {
-  const { cmdDir, pkgvar, logFile, env } = await stageUpgradeFixture(t);
-  await writeStubInstallCallback(cmdDir);
-  await writeStubMain(cmdDir, { statusExit: 0 });
-  const retained = path.join(pkgvar, "users", "1000", "meta", "marker");
-  await mkdir(path.dirname(retained), { recursive: true });
-  await writeFile(retained, "legacy");
-
-  const result = spawnSync("bash", [path.join(cmdDir, "upgrade_init")], { encoding: "utf8", env });
-  assert.notEqual(result.status, 0);
-  assert.match(await readFile(logFile, "utf8"), /reset|consent/i);
-  assert.equal(await readFile(retained, "utf8"), "legacy");
 });
 
 test("upgrade_init tolerates a missing users directory (first install)", async (t) => {
@@ -536,7 +533,7 @@ test("upgrade_init fails closed when existing users have no backup tool", async 
   await mkdir(path.join(pkgvar, "users", "1000"), { recursive: true });
 
   const result = spawnSync("bash", [path.join(cmdDir, "upgrade_init")], {
-    encoding: "utf8", env: { ...env, SAG_ACCEPT_REINGEST_UPGRADE: "true" },
+    encoding: "utf8", env: { ...env, SAG_KNOWLEDGE_UPGRADE_MODE: "rebuild-legacy-071" },
   });
   assert.notEqual(result.status, 0);
   assert.match(await readFile(logFile, "utf8"), /backup.*required|cannot.*backup/i);
@@ -681,25 +678,13 @@ test("public MCP uses the fnOS-assigned service port instead of a reserved hard-
 test("public MCP startup failure is isolated from Native desktop startup", async () => {
   const source = await readFile(path.join(cmd, "main"), "utf8");
   assert.match(source, /SAG Native public MCP listener failed to start; the desktop app remains available/);
-  assert.doesNotMatch(source, /mcp-public[^\n]*exit 1/);
+  const start = source.split(/\n  start\)\n/)[1]?.split(/\n  upgrade-knowledge\)\n/)[0] ?? "";
+  assert.doesNotMatch(start, /mcp-public[^\n]*exit 1/);
 });
 
 
-test("upgrade_callback invokes the new cold-backup gate even when old upgrade_init skipped it", async (t) => {
-  const { cmdDir, pkgvar, logFile, env } = await stageUpgradeFixture(t);
-  await writeFile(path.join(cmdDir, "upgrade_callback"), await readFile(path.join(cmd, "upgrade_callback")));
-  await writeStubInstallCallback(cmdDir);
-  await writeStubMain(cmdDir, { statusExit: 3 });
-  await mkdir(path.join(pkgvar, "users", "1000"), { recursive: true });
-  const result = spawnSync("/bin/sh", [path.join(cmdDir, "upgrade_callback")], {
-    encoding: "utf8", env: { ...env, SAG_ACCEPT_REINGEST_UPGRADE: "true" },
-  });
-  assert.notEqual(result.status, 0);
-  assert.match(await readFile(logFile, "utf8"), /backup.*required|cannot.*backup/i);
-});
-
-for (const callback of ["upgrade_init", "upgrade_callback"]) {
-  test(`${callback} allows committed 0.13 updates without wizard and still backs up`, async (t) => {
+for (const callback of ["upgrade_init"]) {
+  test(`${callback} backs up a committed empty library`, async (t) => {
     const {cmdDir, appdest, pkgvar, logFile, env} = await stageUpgradeFixture(t);
     await writeStubInstallCallback(cmdDir);
     await writeStubMain(cmdDir, {statusExit:0});
@@ -707,7 +692,7 @@ for (const callback of ["upgrade_init", "upgrade_callback"]) {
     await cp(path.join(root,"packages/fnos/native/sag/app/runtime/lifecycle.py"),path.join(appdest,"runtime/lifecycle.py"));
     const database = path.join(pkgvar,"users/1000/meta/sag.db");
     await mkdir(path.dirname(database), {recursive:true});
-    const create = spawnSync("python3",["-c","import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table settings(scope text,key text,value_json text)'); c.execute('insert into settings values (?,?,?)',('global','fnos_knowledge_engine_0_13','{\"engine\":\"0.13.0\",\"knowledge_reset\":true}')); c.commit()", database]);
+    const create = spawnSync("python3",["-c","import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table settings(scope text,key text,value_json text)'); c.execute('create table sources(id text)'); c.execute('create table documents(id text)'); c.execute('insert into settings values (?,?,?)',('global','fnos_knowledge_engine_0_13','{\"engine\":\"0.13.0\",\"knowledge_reset\":true}')); c.commit()", database]);
     assert.equal(create.status,0,create.stderr?.toString());
     const result=spawnSync("/bin/sh",[path.join(cmdDir,callback)],{encoding:"utf8",env});
     assert.equal(result.status,0,result.stderr+await readFile(logFile,"utf8"));
@@ -715,26 +700,7 @@ for (const callback of ["upgrade_init", "upgrade_callback"]) {
   });
 }
 
-for (const callback of ["upgrade_init", "upgrade_callback"]) {
-  test(`${callback} rejects explicit decline even after a committed reset`, async (t) => {
-    const {cmdDir, appdest, pkgvar, logFile, env} = await stageUpgradeFixture(t);
-    await writeStubInstallCallback(cmdDir);
-    await writeStubMain(cmdDir, {statusExit:0});
-    await cp(path.join(cmd,"upgrade_callback"),path.join(cmdDir,"upgrade_callback"));
-    await cp(path.join(root,"packages/fnos/native/sag/app/runtime/lifecycle.py"),path.join(appdest,"runtime/lifecycle.py"));
-    const database = path.join(pkgvar,"users/1000/meta/sag.db");
-    await mkdir(path.dirname(database), {recursive:true});
-    const create = spawnSync("python3",["-c","import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table settings(scope text,key text,value_json text)'); c.execute('insert into settings values (?,?,?)',('global','fnos_knowledge_engine_0_13','{\"engine\":\"0.13.0\",\"knowledge_reset\":true}')); c.commit()", database]);
-    assert.equal(create.status,0,create.stderr?.toString());
-    const result=spawnSync("/bin/sh",[path.join(cmdDir,callback)],{encoding:"utf8",env:{...env,SAG_ACCEPT_REINGEST_UPGRADE:"false"}});
-    assert.notEqual(result.status,0);
-    assert.match(await readFile(logFile,"utf8"),/暂不升级/);
-    assert.equal(existsSync(path.join(pkgvar,"backup")),false);
-  });
-}
-
-
-test("retained-data reinstall refuses reset without consent before metadata or secret writes", async (t) => {
+test("retained-data reinstall refuses unreadable data before metadata or secret writes", async (t) => {
   const { cmdDir, appdest, pkgvar, logFile, env } = await stageUpgradeFixture(t);
   await cp(path.join(cmd, "install_callback"), path.join(cmdDir, "install_callback"));
   await writeStubMain(cmdDir, { statusExit: 3 });
@@ -747,58 +713,39 @@ test("retained-data reinstall refuses reset without consent before metadata or s
   assert.notEqual(result.status, 0);
   assert.deepEqual(await readFile(database), before);
   assert.equal(existsSync(path.join(pkgvar, "internal-secret")), false);
-  assert.match(await readFile(logFile, "utf8"), /consent|重置/);
+  assert.match(await readFile(logFile, "utf8"), /无法确认/);
 });
 
-test("retained-data reinstall with consent uses real cold backup without recursion", async (t) => {
+test("retained-data reinstall uses real cold backup without recursion", async (t) => {
   const { cmdDir, appdest, pkgvar, logFile, env } = await stageUpgradeFixture(t);
   await cp(path.join(cmd, "install_callback"), path.join(cmdDir, "install_callback"));
   await writeStubMain(cmdDir, { statusExit: 3 });
   await cp(path.join(root, "packages/fnos/native/sag/app/runtime/lifecycle.py"), path.join(appdest, "runtime/lifecycle.py"));
-  const database = path.join(pkgvar, "users/1000/meta/sag.db");
-  await mkdir(path.dirname(database), { recursive: true });
-  const create = spawnSync("python3", ["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table data(value text)'); c.commit()", database]);
-  assert.equal(create.status, 0);
+  stageLegacyUsers(pkgvar);
   const result = spawnSync("/bin/sh", [path.join(cmdDir, "install_callback")], {
-    encoding: "utf8", env: { ...env, SAG_ACCEPT_REINGEST_UPGRADE: "true" }, timeout: 15000,
+    encoding: "utf8", env: { ...env, SAG_KNOWLEDGE_UPGRADE_MODE: "rebuild-legacy-071" }, timeout: 15000,
   });
   assert.equal(result.status, 0, result.stderr + await readFile(logFile, "utf8"));
   assert.match(await readFile(logFile, "utf8"), /pre-upgrade backup written/);
   assert.equal((await stat(path.join(pkgvar, "internal-secret"))).size, 64);
 });
 
-for (const [phase, callback] of [["upgrade", "upgrade_init"], ["upgrade", "upgrade_callback"], ["install", "install_callback"]]) {
-  for (const accept of [false, true]) {
-    test(`${phase} wizard ${accept ? "acceptance" : "decline"} reaches ${callback} with legacy data`, async (t) => {
-      const { cmdDir, appdest, pkgvar, logFile, env } = await stageUpgradeFixture(t);
-      await cp(path.join(cmd, "install_callback"), path.join(cmdDir, "install_callback"));
-      await cp(path.join(cmd, "upgrade_callback"), path.join(cmdDir, "upgrade_callback"));
-      await writeStubMain(cmdDir, { statusExit: 3 });
-      await cp(path.join(root, "packages/fnos/native/sag/app/runtime/lifecycle.py"), path.join(appdest, "runtime/lifecycle.py"));
-      const database = path.join(pkgvar, "users/1000/meta/sag.db");
-      await mkdir(path.dirname(database), { recursive: true });
-      const create = spawnSync("python3", ["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table data(value text)'); c.commit()", database]);
-      assert.equal(create.status, 0, create.stderr?.toString());
-      const before = await readFile(database);
-      // Model the documented host boundary: discover wizard/<phase>,
-      // export the radio's selected string under its field name.
-      const wizard = JSON.parse(await readFile(path.join(root, `packages/fnos/native/sag/wizard/${phase}`), "utf8"));
-      const choice = wizard[0].items.find((item) => item.field === "SAG_ACCEPT_REINGEST_UPGRADE");
-      const value = accept ? choice.options.find((option) => option.value === "true").value : choice.initValue;
-      const result = spawnSync("/bin/sh", [path.join(cmdDir, callback)], {
-        encoding: "utf8", env: { ...env, [choice.field]: value }, timeout: 15000,
-      });
-      const log = await readFile(logFile, "utf8");
-      assert.deepEqual(await readFile(database), before);
-      if (accept) {
-        assert.equal(result.status, 0, result.stderr + log);
-        assert.match(log, /pre-upgrade backup written/);
-      } else {
-        assert.notEqual(result.status, 0);
-        assert.match(log, /暂不升级/);
-        assert.equal(existsSync(path.join(pkgvar, "backup")), false);
-        assert.equal(existsSync(path.join(pkgvar, "internal-secret")), false);
-      }
+for (const callback of ["upgrade_init", "install_callback"]) {
+  test(`native upgrade ${callback} backs up legacy metadata before the offline callback`, async (t) => {
+    const { cmdDir, appdest, pkgvar, logFile, env } = await stageUpgradeFixture(t);
+    await cp(path.join(cmd, "install_callback"), path.join(cmdDir, "install_callback"));
+    await cp(path.join(cmd, "upgrade_callback"), path.join(cmdDir, "upgrade_callback"));
+    await writeStubMain(cmdDir, { statusExit: 3 });
+    await cp(path.join(root, "packages/fnos/native/sag/app/runtime/lifecycle.py"), path.join(appdest, "runtime/lifecycle.py"));
+    stageLegacyUsers(pkgvar);
+    const database = path.join(pkgvar, "users/1000/meta/sag.db");
+    const before = await readFile(database);
+    const result = spawnSync("/bin/sh", [path.join(cmdDir, callback)], {
+      encoding: "utf8", env, timeout: 15000,
     });
-  }
+    const log = await readFile(logFile, "utf8");
+    assert.equal(result.status, 0, result.stderr + log);
+    assert.deepEqual(await readFile(database), before);
+    assert.match(log, /pre-upgrade backup written/);
+  });
 }

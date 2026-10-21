@@ -250,7 +250,7 @@ fi
         # macOS has no flock; this executable is not reached, but lets the
         # callback exercise its actual FD-open error and EXIT diagnostics.
         self.executable("flock", "#!/bin/sh\nexit 99\n")
-        for action in ("start", "stop", "status"):
+        for action in ("start", "stop", "status", "upgrade-knowledge"):
             log = Path(self.env["TRIM_TEMP_LOGFILE"])
             log.unlink(missing_ok=True)
             result = subprocess.run(["/bin/sh", str(self.main), action], env=self.env,
@@ -261,6 +261,17 @@ fi
             self.assertIn("lifecycle lock", log.read_text())
             self.assertFalse((self.run / "gateway.pid").exists())
 
+    def upgrade_cleanup_failure_reports_cause(self):
+        self.prepare_main()
+        self.executable("flock", "#!/bin/sh\nexit 0\n")
+        (self.app / "app.sock").mkdir()
+        result = subprocess.run(["/bin/sh", str(self.main), "upgrade-knowledge"], env=self.env,
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        log = Path(self.env["TRIM_TEMP_LOGFILE"])
+        self.assertTrue(log.is_file(), "upgrade failure must reach fnpack's visible log")
+        self.assertIn("socket/port", log.read_text())
+        self.assertIn("upgrade-knowledge", log.read_text())
 
     def worker(self, data, *, ignore_term=False):
         module = self.app / "server/sag_api/fnos/worker.py"
@@ -300,6 +311,20 @@ with sqlite3.connect(root / 'worker.db') as database:
         self.action("stop")
         wait_until(lambda: orphan.poll() is not None)
 
+    def new_commands_verify_workers_before_upgrade_owner(self):
+        self.prepare_pre_payload_main()
+        orphan = self.worker(self.data)
+        called = self.root / "upgrade-owner-called"
+        (self.app / "server/sag_api/fnos/package_upgrade.py").write_text(f'''
+from pathlib import Path
+stat = Path('/proc/{orphan.pid}/stat')
+if stat.exists() and stat.read_text().rpartition(') ')[2].split()[0] not in ('Z', 'X'):
+    raise SystemExit('offline upgrade owner was reached while a worker could still write')
+Path({str(called)!r}).touch()
+''')
+        self.action("upgrade-knowledge")
+        self.assertTrue(called.is_file(), "upgrade did not reach its verified offline owner")
+        wait_until(lambda: orphan.poll() is not None)
 
     def start_reaps_workers_left_by_dead_gateway(self):
         self.prepare_main()
@@ -443,6 +468,21 @@ if sys.argv[1] == 'gateway':
             after = database.execute('SELECT count(*) FROM writes').fetchone()[0]
         self.assertEqual(before, after, "stopped worker committed data after stop returned")
 
+    def upgrade_refuses_when_worker_identity_cannot_be_pinned(self):
+        self.prepare_main()
+        orphan = self.worker(self.data)
+        # Execute the real helper with only the unavailable kernel primitive
+        # substituted; a failed identity pin must never fall back to kill(pid).
+        helper = self.main.parent / "stop_workers.py"
+        if helper.exists():
+            helper.write_text("import os\ndef unavailable(*args, **kwargs): raise OSError('pidfd unavailable')\n"
+                              "os.pidfd_open = unavailable\n" + helper.read_text().replace(
+                                  "from __future__ import annotations\n", ""))
+        result = subprocess.run(["/bin/sh", str(self.main), "upgrade-knowledge"], env=self.env,
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIsNone(orphan.poll(), "unverified process must not be signalled")
+        self.assertIn("worker", Path(self.env["TRIM_TEMP_LOGFILE"]).read_text())
 
     def concurrent_restart_keeps_the_new_socket(self):
         self.prepare_main()

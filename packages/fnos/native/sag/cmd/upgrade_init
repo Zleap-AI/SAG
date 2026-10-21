@@ -86,28 +86,6 @@ LAST_STEP="env-check"
 [ -n "$TRIM_APPDEST" ] || die "TRIM_APPDEST is empty; fnpack did not inject the appdest directory"
 [ -n "$TRIM_PKGVAR" ]  || die "TRIM_PKGVAR is empty; fnpack did not inject the package var directory"
 
-# Existing knowledge, including earlier 0.13 candidates, must be reset once.
-# The upgrade must not stop the old service until its administrator accepts
-# the loss of current knowledge and the need to upload documents again.
-LAST_STEP="migration-consent"
-# Explicit refusal takes precedence over an already-reset workspace.
-if [ "${SAG_ACCEPT_REINGEST_UPGRADE:-}" = false ]; then
-  die "您已选择暂不升级，请取消本次更新。"
-fi
-if [ -d "$users" ] && [ -n "$(ls -A "$users" 2>/dev/null)" ]; then
-  # A committed per-tenant reset marker proves this is a routine update.
-  # The consent environment key is retained for compatibility with installed callbacks.
-  # Never bypass the cold backup.
-  if [ "${SAG_ACCEPT_REINGEST_UPGRADE:-false}" != true ]; then
-    [ -f "$lifecycle" ] && "$py" "$lifecycle" migration-ready --root "$users" >/dev/null 2>&1 ||
-      die "旧知识库将被重置，需重新上传文档；请先确认升级影响。reset consent is required"
-  fi
-  [ -f "$lifecycle" ] || die "verified cold backup is required, but runtime/lifecycle.py is missing; reinstall the backup tool before upgrading"
-  if [ ! -x "$py312" ] && ! command -v python3 >/dev/null 2>&1; then
-    die "cannot create required cold backup: Python runtime is unavailable"
-  fi
-fi
-
 # ---- Delegate identity-secret provisioning to install_callback -----------
 # Since install_init no longer touches $TRIM_PKGVAR (fnpack does not
 # guarantee it exists at that stage), the secret / perm work lives in
@@ -132,14 +110,10 @@ if TRIM_TEMP_LOGFILE=/dev/null "$main" status >/dev/null 2>&1; then
   was_running=true
 fi
 
-# ---- Stop the previous instance if one is running ------------------------
+# ---- Stop even when a failed health probe cannot establish service state --
 LAST_STEP="stop-previous"
-if [ "$was_running" = true ]; then
-  if ! "$main" stop; then
-    die "failed to stop the running Native instance before upgrade"
-  fi
-else
-  TRIM_TEMP_LOGFILE=/dev/null "$main" stop >/dev/null 2>&1 || :
+if ! "$main" stop; then
+  die "failed to stop the Native instance before upgrade; no cold backup was created"
 fi
 
 restore_if_needed() {
@@ -148,6 +122,21 @@ restore_if_needed() {
   fi
 }
 trap 'restore_if_needed; on_exit' EXIT HUP INT TERM
+
+# Check a cold tree: independently copying a live SQLite DB and its WAL can
+# produce an inconsistent image even when the original database is healthy.
+# Missing app markers do not make verified 0.13 storage incompatible.
+LAST_STEP="knowledge-format"
+if [ -d "$users" ] && [ -n "$(ls -A "$users" 2>/dev/null)" ]; then
+  [ -f "$lifecycle" ] || die "verified cold backup is required, but runtime/lifecycle.py is missing; reinstall the backup tool before upgrading"
+  if ! migration_state="$("$py" "$command_dir/knowledge_compatibility.py" --root "$users" 2>/dev/null)"; then
+    die "暂时无法确认知识库状态，已停止升级。请保留数据并联系维护者。"
+  fi
+  case "$migration_state" in
+    fresh|compatible|legacy) ;;
+    *) die "暂时无法确认知识库状态，已停止升级。请保留数据并联系维护者。" ;;
+  esac
+fi
 
 # ---- Decide whether there is anything to back up -------------------------
 # Skip the whole backup pipeline when any of these hold:

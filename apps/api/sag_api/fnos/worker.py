@@ -52,6 +52,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     if not socket_file.is_absolute() or socket_file != paths.socket_file:
         raise SystemExit("worker socket must be the tenant-scoped fnOS worker socket")
 
+    from sag_api.fnos.knowledge_compatibility import classify_tenant
+
+    if classify_tenant(paths.root) == "legacy":
+        raise ValueError("legacy knowledge requires explicit confirmation before startup")
+
     paths.prepare()
     _configure_environment(paths, args.uid, username)
 

@@ -1,4 +1,4 @@
-"""One-time Native knowledge reset; old engine and originals remain recoverable."""
+"""Preserve verified current knowledge; reset only the recognized legacy format."""
 
 from pathlib import Path
 
@@ -19,6 +19,7 @@ from sag_api.db.models import (
     UniversePartition,
 )
 from sag_api.enums import BindingTargetType
+from sag_api.fnos.knowledge_compatibility import classify_workspace, committed_marker
 
 _UPGRADE_KEY = "fnos_knowledge_engine_0_13"
 
@@ -30,7 +31,9 @@ def stale_internal_citations(citations: list) -> list:
     ]
 
 
-async def reset_legacy_knowledge(session: AsyncSession, legacy_engine_dir: Path) -> int:
+async def reset_legacy_knowledge(
+    session: AsyncSession, legacy_engine_dir: Path, *, allow_legacy_reset: bool = False,
+) -> int:
     """Clear old knowledge in one transaction before workers or engines start.
 
     A separate engine-v0.13-clean directory isolates the new index. The old
@@ -38,13 +41,17 @@ async def reset_legacy_knowledge(session: AsyncSession, legacy_engine_dir: Path)
     the complete tenant metadata before allowing install or upgrade to proceed.
     """
     marker = await session.scalar(select(Setting).where(Setting.scope == "global", Setting.key == _UPGRADE_KEY))
-    if marker is not None and marker.value.get("knowledge_reset") is True:
-        return 0
-    if legacy_engine_dir.is_symlink():
-        raise ValueError("legacy engine directory must not be a symlink")
-    old_workspace = (
-        marker is not None or legacy_engine_dir.is_dir() or bool(await session.scalar(select(func.count(Source.id))))
+    state = classify_workspace(
+        legacy_engine_dir.parent,
+        marker.value if marker is not None else None,
+        has_sources=bool(await session.scalar(select(func.count(Source.id)))),
+        has_documents=bool(await session.scalar(select(func.count(Document.id)))),
     )
+    if state == "compatible" and marker is not None and committed_marker(marker.value):
+        return 0
+    old_workspace = state == "legacy"
+    if old_workspace and not allow_legacy_reset:
+        raise ValueError("legacy knowledge requires explicit confirmation before rebuilding")
     count = 0
     if old_workspace:
         count = await session.scalar(select(func.count(Document.id))) or 0
@@ -64,7 +71,7 @@ async def reset_legacy_knowledge(session: AsyncSession, legacy_engine_dir: Path)
             Source,
         ):
             await session.execute(delete(model))
-    value = {"engine": "0.13.0", "knowledge_reset": True, "legacy_retained": old_workspace}
+    value = {"engine": "0.13.0", "knowledge_reset": True, "legacy_retained": legacy_engine_dir.is_dir()}
     if marker is None:
         session.add(Setting(scope="global", key=_UPGRADE_KEY, value=value))
     else:

@@ -512,6 +512,26 @@ case "${1:-}" in
     # Success — disarm the crash trap so stop/status are not affected.
     trap - EXIT
     ;;
+  upgrade-knowledge)
+    trap 's=$?; if [ "$s" -ne 0 ]; then log_error "SAG Native upgrade-knowledge failed (code $s, last step: ${_UPGRADE_STEP:-lifecycle-lock}). Keep DATA and backups intact; check the preceding cause and retry."; fi' EXIT
+    _UPGRADE_STEP="lifecycle-lock"
+    acquire_lifecycle_lock || exit 1
+    _UPGRADE_STEP="stop-services"
+    stop_process "$mcp_public_pid" "sag_api.fnos.cli" "mcp-public" || exit 1
+    stop_process "$gateway_pid" "sag_api.fnos.cli" || exit 1
+    _UPGRADE_STEP="stop-tenant-workers"
+    stop_tenant_workers || exit 1
+    _UPGRADE_STEP="stop-web"
+    stop_process "$web_pid" "$web_entry" "web" || exit 1
+    _UPGRADE_STEP="remove-stopped-records"
+    rm -f "$gateway_socket" "$web_port_file" || { log_error "SAG Native cannot remove stopped socket/port records before upgrade. Check package directory permissions and invalid files at $gateway_socket and $web_port_file, then retry."; exit 1; }
+    _UPGRADE_STEP="knowledge-backup-and-rebuild"
+    export PYTHONPATH="${TRIM_APPDEST}/server/vendor:${TRIM_APPDEST}/server${PYTHONPATH:+:$PYTHONPATH}"
+    if ! "$runtime" -m sag_api.fnos.package_upgrade --root "$TRIM_PKGVAR" --backup-tool "$TRIM_APPDEST/runtime/lifecycle.py"; then
+      log_error "知识库更新未完成，已停止本次更新。请保留数据和备份，重试或联系维护者。"
+      exit 1
+    fi
+    ;;
   stop)
     trap 's=$?; if [ "$s" -ne 0 ]; then log_error "SAG Native stop failed (code $s). Inspect package processes and DATA permissions before retrying."; fi' EXIT
     acquire_lifecycle_lock || exit 1

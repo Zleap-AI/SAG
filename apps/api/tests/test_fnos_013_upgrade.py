@@ -129,6 +129,69 @@ async def test_real_013_store_opens_without_reset(old_stores):
 
 
 @pytest.mark.asyncio
+async def test_unmarked_real_013_preserves_knowledge_rows_vectors_and_citations(old_stores):
+    root, provenance = old_stores
+    for tenant in provenance["tenants"]:
+        workspace = root / "users" / tenant
+        with sqlite3.connect(workspace / "meta/sag.db") as connection:
+            connection.execute("DELETE FROM settings WHERE key = 'fnos_knowledge_engine_0_13'")
+        before = await metadata_snapshot(workspace)
+        rows = engine_rows(workspace)
+        vectors = vector_rows(workspace)
+        files = tree_hashes(workspace / "engine-v0.13-clean")
+        originals = tree_hashes(workspace / "uploads")
+        database = create_async_engine(f"sqlite+aiosqlite:///{workspace / 'meta/sag.db'}")
+        sessions = async_sessionmaker(database, expire_on_commit=False)
+        try:
+            async with sessions() as session:
+                assert await reset_legacy_knowledge(session, workspace / "engine") == 0
+            after = await metadata_snapshot(workspace)
+            marker = after["settings"].pop("fnos_knowledge_engine_0_13")
+            assert marker["knowledge_reset"] is True
+            assert after == before
+            assert engine_rows(workspace) == rows
+            assert vector_rows(workspace) == vectors
+            assert tree_hashes(workspace / "engine-v0.13-clean") == files
+            assert tree_hashes(workspace / "uploads") == originals
+            async with DataEngine(GENERATOR["config"](workspace), data_source_id=f"config-{tenant}") as engine:
+                assert (await search(engine, tenant)).chunks
+        finally:
+            await database.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("defect", ["corrupt", "empty", "future", "missing-table"])
+@pytest.mark.parametrize("committed", [False, True])
+async def test_unknown_current_engine_never_resets_knowledge(old_stores, defect, committed):
+    root, provenance = old_stores
+    workspace = root / "users" / provenance["tenants"][0]
+    if not committed:
+        with sqlite3.connect(workspace / "meta/sag.db") as connection:
+            connection.execute("DELETE FROM settings WHERE key = 'fnos_knowledge_engine_0_13'")
+    engine_file = workspace / "engine-v0.13-clean/sag.db"
+    if defect in {"corrupt", "empty"}:
+        engine_file.write_bytes(b"not SQLite" if defect == "corrupt" else b"")
+    else:
+        with sqlite3.connect(engine_file) as connection:
+            if defect == "future":
+                connection.execute("UPDATE sag_schema_meta SET schema_version = 999")
+            else:
+                connection.execute("DROP TABLE source_event")
+    before = await metadata_snapshot(workspace)
+    before_files = tree_hashes(workspace)
+    database = create_async_engine(f"sqlite+aiosqlite:///{workspace / 'meta/sag.db'}")
+    sessions = async_sessionmaker(database, expire_on_commit=False)
+    try:
+        async with sessions() as session:
+            with pytest.raises(ValueError, match="无法确认|unknown|unsupported|invalid"):
+                await reset_legacy_knowledge(session, workspace / "engine")
+        assert await metadata_snapshot(workspace) == before
+        assert tree_hashes(workspace) == before_files
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_upgrade_preserves_ids_vectors_and_citations(old_stores):
     root, provenance = old_stores
     for tenant in provenance["tenants"]:

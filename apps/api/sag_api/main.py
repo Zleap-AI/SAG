@@ -98,14 +98,17 @@ async def _running_lifespan(app: FastAPI):
             raise RuntimeError("生产密码认证需要独立的强随机 SAG_AUTH_BOOTSTRAP_TOKEN（≥32 字节）")
         if bootstrap_token == settings.secret_key:
             raise RuntimeError("SAG_SECRET_KEY 与 SAG_AUTH_BOOTSTRAP_TOKEN 必须彼此独立")
+    if settings.auth_mode == "fnos":
+        from sag_api.fnos.knowledge_compatibility import classify_tenant
+
+        if classify_tenant(Path(settings.data_dir).parent) == "legacy":
+            raise ValueError("legacy knowledge requires explicit confirmation before startup")
     os.makedirs(settings.data_dir, exist_ok=True)
     os.makedirs(settings.upload_dir, exist_ok=True)
 
     await init_db()
 
     if settings.auth_mode == "fnos":
-        from pathlib import Path
-
         from sag_api.fnos.knowledge_upgrade import reset_legacy_knowledge
 
         active_engine_dir = Path(settings.data_dir)

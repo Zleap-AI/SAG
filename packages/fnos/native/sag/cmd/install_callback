@@ -82,12 +82,27 @@ case "$TRIM_PKGVAR" in
   *) die "TRIM_PKGVAR ($TRIM_PKGVAR) is not an absolute path" ;;
 esac
 
-# Retained-data installs have the same destructive reset and backup requirements.
+# Retained-data installs require the same read-only format check and cold backup.
+# A retained old-format library requires the native upgrade notice. A fresh
+# installation has no such notice and must not silently clear retained data.
 if [ "${SAG_INSTALL_FROM_UPGRADE:-false}" != true ] &&
    [ -d "$TRIM_PKGVAR/users" ] && [ -n "$(ls -A "$TRIM_PKGVAR/users" 2>/dev/null)" ]; then
   command_dir="$(dirname "$0")"
+  # Retained data may still have a writer from a previous installation.
+  # Never classify a separately copied DB/WAL until all package workers stop.
+  if ! "$command_dir/main" stop; then
+    die "无法停止现有知识库服务，已停止安装。请保留数据并重试。"
+  fi
+  py="/var/apps/python312/target/bin/python3"
+  [ -x "$py" ] || py="python3"
+  if ! migration_state="$("$py" "$command_dir/knowledge_compatibility.py" --root "$TRIM_PKGVAR/users" 2>/dev/null)"; then
+    die "暂时无法确认现有知识库状态，已停止安装。请保留数据并联系维护者。"
+  fi
+  if [ "$migration_state" = legacy ] && [ "${TRIM_APP_STATUS:-}" != UPGRADE ]; then
+    die "检测到旧版知识库。请保留数据，使用覆盖升级确认更新；本次安装未重建知识库。"
+  fi
   if ! SAG_INSTALL_FROM_UPGRADE=true SAG_UPGRADE_KEEP_STOPPED=true "$command_dir/upgrade_init"; then
-    die "旧知识库将被重置，请先确认升级影响并完成备份；未修改知识库数据。"
+    die "无法安全确认现有知识库的升级方式或备份未完成；已停止本次安装，请查看前述说明。"
   fi
 fi
 
