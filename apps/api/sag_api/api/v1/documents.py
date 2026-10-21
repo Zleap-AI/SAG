@@ -70,13 +70,19 @@ async def list_(
     source = await get_source(session, source_id)
     documents = await list_documents(session, source.id)
     cleanup_ids = [
-        document.id for document in documents
+        document.id
+        for document in documents
         if document.status in {DocumentStatus.DELETING, DocumentStatus.DELETE_FAILED}
     ]
-    jobs = await session.scalars(
-        select(Job).where(Job.type == JobType.DELETE_DOCUMENT, Job.document_id.in_(cleanup_ids))
-        .order_by(Job.created_at.desc(), Job.id.desc())
-    ) if cleanup_ids else ()
+    jobs = (
+        await session.scalars(
+            select(Job)
+            .where(Job.type == JobType.DELETE_DOCUMENT, Job.document_id.in_(cleanup_ids))
+            .order_by(Job.created_at.desc(), Job.id.desc())
+        )
+        if cleanup_ids
+        else ()
+    )
     latest: dict[str, JobOut] = {}
     for job in jobs:
         latest.setdefault(job.document_id, JobOut.model_validate(job))
@@ -167,7 +173,7 @@ async def upload(
             document.id,
             request_id,
         )
-    return DocumentOut.model_validate(document)
+    return DocumentOut.model_validate(document).model_copy(update={"job_id": _job.id})
 
 
 @router.post("/ingest", response_model=DocumentOut, status_code=201)
@@ -190,7 +196,17 @@ async def ingest(
             upload_dir=settings.upload_dir,
             job_queue=job_queue,
         )
-    return DocumentOut.model_validate(document)
+    job_id = await session.scalar(
+        select(Job.id)
+        .where(
+            Job.document_id == document.id,
+            Job.source_id == source_id,
+            Job.type == JobType.PROCESS_DOCUMENT,
+        )
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(1)
+    )
+    return DocumentOut.model_validate(document).model_copy(update={"job_id": job_id})
 
 
 @router.get("/{document_id}", response_model=DocumentOut)

@@ -33,6 +33,7 @@ class DocumentOut(BaseModel):
 
     id: str
     source_id: str
+    job_id: str | None = None
     filename: str
     content_type: str
     size_bytes: int

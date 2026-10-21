@@ -6,6 +6,9 @@ import { clientErrorMessage, serverErrorMessage } from "../i18n/client-errors";
 import type { SearchStrategy } from "./retrieval-config";
 import type {
   ActivityItem,
+  ClientAccessInfo,
+  ClientAccessSession,
+  ClientDevicePreview,
   AuthStatus,
   Entity,
   Agent,
@@ -766,6 +769,12 @@ export const api = {
       "/api/v1/system/model-config/mineru/302",
       { method: "POST" },
     ),
+  clientAccessInfo: () => request<ClientAccessInfo>("/api/v1/client-access/info"),
+  clientAccessSessions: () => request<ClientAccessSession[]>("/api/v1/client-access/sessions"),
+  clientAccessDevice: (user_code: string) => request<ClientDevicePreview>("/api/v1/client-access/inspect", { method: "POST", body: JSON.stringify({ user_code }) }),
+  approveClientAccess: (user_code: string, approve: boolean) => request<{ approved: boolean }>(
+    "/api/v1/client-access/approve", { method: "POST", body: JSON.stringify({ user_code, approve }) }),
+  revokeClientAccess: (id: string) => request<void>(`/api/v1/client-access/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
   testModelConfig: (b?: ModelConfigPatch) =>
     request<{ ok: boolean; message: string; completion?: { ok: boolean }; structured?: { ok: boolean; mode: string } }> (
       "/api/v1/system/model-config/test",

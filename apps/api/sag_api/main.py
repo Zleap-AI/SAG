@@ -140,6 +140,9 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=500, content={"error": error})
 
     app.include_router(api_router)
+    from sag_api.client_access.standard import install as install_client_access
+
+    install_client_access(app)
 
     # 信源即 MCP：挂载 Streamable-HTTP 端点（失败不阻断应用启动）
     try:

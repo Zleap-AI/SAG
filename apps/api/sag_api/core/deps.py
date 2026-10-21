@@ -22,7 +22,7 @@ from sag_api.services.auth_service import get_user
 from sag_api.services.dsh_integration_service import authenticate_connector
 
 _bearer = HTTPBearer(auto_error=False)
-_AuthKind = Literal["jwt", "connector"]
+_AuthKind = Literal["jwt", "connector", "client"]
 
 
 def _require_matching_auth_mode(payload: dict) -> None:
@@ -64,6 +64,13 @@ async def get_current_user(
     token: str = Depends(_get_bearer_token),
     session: AsyncSession = Depends(get_session),
 ) -> User:
+    client = getattr(request.state, "client_access", None)
+    if client is not None:
+        user = await get_user(session, client["subject"])
+        if user is None or not user.is_active:
+            raise AuthError("用户不存在或已停用")
+        request.state.user, request.state.auth_kind = user, "client"
+        return user
     try:
         payload = decode_token(token)
     except jwt.PyJWTError as error:
@@ -84,6 +91,8 @@ async def get_current_user_or_connector(
     session: AsyncSession = Depends(get_session),
 ) -> User:
     """Authenticate approved knowledge operations with JWT or local connector token."""
+    if getattr(request.state, "client_access", None) is not None:
+        return await get_current_user(request, token, session)
     principal = await _authenticate_user_principal(session, token)
     if principal is None:
         raise AuthError("令牌无效或已过期")

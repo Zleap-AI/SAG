@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 天
     # local 保留单机名字身份；password 强制邮箱密码认证。
     auth_mode: Literal["local", "password"] = "local"
+    # Complete externally configured bases; never infer the Web port from the API.
+    client_public_url: str | None = None
+    client_web_url: str | None = None
     # 业务展示时区；数据库与 API 时间戳始终使用 UTC。
     timezone: str = "Asia/Shanghai"
     # NoDecode 让逗号分隔值先进入下方 validator，避免 settings 源强制按 JSON 解码。
@@ -420,6 +423,13 @@ class Settings(BaseSettings):
         except (ZoneInfoNotFoundError, ValueError) as error:
             raise ValueError("timezone 必须是有效的 IANA 时区") from error
         return normalized
+
+    @field_validator("client_public_url", "client_web_url")
+    @classmethod
+    def _validate_client_url(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return cls._validate_dsh_public_url(value)
 
     @field_validator("dsh_public_url")
     @classmethod

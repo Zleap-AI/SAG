@@ -204,7 +204,8 @@ async def test_original_model_probe_uses_original_connection(isolate, monkeypatc
 
     async def complete(**kwargs):
         requests.append(kwargs)
-        return ModelResponse(model=kwargs["model"], choices=[{"message": {"role": "assistant", "content": "ok"}}])
+        return ModelResponse(model=kwargs["model"], choices=[{"message": {"role": "assistant",
+            "content": '{"ok": true}' if "response_format" in kwargs else "ok"}}])
 
     monkeypatch.setattr(system, "settings", isolate.stock)
     monkeypatch.setattr("sag_api.generation.llm._litellm_completion", complete)
@@ -215,7 +216,8 @@ async def test_original_model_probe_uses_original_connection(isolate, monkeypatc
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
         result = await client.post("/api/v1/system/model-config/test")
     assert result.status_code == 200 and result.json()["ok"]
-    assert requests[0]["api_key"] == "stock-key" and requests[0]["model"] == "openai/stock-model"
+    assert len(requests) == 2
+    assert all(item["api_key"] == "stock-key" and item["model"] == "openai/stock-model" for item in requests)
 
 
 @pytest.mark.parametrize(
