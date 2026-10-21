@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readdir, readFile, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -174,6 +174,9 @@ export async function validateNativeTemplate(root, platform) {
   // probe; it does not start the production gateway, web or tenant workers.
   const runtimeProbe = launcher.includes('"$server/fnos-native-probe.py" serve --socket "$TRIM_APPDEST/app.sock" --output "$TRIM_PKGVAR/native-p0.json"');
   if (!runtimeProbe) {
+    if (!launcher.startsWith("#!/bin/sh\nset -u\n")) {
+      fail("production launcher must use POSIX sh with explicit failure handling");
+    }
     const nofileBootstrap = launcher.indexOf('    configure_nofile >> "$gateway_log" 2>&1 || exit 1');
     const firstDaemon = launcher.indexOf('    _START_STEP="start-web"');
     if (nofileBootstrap < 0 || firstDaemon < 0 || nofileBootstrap > firstDaemon) {
@@ -183,6 +186,37 @@ export async function validateNativeTemplate(root, platform) {
         || /ulimit\s+(?:-H\s+)?-n\s+(?:["'$]|[0-9]+(?:\s|$))/m.test(launcher)) {
       fail("launcher NOFILE bootstrap must change only the soft limit");
     }
+    const lockBootstrap = launcher.indexOf('    acquire_lifecycle_lock || exit 1');
+    const stop = launcher.split(/\n  stop\)\n/)[1]?.split(/\n  status\)\n/)[0] ?? "";
+    if (lockBootstrap < 0 || lockBootstrap > firstDaemon
+        || !launcher.includes('if ! command exec 9>"${run_dir}/lifecycle.lock"; then')
+        || !launcher.includes('flock -w 60 "${1:--x}" 9')
+        || !stop.includes("acquire_lifecycle_lock || exit 1")
+        || stop.indexOf("acquire_lifecycle_lock") > stop.indexOf("stop_process")) {
+      fail("launcher must serialize start and stop before process or socket changes");
+    }
+    const daemonLaunches = launcher.split("\n").filter((line) => /^\s*\( .*\) >> .* &$/.test(line));
+    if (daemonLaunches.length !== 3 || daemonLaunches.some((line) => !line.includes("exec 9>&-;"))) {
+      fail("launcher daemons must close the lifecycle lock descriptor before starting");
+    }
+    if (!launcher.includes('valid_pid "$pid_file" "$expected" "$service" "$pid"')) {
+      fail("launcher stop must validate the captured PID before signalling it");
+    }
+    if (!stop.includes("stop_tenant_workers || exit 1")
+        || !launcher.includes('"$command_dir/stop_workers.py" --root "$TRIM_PKGVAR"')) {
+      fail("launcher must verify all tenant workers stopped before returning or backing up knowledge");
+    }
+    const start = launcher.split(/\n  start\)\n/)[1]?.split(/\n  upgrade-knowledge\)\n/)[0] ?? "";
+    const orphanCheck = start.indexOf('    _START_STEP="stop-orphan-workers"');
+    const gatewayStart = start.split('    _START_STEP="start-gateway"')[1] ?? "";
+    if (orphanCheck < start.indexOf("acquire_lifecycle_lock || exit 1")
+        || orphanCheck > start.indexOf('    _START_STEP="start-web"')
+        || !start.includes('if ! valid_pid "$gateway_pid" "sag_api.fnos.cli"; then\n      stop_tenant_workers || exit 1\n    fi')
+        || !gatewayStart.includes('if ! valid_pid "$gateway_pid" "sag_api.fnos.cli"; then\n      stop_tenant_workers || exit 1\n')) {
+      fail("launcher must verify orphan tenant workers stopped before starting a replacement gateway");
+    }
+    const stopHelper = await lstat(path.join(root, "cmd/stop_workers.py")).catch(() => null);
+    if (!stopHelper?.isFile()) fail("production commands must include tenant worker stop verification before payload replacement");
   }
   const configInit = await readFile(path.join(root, "cmd/config_init"), "utf8");
   const configCommands = configInit.split(/\r?\n/).map((line) => line.trim())
