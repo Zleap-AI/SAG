@@ -40,6 +40,8 @@ module.exports = {
   files: [
     "dist/**/*",
     "assets/splash.html",
+    "assets/workspaces.html",
+    "assets/workspaces.js",
     "assets/icon-master.png",
     "package.json"
   ],

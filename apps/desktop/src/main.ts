@@ -7,6 +7,8 @@ import {
   autoUpdater as nativeUpdater,
   BrowserWindow,
   ipcMain,
+  Menu,
+  session as electronSession,
   dialog,
   shell,
   type IpcMainInvokeEvent,
@@ -22,8 +24,15 @@ import {
 import { createUpdaterController, type UpdaterController } from "./updater";
 import { RuntimeController } from "./runtime-controller";
 import { ExitController } from "./exit-controller";
+import { WorkspaceProfiles, type WorkspaceProfile, type RemoteProfileInput } from "./workspace-profiles";
+import { WorkspaceController, trustedFrame, type WorkspaceDestination } from "./workspace-controller";
+import { RemoteWebBoundary, type RemoteWindowBinding } from "./remote-web-boundary";
+import { FnOsHostContext, type HostWindow } from "./fnos-host-context";
 
 let mainWindow: BrowserWindow | null = null;
+let managerWindow: BrowserWindow | null = null;
+let workspaceMessage = "";
+let switching = false;
 let splashWindow: BrowserWindow | null = null;
 let updater: UpdaterController | null = null;
 let trustedOrigin = "";
@@ -32,6 +41,7 @@ let quitAllowed = false;
 let updateQuitRequested = false;
 let booting: Promise<void> | undefined;
 let failureDialog: Promise<void> | undefined;
+let workspaceGeneration = 0;
 
 const runtime = new RuntimeController<ManagedRuntime>(
   (signal) => app.isPackaged
@@ -56,6 +66,8 @@ const exitController = new ExitController(
   },
   async () => {
     quitting = true;
+    workspaceGeneration++;
+    fnosHost.close();
     try { await runtime.stop(); } catch (error) { quitting = false; throw error; }
   },
 );
@@ -75,6 +87,167 @@ log.transports.file.maxSize = 5 * 1024 * 1024;
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) app.quit();
+
+const profiles = new WorkspaceProfiles(app.getPath("userData"));
+const workspaces = new WorkspaceController(profiles, {
+  startLocal: async () => (await runtime.start()).webUrl,
+  stopLocal: () => runtime.stop(),
+  inspectLocal: async () => runtime.session ? runtime.session.inspectActivity() : false,
+  confirmSwitch: async active => (await dialog.showMessageBox({
+    type: "warning", title: "切换工作区", message: active === null ? "无法确认本机任务状态" : "本机仍有正在处理的任务",
+    detail: "切换到 NAS 会停止本机服务，未完成任务将在下次启动时恢复。",
+    buttons: ["取消", "停止本机服务并切换"], defaultId: 0, cancelId: 0,
+  })).response === 1,
+});
+const fnosHost = new FnOsHostContext({
+  create: createFnOsHostWindow,
+  probe: async (profile, signal) => (await checkRemoteWorkspace(profile, signal, 2_000)).ok,
+});
+
+async function checkRemoteWorkspace(profile: WorkspaceProfile, signal: AbortSignal, timeoutMs = 10_000): Promise<{ ok: boolean; message: string }> {
+  try {
+    const response = await electronSession.fromPartition(profile.partition).fetch(
+      `${profile.webOrigin}${profile.appPrefix}/api/v1/system/capabilities`,
+      { signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]), redirect: "error" });
+    if ([401, 403].includes(response.status)) {
+      await response.body?.cancel();
+      return { ok: false, message: profile.deployment === "fnos" ? "请先在此连接的 NAS 宿主窗口完成登录。"
+        : "请先打开工作区，在此连接的独立窗口登录服务器。" };
+    }
+    if (!response.ok) {
+      await response.body?.cancel();
+      return { ok: false, message: `工作台 API 返回 HTTP ${response.status}。请检查应用前缀与服务状态。` };
+    }
+    const capabilities: unknown = await response.json();
+    if (!capabilities || typeof capabilities !== "object" || !("llm_configured" in capabilities)) {
+      return { ok: false, message: "此地址未提供兼容的 SAG 工作台，请确认应用前缀与服务器版本。" };
+    }
+    return { ok: true, message: "SAG 工作台可连接。打开工作区后确认服务器和当前登录身份。" };
+  } catch { return { ok: false, message: profile.deployment === "fnos"
+    ? "宿主会话尚未就绪。请检查网络与地址，并在 NAS 宿主窗口完成登录。"
+    : "无法验证工作台。请检查网络、证书与地址；如需要登录，先打开工作区。" }; }
+}
+
+async function openWorkspace(id: string, destination: WorkspaceDestination = "knowledge"): Promise<boolean> {
+  const generation = ++workspaceGeneration;
+  const previousId = workspaces.active?.id;
+  if (id !== workspaces.active?.id) fnosHost.close();
+  const opened = await workspaces.open(id, destination);
+  if (!opened || quitting || generation !== workspaceGeneration) return false;
+  // After switching is accepted, no old renderer may refill a partition being cleared
+  // while a different host is still bootstrapping.
+  if (destination !== "host-login" || previousId !== opened.profile.id) {
+    switching = true;
+    try { mainWindow?.destroy(); mainWindow = null; } finally { switching = false; }
+  }
+  const fnos = opened.profile.kind === "remote-web" && opened.profile.deployment === "fnos";
+  if (fnos) {
+    if (destination === "host-login") {
+      fnosHost.show(opened.profile);
+      splashWindow?.close(); splashWindow = null;
+      return true;
+    }
+    const ready = await fnosHost.ready(opened.profile);
+    if (quitting || generation !== workspaceGeneration) return false;
+    if (!ready) {
+      workspaceMessage = "NAS 宿主会话尚未就绪。请在宿主窗口完成登录，再选择“返回知识库”。";
+      showWorkspaceManager(); splashWindow?.close(); splashWindow = null;
+      return false;
+    }
+  } else fnosHost.close();
+  switching = true;
+  try { mainWindow?.destroy(); mainWindow = createMainWindow(opened.url, opened.profile); }
+  finally { switching = false; }
+  if (fnos) fnosHost.hide(opened.profile);
+  return true;
+}
+function showWorkspaceManager(): void {
+  if (managerWindow && !managerWindow.isDestroyed()) {
+    void managerWindow.reload(); managerWindow.show(); managerWindow.focus(); return;
+  }
+  managerWindow = new BrowserWindow({ width: 1020, height: 820, minWidth: 640, minHeight: 560,
+    title: "SAG · 管理工作区", backgroundColor: "#101315",
+    webPreferences: { preload: path.join(__dirname, "workspace-preload.js"),
+      nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
+  });
+  managerWindow.webContents.on("will-navigate", event => event.preventDefault());
+  managerWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  managerWindow.on("closed", () => { managerWindow = null; });
+  void managerWindow.loadFile(path.join(app.getAppPath(), "assets", "workspaces.html"));
+}
+function installWorkspaceMenu(): void {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    ...(process.platform === "darwin" ? [{ role: "appMenu" as const }] : []),
+    { label: "工作区", submenu: [
+      { label: "管理连接…", accelerator: "CmdOrCtrl+Shift+W", click: showWorkspaceManager },
+      { label: "重试当前工作区", click: () => { const id = profiles.read().activeId; if (id) void openWorkspace(id).catch(error => { workspaceMessage = String(error); showWorkspaceManager(); }); } },
+    ] },
+    { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" },
+  ]));
+}
+function registerWorkspaceIpc(): void {
+  const trust = (event: IpcMainInvokeEvent) => {
+    if (!trustedFrame(event, managerWindow?.webContents ?? null) ||
+        event.senderFrame?.url !== managerWindow?.webContents.getURL()) throw new Error("Untrusted workspace manager");
+  };
+  ipcMain.handle("workspace:list", event => { trust(event); return { ...profiles.read(), message: workspaceMessage }; });
+  ipcMain.handle("workspace:save", async (event, input: RemoteProfileInput) => {
+    trust(event);
+    if (input?.id && input.id === workspaces.active?.id) {
+      workspaceGeneration++; fnosHost.closeProfile(input.id);
+      await workspaces.close(); switching = true;
+      try { mainWindow?.destroy(); mainWindow = null; } finally { switching = false; }
+    }
+    const old = input?.id ? profiles.read().profiles.find(profile => profile.id === input.id) : undefined;
+    const saved = profiles.save(input);
+    if (old && old.partition !== saved.partition) await electronSession.fromPartition(old.partition).clearStorageData();
+    workspaceMessage = ""; return saved;
+  });
+  ipcMain.handle("workspace:open", async (event, id: string) => { trust(event); workspaceMessage = ""; return { opened: await openWorkspace(id) }; });
+  ipcMain.handle("workspace:host-login", async (event, id: string) => {
+    trust(event);
+    const opened = await openWorkspace(id, "host-login");
+    workspaceMessage = opened
+      ? "已在此连接的独立窗口打开 NAS 宿主登录页。完成登录后，选择“返回知识库”。登录状态仅保存在此连接中。"
+      : "已取消工作区切换。";
+    return { opened };
+  });
+  ipcMain.handle("workspace:remove", async (event, id: string) => {
+    trust(event); fnosHost.closeProfile(id); if (workspaces.active?.id === id) {
+      workspaceGeneration++;
+      await workspaces.close(); switching = true;
+      try { mainWindow?.destroy(); mainWindow = null; } finally { switching = false; }
+    }
+    const profile = profiles.remove(id); await electronSession.fromPartition(profile.partition).clearStorageData(); return { removed: true };
+  });
+  ipcMain.handle("workspace:logout", async (event, id: string) => {
+    trust(event); const profile = profiles.read().profiles.find(item => item.id === id && item.kind === "remote-web");
+    if (!profile) throw new Error("连接不存在");
+    const generation = ++workspaceGeneration;
+    fnosHost.closeProfile(id);
+    if (profile.deployment === "fnos" && workspaces.active?.id === id) {
+      switching = true;
+      try { mainWindow?.destroy(); mainWindow = null; } finally { switching = false; }
+    }
+    await electronSession.fromPartition(profile.partition).clearStorageData();
+    if (quitting || generation !== workspaceGeneration) return { cleared: true, opened: false };
+    if (profile.deployment === "fnos") {
+      await electronSession.fromPartition(profile.partition).clearAuthCache();
+      if (quitting || generation !== workspaceGeneration) return { cleared: true, opened: false };
+      const opened = await openWorkspace(id, "host-login");
+      workspaceMessage = opened
+        ? "已清除此连接的登录状态，并打开 NAS 宿主登录页。完成登录后，选择“返回知识库”。"
+        : "已清除此连接的登录状态；工作区切换已取消。";
+      return { cleared: true, opened };
+    }
+    if (workspaces.active?.id === id) mainWindow?.reload(); return { cleared: true };
+  });
+  ipcMain.handle("workspace:check", async (event, id: string) => {
+    trust(event); const profile = profiles.read().profiles.find(item => item.id === id && item.kind === "remote-web");
+    if (!profile) throw new Error("连接不存在");
+    return checkRemoteWorkspace(profile, AbortSignal.timeout(10_000));
+  });
+}
 
 function createSplashWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -123,6 +296,7 @@ function showStartupError(error: unknown): void {
 }
 
 function isTrustedSender(event: IpcMainInvokeEvent): boolean {
+  if (workspaces.active?.kind !== "local-managed" || !trustedFrame(event, mainWindow?.webContents ?? null)) return false;
   try {
     return new URL(event.senderFrame?.url ?? "").origin === trustedOrigin;
   } catch {
@@ -230,11 +404,19 @@ function registerIpc(): void {
   });
 }
 
-function installNavigationPolicy(window: BrowserWindow): void {
+function installNavigationPolicy(window: BrowserWindow, origin = trustedOrigin, profile?: WorkspaceProfile,
+  binding?: () => RemoteWindowBinding): void {
+  const remote = profile?.kind === "remote-web";
+  const boundary = remote ? new RemoteWebBoundary(origin, { window, profileId: profile.id,
+    partition: profile.partition, session: window.webContents.session }) : undefined;
+  const currentBinding = binding ?? (() => ({ window: mainWindow, profileId: workspaces.active?.id,
+    partition: workspaces.active?.partition,
+    session: mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.session : undefined }));
   window.webContents.on("will-navigate", (event, url) => {
     try {
       const parsed = new URL(url);
-      if (parsed.origin === trustedOrigin) return;
+      if (boundary && !boundary.isCurrent(currentBinding())) { event.preventDefault(); return; }
+      if (boundary ? boundary.navigationAllowed(url, currentBinding()) : parsed.origin === origin) return;
       if (parsed.protocol === "https:" || parsed.protocol === "http:") {
         void shell.openExternal(parsed.toString());
       }
@@ -244,9 +426,16 @@ function installNavigationPolicy(window: BrowserWindow): void {
     event.preventDefault();
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
+    if (boundary) {
+      if (boundary.popupDisposition(currentBinding()) === "unsupported") {
+        workspaceMessage = "此工作台的授权弹窗路径尚不支持。请在主窗口登录；依赖弹窗或授权回跳的 NAS 登录需要完成宿主协议验证。";
+        showWorkspaceManager();
+      }
+      return { action: "deny" };
+    }
     try {
       const parsed = new URL(url);
-      if (parsed.origin === trustedOrigin) {
+      if (parsed.origin === origin) {
         void window.loadURL(parsed.toString());
         return { action: "deny" };
       }
@@ -260,7 +449,36 @@ function installNavigationPolicy(window: BrowserWindow): void {
   });
 }
 
-function createMainWindow(webUrl: string): BrowserWindow {
+function createFnOsHostWindow(profile: WorkspaceProfile): HostWindow {
+  const window = new BrowserWindow({ width: 1200, height: 840, show: false,
+    title: `SAG · ${profile.name} · NAS 宿主`, backgroundColor: "#09090b",
+    webPreferences: { partition: profile.partition, nodeIntegration: false,
+      contextIsolation: true, sandbox: true, webSecurity: true },
+  });
+  installNavigationPolicy(window, profile.webOrigin, profile, () => ({
+    window: fnosHost.isCurrent(window, profile) ? window : null,
+    profileId: workspaces.active?.id, partition: workspaces.active?.partition,
+    session: window.isDestroyed() ? undefined : window.webContents.session,
+  }));
+  window.on("closed", () => { fnosHost.closed(window); });
+  window.webContents.on("did-fail-load", (_event, code, _description, _url, mainFrame) => {
+    if (!mainFrame || code === -3 || quitting || !fnosHost.isCurrent(window, profile)) return;
+    workspaceMessage = "NAS 宿主页面无法连接。请检查网络、证书和连接地址。";
+    showWorkspaceManager();
+  });
+  return {
+    window, isDestroyed: () => window.isDestroyed(), show: () => window.show(), hide: () => window.hide(),
+    destroy: () => window.destroy(),
+    load: () => { void window.loadURL(`${profile.webOrigin}/`).catch(() => {
+      if (quitting || !fnosHost.isCurrent(window, profile)) return;
+      workspaceMessage = "NAS 宿主页面无法连接。请检查网络、证书和连接地址。";
+      showWorkspaceManager();
+    }); },
+  };
+}
+
+function createMainWindow(webUrl: string, profile?: WorkspaceProfile): BrowserWindow {
+  const remote = profile?.kind === "remote-web";
   trustedOrigin = new URL(webUrl).origin;
   const window = new BrowserWindow({
     width: 1440,
@@ -271,60 +489,67 @@ function createMainWindow(webUrl: string): BrowserWindow {
     backgroundColor: "#09090b",
     autoHideMenuBar: true,
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: remote ? undefined : path.join(__dirname, "preload.js"),
+      partition: remote ? profile.partition : undefined,
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
       webSecurity: true,
     },
   });
-  if (app.isPackaged) window.setMenu(null);
-  installNavigationPolicy(window);
+  installNavigationPolicy(window, new URL(webUrl).origin, profile);
+  if (remote) {
+    window.setTitle(`SAG · ${profile.name} · ${profile.webOrigin}`);
+    window.webContents.on("did-fail-load", (_event, code, _description, _url, mainFrame) => {
+      if (!mainFrame || code === -3 || switching || quitting) return;
+      workspaceMessage = code === -202 || code === -200
+        ? "服务器证书无效。请修复服务器证书后重试。"
+        : code === -105 || code === -106 || code === -102
+          ? "工作台连接不可用。请检查网络、NAS 服务和工作台地址。"
+          : `工作台加载失败（${code}）。请检查地址，或重新登录。`;
+      showWorkspaceManager();
+    });
+  }
   window.once("ready-to-show", () => {
     splashWindow?.close();
     splashWindow = null;
     window.show();
   });
   window.on("close", (event) => {
-    if (process.platform !== "darwin" && !quitAllowed) {
+    if (process.platform !== "darwin" && !quitAllowed && !switching) {
       event.preventDefault();
       app.quit();
     }
   });
   window.on("closed", () => {
-    mainWindow = null;
+    if (mainWindow === window) mainWindow = null;
   });
-  void window.loadURL(webUrl);
+  void window.loadURL(webUrl).catch(() => {});
   return window;
 }
 
 function bootstrap(): Promise<void> {
   if (booting) return booting;
   if (quitting) return Promise.resolve();
+  if (!updater) updater = createUpdaterController(() => mainWindow, {
+    beforeInstall: async () => {
+      const prepared = await exitController.prepare("update");
+      if (prepared) quitAllowed = true;
+      return prepared;
+    },
+    onInstallError: () => {
+      if (!quitAllowed && !quitting) return;
+      quitAllowed = false; quitting = false;
+      void bootstrap();
+    },
+  });
+  registerIpc();
   if (!splashWindow || splashWindow.isDestroyed()) splashWindow = createSplashWindow();
   booting = (async () => {
     try {
-      const session = await runtime.start();
-      if (quitting || runtime.state.phase !== "ready") return;
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        trustedOrigin = new URL(session.webUrl).origin;
-        await mainWindow.loadURL(session.webUrl);
-        splashWindow?.close(); splashWindow = null;
-        mainWindow.show();
-      } else mainWindow = createMainWindow(session.webUrl);
-      if (!updater) updater = createUpdaterController(() => mainWindow, {
-        beforeInstall: async () => {
-          const prepared = await exitController.prepare("update");
-          if (prepared) quitAllowed = true;
-          return prepared;
-        },
-        onInstallError: () => {
-          if (!quitAllowed && !quitting) return;
-          quitAllowed = false; quitting = false;
-          void bootstrap();
-        },
-      });
-      registerIpc();
+      const activeId = profiles.read().activeId;
+      if (!activeId) { showWorkspaceManager(); splashWindow?.close(); splashWindow = null; return; }
+      await openWorkspace(activeId);
     } catch (error) {
       if (!quitting) {
         showStartupError(error);
@@ -355,19 +580,20 @@ function presentRuntimeFailure(message: string): Promise<void> {
 
 if (gotSingleInstanceLock) {
   app.on("second-instance", () => {
-    if (!mainWindow) return;
+    if (!mainWindow) { showWorkspaceManager(); return; }
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
   });
 
-  app.whenReady().then(bootstrap).catch(showStartupError);
+  app.whenReady().then(() => { registerWorkspaceIpc(); installWorkspaceMenu(); return bootstrap(); }).catch(showStartupError);
 
   app.on("activate", () => {
     if (mainWindow) {
       mainWindow.show();
       return;
     }
+    if (managerWindow) { managerWindow.show(); return; }
     if (runtime.session && runtime.state.phase === "ready") {
       mainWindow = createMainWindow(runtime.session.webUrl);
       return;
@@ -377,6 +603,8 @@ if (gotSingleInstanceLock) {
 
   nativeUpdater.on("before-quit-for-update", () => { updateQuitRequested = true; });
   app.on("before-quit", (event) => {
+    log.info("Desktop quit request", { authorized: quitAllowed, windows: BrowserWindow.getAllWindows().length,
+      runtime: runtime.state.phase });
     if (updateQuitRequested) {
       updateQuitRequested = false;
       // NSIS may already have queued this quit before its launch error arrived.
@@ -387,15 +615,20 @@ if (gotSingleInstanceLock) {
     void exitController.prepare("quit").then((prepared) => {
       if (!prepared) return;
       quitAllowed = true;
+      log.info("Desktop quit authorized");
       updater?.dispose();
-      app.quit();
+      // Electron assigns its native quitting flag after before-quit observers return.
+      // Re-entering from this promise's microtask can be overwritten by the first
+      // prevented event, leaving a windowless macOS process. Finish that turn first.
+      setImmediate(() => app.quit());
     }).catch((error) => {
       log.error("Desktop shutdown failed", error);
       dialog.showErrorBox("SAG 退出失败", "本地服务未能完成清理。请关闭 SAG 后重试；详情见日志。");
     });
   });
+  app.on("will-quit", () => { log.info("Desktop will quit"); });
 
   app.on("window-all-closed", () => {
-    if (process.platform !== "darwin") app.quit();
+    if (process.platform !== "darwin" && !switching) app.quit();
   });
 }
