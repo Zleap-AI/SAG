@@ -715,3 +715,13 @@ async def test_delete_failed_source_is_filtered_before_vector_top_k():
         )
 
     assert [section.chunk_id for section in outcome.sections] == ["visible-26"]
+
+
+def test_lexical_noise_does_not_discard_strong_semantic_evidence():
+    result = rerank_sections(
+        "请帮忙看看配送劳动者保障",
+        [section("strong", "骑手权益", "外卖员的工时和社保政策。", 0.86)],
+        lexical=[section("noise", "帮忙", "请帮忙看看本站的说明。", 0.1)],
+        limit=8,
+    )
+    assert "strong" in [item.chunk_id for item in result.sections]

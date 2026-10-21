@@ -78,8 +78,20 @@ def normalize_lexical_text(value: str) -> str:
 
 def _remove_query_noise(query: str) -> str:
     cleaned = query.strip().lower()
-    for phrase in _QUERY_NOISE:
+    cleaned = re.sub(
+        r"^(?:(?:could|would|can)\s+you\s+(?:please\s+)?(?:help\s+me\s+)?(?:find\s+)?"
+        r"|please\s+(?:help\s+me\s+)?(?:find\s+)?|help\s+me\s+(?:find\s+)?)",
+        "",
+        cleaned,
+    )
+    for phrase in sorted(_QUERY_NOISE, key=len, reverse=True):
         cleaned = cleaned.replace(phrase, " ")
+    cleaned = re.sub(
+        r"^(?:(?:麻烦你|麻烦(?=帮|请|查)|你(?=可以|帮)|可以(?=帮|查|搜索)"
+        r"|帮我(?:看看)?|帮忙|看看|请(?=帮|问|查|搜索|查询|介绍|解释|说明|告诉))\s*)+",
+        "",
+        cleaned.lstrip(),
+    )
     return cleaned
 
 
@@ -164,11 +176,7 @@ def _segmented_terms(
             values.extend(segmenter(part))
         else:
             values.append(part)
-    informative = (
-        value
-        for value in values
-        if normalize_lexical_text(value) not in _QUERY_INSTRUCTION_TERMS
-    )
+    informative = (value for value in values if normalize_lexical_text(value) not in _QUERY_INSTRUCTION_TERMS)
     return _split_alnum_terms(informative)
 
 

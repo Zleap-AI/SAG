@@ -186,6 +186,7 @@ def rerank_sections(
         query,
         segmentation_enabled=settings.search_chinese_segmentation_enabled,
     )
+    semantic_keys = {_section_key(section) for section in semantic}
     lexical = lexical or []
     lexical_keys = {_section_key(section) for section in lexical}
     exact_keys = lexical_keys if exact_lexical_keys is None else lexical_keys.intersection(exact_lexical_keys)
@@ -217,6 +218,7 @@ def rerank_sections(
         key: _lexical_relevance(query, section, analysis=effective) for key, (section, _index) in candidates
     }
     has_lexical_signal = any(key in lexical_keys or score >= 0.2 for key, score in lexical_scores.items())
+    has_strong_lexical_signal = any(score >= 0.35 for score in lexical_scores.values())
     ranked: list[tuple[float, float, int, RetrievedSection]] = []
 
     for position, (key, (section, original_index)) in enumerate(candidates):
@@ -232,7 +234,10 @@ def rerank_sections(
             raw * 0.5 + rank_score * 0.2 + lexical_score * 0.3 + (0.15 if exact else 0.0),
         )
         if has_lexical_signal:
-            relevant = lexical_match or lexical_score >= 0.2
+            relevant = lexical_match or lexical_score >= 0.2 or (
+                not has_strong_lexical_signal and key in semantic_keys
+                and raw >= max(0.8, semantic_floor) and not _is_boilerplate(section)
+            )
         else:
             relevant = raw >= semantic_floor
         if not relevant:

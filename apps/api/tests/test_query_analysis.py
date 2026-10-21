@@ -1,5 +1,7 @@
 """Query analysis keeps Chinese lexical retrieval bounded and recoverable."""
 
+import pytest
+
 from sag_api.services.query_analysis import QueryAnalysis, analyze_query
 
 
@@ -125,3 +127,38 @@ def test_mixed_chinese_and_glued_english_digit_splits_both():
 
     assert "gpt" in result.scoring_terms
     assert "gpt" in result.lookup_terms
+
+
+def test_polite_prefix_does_not_spend_topic_budget():
+    result = analyze_query("麻烦你可以帮忙帮我看看 DW-2412P30 不支持联网的温度说明")
+    assert "dw-2412p30" in result.scoring_terms
+    assert "不支持" in result.normalized_phrase
+    assert not {"麻烦", "可以", "帮忙", "看看"}.intersection(result.scoring_terms)
+    assert any("温度" in term for term in result.lookup_terms)
+
+
+def test_english_polite_prefix_keeps_model_and_negation():
+    result = analyze_query("Could you please help me find Qwen3 without networking temperature")
+    assert "qwen" in result.lookup_terms
+    assert "without" in result.scoring_terms
+    assert not {"could", "you", "please", "help", "me"}.intersection(result.scoring_terms)
+
+
+def test_politeness_removal_does_not_damage_topic_entities():
+    result = analyze_query("请帮我看看申请流程与DW-2412P30不联网的说明")
+    assert "申请流程" in result.normalized_phrase
+    assert "dw2412p30不联网" in result.normalized_phrase
+
+
+@pytest.mark.parametrize("query", ["请假流程", "请帮我看看请假流程", "麻烦你帮我查一下请假流程"])
+def test_leave_request_entity_survives_direct_and_polite_queries(query):
+    result = analyze_query(query, segmentation_enabled=False)
+    assert result.normalized_phrase == "请假流程"
+    assert "请假流程" in result.lookup_terms
+
+
+@pytest.mark.parametrize("query", ["Linux find command", "Could you please help me find Linux find command"])
+def test_find_command_survives_direct_and_polite_queries(query):
+    result = analyze_query(query, segmentation_enabled=False)
+    assert result.normalized_phrase == "linuxfindcommand"
+    assert result.scoring_terms == ("linux", "find", "command")
