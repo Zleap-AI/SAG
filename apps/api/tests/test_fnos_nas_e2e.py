@@ -236,6 +236,7 @@ async def _wait_process_job(document_id: str) -> Job:
 async def test_real_uds_http_queue_filesystem_import_and_replacement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    isolated_metadata,
 ) -> None:
     from sag_api import main
     from sag_api.core.db import SessionLocal
@@ -245,8 +246,11 @@ async def test_real_uds_http_queue_filesystem_import_and_replacement(
     shared_root.mkdir()
     nas_file = shared_root / "handbook.md"
     nas_file.write_text("# Policy\n\nold knowledge", encoding="utf-8")
-    uploads = tmp_path / "uploads"
-    data = tmp_path / "engine-v0.13-clean"
+    # Host share and gateway secret are outside the private tenant workspace.
+    # A real first-start workspace must not contain unrelated files without metadata.
+    workspace = tmp_path / "tenant"
+    uploads = workspace / "uploads"
+    data = workspace / "engine-v0.13-clean"
     secret = tmp_path / "internal-secret"
     secret.write_text("a" * 64, encoding="ascii")
     secret.chmod(0o600)

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readdir, readFile, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -79,29 +79,22 @@ async function assertNoDockerOrTokens(root) {
   }
 }
 
-// fnOS wizard contract: https://developer.fnnas.com/docs/core-concepts/wizard
-async function assertUpgradeConsentWizard(root, filename) {
-  const wizard = await readJson(root, `wizard/${filename}`);
-  if (!Array.isArray(wizard) || wizard.length !== 1 || !wizard[0]?.stepTitle
-      || !Array.isArray(wizard[0]?.items) || wizard[0].items.length !== 2) {
-    fail("upgrade consent wizard must contain one titled step, warning and choice");
-  }
-  const [warning, choice] = wizard[0].items;
-  if (warning.type !== "tips" || typeof warning.helpText !== "string"
-      || !warning.helpText.includes("重置") || !warning.helpText.includes("重新上传")) {
-    fail("consent wizard must warn about knowledge reset and re-upload");
-  }
-  if (!/0\.13.*保留/.test(warning.helpText) || !/全新安装.*不涉及重置/.test(warning.helpText)) {
-    fail("consent wizard must distinguish migrated data preservation from reset and fresh install");
-  }
-  if (choice.type !== "radio" || choice.field !== "SAG_ACCEPT_REINGEST_UPGRADE"
-      || !choice.label || choice.initValue !== "false"
-      || choice.rules?.length !== 1 || choice.rules[0]?.pattern !== "^true$"
-      || !choice.rules[0]?.message
-      || !Array.isArray(choice.options) || choice.options.length !== 2
-      || choice.options[0]?.value !== "false" || !choice.options[0]?.label
-      || choice.options[1]?.value !== "true" || !choice.options[1]?.label) {
-    fail("upgrade consent wizard must default to decline and export the required consent field");
+// Fresh installs have no data form; all upgrades show one native notice before
+// fnOS stops the old application. Continue is the current operation's consent.
+async function assertUpgradeNoticeWizard(root) {
+  const entry = await lstat(path.join(root, "wizard", "install")).catch((error) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (entry) fail("wizard/install must be absent for fresh installation");
+  let steps;
+  try { steps = JSON.parse(await readFile(path.join(root, "wizard", "upgrade"), "utf8")); }
+  catch { fail("wizard/upgrade must contain one read-only upgrade notice"); }
+  if (!Array.isArray(steps) || steps.length !== 1 || !Array.isArray(steps[0].items)
+      || steps[0].items.length !== 1 || steps[0].items[0].type !== "tips"
+      || typeof steps[0].items[0].helpText !== "string" || !steps[0].items[0].helpText.trim()
+      || steps[0].items[0].field || steps[0].items[0].options) {
+    fail("wizard/upgrade must contain one read-only upgrade notice");
   }
 }
 
@@ -167,13 +160,27 @@ export async function validateNativeTemplate(root, platform) {
   if (entry.allUsers !== true) fail("UI allUsers must be true");
   if (Object.hasOwn(entry, "port")) fail("UI must not expose a direct service port");
 
-  await assertUpgradeConsentWizard(root, "upgrade");
-  await assertUpgradeConsentWizard(root, "install");
+  await assertUpgradeNoticeWizard(root);
   const launcher = await readFile(path.join(root, "cmd/main"), "utf8");
   // The diagnostic probe builder replaces main with its own standalone
   // probe; it does not start the production gateway, web or tenant workers.
   const runtimeProbe = launcher.includes('"$server/fnos-native-probe.py" serve --socket "$TRIM_APPDEST/app.sock" --output "$TRIM_PKGVAR/native-p0.json"');
   if (!runtimeProbe) {
+    // The source template has no server yet; the production builder copies it.
+    const server = await stat(path.join(root, "app/server")).catch(() => null);
+    if (server?.isDirectory()) {
+      const sourceChecker = path.join(root, "app/server/sag_api/fnos/knowledge_compatibility.py");
+      const checker = await lstat(sourceChecker).catch(() => null);
+      if (!checker?.isFile()) fail("production server must contain the shared knowledge compatibility checker");
+      const commandChecker = path.join(root, "cmd/knowledge_compatibility.py");
+      const command = await lstat(commandChecker).catch(() => null);
+      if (!command?.isFile() || !(await readFile(commandChecker)).equals(await readFile(sourceChecker))) {
+        fail("production cmd compatibility checker must match the shared server checker before payload replacement");
+      }
+    }
+    if (!launcher.startsWith("#!/bin/sh\nset -u\n")) {
+      fail("production launcher must use POSIX sh with explicit failure handling");
+    }
     const nofileBootstrap = launcher.indexOf('    configure_nofile >> "$gateway_log" 2>&1 || exit 1');
     const firstDaemon = launcher.indexOf('    _START_STEP="start-web"');
     if (nofileBootstrap < 0 || firstDaemon < 0 || nofileBootstrap > firstDaemon) {
@@ -183,21 +190,81 @@ export async function validateNativeTemplate(root, platform) {
         || /ulimit\s+(?:-H\s+)?-n\s+(?:["'$]|[0-9]+(?:\s|$))/m.test(launcher)) {
       fail("launcher NOFILE bootstrap must change only the soft limit");
     }
+    const lockBootstrap = launcher.indexOf('    acquire_lifecycle_lock || exit 1');
+    const stop = launcher.split(/\n  stop\)\n/)[1]?.split(/\n  status\)\n/)[0] ?? "";
+    if (lockBootstrap < 0 || lockBootstrap > firstDaemon
+        || !launcher.includes('if ! command exec 9>"${run_dir}/lifecycle.lock"; then')
+        || !launcher.includes('flock -w 60 "${1:--x}" 9')
+        || !stop.includes("acquire_lifecycle_lock || exit 1")
+        || stop.indexOf("acquire_lifecycle_lock") > stop.indexOf("stop_process")) {
+      fail("launcher must serialize start and stop before process or socket changes");
+    }
+    const daemonLaunches = launcher.split("\n").filter((line) => /^\s*\( .*\) >> .* &$/.test(line));
+    if (daemonLaunches.length !== 3 || daemonLaunches.some((line) => !line.includes("exec 9>&-;"))) {
+      fail("launcher daemons must close the lifecycle lock descriptor before starting");
+    }
+    if (!launcher.includes('valid_pid "$pid_file" "$expected" "$service" "$pid"')) {
+      fail("launcher stop must validate the captured PID before signalling it");
+    }
+    const upgrade = launcher.split(/\n  upgrade-knowledge\)\n/)[1]?.split(/\n  stop\)\n/)[0] ?? "";
+    if (!upgrade.includes("-m sag_api.fnos.package_upgrade")
+        || !upgrade.includes('--backup-tool "$TRIM_APPDEST/runtime/lifecycle.py"')
+        || !upgrade.includes("acquire_lifecycle_lock || exit 1")
+        || upgrade.indexOf("acquire_lifecycle_lock") > upgrade.indexOf("stop_process")) {
+      fail("launcher must serialize the offline knowledge upgrade through cold backup and rebuilding");
+    }
+    if (!stop.includes("stop_tenant_workers || exit 1")
+        || !upgrade.includes("stop_tenant_workers || exit 1")
+        || upgrade.indexOf("stop_tenant_workers") > upgrade.indexOf("-m sag_api.fnos.package_upgrade")
+        || !launcher.includes('"$command_dir/stop_workers.py" --root "$TRIM_PKGVAR"')) {
+      fail("launcher must verify all tenant workers stopped before returning or backing up knowledge");
+    }
+    const start = launcher.split(/\n  start\)\n/)[1]?.split(/\n  upgrade-knowledge\)\n/)[0] ?? "";
+    const orphanCheck = start.indexOf('    _START_STEP="stop-orphan-workers"');
+    const gatewayStart = start.split('    _START_STEP="start-gateway"')[1] ?? "";
+    if (orphanCheck < start.indexOf("acquire_lifecycle_lock || exit 1")
+        || orphanCheck > start.indexOf('    _START_STEP="start-web"')
+        || !start.includes('if ! valid_pid "$gateway_pid" "sag_api.fnos.cli"; then\n      stop_tenant_workers || exit 1\n    fi')
+        || !gatewayStart.includes('if ! valid_pid "$gateway_pid" "sag_api.fnos.cli"; then\n      stop_tenant_workers || exit 1\n')) {
+      fail("launcher must verify orphan tenant workers stopped before starting a replacement gateway");
+    }
+    if (!upgrade.includes("trap '") || !upgrade.includes("upgrade-knowledge failed")
+        || !upgrade.includes("cannot remove stopped socket/port")) {
+      fail("launcher must report actionable offline upgrade failures to fnpack");
+    }
+    const stopHelper = await lstat(path.join(root, "cmd/stop_workers.py")).catch(() => null);
+    if (!stopHelper?.isFile()) fail("production commands must include tenant worker stop verification before payload replacement");
+  }
+  const configInit = await readFile(path.join(root, "cmd/config_init"), "utf8");
+  const configCommands = configInit.split(/\r?\n/).map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  if (configCommands.join("\n") !== "set -u\nexit 0") {
+    fail("config_init must preserve running services and stopped state without install cleanup");
   }
   const install = await readFile(path.join(root, "cmd/install_callback"), "utf8");
   if (!install.includes("SAG_INSTALL_FROM_UPGRADE") || !install.includes("$command_dir/upgrade_init")) {
-    fail("install_callback must apply the upgrade backup and consent gate to retained data");
+    fail("install_callback must apply the upgrade format check and cold backup gate to retained data");
   }
-  for (const callback of ["upgrade_init", "upgrade_callback"]) {
+  for (const callback of ["install_callback", "upgrade_init", "upgrade_callback"]) {
     const source = await readFile(path.join(root, "cmd", callback), "utf8");
-    if (!source.includes("migration-ready --root") || !source.includes('"${SAG_ACCEPT_REINGEST_UPGRADE:-}" = false')) {
-      fail(`${callback} must enforce legacy consent and recognize committed engine updates`);
+    if (source.includes("SAG_KNOWLEDGE_UPGRADE_MODE") || source.includes("SAG_ACCEPT_REINGEST_UPGRADE")) {
+      fail(`${callback} must not consume historical package wizard consent`);
+    }
+    if (callback === "upgrade_init" &&
+        (!source.includes('"$command_dir/knowledge_compatibility.py" --root')
+         || !source.includes("legacy") || !source.includes("compatible"))) {
+      fail(`${callback} must preserve recognized knowledge and reject unknown engine updates`);
+    }
+    if (callback === "upgrade_callback" &&
+        (!source.includes('"$command_dir/main" upgrade-knowledge')
+         || source.includes('"$command_dir/knowledge_compatibility.py" --root'))) {
+      fail("upgrade_callback must delegate to the stopped offline lifecycle owner before knowledge classification");
     }
   }
   const lifecycle = await readFile(path.join(root, "app/runtime/lifecycle.py"), "utf8");
-  if (!lifecycle.includes("def migration_ready")
-      || !lifecycle.includes("fnos_knowledge_engine_0_13") || !lifecycle.includes("knowledge_reset")) {
-    fail("lifecycle must verify committed tenant engine markers");
+  if (!lifecycle.includes("def upgrade_check") || !lifecycle.includes("def migration_ready")
+      || !lifecycle.includes("knowledge_compatibility.py")) {
+    fail("lifecycle must classify existing tenant engine formats before migration");
   }
   await assertFiles(root, requiredIcons);
 }

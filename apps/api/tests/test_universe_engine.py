@@ -22,7 +22,7 @@ def test_universe_cursor_protocol_rejects_v1_tokens():
 
 
 @pytest.mark.asyncio
-async def test_universe_real_store_statistics_and_keyset_cursor():
+async def test_universe_real_store_statistics_and_keyset_cursor(isolated_metadata):
     from sag_api.core.db import SessionLocal
     from sag_api.db.models import Source, UniverseDirtySource, User
     from sag_api.main import app

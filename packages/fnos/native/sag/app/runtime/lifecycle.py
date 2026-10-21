@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import json
+import importlib.util
 import os
 import re
 import shutil
@@ -90,29 +90,22 @@ def validate(archive: Path) -> None:
                 connection.close()
 
 
-def migration_ready(root: Path) -> None:
-    """Permit a routine update only when every tenant committed the knowledge reset.
-
-    Read live SQLite including WAL without mutating metadata. Missing, unreadable,
-    corrupt or mixed legacy tenants require explicit administrator consent.
-    """
+def upgrade_check(root: Path) -> str:
+    """Recognize all tenants before consent or any service/data mutation."""
     root = _users_root(root)
     _validate_tree(root)
-    for user in root.iterdir():
-        database = user / "meta" / "sag.db"
-        if not database.is_file():
-            raise ValueError("tenant engine migration marker is missing")
-        connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
-        try:
-            row = connection.execute(
-                "SELECT value_json FROM settings WHERE scope=? AND key=?",
-                ("global", "fnos_knowledge_engine_0_13"),
-            ).fetchone()
-            value = json.loads(row[0]) if row else {}
-            if value.get("engine") != "0.13.0" or value.get("knowledge_reset") is not True:
-                raise ValueError("tenant engine migration is not committed")
-        finally:
-            connection.close()
+    helper = Path(__file__).resolve().parents[1] / "server/sag_api/fnos/knowledge_compatibility.py"
+    if helper.is_symlink() or not helper.is_file():
+        raise ValueError("knowledge compatibility checker is unavailable")
+    spec = importlib.util.spec_from_file_location("fnos_knowledge_compatibility", helper)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.classify_users(root)
+
+
+def migration_ready(root: Path) -> None:
+    if upgrade_check(root) == "legacy":
+        raise ValueError("已识别 0.7 旧知识库；重建前需要明确同意。")
 
 
 def delete(root: Path) -> None:
@@ -126,7 +119,7 @@ def delete(root: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("size", "backup", "validate", "delete", "migration-ready"))
+    parser.add_argument("action", choices=("size", "backup", "validate", "delete", "migration-ready", "upgrade-check"))
     parser.add_argument("--root", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--archive", type=Path)
@@ -139,6 +132,8 @@ def main() -> None:
         validate(args.archive)
     elif args.action == "migration-ready":
         migration_ready(args.root)
+    elif args.action == "upgrade-check":
+        print(upgrade_check(args.root))
     else:
         delete(args.root)
 

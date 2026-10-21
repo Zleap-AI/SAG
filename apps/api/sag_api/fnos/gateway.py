@@ -218,7 +218,7 @@ def create_gateway_app(
         except (AuthError, HeaderPolicyError, ValueError):
             await websocket.close(code=1008)
             return
-        except WorkerCapacityError:
+        except (WorkerCapacityError, WorkerStartError):
             await websocket.close(code=1013)
             return
         request_id = str(uuid4())

@@ -52,3 +52,26 @@ async def _isolate_persisted_jobs():
             )
         )
         await session.commit()
+
+
+@pytest.fixture
+async def isolated_metadata(tmp_path, monkeypatch):
+    """Opt in when a whole tenant/store test requires its own metadata rows."""
+    from sqlalchemy import event
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from sag_api.core import db
+
+    directory = tmp_path / "meta"
+    directory.mkdir()
+    engine = create_async_engine(f"sqlite+aiosqlite:///{directory / 'sag.db'}")
+    event.listen(engine.sync_engine, "connect", db._sqlite_pragmas)
+    original_bind = db.SessionLocal.kw["bind"]
+    # Existing imported aliases, including queue workers, keep the same maker.
+    db.SessionLocal.configure(bind=engine)
+    monkeypatch.setattr(db, "engine", engine)
+    try:
+        yield
+    finally:
+        db.SessionLocal.configure(bind=original_bind)
+        await engine.dispose()

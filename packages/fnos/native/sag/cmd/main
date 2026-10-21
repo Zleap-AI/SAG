@@ -1,6 +1,13 @@
-#!/bin/bash
-set -eu
+#!/bin/sh
+set -u
 
+log_error() { printf '%s\n' "$1" >> "${TRIM_TEMP_LOGFILE:-/dev/stderr}"; }
+if [ -z "${TRIM_PKGVAR:-}" ] || [ -z "${TRIM_APPDEST:-}" ]; then
+  log_error "SAG Native requires TRIM_PKGVAR and TRIM_APPDEST from fnOS. Start SAG through the application center."
+  exit 1
+fi
+
+command_dir="$(dirname "$0")"
 runtime="/var/apps/python312/target/bin/python3"
 node_runtime="/var/apps/nodejs_v22/target/bin/node"
 run_dir="${TRIM_PKGVAR}/run"
@@ -38,8 +45,6 @@ secret="${TRIM_PKGVAR}/internal-secret"
 # The gateway UDS lives at $TRIM_APPDEST/app.sock — fnpack's own
 # gateway proxy reads from there based on the `gatewaySocket` field in
 # app/ui/config. fnpack grants the package user access to package paths.
-
-log_error() { printf '%s\n' "$1" >> "${TRIM_TEMP_LOGFILE:-/dev/null}"; }
 
 # Run in the launcher shell, before any daemon is forked. The sag package
 # user can raise only the soft limit, up to the hard limit inherited from
@@ -90,36 +95,6 @@ configure_nofile() {
     return 1
   fi
   printf 'SAG Native launcher NOFILE soft=%s target=%s effective=%s hard=%s%s\n' "$_sag_nofile_soft" "$_sag_nofile_target" "$_sag_nofile_actual" "$_sag_nofile_hard" "$_sag_nofile_note"
-}
-
-# drop_priv — exec "$@" as the sag package user. Uses setpriv when
-# available (present on fnOS 1.2.x; verified on the user's 1.2.0302),
-# and falls back to su -s /bin/sh sag -c '…' otherwise. runuser is
-# intentionally not tried — it is not shipped on the user's box.
-#
-# Called only for daemon launches (as command prefix in front of a
-# background pipeline that already opens its log fds in the outer
-# shell). The child inherits fd 1/2 dup'd to the log file, cwd from
-# the outer shell's cd, and the SAG_NATIVE_SERVICE / HOSTNAME / PORT
-# env prefix (setpriv preserves env by default).
-drop_priv() {
-  if command -v setpriv >/dev/null 2>&1; then
-    exec setpriv --reuid sag --regid sag --init-groups -- "$@"
-  elif command -v su >/dev/null 2>&1; then
-    # Shell-quote each argument for the -c command line. Necessary
-    # because su -s /bin/sh sag -c 'STR' re-parses STR as a shell
-    # command. Arguments containing spaces / metacharacters (e.g. a
-    # web-origin URL) must survive one round of shell parsing.
-    _quoted=""
-    for _arg in "$@"; do
-      _q="${_arg//\'/\'\\\'\'}"
-      _quoted="$_quoted '$_q'"
-    done
-    exec su -s /bin/sh sag -c "$_quoted"
-  else
-    log_error "SAG Native: neither setpriv nor su is available; cannot drop privileges to sag."
-    exit 1
-  fi
 }
 
 # prepare_secret returns 0 iff main can safely hand the secret to the
@@ -194,16 +169,47 @@ prepare_secret() {
 }
 
 write_pid() {
-  local pid_file="$1" pid="$2" temporary
+  (
+  pid_file="$1" pid="$2"
   temporary="${pid_file}.tmp.$$"
-  printf '%s\n' "$pid" > "$temporary"
-  mv -f "$temporary" "$pid_file"
+  if ! { printf '%s\n' "$pid" > "$temporary" && mv -f "$temporary" "$pid_file"; }; then
+    rm -f "$temporary"
+    log_error "SAG Native cannot write process record $pid_file. Check run directory permissions and restart SAG."
+    return 1
+  fi
+  )
+}
+
+# Keep this file for the lifetime of DATA: unlinking a locked file would
+# allow another invocation to lock a different inode. Daemons close fd 9.
+acquire_lifecycle_lock() {
+  if ! command -v flock >/dev/null 2>&1; then
+    log_error "SAG Native requires flock to serialize service lifecycle commands. Restore the fnOS flock utility and retry."
+    return 1
+  fi
+  if ! mkdir -p "$run_dir"; then
+    log_error "SAG Native cannot create lifecycle lock directory $run_dir. Check DATA permissions and retry."
+    return 1
+  fi
+  # `command` removes exec's special-builtin fatal-redirection behavior
+  # in dash, while retaining the descriptor for the launcher lifetime.
+  if ! command exec 9>"${run_dir}/lifecycle.lock"; then
+    log_error "SAG Native cannot open lifecycle lock ${run_dir}/lifecycle.lock. Check DATA run-directory permissions and remove a directory or invalid file at that path before retrying."
+    return 1
+  fi
+  if ! flock -w 60 "${1:--x}" 9; then
+    log_error "SAG Native could not acquire the lifecycle lock within 60s. Check the preceding start/stop command and retry."
+    return 1
+  fi
 }
 
 valid_pid() {
-  local pid_file="$1" expected="$2" service="${3:-}" pid command attempt=0
+  (
+  pid_file="$1" expected="$2" service="${3:-}" attempt=0
   test -f "$pid_file" || return 1
-  pid="$(cat "$pid_file")"
+  # stop passes its captured PID: never validate one PID then signal a
+  # second value read from a concurrently replaced process record.
+  if [ "$#" -ge 4 ]; then pid="$4"; else pid="$(cat "$pid_file")"; fi
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   kill -0 "$pid" 2>/dev/null || return 1
   # Next rewrites its process title to "next-server", which on Linux also
@@ -219,36 +225,86 @@ valid_pid() {
     done
   fi
   return 1
+  )
+}
+
+pid_start_time() {
+  (
+  process_stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+  # comm (field 2) can contain spaces and parentheses. Everything after
+  # its final ') ' is the fixed numeric/state part of the kernel record.
+  process_stat="${process_stat##*) }"
+  set -f
+  set -- $process_stat
+  [ "$#" -ge 20 ] || return 1
+  shift 19
+  printf '%s\n' "$1"
+  )
 }
 
 stop_process() {
-  local pid_file="$1" expected="$2" service="${3:-}" pid waited=0
-  if ! valid_pid "$pid_file" "$expected" "$service"; then
-    rm -f "$pid_file"
+  (
+  pid_file="$1" expected="$2" service="${3:-}" waited=0
+  pid="$(cat "$pid_file" 2>/dev/null)" || pid=""
+  if ! valid_pid "$pid_file" "$expected" "$service" "$pid"; then
+    rm -f "$pid_file" || { log_error "SAG Native cannot remove stale process record $pid_file. Check DATA permissions before retrying."; return 1; }
     return 0
   fi
-  pid="$(cat "$pid_file")"
-  kill -TERM "$pid"
-  while kill -0 "$pid" 2>/dev/null && test "$waited" -lt 15; do
+  started="$(pid_start_time "$pid")" || {
+    log_error "SAG Native cannot verify process identity for pid=$pid. Inspect $pid_file before retrying stop."
+    return 1
+  }
+  if ! kill -TERM "$pid" 2>/dev/null && valid_pid "$pid_file" "$expected" "$service" "$pid"; then
+    log_error "SAG Native cannot stop pid=$pid. Check package process ownership and retry."
+    return 1
+  fi
+  while [ "$(pid_start_time "$pid")" = "$started" ] && valid_pid "$pid_file" "$expected" "$service" "$pid" && test "$waited" -lt 15; do
     sleep 1
     waited=$((waited + 1))
   done
-  if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid"; fi
+  # A recycled PID must not receive the delayed SIGKILL.
+  if [ "$(pid_start_time "$pid")" = "$started" ] && valid_pid "$pid_file" "$expected" "$service" "$pid"; then
+    kill -KILL "$pid" 2>/dev/null || {
+      log_error "SAG Native cannot force-stop pid=$pid. Inspect package processes before retrying."
+      return 1
+    }
+    waited=0
+    while [ "$(pid_start_time "$pid")" = "$started" ] && valid_pid "$pid_file" "$expected" "$service" "$pid"; do
+      if test "$waited" -ge 50; then
+        log_error "SAG Native pid=$pid did not exit after SIGKILL. Inspect package processes before retrying stop or upgrade."
+        return 1
+      fi
+      sleep 0.1
+      waited=$((waited + 1))
+    done
+  fi
   rm -f "$pid_file"
+  )
+}
+
+stop_tenant_workers() {
+  # fnpack can deliver cmd before replacing app/runtime during upgrade.
+  if ! "$runtime" "$command_dir/stop_workers.py" --root "$TRIM_PKGVAR" >> "${TRIM_TEMP_LOGFILE:-/dev/stderr}" 2>&1; then
+    log_error "SAG Native tenant worker stop verification failed. Check the worker diagnostic above; do not back up or rebuild knowledge until all package workers have exited."
+    return 1
+  fi
 }
 
 wait_for_web() {
-  local waited=0
+  (
+  waited=0
   while test "$waited" -lt 15; do
     if curl -fsS --max-time 2 "http://127.0.0.1:${web_port}/app/sag/chat" >/dev/null 2>> "$gateway_log"; then return 0; fi
     sleep 1
     waited=$((waited + 1))
   done
   return 1
+  )
 }
 
 select_web_port() {
-  local candidate=3091
+  (
+  candidate=3091
   while test "$candidate" -le 3191; do
     if ! ss -ltn 2>/dev/null | grep -Eq "[:.]${candidate}[[:space:]]"; then
       printf '%s\n' "$candidate"
@@ -257,10 +313,12 @@ select_web_port() {
     candidate=$((candidate + 1))
   done
   return 1
+  )
 }
 
 wait_for_gateway_socket() {
-  local waited=0
+  (
+  waited=0
   while test "$waited" -lt 15; do
     if test -S "$gateway_socket" && valid_pid "$gateway_pid" "sag_api.fnos.cli" && gateway_healthy; then return 0; fi
     # If the process died during the wait loop, don't waste 14 more
@@ -275,6 +333,7 @@ wait_for_gateway_socket() {
   # Timed out after 15s — the process may still be alive but not serving.
   log_error "SAG Native gateway did not become ready within 15s. Socket exists: $(test -S "$gateway_socket" && echo yes || echo no). PID alive: $(valid_pid "$gateway_pid" "sag_api.fnos.cli" && echo yes || echo no). Last 20 lines of gateway.log: $(tail -n 20 "$gateway_log" 2>/dev/null | tr '\n' ' ' | head -c 800)."
   return 1
+  )
 }
 
 gateway_healthy() {
@@ -285,13 +344,15 @@ status_check_with_retry() {
   # Retry a probe up to 3 times with a 1s backoff so a single cold-start hiccup
   # (a healthz round-trip briefly crossing --max-time, a transient /proc read)
   # does not exit 3 and cause the fnOS app center to force-close the iframe.
-  local attempt=0
+  (
+  attempt=0
   while test "$attempt" -lt 3; do
     "$@" && return 0
     attempt=$((attempt + 1))
     sleep 1
   done
   return 1
+  )
 }
 
 web_healthy() {
@@ -303,7 +364,7 @@ web_healthy() {
 # leaves at least a pid/dir/log-tail breadcrumb in TRIM_TEMP_LOGFILE so
 # fnpack never shows the generic "执行脚本出错且原因未知".
 _start_crash_trap() {
-  local s=$?
+  s=$?
   if [ "$s" -ne 0 ]; then
     log_error "SAG Native start exited with code $s (last step: ${_START_STEP:-<startup>}). UID=$(id -u 2>/dev/null || echo ?) GID=$(id -g 2>/dev/null || echo ?). GW log: $(tail -n 20 "$gateway_log" 2>/dev/null | tr '\n' ' ' | head -c 800). Secret: $(ls -l "$secret" 2>&1). Socket dir: $(ls -ld "$(dirname "$gateway_socket")" 2>&1)."
   fi
@@ -329,6 +390,8 @@ case "${1:-}" in
     fi
     _START_STEP="configure-nofile"
     configure_nofile >> "$gateway_log" 2>&1 || exit 1
+    _START_STEP="lifecycle-lock"
+    acquire_lifecycle_lock || exit 1
     # Warm the operator if the socket dir is not writable by us so the
     # eventual PermissionError in uvicorn is not a surprise.
     _START_STEP="check-socket-dir"
@@ -341,6 +404,10 @@ case "${1:-}" in
     export PATH="/var/apps/python312/target/bin:/var/apps/nodejs_v22/target/bin:$PATH"
     export PYTHONPATH="${TRIM_APPDEST}/server/vendor:${TRIM_APPDEST}/server${PYTHONPATH:+:$PYTHONPATH}"
     export SAG_FNOS_DATA_ROOT="${TRIM_PKGVAR}"
+    if [ -z "${TRIM_PKGTMP:-}" ]; then
+      log_error "SAG Native requires TRIM_PKGTMP from fnOS. Start SAG through the application center."
+      exit 1
+    fi
     export SAG_FNOS_TEMP_ROOT="${TRIM_PKGTMP}"
     export SAG_FNOS_INTERNAL_SECRET_FILE="$secret"
 
@@ -350,18 +417,27 @@ case "${1:-}" in
     if ! test -f "$web_entry"; then log_error "SAG Native runtime payload is unavailable: web entry missing at $web_entry."; exit 1; fi
     if ! test -d "$web_root"; then log_error "SAG Native runtime payload is unavailable: web root missing at $web_root."; exit 1; fi
 
+    # A crashed gateway can leave older independent tenant workers writing.
+    # Confirm they exited before a replacement gateway classifies cold DATA.
+    # An already running gateway still owns its workers; keep them untouched.
+    _START_STEP="stop-orphan-workers"
+    if ! valid_pid "$gateway_pid" "sag_api.fnos.cli"; then
+      stop_tenant_workers || exit 1
+    fi
+
     _START_STEP="prepare-secret"
     prepare_secret || exit 1
 
     _START_STEP="start-web"
     if valid_pid "$web_pid" "$web_entry" "web" && test -f "$web_port_file"; then
-      web_port="$(cat "$web_port_file")"
+      web_port="$(cat "$web_port_file")" || { log_error "SAG Native cannot read web port record $web_port_file. Check DATA permissions and retry."; exit 1; }
     else
       web_port="$(select_web_port)" || { log_error "No free local port for SAG Native web service."; exit 1; }
-      cd "$web_root"
-      ( SAG_NATIVE_SERVICE="web" HOSTNAME=127.0.0.1 PORT="$web_port" "$node_runtime" "$web_entry" ) >> "$web_log" 2>&1 &
-      write_pid "$web_pid" "$!"
-      write_pid "$web_port_file" "$web_port"
+      cd "$web_root" || { log_error "SAG Native cannot enter web directory $web_root."; exit 1; }
+      ( exec 9>&-; SAG_NATIVE_SERVICE="web" HOSTNAME=127.0.0.1 PORT="$web_port" "$node_runtime" "$web_entry" ) >> "$web_log" 2>&1 &
+      web_process=$!
+      write_pid "$web_pid" "$web_process" || { kill -TERM "$web_process" 2>/dev/null || :; exit 1; }
+      write_pid "$web_port_file" "$web_port" || { stop_process "$web_pid" "$web_entry" "web"; exit 1; }
     fi
 
     _START_STEP="wait-web"
@@ -371,12 +447,15 @@ case "${1:-}" in
       exit 1
     fi
 
+    # The gateway can also exit while Web is becoming ready. Reconfirm its
+    # tenants have exited at the actual replacement boundary.
     _START_STEP="start-gateway"
     if ! valid_pid "$gateway_pid" "sag_api.fnos.cli"; then
-      rm -f "$gateway_socket"
-      ( "$runtime" -m sag_api.fnos.cli gateway --socket "$gateway_socket" --web-origin "http://127.0.0.1:${web_port}" ) >> "$gateway_log" 2>&1 &
+      stop_tenant_workers || exit 1
+      rm -f "$gateway_socket" || { log_error "SAG Native cannot remove stale gateway socket $gateway_socket."; exit 1; }
+      ( exec 9>&-; "$runtime" -m sag_api.fnos.cli gateway --socket "$gateway_socket" --web-origin "http://127.0.0.1:${web_port}" ) >> "$gateway_log" 2>&1 &
       gw_pid=$!
-      write_pid "$gateway_pid" "$gw_pid"
+      write_pid "$gateway_pid" "$gw_pid" || { kill -TERM "$gw_pid" 2>/dev/null || :; stop_process "$web_pid" "$web_entry" "web"; exit 1; }
       # Give Python ~1s to import + settle, then check it is still alive.
       # A quick death (permission denied on sqlite, missing native dep,
       # config parse error, secret mode != 0600, etc.) would otherwise be
@@ -412,14 +491,18 @@ case "${1:-}" in
       log_error "SAG Native public MCP listener is disabled: fnOS did not provide TRIM_SERVICE_PORT. The desktop app remains available."
     elif ! valid_pid "$mcp_public_pid" "sag_api.fnos.cli" "mcp-public"; then
       if touch "$mcp_public_log" 2>/dev/null; then
-        ( SAG_NATIVE_SERVICE="mcp-public" "$runtime" -m sag_api.fnos.cli mcp-proxy --socket "$gateway_socket" --host 0.0.0.0 --port "$mcp_public_port" ) >> "$mcp_public_log" 2>&1 &
+        ( exec 9>&-; SAG_NATIVE_SERVICE="mcp-public" "$runtime" -m sag_api.fnos.cli mcp-proxy --socket "$gateway_socket" --host 0.0.0.0 --port "$mcp_public_port" ) >> "$mcp_public_log" 2>&1 &
         mcp_public_process=$!
-        write_pid "$mcp_public_pid" "$mcp_public_process"
-        sleep 1
-        if ! kill -0 "$mcp_public_process" 2>/dev/null; then
-          rm -f "$mcp_public_pid"
-          mcp_public_tail="$(tail -n 20 "$mcp_public_log" 2>/dev/null | tr '\n' ' ' | head -c 800)"
-          log_error "SAG Native public MCP listener failed to start; the desktop app remains available. Last mcp-public.log: ${mcp_public_tail:-<empty>}"
+        if ! write_pid "$mcp_public_pid" "$mcp_public_process"; then
+          kill -TERM "$mcp_public_process" 2>/dev/null || :
+          log_error "SAG Native public MCP listener failed to record its process; the desktop app remains available."
+        else
+          sleep 1
+          if ! kill -0 "$mcp_public_process" 2>/dev/null; then
+            rm -f "$mcp_public_pid"
+            mcp_public_tail="$(tail -n 20 "$mcp_public_log" 2>/dev/null | tr '\n' ' ' | head -c 800)"
+            log_error "SAG Native public MCP listener failed to start; the desktop app remains available. Last mcp-public.log: ${mcp_public_tail:-<empty>}"
+          fi
         fi
       else
         log_error "SAG Native public MCP listener failed to start; the desktop app remains available. Cannot write $mcp_public_log."
@@ -429,13 +512,39 @@ case "${1:-}" in
     # Success — disarm the crash trap so stop/status are not affected.
     trap - EXIT
     ;;
+  upgrade-knowledge)
+    trap 's=$?; if [ "$s" -ne 0 ]; then log_error "SAG Native upgrade-knowledge failed (code $s, last step: ${_UPGRADE_STEP:-lifecycle-lock}). Keep DATA and backups intact; check the preceding cause and retry."; fi' EXIT
+    _UPGRADE_STEP="lifecycle-lock"
+    acquire_lifecycle_lock || exit 1
+    _UPGRADE_STEP="stop-services"
+    stop_process "$mcp_public_pid" "sag_api.fnos.cli" "mcp-public" || exit 1
+    stop_process "$gateway_pid" "sag_api.fnos.cli" || exit 1
+    _UPGRADE_STEP="stop-tenant-workers"
+    stop_tenant_workers || exit 1
+    _UPGRADE_STEP="stop-web"
+    stop_process "$web_pid" "$web_entry" "web" || exit 1
+    _UPGRADE_STEP="remove-stopped-records"
+    rm -f "$gateway_socket" "$web_port_file" || { log_error "SAG Native cannot remove stopped socket/port records before upgrade. Check package directory permissions and invalid files at $gateway_socket and $web_port_file, then retry."; exit 1; }
+    _UPGRADE_STEP="knowledge-backup-and-rebuild"
+    export PYTHONPATH="${TRIM_APPDEST}/server/vendor:${TRIM_APPDEST}/server${PYTHONPATH:+:$PYTHONPATH}"
+    if ! "$runtime" -m sag_api.fnos.package_upgrade --root "$TRIM_PKGVAR" --backup-tool "$TRIM_APPDEST/runtime/lifecycle.py"; then
+      log_error "知识库更新未完成，已停止本次更新。请保留数据和备份，重试或联系维护者。"
+      exit 1
+    fi
+    ;;
   stop)
-    stop_process "$mcp_public_pid" "sag_api.fnos.cli" "mcp-public"
-    stop_process "$gateway_pid" "sag_api.fnos.cli"
-    stop_process "$web_pid" "$web_entry" "web"
-    rm -f "$gateway_socket" "$web_port_file"
+    trap 's=$?; if [ "$s" -ne 0 ]; then log_error "SAG Native stop failed (code $s). Inspect package processes and DATA permissions before retrying."; fi' EXIT
+    acquire_lifecycle_lock || exit 1
+    stop_process "$mcp_public_pid" "sag_api.fnos.cli" "mcp-public" ||
+      exit 1
+    stop_process "$gateway_pid" "sag_api.fnos.cli" || exit 1
+    stop_tenant_workers || exit 1
+    stop_process "$web_pid" "$web_entry" "web" || exit 1
+    rm -f "$gateway_socket" "$web_port_file" || { log_error "SAG Native cannot remove stopped socket/port records. Check package directory permissions."; exit 1; }
     ;;
   status)
+    trap 's=$?; if [ "$s" -ne 0 ] && [ "$s" -ne 3 ]; then log_error "SAG Native status failed (code $s). Check DATA permissions and the lifecycle lock before retrying."; fi' EXIT
+    acquire_lifecycle_lock -s || exit 1
     if ! status_check_with_retry valid_pid "$gateway_pid" "sag_api.fnos.cli"; then
       log_error "SAG Native gateway process is not running."
       exit 3
@@ -456,11 +565,11 @@ case "${1:-}" in
       log_error "SAG Native web port record is missing."
       exit 3
     fi
-    web_port="$(cat "$web_port_file")"
+    web_port="$(cat "$web_port_file")" || { log_error "SAG Native cannot read web port record $web_port_file. Check DATA permissions and retry."; exit 3; }
     if ! status_check_with_retry web_healthy; then
       log_error "SAG Native web health check failed; inspect web.log."
       exit 3
     fi
     ;;
-  *) exit 1 ;;
+  *) log_error "SAG Native expects start, stop or status. Use the fnOS application center to control SAG."; exit 1 ;;
 esac

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const tool = path.join(root, "packages/fnos/native/sag/app/runtime/lifecycle.py");
 
-function run(args, env) {
-  return spawnSync("python3", [tool, ...args], { encoding: "utf8", env });
+function run(args, env, script = tool) {
+  return spawnSync("python3", [script, ...args], { encoding: "utf8", env });
 }
 
 test("backup and validation preserve a two-user tree without changing it", async (t) => {
@@ -62,20 +62,36 @@ test("delete requires explicit consent and keeps live data otherwise", async (t)
   assert.deepEqual(await (await import("node:fs/promises")).readdir(users), []);
 });
 
-for (const defect of [null, "missing", "wrong-engine", "invalid-json", "second-legacy", "corrupt", "old-reingest-marker"]) {
-  test(`migration-ready only accepts all migrated tenants: ${defect ?? "ready"}`, async (t) => {
+for (const defect of [null, "empty-tenant", "missing", "wrong-engine", "invalid-json", "second-legacy", "corrupt", "old-reingest-marker"]) {
+  test(`migration-ready accepts current or empty tenants and refuses unsafe data: ${defect ?? "ready"}`, async (t) => {
     const pkg = await mkdtemp(path.join(os.tmpdir(), "sag-engine-marker-"));
     t.after(() => rm(pkg, { recursive: true, force: true }));
     const users = path.join(pkg, "users");
     const database = path.join(users, "1000", "meta", "sag.db");
     await mkdir(path.dirname(database), { recursive: true });
+    const appdest = path.join(pkg, "appdest");
+    await mkdir(path.join(appdest, "runtime"), { recursive: true });
+    await mkdir(path.join(appdest, "server/sag_api/fnos"), { recursive: true });
+    await cp(tool, path.join(appdest, "runtime/lifecycle.py"));
+    await cp(path.join(root, "apps/api/sag_api/fnos/knowledge_compatibility.py"), path.join(appdest, "server/sag_api/fnos/knowledge_compatibility.py"));
     const marker = defect === "invalid-json" ? "invalid" : JSON.stringify({engine: defect === "wrong-engine" ? "0.7.1" : "0.13.0", knowledge_reset: defect !== "old-reingest-marker"});
-    const create = spawnSync("python3", ["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table settings (scope text,key text,value_json text)'); c.execute('insert into settings values (?,?,?)',('global','fnos_knowledge_engine_0_13',sys.argv[2])); c.commit()", database, marker]);
+    const create = spawnSync("python3", ["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table settings (scope text,key text,value_json text)'); c.execute('create table sources(id text)'); c.execute('create table documents(id text)'); c.execute('insert into settings values (?,?,?)',('global','fnos_knowledge_engine_0_13',sys.argv[2])); c.commit()", database, marker]);
     assert.equal(create.status, 0);
-    if (defect === "missing") await rm(database);
+    if (defect === "missing") {
+      await rm(database);
+      await mkdir(path.join(users, "1000/uploads"));
+      await writeFile(path.join(users, "1000/uploads/retained.txt"), "retained original without metadata");
+    }
     if (defect === "corrupt") await writeFile(database, "broken");
-    if (defect === "second-legacy") await mkdir(path.join(users, "1001", "meta"), {recursive:true});
-    const result = run(["migration-ready", "--root", users], {...process.env, TRIM_PKGVAR:pkg});
-    assert.equal(result.status === 0, defect === null, result.stderr);
+    if (defect === "empty-tenant") await mkdir(path.join(users, "1001", "meta"), {recursive:true});
+    if (defect === "second-legacy") {
+      const fixture = path.join(pkg, "legacy-fixture");
+      const extracted = spawnSync("python3", ["-c", "import sys,tarfile; tarfile.open(sys.argv[1]).extractall(sys.argv[2])",
+        path.join(root, "apps/api/tests/fixtures/fnos_071/native-071.tar.gz"), fixture]);
+      assert.equal(extracted.status, 0, extracted.stderr?.toString());
+      await cp(path.join(fixture, "users/1000"), path.join(users, "1001"), { recursive:true });
+    }
+    const result = run(["migration-ready", "--root", users], {...process.env, TRIM_PKGVAR:pkg}, path.join(appdest, "runtime/lifecycle.py"));
+    assert.equal(result.status === 0, defect === null || defect === "empty-tenant", result.stderr);
   });
 }

@@ -58,6 +58,10 @@ def test_real_071_two_tenant_cold_backup_restores_exact_data(tmp_path):
     for name in ("upgrade_init", "upgrade_callback"):
         shutil.copy2(template / "cmd" / name, command_dir / name)
     shutil.copy2(template / "app/runtime/lifecycle.py", appdest / "runtime/lifecycle.py")
+    helper_dir = appdest / "server/sag_api/fnos"
+    helper_dir.mkdir(parents=True)
+    shutil.copy2(ROOT / "apps/api/sag_api/fnos/knowledge_compatibility.py", helper_dir)
+    shutil.copy2(ROOT / "apps/api/sag_api/fnos/knowledge_compatibility.py", command_dir)
     trace = tmp_path / "trace"
     for name, body in {
         "main": 'printf "%s\\n" "$1" >> "$TRACE"; [ "$1" != status ]',
@@ -75,17 +79,12 @@ def test_real_071_two_tenant_cold_backup_restores_exact_data(tmp_path):
         "TRACE": str(trace),
     }
 
-    declined = subprocess.run(
-        ["/bin/sh", str(command_dir / "upgrade_callback")], env=env, capture_output=True, text=True, check=False
+    retained = subprocess.run(
+        ["/bin/sh", str(command_dir / "upgrade_init")], env=env, capture_output=True, text=True, check=False
     )
-    assert declined.returncode != 0 and not trace.exists()
-    assert tree_hashes(pkgvar) == before
-
-    env["SAG_ACCEPT_REINGEST_UPGRADE"] = "true"
-    accepted = subprocess.run(
-        ["/bin/sh", str(command_dir / "upgrade_callback")], env=env, capture_output=True, text=True, check=False
-    )
-    assert accepted.returncode == 0, accepted.stderr + log.read_text()
+    # The pre-upgrade phase backs up without rebuilding; the accepted native
+    # notice authorizes the new payload to rebuild in its later callback.
+    assert retained.returncode == 0, retained.stderr + log.read_text()
     backups = list((pkgvar / "backup").glob("*.tar.gz"))
     assert len(backups) == 1
     restored = tmp_path / "restored"
@@ -101,10 +100,10 @@ def test_real_071_two_tenant_cold_backup_restores_exact_data(tmp_path):
     corrupted.write_bytes(b"invalid SQLite")
     failed_before = tree_hashes(pkgvar / "users")
     failed = subprocess.run(
-        ["/bin/sh", str(command_dir / "upgrade_callback")], env=env, capture_output=True, text=True, check=False
+        ["/bin/sh", str(command_dir / "upgrade_init")], env=env, capture_output=True, text=True, check=False
     )
     assert failed.returncode != 0
-    assert "validate failed" in log.read_text()
+    assert "无法确认" in log.read_text()
     assert tree_hashes(pkgvar / "users") == failed_before
     assert "start" not in trace.read_text().splitlines()
     assert backups[0].is_file()
@@ -137,7 +136,7 @@ async def test_real_071_reset_is_tenant_scoped_and_preserves_recovery_files(tmp_
             preserved = {}
             for model in (Agent, Thread, Message, Setting):
                 preserved[model] = {row.id for row in (await session.scalars(select(model))).all()}
-            assert await reset_legacy_knowledge(session, workspace / "engine") > 0
+            assert await reset_legacy_knowledge(session, workspace / "engine", allow_legacy_reset=True) > 0
             assert (await session.scalars(select(Source))).all() == []
             assert (await session.scalars(select(Document))).all() == []
             for model in (Agent, Thread, Message, Setting):

@@ -16,6 +16,7 @@ from uuid import uuid4
 import httpx
 
 from sag_api.fnos.identity import GatewayIdentity, InternalIdentitySigner
+from sag_api.fnos.knowledge_compatibility import classify_tenant
 from sag_api.fnos.workspace import WorkspacePaths, tenant_key
 
 MAX_WORKERS = 4
@@ -23,6 +24,14 @@ IDLE_TIMEOUT_SECONDS = 15 * 60
 GRACEFUL_STOP_SECONDS = 15
 READY_TIMEOUT_SECONDS = 60
 log = logging.getLogger(__name__)
+
+
+def _workspace_state(root: Path) -> str:
+    # Preserve the read boundary before WorkspacePaths.prepare() can run.
+    for directory in (root, *root.parents):
+        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+            raise ValueError("workspace ancestry must contain real directories")
+    return classify_tenant(root)
 
 
 class WorkerCapacityError(Exception):
@@ -198,6 +207,8 @@ class WorkerSupervisor:
 
             phase = "prepare"
             try:
+                if await asyncio.to_thread(_workspace_state, starting.paths.root) == "legacy":
+                    raise ValueError("legacy knowledge requires a completed package upgrade")
                 starting.paths.prepare()
                 starting.paths.socket_file.unlink(missing_ok=True)
                 phase = "spawn"
