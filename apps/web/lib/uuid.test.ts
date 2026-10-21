@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { clientErrorMessage } from "@/i18n/client-errors";
 import { UuidCapabilityError, generateUuidV4 } from "./uuid";
 
 describe("generateUuidV4", () => {
@@ -30,5 +31,6 @@ describe("generateUuidV4", () => {
     vi.stubGlobal("crypto", undefined);
 
     expect(() => generateUuidV4()).toThrow(UuidCapabilityError);
+    expect(new UuidCapabilityError().message).toBe(clientErrorMessage("secureRandomUnavailable"));
   });
 });

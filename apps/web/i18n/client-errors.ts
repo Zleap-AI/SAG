@@ -11,6 +11,7 @@ interface ClientErrorValues {
 
 const messages = {
   "zh-CN": {
+    secureRandomUnavailable: "当前浏览器不支持安全随机 ID；请升级浏览器后重试。",
     invalidSearchStream: "搜索服务返回了无法解析的流式数据",
     searchPrepareTimeout: "检索准备超时，请重试",
     searchIdleTimeout: "搜索流长时间无响应，请重试",
@@ -77,6 +78,7 @@ const messages = {
     serverRequestFailed: "请求处理失败，请稍后重试",
   },
   "en-US": {
+    secureRandomUnavailable: "This browser cannot generate secure IDs. Upgrade your browser and try again.",
     invalidSearchStream: "The search service returned an unreadable data stream",
     searchPrepareTimeout: "Search preparation timed out. Try again.",
     searchIdleTimeout: "The search stream stopped responding. Try again.",

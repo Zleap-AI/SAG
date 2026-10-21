@@ -1,6 +1,8 @@
+import { clientErrorMessage } from "@/i18n/client-errors";
+
 export class UuidCapabilityError extends Error {
   constructor() {
-    super("当前浏览器不支持安全随机 ID；请升级浏览器后重试。");
+    super(clientErrorMessage("secureRandomUnavailable"));
     this.name = "UuidCapabilityError";
   }
 }
