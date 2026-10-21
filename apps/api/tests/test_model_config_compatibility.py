@@ -135,3 +135,15 @@ async def test_explicit_jev_key_cannot_be_bound_to_an_invalid_saved_endpoint(leg
             await settings_service.save_model_config(session, {"jev_api_key": "new-scoring-secret"})
     assert await read_legacy_row(sessions) == old
     assert configured.jev_api_key is None
+
+
+@pytest.mark.parametrize("mode", ["auto", "json_schema", "json_object", "prompt_only"])
+async def test_structured_mode_is_persisted_and_reloaded(legacy_profile, mode):
+    sessions, configured = legacy_profile
+    async with sessions() as session:
+        result = await settings_service.save_model_config(session, {"llm_structured_output_mode": mode})
+    assert result["llm_structured_output_mode"] == mode
+    assert (await read_legacy_row(sessions))["llm_structured_output_mode"] == mode
+    configured.llm_structured_output_mode = "auto"
+    await settings_service.apply_startup_overrides(sessions)
+    assert configured.llm_structured_output_mode == mode

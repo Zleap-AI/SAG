@@ -417,6 +417,7 @@ async def update_model_config(
         "llm_max_tokens",
         "llm_timeout_ms",
         "llm_max_retries",
+        "llm_structured_output_mode",
         "embedding_model",
         "embedding_base_url",
         "jev_endpoint",
@@ -490,35 +491,32 @@ async def test_model_config(
         llm = LLMClient(active)
     if not llm.configured:
         return {"ok": False, "message": "尚未配置 API Key"}
+    completion = {"ok": False}
+    structured = {"ok": False, "mode": active.llm_structured_output_mode}
     try:
         await llm.complete([{"role": "user", "content": "ping"}])
+        completion["ok"] = True
+        await llm.probe_structured()
+        structured["ok"] = True
         return {
             "ok": True,
             "message": f"连接成功 · {active.llm_provider} / {active.llm_model}",
+            "completion": completion, "structured": structured,
         }
-    except ApiError as e:
-        messages = {
-            "llm_auth_error": "Generation authentication failed; check this card's API key and model permissions",
-            "llm_bad_request": "Generation request rejected; check this card's provider, endpoint, model and options",
-            "llm_unavailable": (
-                "Generation service unavailable; check the endpoint, rate limits and server availability"
-            ),
-            "llm_empty_response": "Generation service returned an empty response; check the model and protocol",
-        }
-        return {
-            "ok": False,
-            "message": messages.get(
-                e.code,
-                "Generation connection test failed; check endpoint, provider, model, credentials and availability",
-            ),
-        }
-    except Exception:  # noqa: BLE001 -- provider exceptions can contain credentials and response bodies.
-        return {
-            "ok": False,
-            "message": (
-                "Generation connection test failed; check endpoint, provider, model, credentials and availability"
-            ),
-        }
+    except ApiError as error:
+        code = error.code
+    except Exception:  # noqa: BLE001 -- provider exceptions may contain credentials.
+        code = "llm_unavailable"
+    messages = {
+        "llm_auth_error": "Generation authentication failed; check API key and model permissions",
+        "llm_bad_request": "Generation request rejected; check provider, endpoint, model and structured output mode",
+        "llm_unavailable": "Generation service unavailable; check endpoint, rate limits and server availability",
+    }
+    return {
+        "ok": False, "problem_code": code,
+        "message": messages.get(code, "Generation response failed local validation or connection testing"),
+        "completion": completion, "structured": structured,
+    }
 
 
 @_model_config_router.post("/model-config/jev/test")

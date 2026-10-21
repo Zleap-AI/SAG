@@ -857,7 +857,19 @@
     "responsesEndpointDescription": "填写以 /responses 结尾的完整 URL，例如 https://api.deepseek.com/responses。",
     "responsesApiVersion": "Azure API 版本",
     "responsesSendTemperature": "发送温度参数",
-    "responsesTemperatureDescription": "仅在模型支持温度参数时启用。"
+    "responsesTemperatureDescription": "仅在模型支持温度参数时启用。",
+    "structuredOutputMode": "结构化输出模式",
+    "structuredOutputDescription": "自动优先使用 JSON Schema，仅在服务端明确不支持时降级。所有模式仍执行本地校验。Chatbot 未覆盖时继承此模式。",
+    "structuredModes": {
+      "auto": "自动",
+      "json_schema": "JSON Schema",
+      "json_object": "JSON Object",
+      "prompt_only": "仅提示词"
+    },
+    "completionProbe": "普通补全",
+    "structuredProbe": "结构化输出",
+    "probePassed": "通过",
+    "probeFailed": "失败"
   },
   "AgentSettings": {
     "saved": "助手设定已保存",
@@ -1322,7 +1334,10 @@
       "loadFailed": "解析内容加载失败",
       "truncated": "内容较长，预览仅展示前 50 万字符。"
     },
-    "tabs": { "parsed": "解析内容", "original": "原始文件" },
+    "tabs": {
+      "parsed": "解析内容",
+      "original": "原始文件"
+    },
     "document": {
       "loadFailed": "文档加载失败",
       "tokens": "{count} tokens",
@@ -1492,7 +1507,10 @@
     "sourceStats": "{events, number} 事件 · {entities, number} 实体",
     "sourceStatsBuilding": "{events, number} 事件 · 实体统计中",
     "exploreNode": "探索{kind} {label}",
-    "kinds": { "event": "事件", "entity": "实体" },
+    "kinds": {
+      "event": "事件",
+      "entity": "实体"
+    },
     "relatedEvents": "{count, number} 个关联事件 · {category}",
     "continueExploring": "继续探索 {progress}/{total}",
     "explorationProgress": "已探索 {progress}/{total}",
@@ -1580,7 +1598,10 @@
       "overviewBuilding": "{sources, number} 信息源 · {events} 事件 · 实体统计构建中",
       "visibleContours": " · 当前显示 {count, number} 个高密度轮廓"
     },
-    "legend": { "entities": "主题实体", "events": "关联事件" },
+    "legend": {
+      "entities": "主题实体",
+      "events": "关联事件"
+    },
     "searchLocked": {
       "label": "显式探索",
       "description": "搜索结果中滚轮仅用于缩放；锁定节点后，可在详情中选择“探索更多”"

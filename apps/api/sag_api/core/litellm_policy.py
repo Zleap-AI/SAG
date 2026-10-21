@@ -9,6 +9,7 @@ patching ``site-packages``.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -24,6 +25,7 @@ class CapabilityKey:
     provider: str
     base_url: str
     model: str
+    credential_identity: str = ""
 
 
 class StructuredOutputCapabilityCache:
@@ -57,11 +59,12 @@ def _effective_settings(settings: Settings) -> Settings:
 
 def _capability_key(request: Mapping[str, Any], settings: Settings) -> CapabilityKey:
     model = str(request.get("model") or settings.routed_llm_model)
+    credential = hashlib.sha256(str(request.get("api_key") or settings.llm_api_key or "").encode()).hexdigest()
     if model.startswith("sag_responses/"):
         from sag_api.core.responses import Config as ResponsesConfig
 
         config = ResponsesConfig.from_settings(settings)
-        return CapabilityKey("responses:" + config.provider, config.endpoint, model.casefold())
+        return CapabilityKey("responses:" + config.provider, config.endpoint, model, credential)
     explicit_provider = request.get("custom_llm_provider")
     provider = str(
         explicit_provider
@@ -72,8 +75,8 @@ def _capability_key(request: Mapping[str, Any], settings: Settings) -> Capabilit
         or request.get("base_url")
         or settings.llm_base_url
         or ""
-    ).rstrip("/").casefold()
-    return CapabilityKey(provider, base_url, model.casefold())
+    ).rstrip("/")
+    return CapabilityKey(provider, base_url, model, credential)
 
 
 def _json_schema_request(request: Mapping[str, Any]) -> bool:
@@ -114,7 +117,7 @@ def should_downgrade_json_schema(
     # ``json_schema``.  Some OpenAI-compatible gateways (including DeepSeek
     # v4 Flash) only report that the response_format *type* is unavailable,
     # without echoing the concrete type name.
-    names_structured_output = "json_schema" in summary or "response_format" in summary
+    names_structured_output = any(name in summary for name in ("json_schema", "response_format", "guided_grammar"))
     unsupported = any(
         phrase in summary
         for phrase in (

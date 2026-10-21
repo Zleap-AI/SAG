@@ -48,6 +48,7 @@ _FIELDS = frozenset(
         "llm_context_window",
         "llm_timeout_ms",
         "llm_max_retries",
+        "llm_structured_output_mode",
         "embedding_model",
         "embedding_base_url",
         "embedding_api_key",
@@ -94,6 +95,7 @@ _LOCKABLE_LLM_FIELDS = frozenset(
         "llm_context_window",
         "llm_timeout_ms",
         "llm_max_retries",
+        "llm_structured_output_mode",
     }
 )
 _MODEL_CONFIG_SOURCES = {field: "default" for field in _FIELDS - _SECRET_FIELDS}
@@ -370,6 +372,7 @@ def effective_model_config() -> dict:
         "llm_context_window": _settings.llm_context_window,
         "llm_timeout_ms": _settings.llm_timeout_ms,
         "llm_max_retries": _settings.llm_max_retries,
+        "llm_structured_output_mode": _settings.llm_structured_output_mode,
         "llm_api_key_set": bool(_settings.llm_api_key),
         "embedding_model": _settings.embedding_model,
         "embedding_base_url": _settings.embedding_base_url,

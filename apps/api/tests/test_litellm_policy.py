@@ -17,9 +17,7 @@ from sag_api.core.litellm_policy import install_litellm_policy, uninstall_litell
     "call_kind",
     ["generation", "stream", "tool_none", "tool_required", "extraction", "extraction_stream"],
 )
-async def test_deepseek_flash_sends_non_thinking_http_request(
-    monkeypatch: pytest.MonkeyPatch, call_kind: str
-) -> None:
+async def test_deepseek_flash_sends_non_thinking_http_request(monkeypatch: pytest.MonkeyPatch, call_kind: str) -> None:
     """Inspect serialized HTTP after real generation/dependency and LiteLLM routing."""
     from zleap.sag.core.ai.factory import create_llm_client
     from zleap.sag.core.ai.models import LLMMessage
@@ -173,9 +171,7 @@ async def test_auto_downgrades_once_and_caches_by_provider_base_url_model(
 
     monkeypatch.setattr(litellm, "acompletion", completion)
     original = litellm.acompletion
-    handle = install_litellm_policy(
-        Settings(_env_file=None, llm_structured_output_mode="auto")
-    )
+    handle = install_litellm_policy(Settings(_env_file=None, llm_structured_output_mode="auto"))
     try:
         assert await litellm.acompletion(**_schema_request()) == {"ok": True}
         assert await litellm.acompletion(**_schema_request()) == {"ok": True}
@@ -185,9 +181,7 @@ async def test_auto_downgrades_once_and_caches_by_provider_base_url_model(
             "json_object",
         ]
 
-        await litellm.acompletion(
-            **_schema_request(api_base="https://another.example/v1")
-        )
+        await litellm.acompletion(**_schema_request(api_base="https://another.example/v1"))
         assert calls[-2]["response_format"]["type"] == "json_schema"
     finally:
         uninstall_litellm_policy(handle)
@@ -240,6 +234,9 @@ async def test_auto_downgrades_deepseek_unavailable_response_format_wording(
     ("message", "status"),
     [
         ("invalid request body", 400),
+        ("guided_grammar is not supported", 403),
+        ("guided_grammar is not supported", 500),
+        ("guided_grammar is not supported", 503),
         ("response_format json_schema is not supported", 401),
         ("response_format json_schema rate limit", 429),
     ],
@@ -306,9 +303,7 @@ async def test_explicit_mode_does_not_auto_downgrade(
         raise GatewayError("response_format json_schema is not supported", 400)
 
     monkeypatch.setattr(litellm, "acompletion", completion)
-    handle = install_litellm_policy(
-        Settings(_env_file=None, llm_structured_output_mode="json_schema")
-    )
+    handle = install_litellm_policy(Settings(_env_file=None, llm_structured_output_mode="json_schema"))
     try:
         with pytest.raises(GatewayError):
             await litellm.acompletion(**_schema_request())
@@ -341,34 +336,60 @@ async def test_engine_extraction_sends_required_fields_through_app_policy(monkey
         for definition in [schema, *schema["$defs"].values()]:
             assert set(definition["required"]) == set(definition["properties"])
         event = {
-            "title": "Acme 融资", "content": "Acme 完成融资。",
+            "title": "Acme 融资",
+            "content": "Acme 完成融资。",
             "entities": [{"type": "organization", "name": "Acme", "description": "融资方"}],
         }
         if contract == "rich":
             event.update(reason="文档描述融资事项。", references=[1])
         # Local defaults remain valid even if a compatible provider omits them.
         payload = {"type": "response", "data": {"items": [event]}}
-        return httpx.Response(200, request=request, json={
-            "id": "schema-test", "object": "chat.completion", "created": 1, "model": "gpt-6-luna",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": json.dumps(payload)},
-                         "finish_reason": "stop"}],
-        })
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "schema-test",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "gpt-6-luna",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": json.dumps(payload)},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
 
     monkeypatch.setattr(httpx.AsyncClient, "send", send)
     configured = Settings(
-        _env_file=None, llm_provider="openai", llm_model="gpt-6-luna",
-        llm_api_key="schema-test-key", llm_base_url="https://gateway.example/v1",
-        llm_structured_output_mode="json_schema", llm_max_retries=0, llm_temperature=1,
+        _env_file=None,
+        llm_provider="openai",
+        llm_model="gpt-6-luna",
+        llm_api_key="schema-test-key",
+        llm_base_url="https://gateway.example/v1",
+        llm_structured_output_mode="json_schema",
+        llm_max_retries=0,
+        llm_temperature=1,
     )
     processor = EventProcessor(
         llm_client=OpenAILLMAdapter(scenario="extract", config=build_engine_config(configured).llm),
-        embedding=object(), session_factory=object(), repositories=object(),
+        embedding=object(),
+        session_factory=object(),
+        repositories=object(),
         prompt_manager=SimpleNamespace(prompts_dir=Path(zleap.sag.__file__).parent / "prompts", language="zh"),
         config=ExtractConfig(
-            storage_mode="normal", write_plan=ExtractionWritePlan.from_storage_mode("normal"),
-            data_source_id="ds", source_type="ARTICLE", source_id="source", source_version="v1",
-            chunk_ids=("chunk",), related_events=RelatedEventContextOptions(enabled=False),
-            contract=contract, max_retries=0,
+            storage_mode="normal",
+            write_plan=ExtractionWritePlan.from_storage_mode("normal"),
+            data_source_id="ds",
+            source_type="ARTICLE",
+            source_id="source",
+            source_version="v1",
+            chunk_ids=("chunk",),
+            related_events=RelatedEventContextOptions(enabled=False),
+            contract=contract,
+            max_retries=0,
         ),
     )
     await processor.initialize([SimpleNamespace(type="organization", name="Organization", description="Organization")])
@@ -381,3 +402,42 @@ async def test_engine_extraction_sends_required_fields_through_app_policy(monkey
     assert len(requests) == 1
     assert result["data"]["items"][0]["children"] == []
     assert result["data"]["items"][0]["is_valid"] is True
+
+
+@pytest.mark.asyncio
+async def test_auto_downgrades_explicit_guided_grammar_unsupported(monkeypatch):
+    calls = []
+
+    async def completion(**kwargs):
+        calls.append(kwargs["response_format"]["type"])
+        if kwargs["response_format"]["type"] == "json_schema":
+            raise GatewayError("guided_grammar is not supported by this model", 400)
+        return {"ok": True}
+
+    monkeypatch.setattr(litellm, "acompletion", completion)
+    handle = install_litellm_policy(Settings(_env_file=None))
+    try:
+        assert await litellm.acompletion(**_schema_request()) == {"ok": True}
+    finally:
+        uninstall_litellm_policy(handle)
+    assert calls == ["json_schema", "json_object"]
+
+
+@pytest.mark.asyncio
+async def test_capability_cache_reprobes_after_credential_change(monkeypatch):
+    calls = []
+
+    async def completion(**request):
+        calls.append((request["api_key"], request["response_format"]["type"]))
+        if request["api_key"] == "first-key" and request["response_format"]["type"] == "json_schema":
+            raise GatewayError("guided_grammar unsupported", 400)
+        return {"ok": True}
+
+    monkeypatch.setattr(litellm, "acompletion", completion)
+    handle = install_litellm_policy(Settings(_env_file=None))
+    try:
+        await litellm.acompletion(**_schema_request(api_key="first-key"))
+        await litellm.acompletion(**_schema_request(api_key="second-key"))
+    finally:
+        uninstall_litellm_policy(handle)
+    assert calls == [("first-key", "json_schema"), ("first-key", "json_object"), ("second-key", "json_schema")]

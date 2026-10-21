@@ -111,6 +111,7 @@ class LLMClient:
         stream: bool = False,
         tools: list[dict] | None = None,
         tool_choice: str | dict | None = None,
+        response_format: dict | None = None,
     ) -> Any:
         request: dict[str, Any] = {
             "model": self._settings.routed_llm_model,
@@ -122,6 +123,8 @@ class LLMClient:
             "max_tokens": self._settings.llm_max_tokens,
             "stream": stream,
         }
+        if response_format is not None:
+            request["response_format"] = response_format
         if tools:
             request["tools"] = tools
             if tool_choice is not None:
@@ -129,16 +132,38 @@ class LLMClient:
         if self._settings.llm_base_url:
             request["api_base"] = self._settings.llm_base_url
         request = apply_litellm_completion_policy(self._settings, request)
-        if self._settings.llm_provider == "responses":
-            from sag_api.generation.responses.routing import ConfiguredStream, request_settings
+        from sag_api.generation.responses.routing import ConfiguredStream, request_settings
 
-            token = request_settings.set(self._settings)
-            try:
-                response = await _litellm_completion(**request)
-            finally:
-                request_settings.reset(token)
-            return ConfiguredStream(response, self._settings) if stream else response
-        return await _litellm_completion(**request)
+        token = request_settings.set(self._settings)
+        try:
+            response = await _litellm_completion(**request)
+        finally:
+            request_settings.reset(token)
+        if stream and self._settings.llm_provider == "responses":
+            return ConfiguredStream(response, self._settings)
+        return response
+
+    async def probe_structured(self) -> None:
+        """Exercise the extraction format contract and validate locally in every mode."""
+        from jsonschema import validate
+        from zleap.sag.core.ai.structured import build_response_format
+
+        from sag_api.sag.config_builder import _structured_output_mode
+
+        schema = {"type": "object", "properties": {"ok": {"type": "boolean", "const": True}},
+                  "required": ["ok"], "additionalProperties": False}
+        try:
+            response = await self._create_completion(
+                [{"role": "user", "content": 'Return only this JSON object: {"ok": true}'}],
+                response_format=build_response_format(_structured_output_mode(self._settings), schema),
+            )
+            choices = _attr(response, "choices", []) or []
+            content = _attr(_attr(choices[0], "message", {}), "content", "") if choices else ""
+            validate(json.loads(content), schema)
+        except ApiError:
+            raise
+        except Exception as error:
+            raise _classify_llm_error(error, stage=ErrorStage.GENERATE) from error
 
     @staticmethod
     async def _close_stream(stream: Any) -> None:

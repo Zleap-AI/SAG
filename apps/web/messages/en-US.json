@@ -857,7 +857,19 @@
     "responsesEndpointDescription": "Enter the full URL ending in /responses, such as https://api.deepseek.com/responses.",
     "responsesApiVersion": "Azure API version",
     "responsesSendTemperature": "Send temperature",
-    "responsesTemperatureDescription": "Enable only when your model supports temperature."
+    "responsesTemperatureDescription": "Enable only when your model supports temperature.",
+    "structuredOutputMode": "Structured output mode",
+    "structuredOutputDescription": "Auto uses JSON Schema and falls back only when the server explicitly rejects that format. All modes validate output locally. Chatbot inherits this mode unless its own connection overrides it.",
+    "structuredModes": {
+      "auto": "Auto",
+      "json_schema": "JSON Schema",
+      "json_object": "JSON Object",
+      "prompt_only": "Prompt only"
+    },
+    "completionProbe": "Plain completion",
+    "structuredProbe": "Structured output",
+    "probePassed": "Passed",
+    "probeFailed": "Failed"
   },
   "AgentSettings": {
     "saved": "Assistant settings saved",
@@ -1322,7 +1334,10 @@
       "loadFailed": "Failed to load parsed content",
       "truncated": "This content is long. The preview shows only the first 500,000 characters."
     },
-    "tabs": { "parsed": "Parsed content", "original": "Original file" },
+    "tabs": {
+      "parsed": "Parsed content",
+      "original": "Original file"
+    },
     "document": {
       "loadFailed": "Failed to load document",
       "tokens": "{count} tokens",
@@ -1492,7 +1507,10 @@
     "sourceStats": "{events, plural, one {# event} other {# events}} · {entities, plural, one {# entity} other {# entities}}",
     "sourceStatsBuilding": "{events, plural, one {# event} other {# events}} · building entity statistics",
     "exploreNode": "Explore {kind}: {label}",
-    "kinds": { "event": "event", "entity": "entity" },
+    "kinds": {
+      "event": "event",
+      "entity": "entity"
+    },
     "relatedEvents": "{count, plural, one {# related event} other {# related events}} · {category}",
     "continueExploring": "Continue exploring {progress}/{total}",
     "explorationProgress": "Explored {progress}/{total}",
@@ -1580,7 +1598,10 @@
       "overviewBuilding": "{sources, plural, one {# source} other {# sources}} · {events} events · building entity statistics",
       "visibleContours": " · showing {count, plural, one {# high-density contour} other {# high-density contours}}"
     },
-    "legend": { "entities": "Topic entities", "events": "Related events" },
+    "legend": {
+      "entities": "Topic entities",
+      "events": "Related events"
+    },
     "searchLocked": {
       "label": "Explicit exploration",
       "description": "In search results, the wheel only zooms. Lock a node, then choose Explore more in the details panel."
@@ -1598,7 +1619,7 @@
       "completedTimePosition": "{time} · Exploration complete",
       "partialTime": "{time} (some times are not specified)",
       "unknownTime": "Time not specified",
-      "countRange": "Items {from}\u2013{to} of {total}",
+      "countRange": "Items {from}–{to} of {total}",
       "countPosition": "Item {position} of {total}",
       "explorationComplete": "Exploration complete",
       "home": "Go back",

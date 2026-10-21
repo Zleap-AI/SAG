@@ -19,6 +19,7 @@ _RESTORE = (
     "llm_temperature",
     "llm_timeout_ms",
     "llm_max_retries",
+    "llm_structured_output_mode",
     "search_strategy",
     "document_chunk_max_tokens",
     "document_chunk_mode",
@@ -465,13 +466,16 @@ async def test_self_hosted_model_config_form_test_uses_draft_without_saving(monk
     observed: dict = {}
 
     async def fake_completion(**request):
-        observed.update(request)
+        if "response_format" not in request:
+            observed.update(request)
         return {
             "id": "chatcmpl-test",
             "object": "chat.completion",
             "created": 0,
             "model": "test-model",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "pong"}, "finish_reason": "stop"}],
+            "choices": [{"index": 0, "message": {"role": "assistant",
+                         "content": '{"ok": true}' if "response_format" in request else "pong"},
+                         "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         }
 
@@ -482,7 +486,8 @@ async def test_self_hosted_model_config_form_test_uses_draft_without_saving(monk
         response = await client.post("/api/v1/system/model-config/test", headers=headers, json=payload)
 
         assert response.status_code == 200, response.text
-        assert response.json() == {"ok": True, "message": "连接成功 · openai / test-model"}
+        assert response.json() == {"ok": True, "message": "连接成功 · openai / test-model",
+                                   "completion": {"ok": True}, "structured": {"ok": True, "mode": "auto"}}
         assert observed["model"] == "openai/test-model"
         assert observed["api_key"] == "schema-regression-key"
         assert observed["api_base"] == "https://llm.example/v1"
@@ -576,7 +581,11 @@ async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatc
                     observed["key"] = client._settings.llm_api_key
                     return "pong"
 
+                async def fake_structured(_client):
+                    return None
+
                 monkeypatch.setattr(LLMClient, "complete", fake_complete)
+                monkeypatch.setattr(LLMClient, "probe_structured", fake_structured)
                 draft = await c.post(
                     "/api/v1/system/model-config/test",
                     headers=A,
@@ -591,6 +600,7 @@ async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatc
                 assert draft.json() == {
                     "ok": True,
                     "message": "连接成功 · gemini / gemini-3.5-flash",
+                    "completion": {"ok": True}, "structured": {"ok": True, "mode": "auto"},
                 }
                 assert observed == {
                     "provider": "gemini",
@@ -893,3 +903,53 @@ def test_startup_warning_does_not_print_endpoint_credentials(monkeypatch, caplog
     assert "test-password" not in caplog.text
     assert "test-token" not in caplog.text
     assert "https://" not in caplog.text
+
+
+@pytest.mark.parametrize("status,invalid", [(400, False), (400, True), (401, False), (429, False), (500, False)])
+async def test_model_probe_http_guided_grammar_fallback_and_local_validation(monkeypatch, status, invalid):
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    calls = []
+
+    class Upstream(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            calls.append(body)
+            mode = body.get("response_format", {}).get("type")
+            if mode == "json_schema":
+                self.send_response(status)
+                result = {"error": {"message": "guided_grammar is not supported", "type": "invalid_request_error"}}
+            else:
+                self.send_response(200)
+                content = "pong" if mode is None else ('{"ok": "wrong-type"}' if invalid else '{"ok": true}')
+                result = {"id": "probe", "object": "chat.completion", "created": 1, "model": "probe-model",
+                          "choices": [{"index": 0, "message": {"role": "assistant", "content": content},
+                                       "finish_reason": "stop"}]}
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode())
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        async with _self_hosted_model_config_client(monkeypatch) as (client, headers, config, payload):
+            payload.update(llm_base_url=f"http://127.0.0.1:{server.server_port}/v1", llm_model="probe-model",
+                           llm_structured_output_mode="auto", llm_max_retries=0)
+            result = await client.post("/api/v1/system/model-config/test", headers=headers, json=payload)
+            assert result.status_code == 200
+            assert result.json()["ok"] is (status == 400 and not invalid)
+            assert result.json()["completion"]["ok"] is True
+            assert result.json()["structured"]["ok"] is (status == 400 and not invalid)
+            assert (await client.get("/api/v1/system/model-config", headers=headers)).json() == config
+        modes = [call.get("response_format", {}).get("type") for call in calls]
+        assert modes == ([None, "json_schema", "json_object"] if status == 400 else [None, "json_schema"])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

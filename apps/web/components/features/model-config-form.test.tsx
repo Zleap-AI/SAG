@@ -413,7 +413,7 @@ describe("generation connection tests", () => {
       llm_provider: provider, llm_model: "qwen3.8-flash", llm_api_key: "synthetic-generation-key",
       llm_base_url: provider === "responses" ? "https://llm.invalid/v1" : "https://api.302ai.cn/v1",
       llm_temperature: 0.3, llm_max_tokens: 20000, llm_context_window: 128000,
-      llm_timeout_ms: 60000, llm_max_retries: 2,
+      llm_timeout_ms: 60000, llm_max_retries: 2, llm_structured_output_mode: "auto",
       ...(provider === "responses" ? {
         llm_responses_provider: "azure", llm_responses_endpoint: "https://draft.invalid/openai/responses",
         llm_responses_api_version: "2025-04-01-preview", llm_responses_send_temperature: true,
@@ -709,4 +709,29 @@ describe("individual card format compatibility", () => {
     expect(container.querySelector<HTMLButtonElement>("#llm-api-format")!.disabled).toBe(true);
   });
 
+});
+
+
+it("persists structured output mode independently from Chatbot connections", async () => {
+  await mount();
+  const select = container.querySelector<HTMLSelectElement>("#llm-structured-mode");
+  expect(select).not.toBeNull();
+  expect([...select!.options].map(option => option.value)).toEqual(["auto", "json_schema", "json_object", "prompt_only"]);
+  await act(async () => { select!.value = "prompt_only"; select!.dispatchEvent(new Event("change", { bubbles: true })); });
+  await save("generationTitle");
+  expect(mocks.saveModelConfig).toHaveBeenCalledWith({ llm_structured_output_mode: "prompt_only" });
+  expect(mocks.saveChatbotConfig).not.toHaveBeenCalled();
+});
+
+
+it("shows independent plain and structured connection outcomes", async () => {
+  mocks.testModelConfig.mockResolvedValue({ ok: false, message: "Structured response invalid",
+    completion: { ok: true }, structured: { ok: false, mode: "auto" } });
+  await mount();
+  const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === "Test generation model")!;
+  await act(async () => button.click());
+  expect(container.textContent).toContain("completionProbe");
+  expect(container.textContent).toContain("structuredProbe");
+  expect(container.textContent).toContain("probePassed");
+  expect(container.textContent).toContain("probeFailed");
 });

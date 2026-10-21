@@ -60,7 +60,7 @@ function BaseModelConfigForm() {
   const pending = React.useRef<Record<BaseTarget, boolean>>({ generation: false, embedding: false, parser: false });
   const [saveResults, setSaveResults] = React.useState<Partial<Record<BaseTarget, { ok: boolean; message: string }>>>({});
   const [testing, setTesting] = React.useState(false);
-  const [testResult, setTestResult] = React.useState<{ ok: boolean; message: string } | null>(null);
+  const [testResult, setTestResult] = React.useState<{ ok: boolean; message: string; completion?: { ok: boolean }; structured?: { ok: boolean; mode: string } } | null>(null);
   const [testingEmbedding, setTestingEmbedding] = React.useState(false);
   const [embeddingTestResult, setEmbeddingTestResult] = React.useState<{ ok: boolean; message: string } | null>(null);
 
@@ -76,6 +76,7 @@ function BaseModelConfigForm() {
   const [maxTokens, setMaxTokens] = React.useState(20_000);
   const [timeoutMs, setTimeoutMs] = React.useState(60_000);
   const [maxRetries, setMaxRetries] = React.useState(2);
+  const [structuredMode, setStructuredMode] = React.useState<NonNullable<ModelConfig["llm_structured_output_mode"]>>("auto");
   const [ctxWindow, setCtxWindow] = React.useState(128000);
   const [embModel, setEmbModel] = React.useState("");
   const [embBaseUrl, setEmbBaseUrl] = React.useState("");
@@ -105,6 +106,7 @@ function BaseModelConfigForm() {
     setMaxTokens(config.llm_max_tokens);
     setTimeoutMs(config.llm_timeout_ms ?? 60_000);
     setMaxRetries(config.llm_max_retries ?? 2);
+    setStructuredMode(config.llm_structured_output_mode ?? "auto");
     setCtxWindow(config.llm_context_window ?? 128000);
     setEmbModel(config.embedding_model);
     setEmbBaseUrl(config.embedding_base_url ?? "");
@@ -167,6 +169,7 @@ function BaseModelConfigForm() {
       llm_max_tokens: maxTokens,
       llm_timeout_ms: timeoutMs,
       llm_max_retries: maxRetries,
+      llm_structured_output_mode: structuredMode,
       llm_context_window: ctxWindow,
       embedding_model: embModel.trim(),
       embedding_base_url: embBaseUrl.trim(),
@@ -193,6 +196,7 @@ function BaseModelConfigForm() {
       llm_base_url: cfg.llm_base_url ?? null,
       llm_timeout_ms: cfg.llm_timeout_ms ?? 60_000,
       llm_max_retries: cfg.llm_max_retries ?? 2,
+      llm_structured_output_mode: cfg.llm_structured_output_mode ?? "auto",
       llm_context_window: cfg.llm_context_window ?? 128000,
       embedding_base_url: cfg.embedding_base_url ?? "",
       embedding_dimensions: cfg.embedding_dimensions ?? null,
@@ -513,6 +517,10 @@ function BaseModelConfigForm() {
                     >
                       {testResult.ok ? <Check className="size-4" /> : <X className="size-4" />}
                       {testResult.message}
+                      {testResult.completion && testResult.structured && <span className="ml-2">
+                        {t("completionProbe")} · {t(testResult.completion.ok ? "probePassed" : "probeFailed")}{" / "}
+                        {t("structuredProbe")} · {t(testResult.structured.ok ? "probePassed" : "probeFailed")}
+                      </span>}
                     </span>
                   )}
                 </div>
@@ -599,6 +607,16 @@ function BaseModelConfigForm() {
                     onChange={(event) => setLlmModel(event.target.value)}
                     placeholder={providerSpec.default_model}
                   />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="llm-structured-mode">{t("structuredOutputMode")}</FieldLabel>
+                  <select id="llm-structured-mode" value={structuredMode} disabled={llmLocked}
+                    className="h-9 rounded-md border bg-background px-3 text-sm"
+                    onChange={event => { setStructuredMode(event.target.value as typeof structuredMode); setTestResult(null); }}>
+                    {(["auto", "json_schema", "json_object", "prompt_only"] as const).map(mode =>
+                      <option key={mode} value={mode}>{t(`structuredModes.${mode}`)}</option>)}
+                  </select>
+                  <FieldDescription>{t("structuredOutputDescription")}</FieldDescription>
                 </Field>
                 <Field>
                   <FieldLabel htmlFor="llm-ctxwin">{t("contextWindow")}</FieldLabel>

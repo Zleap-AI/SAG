@@ -767,7 +767,7 @@ export const api = {
       { method: "POST" },
     ),
   testModelConfig: (b?: ModelConfigPatch) =>
-    request<{ ok: boolean; message: string }>(
+    request<{ ok: boolean; message: string; completion?: { ok: boolean }; structured?: { ok: boolean; mode: string } }> (
       "/api/v1/system/model-config/test",
       {
         method: "POST",
