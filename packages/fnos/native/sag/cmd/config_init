@@ -1,2 +1,8 @@
 #!/bin/sh
-exec "$(dirname "$0")/install_init"
+set -u
+
+# fnOS also calls this when saving file permissions for an installed app.
+# There is no configuration wizard work to prepare. In particular, install
+# cleanup would kill the running gateway and unlink its live socket here.
+# Leave both running and stopped applications in their current state.
+exit 0

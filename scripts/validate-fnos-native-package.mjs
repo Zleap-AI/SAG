@@ -184,6 +184,12 @@ export async function validateNativeTemplate(root, platform) {
       fail("launcher NOFILE bootstrap must change only the soft limit");
     }
   }
+  const configInit = await readFile(path.join(root, "cmd/config_init"), "utf8");
+  const configCommands = configInit.split(/\r?\n/).map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  if (configCommands.join("\n") !== "set -u\nexit 0") {
+    fail("config_init must preserve running services and stopped state without install cleanup");
+  }
   const install = await readFile(path.join(root, "cmd/install_callback"), "utf8");
   if (!install.includes("SAG_INSTALL_FROM_UPGRADE") || !install.includes("$command_dir/upgrade_init")) {
     fail("install_callback must apply the upgrade backup and consent gate to retained data");
