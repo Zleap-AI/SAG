@@ -319,7 +319,11 @@ async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatc
                     observed["key"] = client._settings.llm_api_key
                     return "pong"
 
+                async def fake_structured(client):
+                    return None
+
                 monkeypatch.setattr(LLMClient, "complete", fake_complete)
+                monkeypatch.setattr(LLMClient, "probe_structured", fake_structured)
                 draft = await c.post(
                     "/api/v1/system/model-config/test",
                     headers=A,
@@ -334,6 +338,8 @@ async def test_model_config_crud_masking_and_test(monkeypatch: pytest.MonkeyPatc
                 assert draft.json() == {
                     "ok": True,
                     "message": "连接成功 · gemini / gemini-3.5-flash",
+                    "completion": {"ok": True},
+                    "structured": {"ok": True, "mode": "auto"},
                 }
                 assert observed == {
                     "provider": "gemini",

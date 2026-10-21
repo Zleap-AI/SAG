@@ -59,6 +59,7 @@ export function ModelConfigForm() {
   const [maxTokens, setMaxTokens] = React.useState(20_000);
   const [timeoutMs, setTimeoutMs] = React.useState(60_000);
   const [maxRetries, setMaxRetries] = React.useState(2);
+  const [structuredMode, setStructuredMode] = React.useState<NonNullable<ModelConfig["llm_structured_output_mode"]>>("auto");
   const [ctxWindow, setCtxWindow] = React.useState(128000);
   const [embModel, setEmbModel] = React.useState("");
   const [embBaseUrl, setEmbBaseUrl] = React.useState("");
@@ -84,6 +85,7 @@ export function ModelConfigForm() {
     setMaxTokens(config.llm_max_tokens);
     setTimeoutMs(config.llm_timeout_ms ?? 60_000);
     setMaxRetries(config.llm_max_retries ?? 2);
+    setStructuredMode(config.llm_structured_output_mode ?? "auto");
     setCtxWindow(config.llm_context_window ?? 128000);
     setEmbModel(config.embedding_model);
     setEmbBaseUrl(config.embedding_base_url ?? "");
@@ -119,6 +121,7 @@ export function ModelConfigForm() {
         llm_max_tokens: config.llm_max_tokens,
         llm_timeout_ms: config.llm_timeout_ms,
         llm_max_retries: config.llm_max_retries,
+        llm_structured_output_mode: config.llm_structured_output_mode ?? "auto",
         embedding_model: config.embedding_model,
         embedding_base_url: config.embedding_base_url,
         embedding_dimensions: config.embedding_dimensions,
@@ -146,6 +149,7 @@ export function ModelConfigForm() {
       llm_max_tokens: maxTokens,
       llm_timeout_ms: timeoutMs,
       llm_max_retries: maxRetries,
+      llm_structured_output_mode: structuredMode,
       llm_context_window: ctxWindow,
       embedding_model: embModel.trim(),
       embedding_base_url: embBaseUrl.trim(),
@@ -179,6 +183,7 @@ export function ModelConfigForm() {
         llm_max_tokens: config.llm_max_tokens,
         llm_timeout_ms: config.llm_timeout_ms,
         llm_max_retries: config.llm_max_retries,
+        llm_structured_output_mode: config.llm_structured_output_mode ?? "auto",
         embedding_model: config.embedding_model,
         embedding_base_url: config.embedding_base_url,
         embedding_dimensions: config.embedding_dimensions,
@@ -428,6 +433,16 @@ export function ModelConfigForm() {
                 onChange={(event) => setLlmModel(event.target.value)}
                 placeholder={providerSpec.default_model}
               />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="llm-structured-mode">{t("structuredOutputMode")}</FieldLabel>
+              <select id="llm-structured-mode" value={structuredMode}
+                className="h-9 rounded-md border bg-background px-3 text-sm"
+                onChange={event => { setStructuredMode(event.target.value as typeof structuredMode); setTestResult(null); }}>
+                {(["auto", "json_schema", "json_object", "prompt_only"] as const).map(mode =>
+                  <option key={mode} value={mode}>{t(`structuredModes.${mode}`)}</option>)}
+              </select>
+              <FieldDescription>{t("structuredOutputDescription")}</FieldDescription>
             </Field>
             <Field>
               <FieldLabel htmlFor="llm-ctxwin">{t("contextWindow")}</FieldLabel>

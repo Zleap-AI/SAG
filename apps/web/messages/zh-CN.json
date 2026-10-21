@@ -608,7 +608,15 @@
     "testing": "测试中…",
     "testGeneration": "测试生成模型",
     "saving": "保存中…",
-    "save": "保存并生效"
+    "save": "保存并生效",
+    "structuredOutputMode": "结构化输出模式",
+    "structuredOutputDescription": "自动模式优先使用 JSON Schema，仅在服务明确表示不支持时降级。所有模式都会在本地校验输出。",
+    "structuredModes": {
+      "auto": "自动",
+      "json_schema": "JSON Schema",
+      "json_object": "JSON Object",
+      "prompt_only": "仅提示词"
+    }
   },
   "AgentSettings": {
     "saved": "助手设定已保存",

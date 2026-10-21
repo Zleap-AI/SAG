@@ -608,7 +608,15 @@
     "testing": "Testing…",
     "testGeneration": "Test generation model",
     "saving": "Saving…",
-    "save": "Save and apply"
+    "save": "Save and apply",
+    "structuredOutputMode": "Structured output mode",
+    "structuredOutputDescription": "Auto uses JSON Schema and falls back only when the server explicitly rejects that format. All modes validate output locally.",
+    "structuredModes": {
+      "auto": "Auto",
+      "json_schema": "JSON Schema",
+      "json_object": "JSON Object",
+      "prompt_only": "Prompt only"
+    }
   },
   "AgentSettings": {
     "saved": "Assistant settings saved",

@@ -297,6 +297,7 @@ export interface ModelConfig {
   llm_max_tokens: number;
   llm_timeout_ms: number;
   llm_max_retries: number;
+  llm_structured_output_mode?: "auto" | "json_schema" | "json_object" | "prompt_only";
   llm_api_key_set: boolean;
   embedding_model: string;
   embedding_base_url: string | null;
@@ -332,6 +333,7 @@ export type ModelConfigPatch = Partial<{
   llm_max_tokens: number;
   llm_timeout_ms: number;
   llm_max_retries: number;
+  llm_structured_output_mode?: "auto" | "json_schema" | "json_object" | "prompt_only";
   embedding_model: string;
   embedding_base_url: string;
   embedding_api_key: string;

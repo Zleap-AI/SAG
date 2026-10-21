@@ -8,13 +8,112 @@ patching ``site-packages``.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 from collections.abc import Mapping
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any
 
 from sag_api.core.config import Settings
 
 _COMPLETION_CALL_TYPES = {"completion", "acompletion"}
 _DEEPSEEK_V4_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro"}
+
+
+request_settings: ContextVar[Settings | None] = ContextVar("fnos_llm_settings", default=None)
+
+def _effective_settings(settings):
+    return request_settings.get() or settings
+
+@dataclass(frozen=True)
+class CapabilityKey:
+    provider: str
+    base_url: str
+    model: str
+
+class StructuredOutputCapabilityCache:
+    def __init__(self) -> None:
+        self._modes: dict[CapabilityKey, str] = {}
+        self._locks: dict[CapabilityKey, asyncio.Lock] = {}
+
+    def get(self, key: CapabilityKey) -> str | None:
+        return self._modes.get(key)
+
+    def mark(self, key: CapabilityKey, mode: str) -> None:
+        self._modes[key] = mode
+
+    def probe_lock(self, key: CapabilityKey) -> asyncio.Lock:
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[key] = lock
+        return lock
+
+def _capability_key(request: Mapping[str, Any], settings: Settings) -> CapabilityKey:
+    model = str(request.get("model") or settings.routed_llm_model)
+    explicit_provider = request.get("custom_llm_provider")
+    provider = str(
+        explicit_provider
+        or (model.split("/", 1)[0] if "/" in model else settings.llm_provider)
+    ).casefold()
+    base_url = str(
+        request.get("api_base")
+        or request.get("base_url")
+        or settings.llm_base_url
+        or ""
+    ).rstrip("/")
+    credential = hashlib.sha256(str(request.get("api_key") or settings.llm_api_key).encode()).hexdigest()
+    return CapabilityKey(provider + ":" + credential, base_url, model)
+
+def _json_schema_request(request: Mapping[str, Any]) -> bool:
+    response_format = request.get("response_format")
+    return (
+        isinstance(response_format, Mapping)
+        and response_format.get("type") == "json_schema"
+    )
+
+def _with_json_object(request: Mapping[str, Any]) -> dict[str, Any]:
+    changed = dict(request)
+    changed["response_format"] = {"type": "json_object"}
+    return changed
+
+def _status_code(error: Exception) -> int | None:
+    direct = getattr(error, "status_code", None)
+    response = getattr(error, "response", None)
+    value = direct if direct is not None else getattr(response, "status_code", None)
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+def should_downgrade_json_schema(
+    error: Exception,
+    request: Mapping[str, Any],
+    settings: Settings,
+) -> bool:
+    if settings.llm_structured_output_mode != "auto":
+        return False
+    if not _json_schema_request(request) or _status_code(error) not in {400, 422}:
+        return False
+    summary = str(error).casefold()
+    # The request check above already proves the rejected format was
+    # ``json_schema``.  Some OpenAI-compatible gateways (including DeepSeek
+    # v4 Flash) only report that the response_format *type* is unavailable,
+    # without echoing the concrete type name.
+    names_structured_output = any(name in summary for name in ("json_schema", "response_format", "guided_grammar"))
+    unsupported = any(
+        phrase in summary
+        for phrase in (
+            "not supported",
+            "unsupported",
+            "does not support",
+            "isn't supported",
+            "not support",
+            "unavailable",
+        )
+    )
+    return names_structured_output and unsupported
 
 
 def _thinking_override(extra_body: object) -> bool | None:
@@ -106,13 +205,54 @@ def install_litellm_policy(settings: Settings) -> Any:
 
     callback = MuseLiteLLMPolicy()
     litellm.callbacks.append(callback)
-    return callback
+    original_acompletion = litellm.acompletion
+    cache = StructuredOutputCapabilityCache()
 
+    async def sag_acompletion(*args: Any, **kwargs: Any) -> Any:
+        active = _effective_settings(settings)
+        if active.llm_structured_output_mode != "auto" or not _json_schema_request(
+            kwargs
+        ):
+            return await original_acompletion(*args, **kwargs)
+        key = _capability_key(kwargs, active)
+        known = cache.get(key)
+        if known == "json_object":
+            return await original_acompletion(*args, **_with_json_object(kwargs))
+        if known == "json_schema":
+            return await original_acompletion(*args, **kwargs)
+
+        async with cache.probe_lock(key):
+            known = cache.get(key)
+            if known == "json_object":
+                return await original_acompletion(*args, **_with_json_object(kwargs))
+            if known == "json_schema":
+                return await original_acompletion(*args, **kwargs)
+            try:
+                result = await original_acompletion(*args, **kwargs)
+            except Exception as error:
+                if not should_downgrade_json_schema(error, kwargs, active):
+                    raise
+                cache.mark(key, "json_object")
+                return await original_acompletion(
+                    *args, **_with_json_object(kwargs)
+                )
+            cache.mark(key, "json_schema")
+            return result
+
+    callback._sag_original_acompletion = original_acompletion
+    callback._sag_acompletion = sag_acompletion
+    callback._sag_structured_output_cache = cache
+    litellm.acompletion = sag_acompletion
+    return callback
 
 def uninstall_litellm_policy(callback: Any) -> None:
     """Remove a policy installed by :func:`install_litellm_policy`."""
 
     import litellm
 
+    wrapper = getattr(callback, "_sag_acompletion", None)
+    original = getattr(callback, "_sag_original_acompletion", None)
+    if wrapper is not None and original is not None and litellm.acompletion is wrapper:
+        litellm.acompletion = original
     if callback in litellm.callbacks:
         litellm.callbacks.remove(callback)
