@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -14,6 +15,8 @@ from pathlib import Path
 
 # workspace.tenant_key also supports the opt-in UID + sanitized username +
 # eight-character digest layout. Both layouts must remain restorable.
+_RECOVERY_FILES = ("internal-secret", "client-access-policy.json", "client-access-gateway.sqlite")
+
 _TENANT_KEY = re.compile(r"[1-9][0-9]*(?:-[a-zA-Z0-9_-]{0,16}-[0-9a-f]{8})?\Z")
 
 
@@ -43,7 +46,9 @@ def _validate_tree(root: Path) -> None:
 def size(root: Path) -> int:
     root = _users_root(root)
     _validate_tree(root)
-    return sum(path.stat().st_blocks * 512 for path in root.rglob("*") if path.is_file()) // 1024
+    paths = [path for path in root.rglob("*") if path.is_file()]
+    paths.extend(root.parent / name for name in _RECOVERY_FILES if (root.parent / name).is_file())
+    return sum(path.stat().st_blocks * 512 for path in paths) // 1024
 
 
 def backup(root: Path, output: Path) -> None:
@@ -56,6 +61,14 @@ def backup(root: Path, output: Path) -> None:
     backup_dir.mkdir(mode=0o700, exist_ok=True)
     with tarfile.open(output, "w:gz", dereference=False) as archive:
         archive.add(root, arcname="users", recursive=True)
+        for name in _RECOVERY_FILES:
+            path = root.parent / name
+            if path.is_symlink():
+                raise ValueError("recovery files must not be symlinks")
+            if path.exists():
+                if not path.is_file():
+                    raise ValueError("recovery metadata must be regular files")
+                archive.add(path, arcname=name, recursive=False)
     os.chmod(output, 0o600)
 
 
@@ -64,11 +77,12 @@ def validate(archive: Path) -> None:
         target = Path(temp)
         for member in source.getmembers():
             name = Path(member.name)
-            if name.is_absolute() or ".." in name.parts or not name.parts or name.parts[0] != "users":
+            recovery_file = len(name.parts) == 1 and member.name in _RECOVERY_FILES and member.isfile()
+            if name.is_absolute() or ".." in name.parts or not name.parts or (name.parts[0] != "users" and not recovery_file):
                 raise ValueError("archive contains an unsafe path")
             if member.issym() or member.islnk() or member.isdev():
                 raise ValueError("archive contains unsupported links or devices")
-            if len(name.parts) > 1 and not _TENANT_KEY.fullmatch(name.parts[1]):
+            if name.parts[0] == "users" and len(name.parts) > 1 and not _TENANT_KEY.fullmatch(name.parts[1]):
                 raise ValueError("archive contains an invalid user directory")
         # NOTE: extractall(filter="data") was added in Python 3.12. upgrade_init
         # falls back to the system python3, which on many fnOS images is
@@ -76,12 +90,24 @@ def validate(archive: Path) -> None:
         # above already enforces the same safety envelope (no absolute paths,
         # no ..-escapes, no symlinks/hardlinks/devices, first path component
         # must be "users", tenant directories match _TENANT_KEY) — so we can omit the
-        # filter and stay compatible with the older interpreters fnOS ships.
-        source.extractall(target)
+        # filter on older interpreters. Newer Python uses its explicit data filter.
+        if hasattr(tarfile, "data_filter"):
+            source.extractall(target, filter="data")
+        else:
+            source.extractall(target)
         users = target / "users"
         if not users.is_dir():
             raise ValueError("archive does not contain users")
-        for database in users.glob("*/meta/sag.db"):
+        secret = target / "internal-secret"
+        if secret.exists() and not valid_secret(secret.read_text()):
+            raise ValueError("archive contains an invalid internal secret")
+        policy = target / "client-access-policy.json"
+        if policy.exists() and not isinstance(json.loads(policy.read_text()), dict):
+            raise ValueError("archive contains an invalid client policy")
+        databases = list(users.glob("*/meta/sag.db")) + list(users.glob("*/meta/client-access.sqlite"))
+        if (target / "client-access-gateway.sqlite").exists():
+            databases.append(target / "client-access-gateway.sqlite")
+        for database in databases:
             connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
             try:
                 if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":

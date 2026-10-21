@@ -10,6 +10,7 @@ import { AppearanceSettings } from "@/components/features/appearance-settings";
 import { DiagnosticsSettings } from "@/components/features/diagnostics-settings";
 import { KnowledgeConfigForm } from "@/components/features/knowledge-config-form";
 import { McpSettingsCard } from "@/components/features/mcp-settings-card";
+import { ClientAccessSettings } from "@/components/features/client-access-settings";
 import { McpServiceSettings } from "@/components/features/mcp-service-settings";
 import { ModelConfigForm } from "@/components/features/model-config-form";
 import { PageHeader } from "@/components/features/page-header";
@@ -125,6 +126,7 @@ function SettingsPageContent() {
         <TabsContent value="integrations" className="m-0 animate-fade-in">
           <div className="flex flex-col gap-6">
             <McpSettingsCard />
+            <ClientAccessSettings />
             <McpServiceSettings />
           </div>
         </TabsContent>

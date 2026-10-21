@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, Depends, File, UploadFile
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.core.config import settings
 from sag_api.core.db import get_session
 from sag_api.core.deps import get_current_user, get_engine_manager, get_job_queue
 from sag_api.core.errors import ConflictError, NotFoundError, ValidationError
-from sag_api.db.models import User
+from sag_api.db.models import Job, User
 from sag_api.enums import DocumentStatus
 from sag_api.jobs import JobQueue
 from sag_api.parsing.text import (
@@ -70,7 +71,7 @@ async def upload(
         upload_dir=settings.upload_dir,
         job_queue=job_queue,
     )
-    return DocumentOut.model_validate(document)
+    return DocumentOut.model_validate(document).model_copy(update={"job_id": _job.id})
 
 
 @router.post("/ingest", response_model=DocumentOut, status_code=201)
@@ -92,7 +93,10 @@ async def ingest(
         upload_dir=settings.upload_dir,
         job_queue=job_queue,
     )
-    return DocumentOut.model_validate(document)
+    job_id = await session.scalar(
+        select(Job.id).where(Job.document_id == document.id).order_by(Job.created_at.desc()).limit(1)
+    )
+    return DocumentOut.model_validate(document).model_copy(update={"job_id": job_id})
 
 
 @router.get("/{document_id}", response_model=DocumentOut)

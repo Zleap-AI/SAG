@@ -39,11 +39,14 @@ def main(argv: list[str] | None = None) -> None:
     temp_root = Path(os.environ["SAG_FNOS_TEMP_ROOT"])
     secret_file = Path(os.environ["SAG_FNOS_INTERNAL_SECRET_FILE"])
     signer = InternalIdentitySigner.from_file(secret_file)
+    from sag_api.fnos.client_access import FnOSClientAccess
+
     app = create_gateway_app(
         WorkerSupervisor(data_root, temp_root, identity_signer=signer),
         signer,
         args.web_origin,
         mcp_routing_key=derive_fnos_internal_key(secret_file, b"sag-fnos-mcp-routing-v1"),
+        client_access=FnOSClientAccess(data_root, derive_fnos_internal_key(secret_file, b"sag-client-access-v1")),
     )
     uvicorn.run(app, uds=str(args.socket), proxy_headers=False, forwarded_allow_ips="")
 

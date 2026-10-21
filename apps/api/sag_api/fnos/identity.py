@@ -199,12 +199,17 @@ class InternalIdentitySigner:
             )
         ).encode("utf-8")
 
-    def sign(self, identity: GatewayIdentity, request_id: str, now: int) -> dict[str, str]:
+    def sign(self, identity: GatewayIdentity, request_id: str, now: int, *, principal: str = "web") -> dict[str, str]:
         """Return signed internal headers for one gateway-to-API request."""
         if not isinstance(identity, GatewayIdentity):
             raise AuthError("fnOS 身份无效")
         payload = self._payload(identity, request_id, now)
+        if principal not in {"web", "client"}:
+            raise AuthError("fnOS principal is invalid")
+        if principal == "client":
+            payload = b"client-v1\n" + payload
         return {
+            **({"X-SAG-Internal-Principal": "client"} if principal == "client" else {}),
             "X-SAG-Internal-Uid": str(identity.uid),
             # HTTP/ASGI reads header bytes as Latin-1. Keep the wire value ASCII
             # so the worker verifies exactly the username the gateway signed.
@@ -222,8 +227,12 @@ class InternalIdentitySigner:
         now: int,
         *,
         expected_username: str | None = None,
+        expected_principal: str = "web",
     ) -> GatewayIdentity:
         """Validate a signed internal identity and bind it to this fnOS worker."""
+        principal = _optional_header(headers, "X-SAG-Internal-Principal") or "web"
+        if principal not in {"web", "client"} or principal != expected_principal:
+            raise AuthError("fnOS principal does not match this route")
         uid = _uid(_header(headers, _INTERNAL_HEADERS[0]))
         try:
             username = normalize_username(
@@ -247,9 +256,10 @@ class InternalIdentitySigner:
         if now - timestamp > self._max_age_seconds or timestamp - now > 5:
             raise AuthError("fnOS 内部身份签名已过期")
         identity = GatewayIdentity(uid=uid, username=username, is_admin=is_admin)
-        expected = hmac.new(
-            self._key, self._payload(identity, request_id, timestamp), hashlib.sha256
-        ).hexdigest()
+        payload = self._payload(identity, request_id, timestamp)
+        if principal == "client":
+            payload = b"client-v1\n" + payload
+        expected = hmac.new(self._key, payload, hashlib.sha256).hexdigest()
         if not hmac.compare_digest(signature, expected):
             raise AuthError("fnOS 内部身份签名无效")
         if not self._replayed_request_ids.consume(

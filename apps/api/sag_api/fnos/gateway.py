@@ -57,6 +57,7 @@ def create_gateway_app(
     web_origin: str,
     prefix: str = "/app/sag",
     mcp_routing_key: bytes | None = None,
+    client_access=None,
 ) -> FastAPI:
     if not _is_loopback_web_origin(web_origin):
         raise ValueError("fnOS gateway web origin must be loopback")
@@ -68,6 +69,9 @@ def create_gateway_app(
             while True:
                 await asyncio.sleep(30)
                 await supervisor.reap_idle(time.monotonic())
+                if client_access is not None:
+                    with client_access.pairings.lock:
+                        client_access.pairings._prune(time.time())
 
         reaper = asyncio.create_task(reap_workers())
         try:
@@ -81,6 +85,9 @@ def create_gateway_app(
                 await supervisor.close()
 
     app = FastAPI(lifespan=lifespan)
+    if client_access is not None:
+        from sag_api.fnos.client_routes import install_client_routes
+        install_client_routes(app, client_access, supervisor, signer, prefix)
 
     async def _release_lease(lease) -> None:
         release = getattr(lease, "release", None)

@@ -262,6 +262,9 @@ export async function validateNativeTemplate(root, platform) {
     }
   }
   const lifecycle = await readFile(path.join(root, "app/runtime/lifecycle.py"), "utf8");
+  if (!lifecycle.includes("client-access-policy.json") || !lifecycle.includes("internal-secret")) {
+    fail("lifecycle must preserve client policy and credential recovery key");
+  }
   if (!lifecycle.includes("def upgrade_check") || !lifecycle.includes("def migration_ready")
       || !lifecycle.includes("knowledge_compatibility.py")) {
     fail("lifecycle must classify existing tenant engine formats before migration");

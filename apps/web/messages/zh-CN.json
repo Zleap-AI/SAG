@@ -1072,7 +1072,10 @@
       "loadFailed": "解析内容加载失败",
       "truncated": "内容较长，预览仅展示前 50 万字符。"
     },
-    "tabs": { "parsed": "解析内容", "original": "原始文件" },
+    "tabs": {
+      "parsed": "解析内容",
+      "original": "原始文件"
+    },
     "document": {
       "loadFailed": "文档加载失败",
       "tokens": "{count} tokens",
@@ -1240,7 +1243,10 @@
     "sourceStats": "{events, number} 事件 · {entities, number} 实体",
     "sourceStatsBuilding": "{events, number} 事件 · 实体统计中",
     "exploreNode": "探索{kind} {label}",
-    "kinds": { "event": "事件", "entity": "实体" },
+    "kinds": {
+      "event": "事件",
+      "entity": "实体"
+    },
     "relatedEvents": "{count, number} 个关联事件 · {category}",
     "continueExploring": "继续探索 {progress}/{total}",
     "explorationProgress": "已探索 {progress}/{total}",
@@ -1328,7 +1334,10 @@
       "overviewBuilding": "{sources, number} 信息源 · {events} 事件 · 实体统计构建中",
       "visibleContours": " · 当前显示 {count, number} 个高密度轮廓"
     },
-    "legend": { "entities": "主题实体", "events": "关联事件" },
+    "legend": {
+      "entities": "主题实体",
+      "events": "关联事件"
+    },
     "searchLocked": {
       "label": "显式探索",
       "description": "搜索结果中滚轮仅用于缩放；锁定节点后，可在详情中选择“探索更多”"
@@ -1500,5 +1509,40 @@
     "fallbackTimeout": "评分服务超出精排预算。",
     "fallbackUnavailable": "评分服务未能完成打分，请检查连接或重试。",
     "partial": "部分结果：部分信源未完成检索。"
+  },
+  "ClientAccess": {
+    "title": "CLI 与自动化",
+    "description": "在此批准客户端访问当前工作区，并管理设备会话。",
+    "loadFailed": "加载失败，请重新登录工作台后重试。",
+    "actionFailed": "操作未完成，请检查短码是否过期或重新登录后重试。",
+    "loading": "正在加载…",
+    "apiUrl": "自动化 API 地址",
+    "webUrl": "网页授权地址",
+    "notConfigured": "请管理员配置完整地址",
+    "protocol": "协议",
+    "copyConnection": "复制连接信息",
+    "copied": "连接信息已复制",
+    "hostLifecycle": "会话受 SAG 工作区账户和本地撤销控制。宿主账户停用不会自动同步，请在此撤销设备访问。",
+    "disabled": "管理员尚未启用客户端访问。",
+    "userCode": "客户端显示的短码",
+    "approvalScope": "批准后，该客户端可读取、上传、修改和删除当前工作区的知识。请确认短码来自您正在连接的设备。",
+    "approve": "批准访问",
+    "deny": "拒绝",
+    "approved": "已批准，请返回客户端完成连接。",
+    "denied": "已拒绝。",
+    "enable": "启用客户端访问",
+    "savePolicy": "保存连接设置",
+    "saved": "连接设置已保存。",
+    "devices": "已授权设备",
+    "empty": "尚无已授权设备。",
+    "accessExpiry": "访问凭据到期",
+    "refreshExpiry": "刷新凭据到期",
+    "absoluteExpiry": "会话最终到期",
+    "lastUsed": "最近使用",
+    "neverUsed": "尚未使用",
+    "revoked": "已撤销",
+    "revoke": "撤销访问",
+    "inspect": "查看待授权设备",
+    "approveDevice": "设备：{device} · 工作区账户：{user}"
   }
 }

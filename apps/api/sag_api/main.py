@@ -227,6 +227,8 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestContextMiddleware)
 
     if settings.auth_mode == "fnos":
+        from sag_api.fnos.client_worker import install_worker_client_access
+        install_worker_client_access(app, settings)
         from sag_api.fnos.nas_registry import FnOSNasScanRegistry
         from sag_api.fnos.open_api import FnOSOpenAPIClient
         from sag_api.services.fnos_nas_access import FnOSNasAccessService

@@ -245,3 +245,15 @@ def test_mcp_proxy_cli_runs_the_public_listener(monkeypatch: pytest.MonkeyPatch,
     cli.main(["mcp-proxy", "--socket", str(tmp_path / "gateway.sock"), "--host", "0.0.0.0", "--port", "5667"])
 
     assert calls[0][1:] == ("0.0.0.0", 5667)
+
+
+@pytest.mark.asyncio
+async def test_client_info_and_business_allowlist_public_proxy(public_client):
+    client, gateway = public_client
+    response = await client.get('/client/v1/info', headers={'X-Trim-Userid': '42', 'X-SAG-Internal-Uid': '42'})
+    assert response.status_code == 200
+    assert gateway.requests[-1][1] == '/app/sag/client/v1/info'
+    assert not any(k.startswith((b'x-trim-', b'x-sag-internal-')) for k, _ in gateway.requests[-1][3])
+    assert (await client.post('/client/v1/api/system/config', headers={'Authorization': 'Bearer x'})).status_code == 404
+    assert (await client.get('/client/v1/api/sources')).status_code == 401
+    assert (await client.post('/api/v1/client-access/approve')).status_code == 404
