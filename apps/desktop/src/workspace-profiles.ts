@@ -34,9 +34,7 @@ export class WorkspaceProfiles {
   constructor(directory: string) { this.directory = directory; this.file = path.join(directory, "workspace-profiles.json"); }
 
   read(): WorkspaceState {
-    if (!existsSync(this.file)) return { schemaVersion: 1,
-      activeId: existsSync(path.join(this.directory, "desktop-runtime.json")) ? "local" : null,
-      profiles: [{ ...local }] };
+    if (!existsSync(this.file)) return { schemaVersion: 1, activeId: "local", profiles: [{ ...local }] };
     const value = JSON.parse(readFileSync(this.file, "utf8")) as WorkspaceState;
     if (value.schemaVersion !== 1 || !Array.isArray(value.profiles) || value.profiles.length > 100) {
       throw new Error("工作区配置版本不受支持，请保留配置并升级 SAG");

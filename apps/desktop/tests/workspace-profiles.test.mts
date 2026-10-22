@@ -12,9 +12,9 @@ function fixture(t: test.TestContext) {
   return dir;
 }
 
-test("first install asks for workspace; existing runtime upgrades to local", t => {
+test("first install and existing runtime default to local without choosing a connection", t => {
   const dir = fixture(t);
-  assert.equal(new WorkspaceProfiles(dir).read().activeId, null);
+  assert.equal(new WorkspaceProfiles(dir).read().activeId, "local");
   writeFileSync(path.join(dir, "desktop-runtime.json"), JSON.stringify({ secretKey: "private" }));
   const upgraded = new WorkspaceProfiles(dir).read();
   assert.equal(upgraded.activeId, "local");

@@ -1,6 +1,116 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
-<title>SAG 工作区</title><style>
-:root{color-scheme:light dark;font:15px system-ui;background:#101315;color:#edf0ed}body{max-width:920px;margin:0 auto;padding:44px 32px}h1{font-size:30px;margin:8px 0}p{color:#acb7b5;line-height:1.7}header{margin-bottom:32px}small{color:#92bca9;letter-spacing:.12em}main{display:grid;grid-template-columns:1fr 1fr;gap:32px}section{border:1px solid #384441;border-radius:14px;padding:24px}h2{font-size:19px;margin:0 0 18px}label{display:block;font-weight:600;margin:16px 0 7px}input,select{box-sizing:border-box;width:100%;background:#171d1b;color:inherit;border:1px solid #52615b;border-radius:7px;padding:10px;font:inherit}button{font:inherit;border:1px solid #52615b;border-radius:7px;padding:8px 13px;cursor:pointer;background:#25352d;color:inherit;margin:5px 5px 0 0}button.primary{background:#bde4cc;color:#10251a;border-color:#bde4cc;font-weight:650}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #bde4cc;outline-offset:3px}.connection{padding:16px 0;border-top:1px solid #384441;overflow-wrap:anywhere}.connection:first-child{border-top:0}.address{font-size:12px;color:#acb7b5;margin:6px 0}.badge{color:#c4e7d0;font-size:12px}#message{white-space:pre-wrap;background:#263029;border-left:3px solid #bde4cc;padding:16px;line-height:1.6;margin-bottom:24px}#message:empty{display:none}.help{font-size:13px}button:disabled{opacity:.5;cursor:wait}@media(max-width:760px){main{grid-template-columns:1fr}body{padding:24px}}
-</style></head><body><header><small>SAG / WORKSPACES</small><h1>选择你的知识工作区</h1><p>本机运行自己的知识库，也可以连接 NAS 工作台。切换只改变这台电脑上的连接，知识与任务保留在各自服务器。</p></header>
-<div id="message" role="status" aria-live="polite"></div><main><section><h2>已保存的工作区</h2><div id="connections"></div></section><section><h2 id="form-title">连接 NAS / 远程工作台</h2><form id="connection-form"><input id="profile-id" type="hidden"><label for="name">连接名称</label><input id="name" maxlength="120" required placeholder="家中的 NAS"><label for="deployment">服务器类型</label><select id="deployment"><option value="fnos">fnOS SAG</option><option value="standard">标准 SAG Web / Docker</option></select><label for="web-url">工作台地址</label><input id="web-url" type="url" required placeholder="https://nas.example/app/sag"><p class="help">填写工作台的完整地址和应用前缀。fnOS 通常使用 /app/sag。此地址与模型 Base URL、CLI 自动化 API 地址分别保存。</p><button class="primary" type="submit">保存连接</button><button id="clear" type="button">新建连接</button></form><p class="help">每个连接使用独立登录状态。修改服务器地址或前缀后需要重新登录。证书错误请修复服务端证书。</p></section></main><script src="workspaces.js"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>SAG · NAS 连接</title>
+  <style>
+    /* Match the neutral tokens and control sizing used by the SAG settings UI. */
+    :root {
+      color-scheme: light;
+      --background: 0 0% 100%; --foreground: 240 10% 3.9%;
+      --card: 0 0% 100%; --primary: 240 5.9% 10%; --primary-foreground: 0 0% 98%;
+      --muted: 240 4.8% 95.9%; --muted-foreground: 240 3.8% 46.1%;
+      --border: 240 5.9% 90%; --ring: 240 10% 3.9%; --destructive: 0 72% 51%;
+      font: 14px/1.5 "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+      background: hsl(var(--background)); color: hsl(var(--foreground));
+      -webkit-font-smoothing: antialiased;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --background: 240 10% 3.9%; --foreground: 0 0% 98%; --card: 240 8% 6%;
+        --primary: 0 0% 98%; --primary-foreground: 240 5.9% 10%;
+        --muted: 240 3.7% 15.9%; --muted-foreground: 240 5% 64.9%;
+        --border: 240 3.7% 15.9%; --ring: 240 4.9% 83.9%; --destructive: 0 72% 58%;
+      }
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { max-width: 768px; margin: 0 auto; padding: 36px 28px; }
+    header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
+    h1 { font-size: 24px; line-height: 32px; font-weight: 600; margin: 0; letter-spacing: -.02em; }
+    h2 { font-size: 16px; line-height: 24px; font-weight: 600; margin: 0; }
+    p { margin: 4px 0 0; color: hsl(var(--muted-foreground)); }
+    button, input, select, summary { font: inherit; }
+    button, .more > summary {
+      display: inline-flex; align-items: center; justify-content: center; height: 36px; padding: 0 14px;
+      border: 1px solid hsl(var(--border)); border-radius: 6px; background: transparent;
+      color: hsl(var(--foreground)); font-size: 14px; font-weight: 500; white-space: nowrap; cursor: pointer;
+      transition: background-color 150ms ease, border-color 150ms ease;
+    }
+    button:hover, .more > summary:hover { background: hsl(var(--muted)); }
+    button.primary { background: hsl(var(--primary)); border-color: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
+    button.primary:hover { opacity: .9; }
+    button:disabled, input:disabled, select:disabled { opacity: .5; cursor: wait; }
+    button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible {
+      outline: 2px solid hsl(var(--ring)); outline-offset: 2px;
+    }
+    #message { margin-bottom: 20px; padding: 12px 16px; border: 1px solid hsl(var(--border)); border-radius: 8px; background: hsl(var(--muted)); white-space: pre-wrap; overflow-wrap: anywhere; }
+    #message:empty { display: none; }
+    #message[data-error="true"] { color: hsl(var(--destructive)); }
+    #connections, #editor { border: 1px solid hsl(var(--border)); border-radius: 10px; background: hsl(var(--card)); }
+    .connection { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px; border-top: 1px solid hsl(var(--border)); }
+    .connection:first-child { border-top: 0; }
+    .connection-info { min-width: 0; }
+    .connection-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    strong { font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+    .badge { color: hsl(var(--muted-foreground)); font-size: 12px; }
+    .address { font-size: 13px; overflow-wrap: anywhere; }
+    .actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .more { position: relative; }
+    .more > summary { list-style: none; }
+    .more > summary::-webkit-details-marker { display: none; }
+    .menu { position: absolute; top: 42px; right: 0; z-index: 1; min-width: 156px; padding: 4px; border: 1px solid hsl(var(--border)); border-radius: 8px; background: hsl(var(--card)); }
+    .menu button { width: 100%; justify-content: flex-start; border: 0; padding: 0 10px; }
+    .menu .destructive { color: hsl(var(--destructive)); }
+    #editor { padding: 20px; }
+    #editor > p { margin-bottom: 20px; }
+    label { display: block; margin-bottom: 6px; font-weight: 500; }
+    input, select { display: block; width: 100%; height: 36px; padding: 0 12px; border: 1px solid hsl(var(--border)); border-radius: 6px; background: hsl(var(--card)); color: hsl(var(--foreground)); }
+    input::placeholder { color: hsl(var(--muted-foreground)); }
+    .help { font-size: 13px; line-height: 20px; }
+    .advanced { margin-top: 20px; }
+    .advanced > summary { color: hsl(var(--muted-foreground)); cursor: pointer; }
+    .field { margin-top: 16px; }
+    .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+    ::selection { background: hsl(var(--foreground) / .12); }
+    ::-webkit-scrollbar { width: 11px; }
+    ::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 999px; background: hsl(var(--muted-foreground) / .35); background-clip: content-box; }
+    @media (max-width: 520px) {
+      body { padding: 24px 16px; }
+      header { gap: 12px; }
+      .connection { align-items: flex-start; flex-direction: column; gap: 12px; padding: 16px; }
+      .actions { align-self: flex-end; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div><h1>NAS 连接</h1><p>连接远程知识库，或继续使用本机知识库。</p></div>
+    <button id="add" class="primary" type="button">添加连接</button>
+  </header>
+  <div id="message" role="status" aria-live="polite"></div>
+  <main>
+    <div id="connections" aria-label="知识库连接"></div>
+    <section id="editor" aria-labelledby="form-title" hidden>
+      <h2 id="form-title">添加连接</h2>
+      <p>填写 NAS 中 SAG 的工作台地址。</p>
+      <form id="connection-form">
+        <input id="profile-id" type="hidden">
+        <label for="web-url">工作台地址</label>
+        <input id="web-url" type="url" required maxlength="2000" placeholder="http://nas-address:5666/app/sag" aria-describedby="url-help">
+        <p id="url-help" class="help">复制浏览器中的 SAG 地址，保留 /app/sag 前缀。</p>
+        <details id="advanced" class="advanced">
+          <summary>高级设置</summary>
+          <div class="field"><label for="name">连接名称（可选）</label><input id="name" maxlength="120" placeholder="默认使用服务器地址"></div>
+          <div class="field"><label for="deployment">服务器类型</label><select id="deployment"><option value="fnos">fnOS SAG</option><option value="standard">标准 SAG Web / Docker</option></select></div>
+        </details>
+        <div class="form-actions"><button id="cancel" type="button">取消</button><button class="primary" type="submit">保存连接</button></div>
+      </form>
+    </section>
+  </main>
+  <script src="workspaces.js"></script>
+</body>
+</html>

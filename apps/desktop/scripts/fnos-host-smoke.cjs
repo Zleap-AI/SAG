@@ -5,6 +5,7 @@ const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function wait(probe,timeout=15000){const start=Date.now();while(Date.now()-start<timeout){const result=await probe();if(result)return result;await sleep(50);}throw Error('Controlled Electron state timed out');}
 async function worker({app,BrowserWindow,Menu,session}){
  const directory=process.env.SAG_HOST_SMOKE_DATA;app.setPath('appData',directory);app.setAppPath(path.resolve(__dirname,'..'));
+ process.env.SAG_DESKTOP_DEV_WEB_URL=process.env.SAG_HOST_SMOKE_ORIGIN+'/fixture-local';
  require(process.env.SAG_HOST_SMOKE_MAIN);
  app.on('before-quit',event=>console.log('QUIT before-quit',JSON.stringify({prevented:event.defaultPrevented,windows:BrowserWindow.getAllWindows().length})));
  app.on('will-quit',()=>console.log('QUIT will-quit'));app.on('quit',()=>console.log('QUIT complete'));
@@ -14,6 +15,9 @@ async function worker({app,BrowserWindow,Menu,session}){
   const loaded=url=>BrowserWindow.getAllWindows().find(w=>w.webContents.getURL()===url&&!w.webContents.isLoading());
   const findManager=()=>BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().endsWith('workspaces.html')&&!w.webContents.isLoading());
   if(process.env.SAG_HOST_SMOKE_ROUND==='first'){
+   await wait(()=>loaded(origin+'/fixture-local'));
+   assert.equal(findManager(),undefined,'fresh install must open local knowledge without asking for NAS settings');
+   Menu.getApplicationMenu().items.find(i=>i.label==='工作区').submenu.items[0].click();
    manager=await wait(findManager);
    const saved=await manager.webContents.executeJavaScript(`sagWorkspaces.save(${JSON.stringify({name:'Controlled NAS',webUrl:origin+'/app/sag',deployment:'fnos'})})`);
    fs.writeFileSync(path.join(directory,'profile.json'),JSON.stringify(saved));
@@ -64,6 +68,7 @@ async function driver(executable){
   else if(req.url==='/host-live'&&signedIn){liveHosts++;streams.add(res);res.writeHead(200,{'Content-Type':'text/event-stream'});res.write('data: ready\n\n');req.on('close',()=>{liveHosts--;streams.delete(res);});}
   else if(req.url.endsWith('/system/capabilities')){if(!signedIn||liveHosts===0){res.writeHead(403);res.end('invalid token');}else{res.setHeader('Content-Type','application/json');res.end('{"llm_configured":false}');}}
   else if(req.url==='/app/sag/chat'){await sleep(100);res.setHeader('Content-Type','text/html');res.end(signedIn&&liveHosts>0?'<h1>Knowledge authorized by live host</h1>':'invalid token');}
+  else if(req.url==='/fixture-local'){res.setHeader('Content-Type','text/html');res.end('<h1>Local knowledge</h1>');}
   else{res.writeHead(404);res.end();}
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const index=process.argv.indexOf('--main');const main=index>=0?path.resolve(process.argv[index+1]):path.resolve(__dirname,'../dist/main.js');let successful=true;

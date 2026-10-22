@@ -150,7 +150,7 @@ async function openWorkspace(id: string, destination: WorkspaceDestination = "kn
     const ready = await fnosHost.ready(opened.profile);
     if (quitting || generation !== workspaceGeneration) return false;
     if (!ready) {
-      workspaceMessage = "NAS 宿主会话尚未就绪。请在宿主窗口完成登录，再选择“返回知识库”。";
+      workspaceMessage = "请先在 NAS 窗口完成登录，再打开连接。";
       showWorkspaceManager(); splashWindow?.close(); splashWindow = null;
       return false;
     }
@@ -165,8 +165,8 @@ function showWorkspaceManager(): void {
   if (managerWindow && !managerWindow.isDestroyed()) {
     void managerWindow.reload(); managerWindow.show(); managerWindow.focus(); return;
   }
-  managerWindow = new BrowserWindow({ width: 1020, height: 820, minWidth: 640, minHeight: 560,
-    title: "SAG · 管理工作区", backgroundColor: "#101315",
+  managerWindow = new BrowserWindow({ width: 800, height: 640, minWidth: 640, minHeight: 480,
+    title: "SAG · 连接设置", backgroundColor: "#ffffff",
     webPreferences: { preload: path.join(__dirname, "workspace-preload.js"),
       nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
   });
@@ -179,7 +179,7 @@ function installWorkspaceMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(process.platform === "darwin" ? [{ role: "appMenu" as const }] : []),
     { label: "工作区", submenu: [
-      { label: "管理连接…", accelerator: "CmdOrCtrl+Shift+W", click: showWorkspaceManager },
+      { label: "NAS / 远程连接…", accelerator: "CmdOrCtrl+Shift+W", click: showWorkspaceManager },
       { label: "重试当前工作区", click: () => { const id = profiles.read().activeId; if (id) void openWorkspace(id).catch(error => { workspaceMessage = String(error); showWorkspaceManager(); }); } },
     ] },
     { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" },
@@ -208,7 +208,7 @@ function registerWorkspaceIpc(): void {
     trust(event);
     const opened = await openWorkspace(id, "host-login");
     workspaceMessage = opened
-      ? "已在此连接的独立窗口打开 NAS 宿主登录页。完成登录后，选择“返回知识库”。登录状态仅保存在此连接中。"
+      ? "已打开 NAS 登录页。完成登录后，再打开连接。"
       : "已取消工作区切换。";
     return { opened };
   });
@@ -236,7 +236,7 @@ function registerWorkspaceIpc(): void {
       if (quitting || generation !== workspaceGeneration) return { cleared: true, opened: false };
       const opened = await openWorkspace(id, "host-login");
       workspaceMessage = opened
-        ? "已清除此连接的登录状态，并打开 NAS 宿主登录页。完成登录后，选择“返回知识库”。"
+        ? "已清除登录状态并打开 NAS 登录页。完成登录后，再打开连接。"
         : "已清除此连接的登录状态；工作区切换已取消。";
       return { cleared: true, opened };
     }
@@ -547,8 +547,7 @@ function bootstrap(): Promise<void> {
   if (!splashWindow || splashWindow.isDestroyed()) splashWindow = createSplashWindow();
   booting = (async () => {
     try {
-      const activeId = profiles.read().activeId;
-      if (!activeId) { showWorkspaceManager(); splashWindow?.close(); splashWindow = null; return; }
+      const activeId = profiles.read().activeId ?? "local";
       await openWorkspace(activeId);
     } catch (error) {
       if (!quitting) {

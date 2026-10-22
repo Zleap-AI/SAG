@@ -4,7 +4,7 @@ const http = require("node:http");
 const { mkdtempSync, rmSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const path = require("node:path");
-const { app, BrowserWindow, session } = require("electron");
+const { app, BrowserWindow, Menu, session } = require("electron");
 const directory = mkdtempSync(path.join(tmpdir(), "sag-electron-smoke-"));
 app.setPath("appData", directory);
 app.setAppPath(path.resolve(__dirname, ".."));
@@ -30,8 +30,13 @@ const server = http.createServer((req, res) => {
 const wait = async predicate => { for (let i = 0; i < 200; i++) { const result = predicate(); if (result) return result; await new Promise(resolve => setTimeout(resolve, 50)); } throw new Error("Timed out waiting for Electron UI"); };
 let failed = false;
 server.listen(0, "127.0.0.1", async () => {
+  process.env.SAG_DESKTOP_DEV_WEB_URL = `http://127.0.0.1:${server.address().port}/fixture-local`;
   require("../dist/main.js");
   try {
+    const local = await wait(() => BrowserWindow.getAllWindows().find(window => window.webContents.getURL() === process.env.SAG_DESKTOP_DEV_WEB_URL && !window.webContents.isLoading()));
+    assert.ok(local, "fresh install opens local knowledge directly");
+    assert.equal(BrowserWindow.getAllWindows().some(window => window.webContents.getURL().endsWith("workspaces.html")), false);
+    Menu.getApplicationMenu().items.find(item => item.label === "工作区").submenu.items[0].click();
     const manager = await wait(() => BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith("workspaces.html")));
     await wait(() => !manager.webContents.isLoading());
     const url = `http://127.0.0.1:${server.address().port}/app/sag`;
@@ -71,7 +76,7 @@ server.listen(0, "127.0.0.1", async () => {
     await host.webContents.executeJavaScript('document.querySelector("form").requestSubmit(); true');
     await signedIn;
     assert.match(await host.webContents.executeJavaScript('document.body.textContent'), /Host signed in/);
-    await manager.webContents.executeJavaScript('[...document.querySelectorAll("button")].find(button => button.textContent === "返回知识库").click(); true');
+    await manager.webContents.executeJavaScript(`document.querySelector('[data-profile-id="${first.id}"] button[data-action="open"]').click(); true`);
     remote = await wait(() => BrowserWindow.getAllWindows().find(window => window.webContents.getURL() === `${url}/chat`));
     await wait(() => !remote.webContents.isLoading());
     assert.match(await remote.webContents.executeJavaScript('document.body.textContent'), /Knowledge sees host session/);
@@ -91,7 +96,7 @@ server.listen(0, "127.0.0.1", async () => {
     await wait(() => manager.webContents.getURL().endsWith("workspaces.html"));
     await new Promise(resolve => setTimeout(resolve, 500));
     assert.match(await manager.webContents.executeJavaScript('document.getElementById("message").textContent'), /连接不可用|加载失败|无法连接/);
-    console.log("PASS actual Electron first-run manager, remote no preload, partition isolation, unrecognized popup and callback denial, same-origin main-window host login and return using its cookie without preload, fnOS-only routing, logout, compatibility check, offline recovery");
+    console.log("PASS actual Electron default local startup, optional connection settings, remote no preload, partition isolation, popup denial, host login, fnOS-only routing, logout and offline recovery");
   } catch (error) { failed = true; console.error(error); }
   finally { server.close(); app.exit(failed ? 1 : 0); }
 });
