@@ -35,6 +35,7 @@ export type SagDesktopUpdateState =
 export interface SagDesktopBridge {
   readonly isDesktop: true;
   readonly platform: string;
+  readonly apiBase?: string;
   appInfo(): Promise<{ version: string; platform: string; arch: string }>;
   checkForUpdates(): Promise<{ supported: boolean }>;
   getUpdateState(): Promise<SagDesktopUpdateState>;

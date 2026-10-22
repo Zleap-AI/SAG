@@ -29,13 +29,14 @@ for (const scenario of ["fresh", "unset", "nas"] as const) test(`${scenario} sta
     }
   }
   const handlers = new Map<string, unknown>(); const scheduled: Array<() => void> = [];
-  const windows: Array<{ file: string; url: string }> = []; let checks = 0; let localStarts = 0;
+  const windows: Array<{ file: string; url: string; options: { webPreferences?: { additionalArguments?: string[]; preload?: string } } }> = []; let checks = 0; let localStarts = 0;
   let menu: Array<{ label?: string; submenu?: Array<{ label?: string; click?: () => void }> }> = [];
   class Window extends EventEmitter {
     file = "";
     url = "";
     webContents = { on() {}, setWindowOpenHandler() {}, send() {} };
-    constructor() { super(); windows.push(this); }
+    readonly options: { webPreferences?: { additionalArguments?: string[]; preload?: string } };
+    constructor(options: typeof this.options = {}) { super(); this.options = options; windows.push(this); }
     async loadFile(file: string) { this.file = file; }
     async loadURL(url: string) { this.url = url; }
     isDestroyed() { return false; }
@@ -66,7 +67,7 @@ for (const scenario of ["fresh", "unset", "nas"] as const) test(`${scenario} sta
     require: (id: string) => id === "electron" ? electron : id === "electron-log/main" ? logger
       : id === "./updater" ? updaterExports : id === "./runtime" ? {
         startPackagedRuntime() { localStarts++; return Promise.resolve({ webUrl: "http://127.0.0.1:3000",
-          apiUrl: "http://127.0.0.1:8000", failure: new Promise(() => {}), stop: async () => {}, inspectActivity: async () => false }); },
+          apiUrl: "http://127.0.0.1:49152", failure: new Promise(() => {}), stop: async () => {}, inspectActivity: async () => false }); },
       } : id === "./fnos-host-context" ? { FnOsHostContext: class {
         ready = async () => true; close() {} hide() {}
       } } : loadCompiled(id),
@@ -78,6 +79,9 @@ for (const scenario of ["fresh", "unset", "nas"] as const) test(`${scenario} sta
   assert.equal(windows.find(window => window.url)?.url, scenario === "nas"
     ? "https://nas.example/app/sag/chat" : "http://127.0.0.1:3000");
   assert.equal(localStarts, scenario === "nas" ? 0 : 1);
+  const preferences = windows.find(window => window.url)?.options.webPreferences;
+  assert.deepEqual(Array.from(preferences?.additionalArguments ?? []), scenario === "nas" ? [] : ["--sag-api-port=49152"]);
+  if (scenario === "nas") assert.equal(preferences?.preload, undefined);
   assert.equal(scheduled.length, 1, "normal startup retains updater discovery");
   assert.ok(handlers.has("desktop:get-update-state"));
   scheduled[0](); await Promise.resolve();

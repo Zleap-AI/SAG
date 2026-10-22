@@ -18,6 +18,7 @@ const DESKTOP_CHANNELS = {
 export interface SagDesktopBridge {
   readonly isDesktop: true;
   readonly platform: NodeJS.Platform;
+  readonly apiBase?: string;
   appInfo(): Promise<{ version: string; platform: NodeJS.Platform; arch: string }>;
   checkForUpdates(): Promise<{ supported: boolean }>;
   getUpdateState(): Promise<UpdateState>;
@@ -27,9 +28,15 @@ export interface SagDesktopBridge {
   onUpdateState(listener: (state: UpdateState) => void): () => void;
 }
 
+// Only the local window receives this argument from the main process.
+const apiPort = process.argv.find(value => /^--sag-api-port=\d+$/.test(value))?.split("=")[1];
+const port = Number(apiPort);
+
 const bridge: SagDesktopBridge = Object.freeze({
   isDesktop: true,
   platform: process.platform,
+  apiBase: Number.isInteger(port) && port > 0 && port <= 65535
+    ? `http://127.0.0.1:${port}` : undefined,
   appInfo: () => ipcRenderer.invoke(DESKTOP_CHANNELS.appInfo),
   checkForUpdates: () => ipcRenderer.invoke(DESKTOP_CHANNELS.checkForUpdates),
   getUpdateState: () => ipcRenderer.invoke(DESKTOP_CHANNELS.getUpdateState),

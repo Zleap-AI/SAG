@@ -1,3 +1,4 @@
+import { resolveApiBase } from "./api-base";
 import { clearToken, getToken } from "./auth";
 import { getDiagnosticsStore } from "./diagnostics";
 import { generateUuidV4 } from "./uuid";
@@ -50,26 +51,7 @@ import type {
 
 export type QuickSetupEmbeddingProvider = "302" | "zhipu" | "bailian";
 
-/** 浏览器通过局域网 IP 打开前端时，自动将 API 指向同主机 8000 端口。 */
-function resolveApiBase(): string {
-  const configured = process.env.NEXT_PUBLIC_API_BASE;
-  if (typeof window !== "undefined") {
-    const { protocol, hostname } = window.location;
-    const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1";
-    if (!isLocalHost) {
-      const pointsToLocal =
-        !configured ||
-        configured.includes("localhost") ||
-        configured.includes("127.0.0.1");
-      if (pointsToLocal) {
-        return `${protocol}//${hostname}:8000`;
-      }
-    }
-  }
-  return configured || "http://localhost:8000";
-}
-
-export const API_BASE = resolveApiBase();
+export const API_BASE = resolveApiBase(process.env.NEXT_PUBLIC_API_BASE);
 
 export class ApiError extends Error {
   status: number;

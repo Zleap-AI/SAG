@@ -490,6 +490,8 @@ function createMainWindow(webUrl: string, profile?: WorkspaceProfile): BrowserWi
     autoHideMenuBar: true,
     webPreferences: {
       preload: remote ? undefined : path.join(__dirname, "preload.js"),
+      additionalArguments: !remote && runtime.session
+        ? [`--sag-api-port=${new URL(runtime.session.apiUrl).port}`] : [],
       partition: remote ? profile.partition : undefined,
       nodeIntegration: false,
       contextIsolation: true,

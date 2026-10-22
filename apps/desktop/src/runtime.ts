@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { createServer } from "node:net";
 import path from "node:path";
 import {
   spawn,
@@ -12,6 +11,7 @@ import { app, utilityProcess, type UtilityProcess } from "electron";
 import log from "electron-log/main";
 
 import { desktopConfig } from "./config";
+import { isPortAvailable, resolveApiPort } from "./runtime-ports";
 import { manageProcess, terminateProcessTree, waitForHttp } from "./managed-process";
 import { RuntimeStartError } from "./runtime-controller";
 import {
@@ -35,17 +35,6 @@ export interface ManagedRuntime {
 interface StartedProcess {
   readonly failure: Promise<Error>;
   stop(): Promise<void>;
-}
-
-async function isPortAvailable(host: string, port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = createServer();
-    server.unref();
-    server.once("error", () => resolve(false));
-    server.listen({ host, port, exclusive: true }, () => {
-      server.close(() => resolve(true));
-    });
-  });
 }
 
 function pipeUtilityLogs(child: UtilityProcess, name: string): void {
@@ -105,6 +94,7 @@ function startPythonRuntime(
   userDataDir: string,
   webOrigin: string,
   controlToken: string,
+  apiPort: number,
 ): StartedProcess {
   const executable = backendExecutable(resourcesPath);
   if (!existsSync(executable)) {
@@ -122,7 +112,7 @@ function startPythonRuntime(
       SAG_SECRET_KEY: secretKey,
       SAG_DESKTOP_CONTROL_TOKEN: controlToken,
       SAG_CORS_ORIGINS: webOrigin,
-      ...desktopApiEnvironment(desktopConfig.apiHost, desktopConfig.apiPort),
+      ...desktopApiEnvironment(desktopConfig.apiHost, apiPort),
       SAG_STORAGE_BOOTSTRAP_POLICY: storageBootstrapPolicy(process.platform),
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -133,7 +123,7 @@ function startPythonRuntime(
   return manageProcess(child, {
     name: "API", hasPid: () => child.pid !== undefined,
     requestStop: async () => {
-      await controlRequest(localHttpOrigin(desktopConfig.apiHost, desktopConfig.apiPort), controlToken, "shutdown");
+      await controlRequest(localHttpOrigin(desktopConfig.apiHost, apiPort), controlToken, "shutdown");
     },
     forceStop: async () => {
       if (child.pid) await terminateProcessTree(child.pid, true);
@@ -156,24 +146,20 @@ async function controlRequest(apiUrl: string, token: string, action: "activity" 
 
 export async function startPackagedRuntime(signal: AbortSignal): Promise<ManagedRuntime> {
   const host = desktopConfig.apiHost;
-  if (!(await isPortAvailable(host, desktopConfig.apiPort))) {
-    throw new Error(
-      `Local API port ${desktopConfig.apiPort} is already in use. `
-      + "Close the conflicting service or configure SAG_DESKTOP_API_PORT.",
-    );
-  }
   const userDataDir = app.getPath("userData");
   const webPort = await resolveStableWebPort(
     userDataDir,
     desktopConfig.preferredWebPort,
     (port) => isPortAvailable(host, port),
   );
+  const apiPort = await resolveApiPort(host, desktopConfig.apiPort, webPort);
+  log.info(`Resolved API port ${apiPort}`);
   log.info(`Resolved stable web port ${webPort} (origin http://localhost:${webPort})`);
   const webHealthUrl = localHttpOrigin(host, webPort);
   // Next.js standalone normalizes redirects to localhost. Use that as the UI
   // origin while keeping the actual listener restricted to 127.0.0.1.
   const webUrl = `http://localhost:${webPort}`;
-  const apiUrl = localHttpOrigin(host, desktopConfig.apiPort);
+  const apiUrl = localHttpOrigin(host, apiPort);
   const webRoot = path.join(process.resourcesPath, "web");
 
   signal.throwIfAborted();
@@ -187,7 +173,7 @@ export async function startPackagedRuntime(signal: AbortSignal): Promise<Managed
   })().catch((error: unknown) => { stopping = undefined; throw error; });
   try {
     processes.push(startNextRuntime(webRoot, webPort));
-    processes.push(startPythonRuntime(process.resourcesPath, userDataDir, webUrl, controlToken));
+    processes.push(startPythonRuntime(process.resourcesPath, userDataDir, webUrl, controlToken, apiPort));
     const failure = Promise.race(processes.map((child) => child.failure));
     const probing = new AbortController();
     try {

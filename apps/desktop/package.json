@@ -33,7 +33,8 @@
     "package:win": "electron-builder --config electron-builder.config.cjs --win --x64 --publish never",
     "dist": "npm run prepare:release && electron-builder --config electron-builder.config.cjs --publish never",
     "dist:mac": "npm run prepare:release && npm run package:mac",
-    "dist:win": "npm run prepare:release && npm run package:win"
+    "dist:win": "npm run prepare:release && npm run package:win",
+    "test:port-conflict": "node ./scripts/port-conflict-smoke.mjs"
   },
   "dependencies": {
     "electron-log": "^5.4.4",
