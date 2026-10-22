@@ -43,13 +43,19 @@ async def get_current_user(
     if settings.auth_mode == "fnos":
         from sag_api.services.fnos_user_service import get_or_create_fnos_user
 
-        signer = _fnos_identity_signer(settings.fnos_internal_secret_file)
-        identity = signer.verify(
-            request.headers,
-            expected_uid=settings.fnos_uid,
-            now=int(time()),
-            expected_username=settings.fnos_username if settings.fnos_username_isolation else None,
+        identity = (
+            getattr(request.state, "client_identity", None)
+            if getattr(request.state, "client_access", None) else None
         )
+        if not isinstance(identity, GatewayIdentity):
+            signer = _fnos_identity_signer(settings.fnos_internal_secret_file)
+            identity = signer.verify(
+                request.headers,
+                expected_uid=settings.fnos_uid,
+                now=int(time()),
+                expected_username=settings.fnos_username if settings.fnos_username_isolation else None,
+                expected_principal="client" if getattr(request.state, "client_access", None) else "web",
+            )
         request.state.fnos_identity = identity
         user = await get_or_create_fnos_user(session, identity)
         request.state.user = user

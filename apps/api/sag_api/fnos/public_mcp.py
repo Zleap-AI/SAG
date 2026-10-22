@@ -1,7 +1,7 @@
-"""Public Streamable HTTP MCP proxy for fnOS Native packages.
+"""Public MCP and client-v1 proxy for fnOS Native packages.
 
 The fnOS desktop router authenticates requests before they reach the package
-UDS. External Agents cannot use that route, so this listener exposes only MCP
+UDS. External Agents cannot use that route, so this listener exposes MCP and explicit client-v1 routes
 and forwards it to the already-running UDS Gateway.  It intentionally does not
 own a WorkerSupervisor or any tenant state.
 """
@@ -16,6 +16,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from sag_api.client_access.allowlist import client_allowed
 from sag_api.fnos.proxy import ProxyStreamingResponse, bearer_token, filtered_response_headers
 
 _FORWARDED_METHODS = ["GET", "POST", "DELETE", "HEAD", "OPTIONS"]
@@ -44,6 +45,7 @@ def _request_headers(request: Request, token: str) -> list[tuple[bytes, bytes]]:
         (name.lower(), value)
         for name, value in request.scope["headers"]
         if name.lower() not in _DROP_REQUEST_HEADERS
+        and not name.lower().startswith((b"x-trim-", b"x-sag-internal-"))
     ]
     headers.append((b"authorization", f"Bearer {token}".encode("ascii")))
     return headers
@@ -58,7 +60,7 @@ def _response_headers(headers: list[tuple[bytes, bytes]]) -> dict[str, str]:
 
 
 def create_public_mcp_app(gateway_socket: Path, *, max_concurrency: int = 2) -> FastAPI:
-    """Create an MCP-only TCP proxy that reuses the existing UDS Gateway."""
+    """Create a bounded public client proxy that reuses the existing UDS Gateway."""
     if max_concurrency < 1:
         raise ValueError("max_concurrency must be positive")
     socket_file = Path(gateway_socket)
@@ -123,6 +125,41 @@ def create_public_mcp_app(gateway_socket: Path, *, max_concurrency: int = 2) -> 
             headers=_response_headers(upstream_response.headers.raw),
         )
 
+    async def proxy_client(request: Request, subpath: str = ""):
+        path = request.url.path
+        if not client_allowed(request.method, path, request.scope.get("raw_path")):
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        token = bearer_token(request.scope["headers"])
+        anonymous = path in {"/client/v1/info", "/client/v1/device/code", "/client/v1/token"}
+        if not anonymous and token is None:
+            return JSONResponse({"error": "invalid_grant"}, status_code=401)
+        semaphore = app.state.semaphore
+        if semaphore.locked():
+            return JSONResponse({"error": "temporarily_unavailable"}, status_code=503, headers={"Retry-After": "2"})
+        await semaphore.acquire()
+        try:
+            headers = _request_headers(request, token or "")
+            if token is None:
+                headers = [(k, v) for k, v in headers if k != b"authorization"]
+            upstream = app.state.client.build_request(
+                request.method, "/app/sag" + path, params=request.query_params,
+                headers=headers, content=request.stream(),
+                timeout=httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0),
+            )
+            response = await app.state.client.send(upstream, stream=True)
+        except BaseException as error:
+            semaphore.release()
+            if isinstance(error, httpx.HTTPError):
+                return JSONResponse({"error": "gateway_unavailable"}, status_code=502)
+            raise
+
+        async def release():
+            semaphore.release()
+
+        return ProxyStreamingResponse(response, release=release, headers=_response_headers(response.headers.raw))
+
+    app.add_api_route("/client/v1/{subpath:path}", proxy_client,
+                      methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
     app.add_api_route("/mcp", proxy_mcp, methods=_FORWARDED_METHODS)
     app.add_api_route("/mcp/{subpath:path}", proxy_mcp, methods=_FORWARDED_METHODS)
     return app

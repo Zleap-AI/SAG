@@ -433,3 +433,15 @@ def test_internal_invalid_utf8_username_is_rejected():
     signed["X-SAG-Internal-Username"] = "%FF"
     with pytest.raises(AuthError):
         signer.verify(signed, expected_uid=1000, now=100)
+
+
+def test_client_internal_principal_cannot_be_replayed_as_web():
+    signer = InternalIdentitySigner(b's' * 32)
+    signed = signer.sign(GatewayIdentity(1000, 'Alice', False), 'client-req', 100, principal='client')
+    with pytest.raises(AuthError):
+        signer.verify(signed, 1000, 100)
+    assert signer.verify(signed, 1000, 100, expected_principal='client').uid == 1000
+    signed = signer.sign(GatewayIdentity(1000, 'Alice', False), 'tampered-client', 100, principal='client')
+    signed.pop('X-SAG-Internal-Principal')
+    with pytest.raises(AuthError):
+        signer.verify(signed, 1000, 100)

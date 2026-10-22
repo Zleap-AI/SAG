@@ -297,6 +297,7 @@ export interface ModelConfig {
   llm_max_tokens: number;
   llm_timeout_ms: number;
   llm_max_retries: number;
+  llm_structured_output_mode?: "auto" | "json_schema" | "json_object" | "prompt_only";
   llm_api_key_set: boolean;
   embedding_model: string;
   embedding_base_url: string | null;
@@ -332,6 +333,7 @@ export type ModelConfigPatch = Partial<{
   llm_max_tokens: number;
   llm_timeout_ms: number;
   llm_max_retries: number;
+  llm_structured_output_mode?: "auto" | "json_schema" | "json_object" | "prompt_only";
   embedding_model: string;
   embedding_base_url: string;
   embedding_api_key: string;
@@ -853,4 +855,25 @@ export interface Capabilities {
   max_upload_mb: number;
   allowed_upload_exts?: string[];
   timezone: string;
+}
+
+export interface ClientAccessInfo {
+  protocol: string;
+  deployment: string;
+  server_id: string;
+  enabled: boolean;
+  api_url: string | null;
+  verification_uri: string | null;
+  can_manage_policy: boolean;
+  host_lifecycle_synchronized: boolean;
+}
+export interface ClientAccessSession {
+  session_id: string;
+  client_name: string;
+  scope: string;
+  access_expires_at: string;
+  refresh_expires_at: string;
+  absolute_expires_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
 }

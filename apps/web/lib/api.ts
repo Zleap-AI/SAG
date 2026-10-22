@@ -540,6 +540,12 @@ async function request<T>(path: string, options: RequestInit & { timeoutMs?: num
 }
 
 export const api = {
+  clientAccessInfo: () => request<import("./types").ClientAccessInfo>("/api/v1/client-access/info"),
+  clientAccessSessions: () => request<import("./types").ClientAccessSession[]>("/api/v1/client-access/sessions"),
+  clientAccessInspect: (user_code: string) => request<{ client_name: string; user_name: string; scope: string }>("/api/v1/client-access/inspect", { method: "POST", body: JSON.stringify({ user_code }) }),
+  clientAccessApprove: (user_code: string, approve: boolean) => request<void>("/api/v1/client-access/approve", { method: "POST", body: JSON.stringify({ user_code, approve }) }),
+  clientAccessRevoke: (id: string) => request<void>(`/api/v1/client-access/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  clientAccessPolicy: (values: { enabled: boolean; api_url: string; verification_uri: string }) => request<import("./types").ClientAccessInfo>("/api/v1/client-access/policy", { method: "PUT", body: JSON.stringify(values) }),
   // auth / system
   singleUserSession: () => request<SingleUserSession>("/api/v1/auth/session"),
   initializeSingleUser: (name: string) =>

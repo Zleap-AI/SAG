@@ -608,7 +608,15 @@
     "testing": "Testing…",
     "testGeneration": "Test generation model",
     "saving": "Saving…",
-    "save": "Save and apply"
+    "save": "Save and apply",
+    "structuredOutputMode": "Structured output mode",
+    "structuredOutputDescription": "Auto uses JSON Schema and falls back only when the server explicitly rejects that format. All modes validate output locally.",
+    "structuredModes": {
+      "auto": "Auto",
+      "json_schema": "JSON Schema",
+      "json_object": "JSON Object",
+      "prompt_only": "Prompt only"
+    }
   },
   "AgentSettings": {
     "saved": "Assistant settings saved",
@@ -1064,7 +1072,10 @@
       "loadFailed": "Failed to load parsed content",
       "truncated": "This content is long. The preview shows only the first 500,000 characters."
     },
-    "tabs": { "parsed": "Parsed content", "original": "Original file" },
+    "tabs": {
+      "parsed": "Parsed content",
+      "original": "Original file"
+    },
     "document": {
       "loadFailed": "Failed to load document",
       "tokens": "{count} tokens",
@@ -1232,7 +1243,10 @@
     "sourceStats": "{events, plural, one {# event} other {# events}} · {entities, plural, one {# entity} other {# entities}}",
     "sourceStatsBuilding": "{events, plural, one {# event} other {# events}} · building entity statistics",
     "exploreNode": "Explore {kind}: {label}",
-    "kinds": { "event": "event", "entity": "entity" },
+    "kinds": {
+      "event": "event",
+      "entity": "entity"
+    },
     "relatedEvents": "{count, plural, one {# related event} other {# related events}} · {category}",
     "continueExploring": "Continue exploring {progress}/{total}",
     "explorationProgress": "Explored {progress}/{total}",
@@ -1320,7 +1334,10 @@
       "overviewBuilding": "{sources, plural, one {# source} other {# sources}} · {events} events · building entity statistics",
       "visibleContours": " · showing {count, plural, one {# high-density contour} other {# high-density contours}}"
     },
-    "legend": { "entities": "Topic entities", "events": "Related events" },
+    "legend": {
+      "entities": "Topic entities",
+      "events": "Related events"
+    },
     "searchLocked": {
       "label": "Explicit exploration",
       "description": "In search results, the wheel only zooms. Lock a node, then choose Explore more in the details panel."
@@ -1338,7 +1355,7 @@
       "completedTimePosition": "{time} · Exploration complete",
       "partialTime": "{time} (some times are not specified)",
       "unknownTime": "Time not specified",
-      "countRange": "Items {from}\u2013{to} of {total}",
+      "countRange": "Items {from}–{to} of {total}",
       "countPosition": "Item {position} of {total}",
       "explorationComplete": "Exploration complete",
       "home": "Go back",
@@ -1492,5 +1509,40 @@
     "fallbackTimeout": "The ranking service exceeded its time budget.",
     "fallbackUnavailable": "The ranking service could not complete scoring. Check the connection or retry.",
     "partial": "Partial results: some sources did not complete retrieval."
+  },
+  "ClientAccess": {
+    "title": "CLI and automation",
+    "description": "Approve clients for this workspace and manage device sessions.",
+    "loadFailed": "Unable to load. Sign in to the workspace and retry.",
+    "actionFailed": "Action failed. Check whether the code expired or sign in again.",
+    "loading": "Loading…",
+    "apiUrl": "Automation API URL",
+    "webUrl": "Web approval URL",
+    "notConfigured": "Ask an administrator to configure the full URL",
+    "protocol": "Protocol",
+    "copyConnection": "Copy connection information",
+    "copied": "Connection information copied",
+    "hostLifecycle": "Sessions follow the SAG workspace account and local revocation. Host account suspension is not automatically synchronized; revoke devices here.",
+    "disabled": "An administrator has not enabled client access.",
+    "userCode": "Code displayed by the client",
+    "approvalScope": "Approval allows this client to read, upload, change and delete knowledge in your workspace. Confirm the code comes from the device you are connecting.",
+    "approve": "Approve access",
+    "deny": "Deny",
+    "approved": "Approved. Return to the client to finish connecting.",
+    "denied": "Denied.",
+    "enable": "Enable client access",
+    "savePolicy": "Save connection settings",
+    "saved": "Connection settings saved.",
+    "devices": "Authorized devices",
+    "empty": "No authorized devices.",
+    "accessExpiry": "Access expires",
+    "refreshExpiry": "Refresh expires",
+    "absoluteExpiry": "Session ends",
+    "lastUsed": "Last used",
+    "neverUsed": "Not used yet",
+    "revoked": "Revoked",
+    "revoke": "Revoke access",
+    "inspect": "Inspect pending device",
+    "approveDevice": "Device: {device} · Workspace account: {user}"
   }
 }
