@@ -613,7 +613,11 @@
     "disabledSuffix": "(不可用)",
     "multiJevLabel": "JEV 精排",
     "multiJevDescription": "扩展关联证据后，使用配置的 JEV 服务评分相关性。",
-    "unsupportedBackend": "当前服务端未声明支持 JEV，请升级服务端后使用此模式。"
+    "sag2Label": "SAG2 证据检索",
+    "sag2Description": "BM25 召回后由 JEV 服务多轮评分，不依赖向量库；付费服务。",
+    "paid": "付费",
+    "openSettings": "去设置",
+    "unsupportedBackend": "当前服务端未声明支持此 JEV 评分模式，请升级服务端后使用。"
   },
   "RetrievalTest": {
     "failed": "检索失败",
@@ -680,8 +684,10 @@
     "jevStorageUnchanged": "现有检索设置保持不变。文档上传、检索和问答继续沿用当前兼容的检索行为。",
     "jevStorageSelectCompatible": "已保存的 JEV 模式无法在此存储下运行。请在上方选择“快速（向量）”或“精准”并保存，以恢复检索；模型和文档数据保持不变。",
     "jevStorageNoChanges": "继续使用知识库无需更换数据库或模型。仍可调整上方的文档处理和检索参数。",
+    "sag2StorageUnavailable": "SAG2 证据检索首期仅支持 SQLite 与 PostgreSQL 关系库，当前存储不可用。",
     "jevTitle": "JEV 精排服务",
-    "jevDescription": "选择 JEV 模式时，会将问题与候选证据发送至此服务进行相关性评分。仅保存服务配置不会开启此模式。",
+    "jevDescription": "选择 JEV 精排或 SAG2 证据检索时，会将问题与候选证据发送至此服务进行相关性评分，需填写 API Key。仅保存服务配置不会开启这些模式。",
+    "jevSharedNotice": "JEV 为付费服务，由「JEV 精排」与「SAG2 证据检索」共用，仅在选择其中一种模式时才会调用；「精排失败时」策略仅对 JEV 精排生效。",
     "jevProvider": "服务商",
     "jevProviderOfficial": "TypeSafe 官方",
     "jevProviderCustom": "自定义",
@@ -690,12 +696,13 @@
     "jevEndpointDescription": "填写服务商提供的完整 HTTP(S) 评分地址，系统不会自动追加路径。",
     "jevModel": "模型",
     "jevModelDescription": "jev-latest 跟随 JEV 最新稳定版，也可填写服务商支持的指定模型标识。",
-    "jevKey": "API Key（可选）",
+    "jevKey": "API Key（选择 JEV 模式时必填）",
     "jevKeyConfigured": "已配置，留空保持不变",
-    "jevKeyOptional": "免密服务可留空",
+    "jevKeyRequiredPlaceholder": "填写 JEV 服务的 API Key",
     "jevKeyProviderPlaceholder": "填写 {provider} API Key",
     "jevKeyProviderDescription": "{provider} 需要独立的 API Key；仅在此地址已保存密钥时，才可留空复用。",
     "jevKeyDescription": "此密钥独立于生成模型密钥。更改服务地址后会清除原密钥，如需鉴权请重新填写。",
+    "jevKeyRequired": "选择 JEV 精排或 SAG2 证据检索前，请填写 JEV API Key。",
     "jevTimeout": "精排总时限（秒）",
     "jevTimeoutDescription": "包含评分与重试，总时限为 0.1 至 120 秒。",
     "jevFailurePolicy": "精排失败时",
@@ -704,7 +711,7 @@
     "jevTest": "测试 JEV 连接",
     "jevTesting": "测试中…",
     "jevTestFailed": "JEV 连接测试失败",
-    "jevInvalidDraft": "请填写有效的完整 HTTP(S) URL、模型名，以及 0.1 至 120 秒的总时限。"
+    "jevInvalidDraft": "请填写有效的完整 HTTP(S) URL、模型名，以及 0.1 至 120 秒的总时限；选择 JEV 模式时还需填写 API Key。"
   },
   "ChatbotConfig": {
     "retry": "重试",
@@ -1767,6 +1774,8 @@
     "actual": "实际模式：{mode}",
     "coarse": "粗排",
     "jevFallback": "本次未完成 JEV 精排，已返回粗排结果。",
+    "jevUsage": "本次 JEV 评分：{requests} 次请求 · {judgments} 次判定{tokens}",
+    "jevUsageTokens": " · {tokens} 输入 token",
     "partial": "部分结果：部分信源未完成检索。"
   },
   "ClientAccess": {

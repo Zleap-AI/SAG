@@ -19,6 +19,11 @@ export const SEARCH_STRATEGIES = [
     labelKey: "multiJevLabel",
     descriptionKey: "multiJevDescription",
   },
+  {
+    value: "sag2",
+    labelKey: "sag2Label",
+    descriptionKey: "sag2Description",
+  },
 ] as const;
 
 export type SearchStrategy = (typeof SEARCH_STRATEGIES)[number]["value"];
@@ -35,7 +40,31 @@ export const SEARCH_STRATEGY_REQUIREMENTS = {
   multi: [] as const,
   multi_es_fast: ["lexical_search"] as const,
   multi_jev: ["lexical_search", "jev"] as const,
+  sag2: ["jev", "sag2_relational"] as const,
 } as const;
+
+/**
+ * Strategies whose relevance scores come from the paid JEV service.
+ * They share one service configuration and all need an API key.
+ */
+export const JEV_SCORED_STRATEGIES = ["multi_jev", "sag2"] as const satisfies readonly SearchStrategy[];
+
+export type JevScoredStrategy = (typeof JEV_SCORED_STRATEGIES)[number];
+
+export function isJevScoredStrategy(value: unknown): value is JevScoredStrategy {
+  return JEV_SCORED_STRATEGIES.some((strategy) => strategy === value);
+}
+
+/**
+ * Disabled reasons that only describe an incomplete JEV service configuration.
+ * A complete local draft (endpoint + model + key) can lift them; storage and
+ * backend-version reasons are never lifted client-side.
+ */
+export const JEV_CONFIG_DISABLED_REASONS = ["jev_not_configured", "jev_api_key_missing"] as const;
+
+export function isJevConfigDisabledReason(reason: unknown): boolean {
+  return JEV_CONFIG_DISABLED_REASONS.some((candidate) => candidate === reason);
+}
 
 export function isSearchStrategy(value: unknown): value is SearchStrategy {
   return (
@@ -70,12 +99,14 @@ export function getSearchStrategiesDisabled(
   jevDraftReady = false,
 ): SearchStrategyDisabledMap {
   const disabled = { ...capabilities?.search_strategies_disabled };
-  const supportsJev = capabilities?.search_strategies?.includes("multi_jev")
-    || Object.hasOwn(disabled, "multi_jev");
-  if (!supportsJev) {
-    disabled.multi_jev = { reason: "unsupported_backend", message: unsupportedMessage };
-  } else if (jevDraftReady && disabled.multi_jev?.reason === "jev_not_configured") {
-    delete disabled.multi_jev;
+  for (const strategy of JEV_SCORED_STRATEGIES) {
+    const supported = capabilities?.search_strategies?.includes(strategy)
+      || Object.hasOwn(disabled, strategy);
+    if (!supported) {
+      disabled[strategy] = { reason: "unsupported_backend", message: unsupportedMessage };
+    } else if (jevDraftReady && isJevConfigDisabledReason(disabled[strategy]?.reason)) {
+      delete disabled[strategy];
+    }
   }
   return disabled;
 }
