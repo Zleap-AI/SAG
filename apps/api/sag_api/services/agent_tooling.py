@@ -361,6 +361,13 @@ def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict])
                 configuration.agent_tool_timeout_seconds,
                 (waves + 1) * (recall_timeout + MAX_JEV_RANKING_TIMEOUT_SECONDS) + recall_timeout,
             )
+        elif strategy == "sag2":
+            # One read-only request covers every source; its whole-search budget
+            # already includes queueing, scanning and all scoring rounds.
+            timeout_seconds = max(
+                configuration.agent_tool_timeout_seconds,
+                float(configuration.sag2_search_timeout_seconds) + max(1.0, configuration.search_source_timeout),
+            )
 
     async def execute(
         arguments: Mapping[str, Any],

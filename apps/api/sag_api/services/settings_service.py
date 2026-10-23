@@ -22,7 +22,7 @@ from sag_api.core.errors import ConfigurationError, ConflictError
 from sag_api.core.logging import get_logger
 from sag_api.core.model_providers import get_model_provider
 from sag_api.db.models import Document, Setting
-from sag_api.enums import SEARCH_STRATEGIES, normalize_search_strategy
+from sag_api.enums import JEV_SCORED_STRATEGIES, SEARCH_STRATEGIES, normalize_search_strategy
 from sag_api.schemas.system import ModelConfigUpdate
 
 _SCOPE = "global"
@@ -494,10 +494,10 @@ async def _save_model_config_locked(session: AsyncSession, patch: dict) -> dict:
             raise ConfigurationError(
                 "Invalid Responses configuration; check endpoint, API version and reasoning options"
             ) from None
-    if patch.get("search_strategy") == "multi_jev":
+    if patch.get("search_strategy") in JEV_SCORED_STRATEGIES:
         from sag_api.sag.engine_manager import EngineManager
 
-        EngineManager.require_jev_capabilities(_settings.model_copy(update=candidate))
+        EngineManager.require_jev_capabilities(_settings.model_copy(update=candidate), patch["search_strategy"])
     # Credentials belong to their scoring endpoint; a new destination must not
     # inherit the old secret, including an environment-supplied secret.
     if str(patch.get("jev_api_key") or "").strip():

@@ -29,6 +29,7 @@ from sag_api.enums import SearchStrategy, normalize_search_strategy
 
 _DEFAULT_LLM_PROVIDER = get_model_provider("openai")
 MAX_JEV_RANKING_TIMEOUT_SECONDS = 120.0
+MAX_SAG2_SEARCH_TIMEOUT_SECONDS = 600.0
 
 # zleap-sag 0.13.0 之前的默认向量维度：未显式配置时用它预建向量 schema，
 # 保持既有知识库的向量空间不变（存量 LanceDB 向量与该维度绑定）。
@@ -225,6 +226,22 @@ class Settings(BaseSettings):
     jev_api_key: str | None = Field(default=None, repr=False, max_length=8192)
     jev_ranking_timeout_seconds: float = Field(default=30.0, ge=0.1, le=MAX_JEV_RANKING_TIMEOUT_SECONDS)
     jev_failure_policy: Literal["error", "fallback_to_score"] = "error"
+
+    # SAG2 证据检索（zleap-sag2）：共用上面的 JEV 连接，只读直搜 SAG 关系库；以下为其自有预算，
+    # 首期只经环境变量调整。候选数默认取包默认值的一半，控制付费评分用量。
+    sag2_candidate_k: int = Field(default=50, ge=1, le=1000)
+    sag2_seed_k: int = Field(default=10, ge=1, le=100)
+    sag2_max_hops: int = Field(default=2, ge=0, le=2)
+    sag2_expansion_term_limit: int = Field(default=20, ge=1, le=100)
+    # 整次检索上限，含并发排队、范围扫描与最多三轮评分；超出报检索超时，不回退其他策略。
+    sag2_search_timeout_seconds: float = Field(default=90.0, ge=5, le=MAX_SAG2_SEARCH_TIMEOUT_SECONDS)
+    # 单次决策请求超时与并发，透传 zleap-sag2 的 JevConfig（包默认 180 秒对交互检索过长）。
+    sag2_decision_timeout_seconds: float = Field(default=60.0, ge=1, le=600)
+    sag2_decision_max_concurrency: int = Field(default=20, ge=1, le=100)
+    # 服务端同时执行的 SAG2 检索数；排队等待计入整次超时。
+    sag2_max_concurrent_searches: int = Field(default=2, ge=1, le=32)
+    # 所选信源段落行数上限；直读模式每次全量扫描，超出即拒绝。0 表示不限制。
+    sag2_max_scope_chunks: int = Field(default=20_000, ge=0)
 
     # Optional chatbot/query connections; extraction and indexing retain the original clients.
     chatbot_llm_enabled: bool = False

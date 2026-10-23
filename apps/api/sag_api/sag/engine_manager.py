@@ -24,6 +24,7 @@ from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
 from sag_api.core.errors import ConfigurationError, ServiceUnavailableError
 from sag_api.core.logging import get_logger
 from sag_api.enums import (
+    JEV_SCORED_STRATEGIES,
     SEARCH_STRATEGIES,
     SEARCH_STRATEGY_REQUIREMENTS,
     normalize_search_strategy,
@@ -42,6 +43,7 @@ from sag_api.sag.dto import (
 from sag_api.sag.engine_access import EngineAccess
 from sag_api.sag.errors import map_sag_errors
 from sag_api.sag.incremental_processor import IncrementalDocumentProcessor, ProgressCallback
+from sag_api.sag.sag2_engine import Sag2EngineHolder, jev_connection_ready, sag2_relational_supported
 from sag_api.sag.search_reader import SearchReader, search_source_timeout_seconds
 from sag_api.sag.universe_cursor import (
     decode_universe_cursor,
@@ -184,6 +186,8 @@ class EngineManager:
         self._universe = UniverseReader(self._access)
         self._content = ContentReader(self._access)
         self._search = SearchReader(self._access)
+        # SAG2 证据检索：一个只读 zleap-sag2 引擎覆盖全部信源，随配置发布重建。
+        self._sag2 = Sag2EngineHolder(settings)
 
     async def _relational_session_factory(self, source_config_id: str, source: Source | None = None) -> Any:
         """0.8.2 起 zleap 无全局会话工厂;经引擎注入的 RelationalStore 访问关系库。"""
@@ -327,26 +331,35 @@ class EngineManager:
     def _vector_provider_supports_lexical(self) -> bool:
         return self._VECTOR_PROVIDER_LEXICAL_SUPPORT.get(self._settings.sag_vector_provider, False)
 
-    def _strategy_missing_capabilities(self, strategy: str) -> tuple[str, ...]:
+    # 缺失能力的报告顺序：存储层能力先于服务配置，前端只展示第一个原因。
+    _CAPABILITY_ORDER: tuple[str, ...] = ("lexical_search", "sag2_relational", "jev")
+
+    @classmethod
+    def _missing_capabilities(cls, settings: Settings, strategy: str) -> tuple[str, ...]:
         requirements = SEARCH_STRATEGY_REQUIREMENTS.get(strategy, frozenset())
+        supports_lexical = cls._VECTOR_PROVIDER_LEXICAL_SUPPORT.get(settings.sag_vector_provider, False)
         missing: list[str] = []
-        for capability in requirements:
-            if capability == "lexical_search" and not self._vector_provider_supports_lexical():
+        for capability in sorted(requirements, key=cls._CAPABILITY_ORDER.index):
+            if capability == "lexical_search" and not supports_lexical:
                 missing.append(capability)
-            elif capability == "jev" and not self._settings.jev_endpoint:
+            elif capability == "jev" and not jev_connection_ready(settings):
+                missing.append(capability)
+            elif capability == "sag2_relational" and not sag2_relational_supported(settings):
                 missing.append(capability)
         return tuple(missing)
+
+    def _strategy_missing_capabilities(self, strategy: str) -> tuple[str, ...]:
+        return self._missing_capabilities(self._settings, strategy)
 
     def _effective_search_strategy(self, requested: str | None) -> str:
         """校验请求的门面策略。未识别或能力不满足时按配置策略回退,再兜底 vector。"""
         raw = requested or self._settings.search_strategy
         strategy = normalize_search_strategy(raw)
-        if strategy == "multi_jev":
+        if strategy in JEV_SCORED_STRATEGIES:
             missing = self._strategy_missing_capabilities(strategy)
             if missing:
                 # Explicit/default JEV selection must never silently change mode.
-                capability = "lexical_search" if "lexical_search" in missing else "jev"
-                reason, message = self._capability_disabled_reason(capability, self._settings.sag_vector_provider)
+                reason, message = self._capability_disabled_reason(missing[0], self._settings)
                 raise ConfigurationError(message, code=reason, stage=ErrorStage.RETRIEVE)
             return strategy
         if strategy in SEARCH_STRATEGIES:
@@ -373,15 +386,23 @@ class EngineManager:
         return self._FACADE_TO_ZLEAP_STRATEGY.get(facade_strategy, facade_strategy)
 
     @classmethod
-    def _capability_disabled_reason(cls, capability: str, provider: str) -> tuple[str, str] | None:
-        """给定缺失的能力名 + 当前 provider,产出 (reason_code, 用户可读文案)。"""
+    def _capability_disabled_reason(cls, capability: str, settings: Settings) -> tuple[str, str] | None:
+        """给定缺失的能力名 + 当前配置,产出 (reason_code, 用户可读文案)。"""
         if capability == "lexical_search":
             return (
                 "vector_provider_lacks_lexical",
-                f"当前向量存储 ({provider}) 不支持 BM25 词法检索，无法启用该检索模式。",
+                f"当前向量存储 ({settings.sag_vector_provider}) 不支持 BM25 词法检索，无法启用该检索模式。",
             )
         if capability == "jev":
-            return ("jev_not_configured", "尚未配置 JEV 精排服务，请先保存服务地址。")
+            if not settings.jev_endpoint:
+                return ("jev_not_configured", "尚未配置 JEV 精排服务，请先保存服务地址。")
+            # JEV 是付费服务：地址已保存但没有 Key 时，任何 JEV 评分模式都不可选。
+            return ("jev_api_key_missing", "JEV 为付费服务，请先在设置中填写 API Key。")
+        if capability == "sag2_relational":
+            return (
+                "sag2_relational_unsupported",
+                f"SAG2 证据检索首期仅支持 SQLite 与 PostgreSQL 关系库，当前为 {settings.sag_relational_provider}。",
+            )
         return None
 
     @classmethod
@@ -390,33 +411,23 @@ class EngineManager:
 
         无需持有 EngineManager 实例——所有判据只来自 settings。
         """
-        provider = settings.sag_vector_provider
-        supports_lexical = cls._VECTOR_PROVIDER_LEXICAL_SUPPORT.get(provider, False)
         enabled: list[str] = []
         disabled: dict[str, dict[str, str]] = {}
         for strategy in sorted(SEARCH_STRATEGIES):
-            requirements = SEARCH_STRATEGY_REQUIREMENTS.get(strategy, frozenset())
-            missing: list[tuple[str, str]] = []
-            for capability in sorted(requirements, key=lambda value: value != "lexical_search"):
-                if (
-                    capability == "lexical_search" and not supports_lexical
-                    or capability == "jev" and not settings.jev_endpoint
-                ):
-                    reason = cls._capability_disabled_reason(capability, provider)
-                    if reason is not None:
-                        missing.append(reason)
-            if missing:
+            missing = cls._missing_capabilities(settings, strategy)
+            reason = cls._capability_disabled_reason(missing[0], settings) if missing else None
+            if reason is not None:
                 # 只呈现第一个原因即可满足 UI 灰置 + tooltip 展示。
-                reason_code, message = missing[0]
+                reason_code, message = reason
                 disabled[strategy] = {"reason": reason_code, "message": message}
             else:
                 enabled.append(strategy)
         return {"enabled": enabled, "disabled": disabled}
 
     @classmethod
-    def require_jev_capabilities(cls, settings: Settings) -> None:
-        """Reject explicit JEV activation before publishing incompatible settings."""
-        unavailable = cls.strategies_capability_report(settings)["disabled"].get("multi_jev")
+    def require_jev_capabilities(cls, settings: Settings, strategy: str = "multi_jev") -> None:
+        """Reject explicit JEV-scored mode activation before publishing incompatible settings."""
+        unavailable = cls.strategies_capability_report(settings)["disabled"].get(strategy)
         if unavailable is not None:
             raise ConfigurationError(unavailable["message"], code=unavailable["reason"])
 
@@ -890,10 +901,12 @@ class EngineManager:
         source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
         include_ranked_candidates: bool = False,
     ) -> SearchOutcome:
-        admission_timeout = (
-            search_source_timeout_seconds(self._settings, strategy)
-            if (strategy or self._settings.search_strategy) == "multi_jev" else None
-        )
+        requested = normalize_search_strategy(strategy or self._settings.search_strategy)
+        admission_timeout = None
+        if requested == "multi_jev":
+            admission_timeout = search_source_timeout_seconds(self._settings, strategy)
+        elif requested == "sag2":
+            admission_timeout = max(1.0, float(self._settings.sag2_search_timeout_seconds))
         try:
             async with self._search_configuration_gate.read(timeout=admission_timeout):
                 return await self._search.search_many(
@@ -910,6 +923,25 @@ class EngineManager:
                     "JEV 检索超时，请稍后重试", layer=ErrorLayer.ENGINE, stage=ErrorStage.RETRIEVE,
                 ) from error
             raise
+
+    async def _sag2_search(
+        self,
+        targets: list[tuple[str, Source | None]],
+        query: str,
+        *,
+        top_k: int,
+        requested_sources: int,
+        source_limit_applied: bool,
+        source_ids_by_config: dict[str, tuple[str, ...]] | None,
+    ) -> SearchOutcome:
+        return await self._sag2.search(
+            targets,
+            query,
+            top_k=top_k,
+            requested_sources=requested_sources,
+            source_limit_applied=source_limit_applied,
+            source_ids_by_config=source_ids_by_config,
+        )
 
     async def _search_chunk_vectors(
         self,
@@ -1180,6 +1212,7 @@ class EngineManager:
         async with self._create_lock:
             async with self._lifecycle_gate.write():
                 await self._close_all_slots()
+                await self._sag2.aclose()
 
     async def apply_settings(self, settings: Any, *, reset_engines: bool) -> None:
         """Publish runtime settings and reset slots in the same admission barrier."""
@@ -1190,6 +1223,8 @@ class EngineManager:
                         setattr(self._settings, field_name, getattr(settings, field_name))
                     if reset_engines:
                         await self._close_all_slots()
+                    # 只读 SAG2 引擎按自身指纹判断是否重建，与槽重置解耦。
+                    await self._sag2.refresh(self._settings)
 
     async def _close_all_slots(self) -> None:
         # Caller owns the create lock and lifecycle writer; don't acquire them twice.

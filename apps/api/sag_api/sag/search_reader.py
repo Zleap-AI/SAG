@@ -18,6 +18,7 @@ from zleap.sag.pipeline import RankingOptions, SearchOptions, SearchOutputOption
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
 from sag_api.core.errors import ServiceUnavailableError
 from sag_api.core.logging import get_logger
+from sag_api.enums import JEV_SCORED_STRATEGIES
 from sag_api.sag._timings_probe import capture_scope as _timings_capture_scope
 from sag_api.sag._timings_probe import release_scope as _timings_release_scope
 from sag_api.sag.dto import RetrievedSection, SearchOutcome
@@ -162,6 +163,16 @@ class SearchReader:
         requested_strategy = strategy or self._access.settings.search_strategy
         strategy = self._access.effective_search_strategy(strategy)
         top_k = top_k or self._access.settings.search_top_k
+        if strategy == "sag2":
+            # SAG2 不经每源 zleap-sag 引擎；同一只读引擎按范围检索，失败不回退。
+            return await self._access.sag2_search(
+                [(source_config_id, source)],
+                query,
+                top_k=top_k,
+                requested_sources=1,
+                source_limit_applied=False,
+                source_ids_by_config=None if source_ids is None else {source_config_id: tuple(source_ids)},
+            )
         search_options: dict[str, Any] = {
             "source": source,
             "top_k": top_k,
@@ -253,8 +264,20 @@ class SearchReader:
         per_source_k = max(top_k, 4)
         requested_sources = len(targets)
         targets = targets[: self._access.settings.search_source_candidate_limit]
+        source_limit_applied = requested_sources > len(targets)
         if source_ids_by_config is not None:
             targets = [(scid, source) for scid, source in targets if source_ids_by_config.get(scid)]
+
+        if strategy == "sag2":
+            # 一次只读检索覆盖全部目标信源，由 zleap-sag2 给出跨源顺序；任何失败整次报错。
+            return await self._access.sag2_search(
+                targets,
+                query,
+                top_k=top_k,
+                requested_sources=requested_sources,
+                source_limit_applied=source_limit_applied,
+                source_ids_by_config=source_ids_by_config,
+            )
 
         if strategy == "vector" and not include_ranked_candidates and targets:
             try:
@@ -299,7 +322,7 @@ class SearchReader:
                     outcome = await self._access.search(scid, query, **options)
                     return scid, outcome
                 except Exception as e:  # noqa: BLE001
-                    if strategy == "multi_jev":
+                    if strategy in JEV_SCORED_STRATEGIES:
                         raise
                     log.warning("fan-out 检索失败 %s：%s", scid, getattr(e, "message", None) or e)
                     return None

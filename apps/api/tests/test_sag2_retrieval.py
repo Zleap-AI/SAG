@@ -1,0 +1,386 @@
+"""Offline contracts for the SAG2 evidence strategy (zleap-sag2 read-only search)."""
+
+import asyncio
+
+import pytest
+
+from sag_api.core.config import Settings, settings
+from sag_api.core.errors import ConfigurationError, ServiceUnavailableError, ValidationError
+from sag_api.sag import RetrievedSection, SearchOutcome, SourceGraphInfo
+from sag_api.sag.engine_manager import EngineManager
+from sag_api.sag.sag2_engine import Sag2EngineHolder, _fingerprint
+from tests.test_jev_config import jev_config_client  # noqa: F401 - shared settings/API fixture
+
+
+def sag2_settings(**changes):
+    return Settings(_env_file=None).model_copy(update={
+        "jev_endpoint": "https://jev.invalid/score",
+        "jev_api_key": "synthetic-jev-key",
+        "sag_vector_provider": "lancedb",
+        "search_source_timeout": 12.0,
+        **changes,
+    })
+
+
+def hit(chunk, score, *, config="cfg-1", document="document-1"):
+    return RetrievedSection(
+        chunk_id=chunk, heading=chunk, content=f"evidence {chunk}", score=score,
+        source_config_id=config, source_id=document, metadata={"score_source": "jev", "hop": 0},
+    )
+
+
+class _NativeStore:
+    """A store without the SAG reader: scope counting is skipped."""
+
+    sag1_reader = None
+
+
+@pytest.mark.parametrize(("changes", "expected"), [
+    ({"jev_endpoint": None}, "jev_not_configured"),
+    ({"jev_api_key": None}, "jev_api_key_missing"),
+    ({"sag_relational_provider": "mysql"}, "sag2_relational_unsupported"),
+    ({"sag_relational_provider": "oceanbase"}, "sag2_relational_unsupported"),
+])
+def test_sag2_requires_paid_jev_connection_and_supported_relational_store(changes, expected):
+    manager = EngineManager(sag2_settings(**changes))
+    with pytest.raises(ConfigurationError) as error:
+        manager._effective_search_strategy("sag2")
+    assert error.value.code == expected
+    report = manager.strategies_capability_report(manager._settings)
+    assert report["disabled"]["sag2"]["reason"] == expected
+    assert "sag2" not in report["enabled"]
+
+
+@pytest.mark.parametrize("relational_provider", [None, "sqlite", "postgres"])
+def test_sag2_is_available_on_sqlite_and_postgres_without_lexical_vectors(relational_provider):
+    manager = EngineManager(sag2_settings(sag_relational_provider=relational_provider, sag_vector_provider="pgvector"))
+    assert manager._effective_search_strategy("sag2") == "sag2"
+    report = manager.strategies_capability_report(manager._settings)
+    assert "sag2" in report["enabled"]
+    # The vector store still gates multi_jev; sag2 reads the relational store directly.
+    assert report["disabled"]["multi_jev"]["reason"] == "vector_provider_lacks_lexical"
+
+
+@pytest.mark.asyncio
+async def test_sag2_fanout_is_one_read_only_request_over_published_sources(monkeypatch):
+    manager = EngineManager(sag2_settings(search_source_candidate_limit=2))
+    calls = []
+
+    async def sag2_search(targets, query, **kwargs):
+        calls.append((targets, query, kwargs))
+        return SearchOutcome(query=query, sections=[hit("a", 0.9), hit("b", 0.8, config="cfg-3")], stats={
+            "requested_strategy": "sag2", "effective_strategy": "sag2", "fallback_used": False,
+        })
+
+    async def raw(*_args, **_kwargs):
+        pytest.fail("SAG2 must not run per-source zleap-sag searches")
+
+    monkeypatch.setattr(manager, "_sag2_search", sag2_search)
+    monkeypatch.setattr(manager, "_search_raw", raw)
+    result = await manager.search_many(
+        [("cfg-1", None), ("cfg-2", None), ("cfg-3", None)], "q", strategy="sag2", top_k=5,
+        source_ids_by_config={"cfg-1": ("d1",), "cfg-2": (), "cfg-3": ("d3",)},
+    )
+    assert len(calls) == 1
+    targets, _query, kwargs = calls[0]
+    # The candidate limit keeps cfg-1 and cfg-2; cfg-2 has no published input left to search.
+    assert [scid for scid, _ in targets] == ["cfg-1"]
+    assert kwargs == {
+        "top_k": 5, "requested_sources": 3, "source_limit_applied": True,
+        "source_ids_by_config": {"cfg-1": ("d1",), "cfg-2": (), "cfg-3": ("d3",)},
+    }
+    assert [section.chunk_id for section in result.sections] == ["a", "b"]
+    assert result.stats["effective_strategy"] == "sag2"
+
+
+@pytest.mark.asyncio
+async def test_sag2_single_source_search_never_falls_back_to_vector(monkeypatch):
+    manager = EngineManager(sag2_settings(search_fallback_vector=True))
+    calls = []
+
+    async def sag2_search(targets, query, **kwargs):
+        calls.append((targets, kwargs))
+        raise RuntimeError("scorer unavailable")
+
+    async def raw(*_args, **_kwargs):
+        pytest.fail("SAG2 has no vector fallback")
+
+    monkeypatch.setattr(manager, "_sag2_search", sag2_search)
+    monkeypatch.setattr(manager, "_search_raw", raw)
+    with pytest.raises(RuntimeError, match="scorer unavailable"):
+        await manager.search("cfg-1", "q", strategy="sag2", source_ids=("d1",))
+    assert calls == [([("cfg-1", None)], {
+        "top_k": settings.search_top_k, "requested_sources": 1, "source_limit_applied": False,
+        "source_ids_by_config": {"cfg-1": ("d1",)},
+    })]
+
+
+@pytest.mark.asyncio
+async def test_holder_builds_scope_and_options_and_preserves_engine_order(monkeypatch):
+    from zleap.sag2 import SearchHit, SearchResult
+
+    holder = Sag2EngineHolder(sag2_settings(
+        sag2_candidate_k=40, sag2_seed_k=5, sag2_max_hops=1, sag2_expansion_term_limit=7,
+    ))
+    captured = []
+
+    class Engine:
+        store = _NativeStore()
+
+        async def search(self, request):
+            captured.append(request)
+            return SearchResult(
+                query=request.query, original_query=request.query, snapshot_revision=7,
+                chunks=(
+                    SearchHit(id="c-low", chunk_id="c-low", data_source_id="cfg-2", source_id="d3",
+                              title="Title", heading="Heading", content="low", score=0.2, hop=1),
+                    SearchHit(id="c-high", chunk_id="c-high", data_source_id="cfg-1", source_id="d1",
+                              title="Title", heading="", content="high", score=0.9, hop=0),
+                ),
+                trace=({"stage": "bm25", "hop": 0, "count": 2}, {"stage": "jev", "hop": 0, "count": 2}),
+                usage={"requests": 2, "judgments": 4, "input_tokens": 1234, "output_tokens": None, "batches": []},
+                elapsed_ms=12.5, local_ms=2.5, jev_ms=10.0,
+            )
+
+    async def engine():
+        return Engine()
+
+    monkeypatch.setattr(holder, "engine", engine)
+    outcome = await holder.search(
+        [("cfg-1", None), ("cfg-2", None)], "q", top_k=5, requested_sources=2, source_limit_applied=False,
+        source_ids_by_config={"cfg-1": ("d2", "d1"), "cfg-2": ("d3",)},
+    )
+    request = captured[0]
+    assert request.scope.data_source_ids == ("cfg-1", "cfg-2")
+    assert request.scope.source_ids == ("d1", "d2", "d3")
+    option_fields = {"candidate_k", "seed_k", "max_hops", "expansion_term_limit", "top_k"}
+    assert request.options.model_dump(include=option_fields) == {
+        "candidate_k": 40, "seed_k": 5, "max_hops": 1, "expansion_term_limit": 7, "top_k": 5,
+    }
+    # The engine order wins over raw score order; scores stay the raw JEV values.
+    assert [(s.chunk_id, s.score, s.rank, s.source_config_id, s.source_id) for s in outcome.sections] == [
+        ("c-low", 0.2, 0, "cfg-2", "d3"), ("c-high", 0.9, 1, "cfg-1", "d1"),
+    ]
+    assert [s.metadata for s in outcome.sections] == [
+        {"score_source": "jev", "hop": 1}, {"score_source": "jev", "hop": 0},
+    ]
+    assert outcome.sections[1].heading == "Title"
+    assert outcome.stats["requested_strategy"] == outcome.stats["effective_strategy"] == "sag2"
+    assert outcome.stats["fallback_used"] is False
+    assert outcome.stats["ranking"] == {"method": "jev", "fallback_reason": None}
+    assert outcome.stats["jev_usage"] == {"requests": 2, "judgments": 4, "input_tokens": 1234, "output_tokens": None}
+    assert outcome.stats["sag2"]["snapshot_revision"] == 7
+    assert outcome.stats["sag2"]["hops"] == [
+        {"stage": "bm25", "hop": 0, "count": 2}, {"stage": "jev", "hop": 0, "count": 2},
+    ]
+    assert outcome.stats["sources"] == 2 and outcome.stats["candidates"] == 2
+
+    unscoped = await holder.search(
+        [("cfg-1", None)], "q", top_k=3, requested_sources=1, source_limit_applied=False, source_ids_by_config=None,
+    )
+    assert captured[1].scope.source_ids is None
+    assert len(unscoped.sections) == 2
+
+    empty = await holder.search(
+        [("cfg-1", None)], "q", top_k=3, requested_sources=1, source_limit_applied=False,
+        source_ids_by_config={"cfg-1": ()},
+    )
+    assert empty.sections == [] and empty.stats["candidates"] == 0 and len(captured) == 2
+
+
+@pytest.mark.asyncio
+async def test_holder_rejects_scopes_above_chunk_limit_before_scoring(monkeypatch):
+    holder = Sag2EngineHolder(sag2_settings(sag2_max_scope_chunks=100))
+
+    class Engine:
+        store = _NativeStore()
+
+        async def search(self, request):
+            pytest.fail("An oversized scope must not reach the paid scorer")
+
+    async def engine():
+        return Engine()
+
+    async def count(_engine, _data_source_ids):
+        return 101
+
+    monkeypatch.setattr(holder, "engine", engine)
+    monkeypatch.setattr(holder, "_count_scope", count)
+    with pytest.raises(ValidationError, match="SAG2"):
+        await holder.search(
+            [("cfg-1", None)], "q", top_k=3, requested_sources=1, source_limit_applied=False, source_ids_by_config=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_holder_timeout_is_a_retryable_service_error(monkeypatch):
+    configuration = sag2_settings()
+    configuration.sag2_search_timeout_seconds = 0.05
+    holder = Sag2EngineHolder(configuration)
+
+    async def run(*_args, **_kwargs):
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(holder, "_run", run)
+    with pytest.raises(ServiceUnavailableError) as error:
+        await holder.search(
+            [("cfg-1", None)], "q", top_k=3, requested_sources=1, source_limit_applied=False, source_ids_by_config=None,
+        )
+    assert error.value.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_holder_limits_concurrent_paid_searches(monkeypatch):
+    from zleap.sag2 import SearchResult
+
+    holder = Sag2EngineHolder(sag2_settings(sag2_max_concurrent_searches=1))
+    active = peak = 0
+
+    class Engine:
+        store = _NativeStore()
+
+        async def search(self, request):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return SearchResult(query=request.query, original_query=request.query)
+
+    async def engine():
+        return Engine()
+
+    monkeypatch.setattr(holder, "engine", engine)
+    await asyncio.gather(*(
+        holder.search([("cfg-1", None)], "q", top_k=3, requested_sources=1, source_limit_applied=False,
+                      source_ids_by_config=None)
+        for _ in range(3)
+    ))
+    assert peak == 1
+
+
+@pytest.mark.asyncio
+async def test_refresh_rebuilds_only_when_connection_or_storage_changes():
+    configuration = sag2_settings()
+    holder = Sag2EngineHolder(configuration)
+    closed = []
+
+    class Engine:
+        async def aclose(self):
+            closed.append(True)
+
+    holder._engine, holder._fingerprint = Engine(), _fingerprint(configuration)
+    await holder.refresh(configuration.model_copy(update={"search_top_k": 20, "sag2_candidate_k": 30}))
+    assert holder.started and not closed
+    await holder.refresh(configuration.model_copy(update={"jev_api_key": "rotated-key"}))
+    assert not holder.started and closed == [True]
+
+
+@pytest.mark.asyncio
+async def test_sag2_business_path_preserves_engine_order_limit_and_publication(publication_source):
+    from sag_api.services import retrieval_service
+
+    source = await publication_source("sag2-business", "cfg-1", "document-1")
+
+    class Engine:
+        _settings = sag2_settings(search_strategy="sag2")
+
+        async def search_many(self, targets, query, **kwargs):
+            assert kwargs["strategy"] == "sag2"
+            assert kwargs["source_ids_by_config"] == {"cfg-1": ("document-1",)}
+            return SearchOutcome(query=query, sections=[
+                hit("unpublished", 1.0, document="hidden"), hit("first", 0.21), hit("second", 0.2), hit("third", 0.19),
+            ], stats={"effective_strategy": "sag2", "ranking": {"method": "jev", "fallback_reason": None}})
+
+        async def grep_chunks(self, *args, **kwargs):
+            pytest.fail("SAG2 must not add unranked application lexical candidates")
+
+    result = await retrieval_service.retrieve_relevant_sections(Engine(), [source], "q", top_k=2)
+    assert [section.chunk_id for section in result.sections] == ["first", "second"]
+    assert [section.score for section in result.sections] == [0.21, 0.2]
+    assert result.stats["requested_strategy"] == "sag2"
+    assert result.stats["publication_filtered"] == 1
+    assert result.stats["lexical_candidates"] == 0
+
+
+@pytest.mark.asyncio
+async def test_agent_follows_global_sag2_and_gets_whole_search_budget(monkeypatch, publication_source):
+    from sag_api.services.agent_tooling import _adapt_tool
+    from sag_api.tools import builtin
+    from sag_api.tools.base import ToolContext
+
+    source = await publication_source("sag2-agent", "cfg-1", "document-1")
+    engine = EngineManager(sag2_settings(
+        search_strategy="sag2", agent_tool_timeout_seconds=5, sag2_search_timeout_seconds=90,
+    ))
+    calls = []
+
+    async def retrieve(manager, sources, query, *, strategy, top_k):
+        calls.append(strategy)
+        assert manager._effective_search_strategy(strategy) == "sag2"
+        return SearchOutcome(query=query, sections=[hit("first", 0.2), hit("second", 0.1)], stats={
+            "effective_strategy": "sag2", "ranking": {"method": "jev", "fallback_reason": None},
+        })
+
+    async def graph(sections, _sources, **kwargs):
+        assert sections == []
+        return SourceGraphInfo(events=[])
+
+    async def events(*args, **kwargs):
+        pytest.fail("Independent event recall must not change SAG2 evidence")
+
+    async def reorder(*args, **kwargs):
+        pytest.fail("SAG2 evidence must retain its engine order")
+
+    engine.graph_for_sections = graph
+    monkeypatch.setattr(builtin, "retrieve_relevant_sections", retrieve)
+    monkeypatch.setattr(builtin, "recall_event_scores", events)
+    monkeypatch.setattr(builtin, "_prioritize_event_evidence", reorder)
+    result = await builtin.SearchContextTool().invoke(
+        {"query": "q"}, ToolContext(engine_manager=engine, sources=[source], persona={}),
+    )
+    assert calls == ["sag2"]
+    assert [section.chunk_id for section in result.data["sections"]] == ["first", "second"]
+    assert result.data["retrieval_stats"]["effective_strategy"] == "sag2"
+
+    adapted = _adapt_tool(builtin.SearchContextTool(), ToolContext(engine_manager=engine, persona={}), [])
+    assert adapted.spec.timeout_seconds is not None
+    assert adapted.spec.timeout_seconds >= 90 + 12
+
+
+async def test_saving_sag2_default_requires_key_and_supported_relational_store(jev_config_client):  # noqa: F811
+    client, headers, _resets = jev_config_client
+    settings.sag_relational_provider = None
+    settings.sag_vector_provider = "pgvector"
+    settings.search_strategy = "vector"
+    settings.jev_endpoint = None
+    settings.jev_api_key = None
+
+    rejected = await client.put(
+        "/api/v1/system/model-config", headers=headers,
+        json={"search_strategy": "sag2", "jev_endpoint": "https://jev.example/score"},
+    )
+    assert rejected.status_code == 400, rejected.text
+    assert rejected.json()["error"]["code"] == "jev_api_key_missing"
+    assert settings.search_strategy == "vector" and settings.jev_endpoint is None
+
+    accepted = await client.put(
+        "/api/v1/system/model-config", headers=headers,
+        json={
+            "search_strategy": "sag2", "jev_endpoint": "https://jev.example/score",
+            "jev_api_key": "synthetic-jev-key",
+        },
+    )
+    assert accepted.status_code == 200, accepted.text
+    body = accepted.json()
+    assert body["config"]["search_strategy"] == "sag2"
+    assert body["config"]["jev_api_key_set"] is True
+    assert "sag2" in body["capabilities"]["search_strategies"]
+    assert body["capabilities"]["search_strategies_disabled"]["multi_jev"]["reason"] == "vector_provider_lacks_lexical"
+
+    settings.sag_relational_provider = "mysql"
+    unsupported = await client.put(
+        "/api/v1/system/model-config", headers=headers, json={"search_strategy": "sag2"},
+    )
+    assert unsupported.status_code == 400, unsupported.text
+    assert unsupported.json()["error"]["code"] == "sag2_relational_unsupported"
