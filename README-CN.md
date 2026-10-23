@@ -572,7 +572,7 @@ config = EngineConfig.from_env()
 
 在“设置 → 知识库 → 检索”配置 302.AI、TypeSafe 官方或自定义 JEV 服务（默认 `jev-latest`，独立 API Key），再选择 **JEV 精排** 或 **SAG2 证据检索**。JEV 是付费服务：仅保存服务不会启用，选择任一 JEV 模式前必须填写 API Key。JEV 精排默认限时 30 秒、失败报错，可选择粗排降级。
 
-**SAG2 证据检索**与 JEV 精排共用同一服务配置，但不经向量库：它直接只读 SAG 的 SQLite / PostgreSQL 关系库（首期不支持 MySQL / OceanBase），文档分块入库后即可检索，不要求事件抽取完成，pgvector 单库部署也可使用。每次检索会扫描所选信源的全部段落并多轮调用 JEV，用量高于 JEV 精排；失败直接报错，不支持粗排降级。候选数、超时、并发与范围上限等调优参数见 `apps/api/.env.example` 的 `SAG_SAG2_*`。
+**SAG2 证据检索**与 JEV 精排共用同一服务配置，但不经向量库：它直接只读 SAG 的 SQLite / PostgreSQL 关系库（首期不支持 MySQL / OceanBase），文档分块入库后即可检索，不要求事件抽取完成，pgvector 单库部署也可使用。每次检索会扫描所选信源的全部段落并多轮调用 JEV，用量高于 JEV 精排；失败直接报错，不支持粗排降级。候选数、超时、并发与范围上限等调优参数见 `apps/api/.env.example` 的 `SAG_SAG2_*`。使用 PostgreSQL 时，连接用户需能在目标 schema 创建并读写 `sag2_state`、`sag2_search_sessions` 两张辅助表，并对 `sag2_state` 执行 `LOCK TABLE`；SAG 的业务表保持只读。
 
 JEV 精排支持 LanceDB、Elasticsearch，暂不支持 pgvector；PostgreSQL 作为关系库不受影响。未启用时沿用原检索策略，已有文档无需重新入库。效果与成本见[更新日志](CHANGELOG.md#jev-reranking)。
 
