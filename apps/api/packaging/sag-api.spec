@@ -72,9 +72,10 @@ for package in (
     hiddenimports += collect_submodules(package)
 
 for package in (
-    "jieba-py",
+    "jieba",
     "sag-api",
     "zleap-sag",
+    "zleap-sag2",
     "lancedb",
     "litellm",
     "markitdown",
