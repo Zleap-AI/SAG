@@ -145,7 +145,11 @@ async def test_holder_builds_scope_and_options_and_preserves_engine_order(monkey
     async def engine():
         return Engine()
 
+    async def count(_engine, data_source_ids):
+        return 3 * len(data_source_ids)
+
     monkeypatch.setattr(holder, "engine", engine)
+    monkeypatch.setattr(holder, "_count_scope", count)
     outcome = await holder.search(
         [("cfg-1", None), ("cfg-2", None)], "q", top_k=5, requested_sources=2, source_limit_applied=False,
         source_ids_by_config={"cfg-1": ("d2", "d1"), "cfg-2": ("d3",)},
@@ -170,6 +174,7 @@ async def test_holder_builds_scope_and_options_and_preserves_engine_order(monkey
     assert outcome.stats["ranking"] == {"method": "jev", "fallback_reason": None}
     assert outcome.stats["jev_usage"] == {"requests": 2, "judgments": 4, "input_tokens": 1234, "output_tokens": None}
     assert outcome.stats["sag2"]["snapshot_revision"] == 7
+    assert outcome.stats["sag2"]["scope_chunks"] == 6
     assert outcome.stats["sag2"]["hops"] == [
         {"stage": "bm25", "hop": 0, "count": 2}, {"stage": "jev", "hop": 0, "count": 2},
     ]
@@ -250,7 +255,11 @@ async def test_holder_limits_concurrent_paid_searches(monkeypatch):
     async def engine():
         return Engine()
 
+    async def count(_engine, _data_source_ids):
+        return 1
+
     monkeypatch.setattr(holder, "engine", engine)
+    monkeypatch.setattr(holder, "_count_scope", count)
     await asyncio.gather(*(
         holder.search([("cfg-1", None)], "q", top_k=3, requested_sources=1, source_limit_applied=False,
                       source_ids_by_config=None)
@@ -260,20 +269,165 @@ async def test_holder_limits_concurrent_paid_searches(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_refresh_rebuilds_only_when_connection_or_storage_changes():
+async def test_refresh_rebuilds_lazily_only_when_connection_or_storage_changes(monkeypatch):
     configuration = sag2_settings()
     holder = Sag2EngineHolder(configuration)
-    closed = []
+    closed, started = [], []
 
     class Engine:
-        async def aclose(self):
-            closed.append(True)
+        def __init__(self, name):
+            self.name = name
 
-    holder._engine, holder._fingerprint = Engine(), _fingerprint(configuration)
+        async def aclose(self):
+            closed.append(self.name)
+
+    async def start(settings):
+        started.append(settings.jev_api_key)
+        return Engine(settings.jev_api_key)
+
+    monkeypatch.setattr(holder, "_start", start)
+    holder._engine, holder._fingerprint = Engine("synthetic-jev-key"), _fingerprint(configuration)
     await holder.refresh(configuration.model_copy(update={"search_top_k": 20, "sag2_candidate_k": 30}))
-    assert holder.started and not closed
+    assert holder.started and not holder.stale and not closed
+    assert (await holder.engine()).name == "synthetic-jev-key" and started == []
+
+    # A connection change keeps the running engine for in-flight searches and rebuilds on the next call.
     await holder.refresh(configuration.model_copy(update={"jev_api_key": "rotated-key"}))
-    assert not holder.started and closed == [True]
+    assert holder.started and holder.stale and closed == []
+    rebuilt = await holder.engine()
+    assert rebuilt.name == "rotated-key" and started == ["rotated-key"] and closed == ["synthetic-jev-key"]
+    assert not holder.stale
+
+    await holder.aclose()
+    assert closed == ["synthetic-jev-key", "rotated-key"] and not holder.started
+
+
+@pytest.mark.asyncio
+async def test_refresh_applies_new_concurrency_limit_without_dropping_inflight_searches(monkeypatch):
+    from zleap.sag2 import SearchResult
+
+    configuration = sag2_settings(sag2_max_concurrent_searches=1)
+    holder = Sag2EngineHolder(configuration)
+    release, first_running = asyncio.Event(), asyncio.Event()
+    active = peak = 0
+
+    class Engine:
+        async def search(self, request):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            first_running.set()
+            await release.wait()
+            active -= 1
+            return SearchResult(query=request.query, original_query=request.query)
+
+    async def engine():
+        return Engine()
+
+    async def count(_engine, _data_source_ids):
+        return 1
+
+    monkeypatch.setattr(holder, "engine", engine)
+    monkeypatch.setattr(holder, "_count_scope", count)
+
+    def run():
+        return asyncio.create_task(holder.search(
+            [("cfg-1", None)], "q", top_k=3, requested_sources=1, source_limit_applied=False, source_ids_by_config=None,
+        ))
+
+    first, second = run(), run()
+    await asyncio.wait_for(first_running.wait(), timeout=1)
+    await asyncio.sleep(0.01)
+    assert active == 1  # the second search queues behind the limit of 1
+    await holder.refresh(configuration.model_copy(update={"sag2_max_concurrent_searches": 2}))
+    await asyncio.sleep(0.01)
+    assert active == 2  # the raised limit admits the queued search; the first keeps running
+    release.set()
+    await asyncio.gather(first, second)
+    assert peak == 2
+
+
+@pytest.mark.parametrize(("status", "expected_type", "expected_message"), [
+    (401, ConfigurationError, "JEV 鉴权失败，请检查服务地址和 API Key"),
+    (403, ConfigurationError, "JEV 鉴权失败，请检查服务地址和 API Key"),
+    (422, ValidationError, "JEV 精排请求被拒绝，请检查模型和候选内容限制"),
+    (429, ServiceUnavailableError, "JEV 精排服务暂不可用，请稍后重试"),
+    (None, ServiceUnavailableError, "JEV 精排服务暂不可用，请稍后重试"),
+])
+def test_sag2_jev_errors_translate_like_multi_jev(status, expected_type, expected_message):
+    from zleap.sag2 import JevError
+
+    from sag_api.core.errors import ApiError
+
+    error = JevError("JEV rejected the request", details={} if status is None else {"status": status})
+    translated = Sag2EngineHolder._translate(error)
+    assert isinstance(translated, expected_type)
+    assert translated.message == expected_message
+    assert translated.code == expected_type.code  # no sag2-specific codes for shared JEV failures
+    assert translated.layer.value == "engine" and translated.stage.value == "retrieve"
+    assert isinstance(translated, ApiError)
+
+
+@pytest.mark.asyncio
+async def test_sag2_configuration_admission_times_out_without_starting_or_leaking_reader(monkeypatch):
+    manager = EngineManager(sag2_settings().model_copy(update={"sag2_search_timeout_seconds": 0.05}))
+    started = []
+
+    async def sag2_search(targets, query, **kwargs):
+        started.append([scid for scid, _ in targets])
+        return SearchOutcome(query=query, sections=[hit("ranked", 0.9)], stats={"effective_strategy": "sag2"})
+
+    monkeypatch.setattr(manager, "_sag2_search", sag2_search)
+    async with manager._search_configuration_gate.write():
+        with pytest.raises(ServiceUnavailableError) as error:
+            await asyncio.wait_for(manager.search_many([("blocked", None)], "q", strategy="sag2"), timeout=1.5)
+        assert error.value.retryable is True
+        assert error.value.layer.value == "engine" and error.value.stage.value == "retrieve"
+        assert started == []
+
+    result = await asyncio.wait_for(manager.search_many([("after-release", None)], "q", strategy="sag2"), timeout=1)
+    assert result.sections[0].chunk_id == "ranked"
+    assert started == [["after-release"]]
+    # A leaked admission reader would prevent a later settings write forever.
+    await asyncio.wait_for(manager.apply_settings(sag2_settings(), reset_engines=False), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_settings_wait_for_whole_sag2_search_before_publishing(monkeypatch):
+    manager = EngineManager(sag2_settings(sag2_candidate_k=50))
+    updated = sag2_settings(jev_endpoint="https://new-jev.invalid/score", sag2_candidate_k=70)
+    search_started, release_search, update_started = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    observed = []
+
+    async def sag2_search(targets, query, **kwargs):
+        observed.append((manager._settings.jev_endpoint, manager._settings.sag2_candidate_k))
+        search_started.set()
+        await release_search.wait()
+        return SearchOutcome(query=query, sections=[hit("ranked", 0.9)], stats={"effective_strategy": "sag2"})
+
+    async def save():
+        update_started.set()
+        await manager.apply_settings(updated, reset_engines=True)
+
+    monkeypatch.setattr(manager, "_sag2_search", sag2_search)
+    query_task = asyncio.create_task(manager.search_many([("cfg-1", None), ("cfg-2", None)], "q", strategy="sag2"))
+    await asyncio.wait_for(search_started.wait(), timeout=1)
+    save_task = asyncio.create_task(save())
+    try:
+        await asyncio.wait_for(update_started.wait(), timeout=1)
+        await asyncio.sleep(0.05)
+        assert not save_task.done(), "settings must wait for the whole SAG2 search"
+        release_search.set()
+        await asyncio.wait_for(query_task, timeout=1)
+        await asyncio.wait_for(save_task, timeout=1)
+        await manager.search_many([("cfg-3", None)], "q", strategy="sag2")
+    finally:
+        release_search.set()
+        for task in (query_task, save_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(query_task, save_task, return_exceptions=True)
+    assert observed == [("https://jev.invalid/score", 50), ("https://new-jev.invalid/score", 70)]
 
 
 @pytest.mark.asyncio
@@ -384,3 +538,32 @@ async def test_saving_sag2_default_requires_key_and_supported_relational_store(j
     )
     assert unsupported.status_code == 400, unsupported.text
     assert unsupported.json()["error"]["code"] == "sag2_relational_unsupported"
+    settings.sag_relational_provider = None
+
+    # Changing the endpoint clears its key; with sag2 still the default that must be rejected.
+    cleared = await client.put(
+        "/api/v1/system/model-config", headers=headers, json={"jev_endpoint": "https://other.example/score"},
+    )
+    assert cleared.status_code == 400, cleared.text
+    assert cleared.json()["error"]["code"] == "jev_api_key_missing"
+    assert settings.jev_endpoint == "https://jev.example/score" and settings.jev_api_key == "synthetic-jev-key"
+    assert settings.search_strategy == "sag2"
+
+    # Supplying the new endpoint's key in the same save keeps the paid default usable.
+    rotated = await client.put(
+        "/api/v1/system/model-config", headers=headers,
+        json={"jev_endpoint": "https://other.example/score", "jev_api_key": "other-key"},
+    )
+    assert rotated.status_code == 200, rotated.text
+    assert settings.jev_endpoint == "https://other.example/score" and settings.jev_api_key == "other-key"
+
+    # With a non-JEV default the endpoint may change freely and its key is cleared.
+    assert (await client.put(
+        "/api/v1/system/model-config", headers=headers, json={"search_strategy": "vector"},
+    )).status_code == 200
+    freed = await client.put(
+        "/api/v1/system/model-config", headers=headers, json={"jev_endpoint": "https://third.example/score"},
+    )
+    assert freed.status_code == 200, freed.text
+    assert freed.json()["config"]["jev_api_key_set"] is False
+    assert freed.json()["capabilities"]["search_strategies_disabled"]["sag2"]["reason"] == "jev_api_key_missing"

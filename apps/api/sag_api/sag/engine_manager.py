@@ -43,8 +43,14 @@ from sag_api.sag.dto import (
 from sag_api.sag.engine_access import EngineAccess
 from sag_api.sag.errors import map_sag_errors
 from sag_api.sag.incremental_processor import IncrementalDocumentProcessor, ProgressCallback
-from sag_api.sag.sag2_engine import Sag2EngineHolder, jev_connection_ready, sag2_relational_supported
-from sag_api.sag.search_reader import SearchReader, search_source_timeout_seconds
+from sag_api.sag.sag2_engine import (
+    Sag2EngineHolder,
+    jev_connection_issue,
+    jev_connection_ready,
+    sag2_relational_issue,
+    sag2_relational_supported,
+)
+from sag_api.sag.search_reader import SearchReader, search_admission_timeout_seconds
 from sag_api.sag.universe_cursor import (
     decode_universe_cursor,
     encode_universe_cursor,
@@ -394,15 +400,9 @@ class EngineManager:
                 f"当前向量存储 ({settings.sag_vector_provider}) 不支持 BM25 词法检索，无法启用该检索模式。",
             )
         if capability == "jev":
-            if not settings.jev_endpoint:
-                return ("jev_not_configured", "尚未配置 JEV 精排服务，请先保存服务地址。")
-            # JEV 是付费服务：地址已保存但没有 Key 时，任何 JEV 评分模式都不可选。
-            return ("jev_api_key_missing", "JEV 为付费服务，请先在设置中填写 API Key。")
+            return jev_connection_issue(settings)
         if capability == "sag2_relational":
-            return (
-                "sag2_relational_unsupported",
-                f"SAG2 证据检索首期仅支持 SQLite 与 PostgreSQL 关系库，当前为 {settings.sag_relational_provider}。",
-            )
+            return sag2_relational_issue(settings)
         return None
 
     @classmethod
@@ -901,12 +901,7 @@ class EngineManager:
         source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
         include_ranked_candidates: bool = False,
     ) -> SearchOutcome:
-        requested = normalize_search_strategy(strategy or self._settings.search_strategy)
-        admission_timeout = None
-        if requested == "multi_jev":
-            admission_timeout = search_source_timeout_seconds(self._settings, strategy)
-        elif requested == "sag2":
-            admission_timeout = max(1.0, float(self._settings.sag2_search_timeout_seconds))
+        admission_timeout = search_admission_timeout_seconds(self._settings, strategy)
         try:
             async with self._search_configuration_gate.read(timeout=admission_timeout):
                 return await self._search.search_many(

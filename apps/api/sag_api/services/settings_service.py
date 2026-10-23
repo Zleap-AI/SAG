@@ -506,6 +506,19 @@ async def _save_model_config_locked(session: AsyncSession, patch: dict) -> dict:
         stored["jev_endpoint"] = candidate["jev_endpoint"]
     elif "jev_endpoint" in patch and candidate["jev_endpoint"] != raw.get("jev_endpoint", _settings.jev_endpoint):
         stored["jev_api_key"] = None
+    if patch.keys() & {"jev_endpoint", "jev_api_key"}:
+        # Changing the scoring connection must not leave a paid JEV mode as the default
+        # without a usable key; the caller either switches mode or supplies the key.
+        from sag_api.sag.sag2_engine import jev_connection_issue
+
+        final = {**candidate, **{key: stored[key] for key in ("jev_endpoint", "jev_api_key") if key in stored}}
+        if normalize_search_strategy(str(final["search_strategy"])) in JEV_SCORED_STRATEGIES:
+            issue = jev_connection_issue(_settings.model_copy(update=final))
+            if issue is not None:
+                code, message = issue
+                raise ConfigurationError(
+                    f"{message} 当前默认检索模式为 JEV 模式；请先改为其他模式，或补填该服务的 API Key。", code=code,
+                )
     identity = ("llm_provider", "llm_responses_provider", "llm_responses_endpoint")
     if (
         not _settings.lock_llm_config

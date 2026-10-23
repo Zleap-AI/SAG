@@ -234,6 +234,7 @@ class Settings(BaseSettings):
     sag2_max_hops: int = Field(default=2, ge=0, le=2)
     sag2_expansion_term_limit: int = Field(default=20, ge=1, le=100)
     # 整次检索上限，含并发排队、范围扫描与最多三轮评分；超出报检索超时，不回退其他策略。
+    # 等待设置发布完成的准入等待另按同一时长计，与 multi_jev 的准入语义一致。
     sag2_search_timeout_seconds: float = Field(default=90.0, ge=5, le=MAX_SAG2_SEARCH_TIMEOUT_SECONDS)
     # 单次决策请求超时与并发，透传 zleap-sag2 的 JevConfig（包默认 180 秒对交互检索过长）。
     sag2_decision_timeout_seconds: float = Field(default=60.0, ge=1, le=600)

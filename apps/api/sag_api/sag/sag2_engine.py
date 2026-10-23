@@ -6,6 +6,9 @@
 
 首期只支持 SQLite 与 PostgreSQL；直读模式每次检索会扫描所选信源的全部可见段落，
 因此这里同时限制并发检索数与范围内段落总数，排队与扫描都计入整次超时。
+
+对 zleap-sag2 内部结构的依赖集中在 ``_sag_schema_present`` 与 ``_count_scope`` 两个
+函数里（``engine.store.engine`` 是其关系库连接）；升级 ``zleap-sag2`` 版本时需复核这两处。
 """
 
 from __future__ import annotations
@@ -25,6 +28,11 @@ from sag_api.core.errors import (
 )
 from sag_api.core.logging import get_logger
 from sag_api.sag.dto import RetrievedSection, SearchOutcome
+from sag_api.sag.errors import (
+    JEV_AUTH_FAILED_MESSAGE,
+    JEV_REQUEST_REJECTED_MESSAGE,
+    JEV_UNAVAILABLE_MESSAGE,
+)
 
 if TYPE_CHECKING:
     from sag_api.core.config import Settings
@@ -34,19 +42,42 @@ log = get_logger("sag.sag2")
 
 SAG2_RELATIONAL_PROVIDERS = frozenset({"sqlite", "postgres"})
 SAG2_STRATEGY = "sag2"
+SAG_CHUNK_TABLE = "source_chunk"
 
 
 def relational_provider(settings: Settings) -> str:
     return settings.sag_relational_provider or "sqlite"
 
 
-def sag2_relational_supported(settings: Settings) -> bool:
-    return relational_provider(settings) in SAG2_RELATIONAL_PROVIDERS
+def jev_connection_issue(settings: Settings) -> tuple[str, str] | None:
+    """JEV 为付费服务：地址与 API Key 都保存后，才允许选择任何 JEV 评分模式。
+
+    返回 ``(reason_code, 用户可读文案)``；连接完整时返回 ``None``。
+    """
+    if not settings.jev_endpoint:
+        return ("jev_not_configured", "尚未配置 JEV 精排服务，请先保存服务地址。")
+    if not settings.jev_api_key:
+        return ("jev_api_key_missing", "JEV 为付费服务，请先在设置中填写 API Key。")
+    return None
+
+
+def sag2_relational_issue(settings: Settings) -> tuple[str, str] | None:
+    """SAG2 首期只读 SQLite / PostgreSQL；其他关系库返回不可用原因。"""
+    provider = relational_provider(settings)
+    if provider in SAG2_RELATIONAL_PROVIDERS:
+        return None
+    return (
+        "sag2_relational_unsupported",
+        f"SAG2 证据检索首期仅支持 SQLite 与 PostgreSQL 关系库，当前为 {provider}。",
+    )
 
 
 def jev_connection_ready(settings: Settings) -> bool:
-    """JEV 为付费服务：地址与 API Key 都保存后，才允许选择任何 JEV 评分模式。"""
-    return bool(settings.jev_endpoint and settings.jev_api_key)
+    return jev_connection_issue(settings) is None
+
+
+def sag2_relational_supported(settings: Settings) -> bool:
+    return sag2_relational_issue(settings) is None
 
 
 def _fingerprint(settings: Settings) -> tuple[Any, ...]:
@@ -71,22 +102,11 @@ def build_sag2_config(settings: Settings):
     """由 SAG 运行时配置装配 zleap-sag2 的 ``EngineConfig``（同一关系库 + 共用 JEV 连接）。"""
     from zleap.sag2 import EngineConfig, JevConfig, RelationalConfig
 
-    provider = relational_provider(settings)
-    if provider not in SAG2_RELATIONAL_PROVIDERS:
-        raise ConfigurationError(
-            f"SAG2 证据检索首期仅支持 SQLite 与 PostgreSQL 关系库，当前为 {provider}",
-            code="sag2_relational_unsupported",
-            stage=ErrorStage.RETRIEVE,
-        )
-    if not settings.jev_endpoint:
-        raise ConfigurationError(
-            "尚未配置 JEV 精排服务，请先保存服务地址。", code="jev_not_configured", stage=ErrorStage.RETRIEVE,
-        )
-    if not settings.jev_api_key:
-        raise ConfigurationError(
-            "JEV 为付费服务，请先在设置中填写 API Key。", code="jev_api_key_missing", stage=ErrorStage.RETRIEVE,
-        )
-    if provider == "sqlite":
+    for issue in (sag2_relational_issue(settings), jev_connection_issue(settings)):
+        if issue is not None:
+            code, message = issue
+            raise ConfigurationError(message, code=code, stage=ErrorStage.RETRIEVE)
+    if relational_provider(settings) == "sqlite":
         # zleap-sag 在 data_dir 下派生同名 SQLite 文件；运行时已把 data_dir 替换为活动目录。
         relational = RelationalConfig(provider="sqlite", path=str(Path(settings.data_dir) / "sag.db"))
     else:
@@ -106,6 +126,20 @@ def build_sag2_config(settings: Settings):
         max_concurrency=settings.sag2_decision_max_concurrency,
     )
     return EngineConfig(relational=relational, jev=jev)
+
+
+def _base_stats(*, sources: int, requested_sources: int, source_limit_applied: bool, candidates: int) -> dict[str, Any]:
+    """所有 SAG2 结果共有的 stats 字段；SAG2 没有粗排降级，``fallback_used`` 恒为 False。"""
+    return {
+        "sources": sources,
+        "sources_requested": requested_sources,
+        "source_limit_applied": source_limit_applied,
+        "candidates": candidates,
+        "requested_strategy": SAG2_STRATEGY,
+        "effective_strategy": SAG2_STRATEGY,
+        "fallback_used": False,
+        "ranking": {"method": "jev", "fallback_reason": None},
+    }
 
 
 def outcome_from_result(
@@ -133,48 +167,63 @@ def outcome_from_result(
     ]
     usage = dict(getattr(result, "usage", None) or {})
     trace = getattr(result, "trace", None) or ()
-    stats: dict[str, Any] = {
-        "sources": len(data_source_ids),
-        "sources_requested": requested_sources,
-        "source_limit_applied": source_limit_applied,
-        "candidates": len(sections),
-        "requested_strategy": SAG2_STRATEGY,
-        "effective_strategy": SAG2_STRATEGY,
-        "fallback_used": False,
-        "ranking": {"method": "jev", "fallback_reason": None},
-        "jev_usage": {
-            "requests": usage.get("requests"),
-            "judgments": usage.get("judgments"),
-            "input_tokens": usage.get("input_tokens"),
-            "output_tokens": usage.get("output_tokens"),
-        },
-        "sag2": {
-            "elapsed_ms": round(float(getattr(result, "elapsed_ms", 0.0) or 0.0), 2),
-            "local_ms": round(float(getattr(result, "local_ms", 0.0) or 0.0), 2),
-            "jev_ms": round(float(getattr(result, "jev_ms", 0.0) or 0.0), 2),
-            "snapshot_revision": getattr(result, "snapshot_revision", None),
-            "scope_chunks": scope_chunks,
-            "hops": [
-                {"stage": item.get("stage"), "hop": item.get("hop"), "count": item.get("count")}
-                for item in trace
-                if isinstance(item, dict)
-            ],
-        },
+    stats = _base_stats(
+        sources=len(data_source_ids),
+        requested_sources=requested_sources,
+        source_limit_applied=source_limit_applied,
+        candidates=len(sections),
+    )
+    stats["jev_usage"] = {
+        "requests": usage.get("requests"),
+        "judgments": usage.get("judgments"),
+        "input_tokens": usage.get("input_tokens"),
+        "output_tokens": usage.get("output_tokens"),
+    }
+    stats["sag2"] = {
+        "elapsed_ms": round(float(getattr(result, "elapsed_ms", 0.0) or 0.0), 2),
+        "local_ms": round(float(getattr(result, "local_ms", 0.0) or 0.0), 2),
+        "jev_ms": round(float(getattr(result, "jev_ms", 0.0) or 0.0), 2),
+        "snapshot_revision": getattr(result, "snapshot_revision", None),
+        "scope_chunks": scope_chunks,
+        "hops": [
+            {"stage": item.get("stage"), "hop": item.get("hop"), "count": item.get("count")}
+            for item in trace
+            if isinstance(item, dict)
+        ],
     }
     return SearchOutcome(query=getattr(result, "query", None) or query, sections=sections, stats=stats)
 
 
-def _empty_outcome(query: str, *, requested_sources: int, source_limit_applied: bool) -> SearchOutcome:
-    return SearchOutcome(query=query, sections=[], stats={
-        "sources": 0,
-        "sources_requested": requested_sources,
-        "source_limit_applied": source_limit_applied,
-        "candidates": 0,
-        "requested_strategy": SAG2_STRATEGY,
-        "effective_strategy": SAG2_STRATEGY,
-        "fallback_used": False,
-        "ranking": {"method": "jev", "fallback_reason": None},
-    })
+class _AdmissionGate:
+    """可在线调整上限的并发闸门：在途检索继续持有名额，新检索按当前上限排队。"""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = max(1, limit)
+        self._active = 0
+        self._condition = asyncio.Condition()
+
+    @property
+    def active(self) -> int:
+        return self._active
+
+    async def set_limit(self, limit: int) -> None:
+        async with self._condition:
+            self._limit = max(1, limit)
+            self._condition.notify_all()
+
+    async def __aenter__(self) -> None:
+        async with self._condition:
+            await self._condition.wait_for(lambda: self._active < self._limit)
+            self._active += 1
+
+    async def __aexit__(self, *_exc: object) -> None:
+        async with self._condition:
+            self._active -= 1
+            self._condition.notify_all()
+
+    async def drain(self) -> None:
+        async with self._condition:
+            await self._condition.wait_for(lambda: self._active == 0)
 
 
 class Sag2EngineHolder:
@@ -189,25 +238,28 @@ class Sag2EngineHolder:
         self._engine: Any | None = None
         self._fingerprint: tuple[Any, ...] | None = None
         self._lock = asyncio.Lock()
-        self._semaphore_size = max(1, settings.sag2_max_concurrent_searches)
-        self._semaphore = asyncio.Semaphore(self._semaphore_size)
+        self._gate = _AdmissionGate(settings.sag2_max_concurrent_searches)
 
     @property
     def started(self) -> bool:
         return self._engine is not None
 
+    @property
+    def stale(self) -> bool:
+        """当前引擎是否已不匹配配置；下次检索会按新配置重建。"""
+        return self._engine is not None and self._fingerprint != _fingerprint(self._settings)
+
     async def refresh(self, settings: Settings) -> None:
-        """配置发布后调用：连接或存储参数变化则关闭当前引擎，下次检索按新配置重建。"""
+        """配置发布后调用：新的并发上限立即生效；连接或存储变化后由下次检索惰性重建。
+
+        在途检索持有旧引擎的本地引用，不在这里关闭它，避免打断正在进行的评分。
+        """
         self._settings = settings
-        size = max(1, settings.sag2_max_concurrent_searches)
-        if size != self._semaphore_size:
-            self._semaphore_size = size
-            self._semaphore = asyncio.Semaphore(size)
-        if self._engine is not None and self._fingerprint != _fingerprint(settings):
-            async with self._lock:
-                await self._close()
+        await self._gate.set_limit(settings.sag2_max_concurrent_searches)
 
     async def aclose(self) -> None:
+        """等待在途检索结束后关闭引擎；与 ``EngineManager._close_all_slots`` 等待空闲的语义一致。"""
+        await self._gate.drain()
         async with self._lock:
             await self._close()
 
@@ -233,24 +285,18 @@ class Sag2EngineHolder:
     async def _start(self, settings: Settings) -> Any:
         from zleap.sag2 import DataEngine
 
-        # 0.1.0 没有公开"是否已有 SAG 库"的探测接口；锁定精确版本后复用其内部检测，
-        # 避免在空库上误建 sag2 原生业务表。
-        from zleap.sag2._sag1 import Sag1Reader
-
         config = build_sag2_config(settings)
+        not_ready = ConfigurationError(
+            "知识库尚未初始化，暂无可检索的段落", code="sag2_storage_not_ready", stage=ErrorStage.RETRIEVE,
+        )
         if relational_provider(settings) == "sqlite" and not Path(settings.data_dir, "sag.db").is_file():
-            raise ConfigurationError(
-                "知识库尚未初始化，暂无可检索的段落", code="sag2_storage_not_ready", stage=ErrorStage.RETRIEVE,
-            )
+            raise not_ready
         scorer = self._scorer_factory(config) if self._scorer_factory is not None else None
         engine = DataEngine(config, scorer=scorer, health_check=False)
         try:
-            async with engine.store.engine.connect() as connection:
-                detected = await connection.run_sync(Sag1Reader.detect)
-            if detected is None:
-                raise ConfigurationError(
-                    "知识库尚未初始化，暂无可检索的段落", code="sag2_storage_not_ready", stage=ErrorStage.RETRIEVE,
-                )
+            # 空库会让 zleap-sag2 建立自己的业务表；只在已有 SAG 段落表时才启动只读模式。
+            if not await self._sag_schema_present(engine):
+                raise not_ready
             await engine.start()
         except BaseException:
             await engine.aclose()
@@ -273,7 +319,9 @@ class Sag2EngineHolder:
         if source_ids_by_config is not None:
             data_source_ids = [scid for scid in data_source_ids if source_ids_by_config.get(scid)]
         if not data_source_ids:
-            return _empty_outcome(query, requested_sources=requested_sources, source_limit_applied=source_limit_applied)
+            return SearchOutcome(query=query, sections=[], stats=_base_stats(
+                sources=0, requested_sources=requested_sources, source_limit_applied=source_limit_applied, candidates=0,
+            ))
         source_ids = (
             None
             if source_ids_by_config is None
@@ -306,14 +354,14 @@ class Sag2EngineHolder:
     ) -> tuple[Any, int]:
         from zleap.sag2 import SearchOptions, SearchRequest, SearchScope
 
-        async with self._semaphore:
+        async with self._gate:
             engine = await self.engine()
             settings = self._settings
             scope_chunks = await self._count_scope(engine, data_source_ids)
             limit = int(settings.sag2_max_scope_chunks)
             if limit and scope_chunks > limit:
                 raise ValidationError(
-                    f"检索范围包含 {scope_chunks:,} 个段落，超过 SAG2 证据检索上限 {limit:,}，请缩小信源范围",
+                    f"检索范围过大：包含 {scope_chunks:,} 个段落，超过 SAG2 证据检索上限 {limit:,}，请缩小信源范围",
                     layer=ErrorLayer.ENGINE,
                     stage=ErrorStage.RETRIEVE,
                 )
@@ -343,21 +391,26 @@ class Sag2EngineHolder:
             return result, scope_chunks
 
     @staticmethod
+    async def _sag_schema_present(engine: Any) -> bool:
+        """SAG 的段落表是否存在；zleap-sag2 据此决定进入只读直搜模式。"""
+        from sqlalchemy import inspect
+
+        async with engine.store.engine.connect() as connection:
+            return bool(await connection.run_sync(lambda sync: inspect(sync).has_table(SAG_CHUNK_TABLE)))
+
+    @staticmethod
     async def _count_scope(engine: Any, data_source_ids: list[str]) -> int:
         """范围内段落行数（含待清理的历史版本），用于扫描成本护栏。"""
-        from sqlalchemy import func, select
+        from sqlalchemy import column, func, select, table
 
-        reader = getattr(engine.store, "sag1_reader", None)
-        table = reader.tables.get("source_chunk") if reader is not None else None
-        if table is None:
-            return 0
+        chunks = table(SAG_CHUNK_TABLE, column("data_source_id"))
+        statement = select(func.count()).select_from(chunks).where(chunks.c.data_source_id.in_(data_source_ids))
         async with engine.store.engine.connect() as connection:
-            statement = select(func.count()).select_from(table).where(table.c.data_source_id.in_(data_source_ids))
             return int(await connection.scalar(statement) or 0)
 
     @staticmethod
     def _translate(error: Exception) -> Exception:
-        """把 zleap-sag2 的异常翻译为带 layer/stage 的领域错误；凭据与响应体不进消息。"""
+        """把 zleap-sag2 的异常翻译为带 layer/stage 的领域错误，文案与 ``multi_jev`` 一致；凭据与响应体不进消息。"""
         from zleap.sag2 import JevError, SagError
         from zleap.sag2.exceptions import ConfigError as Sag2ConfigError
 
@@ -366,17 +419,11 @@ class Sag2EngineHolder:
         if isinstance(error, JevError):
             status = error.details.get("status") if isinstance(error.details, dict) else None
             if status in (401, 403):
-                return ConfigurationError(
-                    "JEV 鉴权失败，请检查服务地址和 API Key", code="jev_auth_failed",
-                    layer=ErrorLayer.ENGINE, stage=ErrorStage.RETRIEVE,
-                )
-            if isinstance(status, int) and 400 <= status < 500:
-                return ValidationError(
-                    "JEV 评分请求被拒绝，请检查模型和候选内容限制", layer=ErrorLayer.ENGINE, stage=ErrorStage.RETRIEVE,
-                )
-            return ServiceUnavailableError(
-                "JEV 评分服务暂不可用，请稍后重试", layer=ErrorLayer.ENGINE, stage=ErrorStage.RETRIEVE,
-            )
+                return ConfigurationError(JEV_AUTH_FAILED_MESSAGE, layer=ErrorLayer.ENGINE, stage=ErrorStage.RETRIEVE)
+            # 408/429 与 5xx 由 zleap-sag2 自行重试，耗尽后以“重试用尽”上抛；其余 4xx 是请求本身被拒绝。
+            if isinstance(status, int) and 400 <= status < 500 and status not in (408, 429):
+                return ValidationError(JEV_REQUEST_REJECTED_MESSAGE, layer=ErrorLayer.ENGINE, stage=ErrorStage.RETRIEVE)
+            return ServiceUnavailableError(JEV_UNAVAILABLE_MESSAGE, layer=ErrorLayer.ENGINE, stage=ErrorStage.RETRIEVE)
         if isinstance(error, Sag2ConfigError):
             return ConfigurationError(
                 "SAG2 证据检索配置无效，请检查 JEV 服务与关系库设置", code=str(error.code),
@@ -399,7 +446,9 @@ __all__ = [
     "SAG2_STRATEGY",
     "Sag2EngineHolder",
     "build_sag2_config",
+    "jev_connection_issue",
     "jev_connection_ready",
     "outcome_from_result",
+    "sag2_relational_issue",
     "sag2_relational_supported",
 ]

@@ -18,7 +18,7 @@ from zleap.sag.pipeline import RankingOptions, SearchOptions, SearchOutputOption
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
 from sag_api.core.errors import ServiceUnavailableError
 from sag_api.core.logging import get_logger
-from sag_api.enums import JEV_SCORED_STRATEGIES
+from sag_api.enums import JEV_SCORED_STRATEGIES, normalize_search_strategy
 from sag_api.sag._timings_probe import capture_scope as _timings_capture_scope
 from sag_api.sag._timings_probe import release_scope as _timings_release_scope
 from sag_api.sag.dto import RetrievedSection, SearchOutcome
@@ -39,6 +39,20 @@ def search_source_timeout_seconds(settings: Settings, strategy: str | None) -> f
     if (strategy or settings.search_strategy) == "multi_jev":
         timeout += settings.jev_ranking_timeout_seconds
     return timeout
+
+
+def search_admission_timeout_seconds(settings: Settings, strategy: str | None) -> float | None:
+    """How long a JEV-scored search may wait for a settings publication before failing.
+
+    ``multi_jev`` reuses its per-source budget; ``sag2`` uses its whole-search budget.
+    Other modes wait without a deadline, as before.
+    """
+    requested = normalize_search_strategy(strategy or settings.search_strategy)
+    if requested == "multi_jev":
+        return search_source_timeout_seconds(settings, strategy)
+    if requested == "sag2":
+        return max(1.0, float(settings.sag2_search_timeout_seconds))
+    return None
 
 
 def _jev_sort_key(section: RetrievedSection) -> tuple[int, float]:
