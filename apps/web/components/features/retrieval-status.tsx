@@ -17,7 +17,7 @@ function usedFallback(stats: Record<string, unknown>): boolean {
   return stats.fallback_used === true || Boolean(record(stats.ranking).fallback_reason);
 }
 
-function count(value: unknown): number | null {
+function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
@@ -37,26 +37,27 @@ export function RetrievalStatus({ stats, requestedStrategy }: {
   const changed = requested && effective && requested !== effective;
   // Paid JEV calls are reported per run so users can see what a query cost.
   const usage = record(stats.jev_usage);
-  const usageRequests = count(usage.requests);
-  const usageJudgments = count(usage.judgments);
-  const usageInputTokens = count(usage.input_tokens);
-  const showUsage = usageRequests !== null || usageJudgments !== null;
+  const usageRequests = finiteNumber(usage.requests);
+  const usageJudgments = finiteNumber(usage.judgments);
+  const usageInputTokens = finiteNumber(usage.input_tokens);
+  const format = (value: number) => value.toLocaleString(locale);
+  // Only report usage the backend actually measured; never fabricate a zero.
+  const usageText = usageRequests !== null && usageJudgments !== null
+    ? t("jevUsage", {
+      requests: format(usageRequests),
+      judgments: format(usageJudgments),
+      tokens: usageInputTokens === null ? "" : t("jevUsageTokens", { tokens: format(usageInputTokens) }),
+    })
+    : null;
   const executionChanged = jevFallback || partial || changed;
-  if (!executionChanged && !showUsage) return null;
+  if (!executionChanged && usageText === null) return null;
   function label(mode: string) {
     return isSearchStrategy(mode) ? strategies(getSearchStrategy(mode).labelKey) : mode;
-  }
-  function format(value: number | null) {
-    return (value ?? 0).toLocaleString(locale);
   }
   return <div role="status" className="flex flex-col gap-1 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
     {executionChanged && requested && <p>{t("requested", { mode: label(requested) })}{" · "}{t("actual", { mode: jevFallback ? t("coarse") : label(effective ?? requested) })}</p>}
     {jevFallback && <p>{t("jevFallback")}</p>}
     {partial && <p>{t("partial")}</p>}
-    {showUsage && <p>{t("jevUsage", {
-      requests: format(usageRequests),
-      judgments: format(usageJudgments),
-      tokens: usageInputTokens === null ? "" : t("jevUsageTokens", { tokens: format(usageInputTokens) }),
-    })}</p>}
+    {usageText !== null && <p>{usageText}</p>}
   </div>;
 }

@@ -89,8 +89,10 @@ export function KnowledgeConfigForm() {
     const url = new URL(jevEndpoint.trim());
     validEndpoint = ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
   } catch { /* An empty or incomplete draft cannot enable JEV. */ }
+  // A saved key only applies to the endpoint it was saved for.
+  const savedKeyApplies = jevKeySet && jevEndpoint.trim() === savedJevEndpoint;
   // JEV is a paid service: a key saved for this exact endpoint or typed into the draft is required.
-  const jevKeyReady = (jevKeySet && jevEndpoint.trim() === savedJevEndpoint) || Boolean(jevKey.trim());
+  const jevKeyReady = savedKeyApplies || Boolean(jevKey.trim());
   const jevServiceDraftValid = validEndpoint && Boolean(jevModel.trim());
   const jevDraftReady = jevServiceDraftValid && jevKeyReady;
   const disabledStrategies = getSearchStrategiesDisabled(capabilities, strategies("unsupportedBackend"), jevDraftReady);
@@ -488,7 +490,7 @@ export function KnowledgeConfigForm() {
               <FieldLabel htmlFor="kb-jev-api-key">{t("jevKey")}</FieldLabel>
               <Input id="kb-jev-api-key" type="password" autoComplete="new-password" value={jevKey}
                 aria-invalid={jevKeyMissing || undefined}
-                placeholder={jevKeySet && jevEndpoint.trim() === savedJevEndpoint ? t("jevKeyConfigured")
+                placeholder={savedKeyApplies ? t("jevKeyConfigured")
                   : jevProvider === "custom" ? t("jevKeyRequiredPlaceholder")
                     : t("jevKeyProviderPlaceholder", { provider: jevProvider === "302" ? "302.AI" : "TypeSafe" })}
                 onChange={(event) => { setJevKey(event.target.value); setJevTestResult(null); }} />
