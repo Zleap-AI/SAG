@@ -613,7 +613,11 @@
     "disabledSuffix": "(unavailable)",
     "multiJevLabel": "JEV reranking",
     "multiJevDescription": "Expand related evidence, then score relevance with your configured JEV service.",
-    "unsupportedBackend": "This server does not advertise JEV support. Upgrade the server to use this mode."
+    "sag2Label": "SAG2 evidence retrieval",
+    "sag2Description": "BM25 recall scored over several JEV rounds; no vector store needed; paid service.",
+    "paid": "Paid",
+    "openSettings": "Open settings",
+    "unsupportedBackend": "This server does not advertise support for this JEV-scored mode. Upgrade the server to use it."
   },
   "RetrievalTest": {
     "failed": "Retrieval failed",
@@ -680,8 +684,10 @@
     "jevStorageUnchanged": "Your existing retrieval settings remain unchanged. Document uploads, search, and chat continue to use the current compatible retrieval behavior.",
     "jevStorageSelectCompatible": "The saved JEV mode cannot run with this storage. Choose Fast (vector) or Precise above and save to resume retrieval. Your models and document data are kept.",
     "jevStorageNoChanges": "No database or model changes are needed to continue using your knowledge base. You can still adjust document processing and retrieval settings above.",
+    "sag2StorageUnavailable": "SAG2 evidence retrieval currently supports only SQLite and PostgreSQL relational stores; it is unavailable with the current storage.",
     "jevTitle": "JEV reranking service",
-    "jevDescription": "Selecting JEV mode sends the question and candidate evidence to this service for relevance scoring. Saving the service alone does not enable this mode.",
+    "jevDescription": "Selecting JEV reranking or SAG2 evidence retrieval sends the question and candidate evidence to this service for relevance scoring; an API key is required. Saving the service alone does not enable these modes.",
+    "jevSharedNotice": "JEV is a paid service shared by JEV reranking and SAG2 evidence retrieval and is only called while one of them is selected. The failure policy applies to JEV reranking only.",
     "jevProvider": "Service provider",
     "jevProviderOfficial": "TypeSafe official",
     "jevProviderCustom": "Custom",
@@ -690,12 +696,13 @@
     "jevEndpointDescription": "Use the complete HTTP(S) scoring URL supplied by your service. No path is added automatically.",
     "jevModel": "Model",
     "jevModelDescription": "jev-latest follows the latest stable JEV release. You can enter a specific model identifier supported by your service.",
-    "jevKey": "API key (optional)",
+    "jevKey": "API key (required for JEV modes)",
     "jevKeyConfigured": "Configured; leave blank to keep it",
-    "jevKeyOptional": "Leave blank for a service without authentication",
+    "jevKeyRequiredPlaceholder": "Enter the API key for your JEV service",
     "jevKeyProviderPlaceholder": "Enter your {provider} API key",
     "jevKeyProviderDescription": "{provider} requires its own API key. Leave blank only to reuse a key already saved for this address.",
     "jevKeyDescription": "This key is separate from your generation model key. Changing the service address clears the saved key; enter a new one if required.",
+    "jevKeyRequired": "Enter the JEV API key before selecting JEV reranking or SAG2 evidence retrieval.",
     "jevTimeout": "Reranking time limit (seconds)",
     "jevTimeoutDescription": "Total scoring and retry time, from 0.1 to 120 seconds.",
     "jevFailurePolicy": "When reranking fails",
@@ -704,7 +711,7 @@
     "jevTest": "Test JEV connection",
     "jevTesting": "Testing…",
     "jevTestFailed": "JEV connection test failed",
-    "jevInvalidDraft": "Enter a valid full HTTP(S) URL, a model name, and a time limit between 0.1 and 120 seconds."
+    "jevInvalidDraft": "Enter a valid full HTTP(S) URL, a model name, and a time limit between 0.1 and 120 seconds. JEV modes also require an API key."
   },
   "ChatbotConfig": {
     "retry": "Retry",
@@ -1767,6 +1774,8 @@
     "actual": "Actual: {mode}",
     "coarse": "Coarse ranking",
     "jevFallback": "JEV reranking did not complete; these results include coarse ranking.",
+    "jevUsage": "JEV scoring this run: {requests} requests · {judgments} judgments{tokens}",
+    "jevUsageTokens": " · {tokens} input tokens",
     "partial": "Partial results: some sources did not complete."
   },
   "ClientAccess": {

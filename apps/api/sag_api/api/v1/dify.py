@@ -15,6 +15,7 @@ from sag_api.core.errors import (
     ServiceUnavailableError,
     ValidationError,
 )
+from sag_api.enums import JEV_SCORED_STRATEGIES
 from sag_api.sag import EngineManager
 from sag_api.schemas.dify import (
     DifyRetrievalRecord,
@@ -104,11 +105,11 @@ async def retrieval(
                 **({
                     "score_source": section.metadata.get("score_source", "unknown"),
                     "ranking_fallback_reason": (outcome.stats.get("ranking") or {}).get("fallback_reason"),
-                } if strategy == "multi_jev" else {}),
+                } if strategy in JEV_SCORED_STRATEGIES else {}),
             },
         )
         for section in outcome.sections
         if section.score >= body.retrieval_setting.score_threshold
-        and (strategy != "multi_jev" or fallback_used or section.metadata.get("score_source") == "jev")
+        and (strategy not in JEV_SCORED_STRATEGIES or fallback_used or section.metadata.get("score_source") == "jev")
     ]
     return DifyRetrievalResponse(records=records)

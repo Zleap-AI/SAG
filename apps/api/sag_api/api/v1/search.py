@@ -22,6 +22,7 @@ from sag_api.core.error_taxonomy import ErrorCode
 from sag_api.core.errors import ApiError, ValidationError
 from sag_api.core.logging import get_logger
 from sag_api.db.models import Source, User
+from sag_api.enums import JEV_SCORED_STRATEGIES
 from sag_api.generation import LLMClient
 from sag_api.sag import EngineManager, RetrievedSection, SearchOutcome
 from sag_api.schemas.insight import EntityOut, GraphRelationOut
@@ -178,7 +179,7 @@ async def _retrieve_search_evidence(
         top_k=body.top_k,
         include_ranked_candidates=body.include_ranked_candidates,
     )
-    if strategy == "multi_jev":
+    if strategy in JEV_SCORED_STRATEGIES:
         outcome = await retrieval
         return outcome, event_scores_from_evidence(outcome.sections), True
     outcome, scores = await asyncio.gather(

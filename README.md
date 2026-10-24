@@ -62,7 +62,7 @@ Upload a document once. SAG parses it, splits it into chunks, embeds it, extract
 | Capability | What it gives you |
 | --- | --- |
 | Knowledge ingestion | File and web sources, document parsing, chunking, embedding, event/entity extraction, background processing |
-| Search | Cross-source or source-scoped retrieval with Fast (`vector` / `multi_es_fast`), Precise (`multi`), and optional JEV reranking (`multi_jev`) modes |
+| Search | Cross-source or source-scoped retrieval with Fast (`vector` / `multi_es_fast`), Precise (`multi`), optional JEV reranking (`multi_jev`), and SAG2 evidence retrieval (`sag2`) modes |
 | Source tracing | Open any result or citation back to the exact original chunk |
 | Knowledge graph | Inspect events, entities, and their queryable associations |
 | Agent chat | Multi-turn answers grounded in selected sources, with clickable citations |
@@ -564,12 +564,15 @@ Pipeline request and result types are available from `zleap.sag.pipeline`: `Pars
 | Fast (multi_es-fast) | `multi_es_fast` | BM25 entity recall and event multi-hop retrieval, skipping LLM reranking |
 | Precise | `multi` | Combines entity relationships with LLM reranking for more complete results |
 | JEV reranking | `multi_jev` | Scores recalled and graph-expanded evidence through an independent JEV service |
+| SAG2 evidence retrieval | `sag2` | Read-only search by [zleap-sag2](https://pypi.org/project/zleap-sag2/) over the relational store: BM25 recall scored over several JEV rounds, no vector store involved |
 
-These are the application/API strategy names; the application maps `multi` to the Python engine's `full_expand` and `multi_es_fast` to `pruned_expand_rff`. Availability depends on storage capabilities: `multi_es_fast` requires lexical search support.
+These are the application/API strategy names; the application maps `multi` to the Python engine's `full_expand` and `multi_es_fast` to `pruned_expand_rff`, while `sag2` runs on the separate `zleap-sag2` engine. Availability depends on storage capabilities: `multi_es_fast` and `multi_jev` require lexical search support; `sag2` requires a SQLite or PostgreSQL relational store.
 
-Configure 302.AI, TypeSafe, or a custom JEV service in **Settings → Knowledge → Retrieval** (default model: `jev-latest`, separate API key), then select **JEV reranking**. Saving the service alone does not enable it. The default deadline is 30 seconds; failures return an error unless coarse fallback is enabled.
+Configure 302.AI, TypeSafe, or a custom JEV service in **Settings → Knowledge → Retrieval** (default model: `jev-latest`, separate API key), then select **JEV reranking** or **SAG2 evidence retrieval**. JEV is a paid service: saving the service alone does not enable it, and an API key is required before either JEV mode can be selected. JEV reranking has a 30-second default deadline; failures return an error unless coarse fallback is enabled.
 
-Supported on LanceDB and Elasticsearch; pgvector is currently unsupported. PostgreSQL relational storage can use JEV with a supported vector backend. Existing retrieval settings remain until JEV is selected; documents do not need reindexing. See the [benchmark results and cost estimates](CHANGELOG.md#jev-reranking).
+**SAG2 evidence retrieval** shares the JEV service configuration but bypasses the vector store: it reads SAG's SQLite or PostgreSQL relational store directly (MySQL and OceanBase are not supported yet), documents become searchable as soon as they are chunked and stored, event extraction is not required, and pgvector single-database deployments can use it. Each search scans every passage of the selected sources and calls JEV over several rounds, so it costs more than JEV reranking; failures are reported as errors, with no coarse fallback. Tuning knobs for candidates, timeouts, concurrency and scope limits are documented as `SAG_SAG2_*` in `apps/api/.env.example`. On PostgreSQL the connecting role must be able to create and use the two auxiliary tables `sag2_state` and `sag2_search_sessions` in the target schema and to `LOCK TABLE` `sag2_state`; SAG's own tables stay read-only.
+
+JEV reranking is supported on LanceDB and Elasticsearch; pgvector is currently unsupported. PostgreSQL relational storage can use JEV with a supported vector backend. Existing retrieval settings remain until a JEV mode is selected; documents do not need reindexing. See the [benchmark results and cost estimates](CHANGELOG.md#jev-reranking).
 
 #### Storage backends
 

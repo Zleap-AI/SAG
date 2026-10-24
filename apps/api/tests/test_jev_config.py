@@ -291,9 +291,21 @@ async def test_lexical_backends_can_enable_jev_and_save_its_endpoint_in_the_same
     settings.jev_endpoint = None
     settings.llm_model = "existing-model"
     settings.llm_api_key = "existing-key"
-    response = await client.put(
+    # JEV is a paid service: enabling the mode with an endpoint but no key rejects the whole save.
+    rejected = await client.put(
         "/api/v1/system/model-config", headers=headers,
         json={"search_strategy": "multi_jev", "jev_endpoint": "https://jev.example/score"},
+    )
+    assert rejected.status_code == 400, rejected.text
+    assert rejected.json()["error"]["code"] == "jev_api_key_missing"
+    assert settings.search_strategy == "vector" and settings.jev_endpoint is None
+
+    response = await client.put(
+        "/api/v1/system/model-config", headers=headers,
+        json={
+            "search_strategy": "multi_jev", "jev_endpoint": "https://jev.example/score",
+            "jev_api_key": "synthetic-jev-key",
+        },
     )
 
     assert response.status_code == 200, response.text
@@ -304,7 +316,8 @@ async def test_lexical_backends_can_enable_jev_and_save_its_endpoint_in_the_same
     async with SessionLocal() as session:
         row = await session.scalar(select(Setting).where(Setting.scope == "global", Setting.key == "model_config"))
         assert row.value == {
-            "search_strategy": "multi_jev", "jev_endpoint": "https://jev.example/score", "jev_api_key": None,
+            "search_strategy": "multi_jev", "jev_endpoint": "https://jev.example/score",
+            "jev_api_key": "synthetic-jev-key",
         }
 
 
@@ -505,13 +518,15 @@ async def test_jev_draft_checks_protocol_without_mutating_saved_configuration(je
     assert all(question["type"] == "noul" for question in payload["questions"].values())
     assert "synthetic-saved-key" not in response.text
 
+    call_count = len(transport.calls)
     response = await client.post(
         "/api/v1/system/model-config/jev/test", headers=headers,
         json={"jev_endpoint": "https://draft.example/score", "jev_api_key": ""},
     )
-    assert response.json()["ok"] is True  # An unauthenticated gateway is supported.
-    assert transport.calls[-1][0] == "https://draft.example/score"
-    assert transport.calls[-1][1]["Authorization"] == "Bearer "
+    # JEV is a paid service: a new endpoint without its own key is rejected before any request.
+    assert response.json()["ok"] is False
+    assert "API Key" in response.json()["message"]
+    assert len(transport.calls) == call_count
     assert settings.model_dump() == before
     assert app.state.knowledge_runtime._settings.model_dump() == runtime_before
     assert len(resets) == reset_count

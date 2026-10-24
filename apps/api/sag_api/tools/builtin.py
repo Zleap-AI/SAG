@@ -19,7 +19,7 @@ import httpx
 from sag_api.connectors.web import extract_web_markdown, extract_web_title
 from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
-from sag_api.enums import SEARCH_STRATEGIES, normalize_search_strategy
+from sag_api.enums import JEV_SCORED_STRATEGIES, SEARCH_STRATEGIES, normalize_search_strategy
 from sag_api.generation import build_citations
 from sag_api.sag import RetrievedSection
 from sag_api.services.retrieval_service import (
@@ -80,10 +80,11 @@ def _events_by_section(events: list | None) -> dict[tuple[str, str], list]:
 
 
 def knowledge_search_strategy(persona: dict[str, Any], configuration: Any = settings) -> str:
-    """Keep the legacy vector default unless the user explicitly enables JEV."""
-    default = "multi_jev" if configuration.search_strategy == "multi_jev" else "vector"
+    """Keep the legacy vector default unless the user explicitly enables a JEV-scored mode."""
+    configured = normalize_search_strategy(configuration.search_strategy)
+    default = configured if configured in JEV_SCORED_STRATEGIES else "vector"
     value = persona.get("search_strategy") or default
-    if default == "multi_jev" and (
+    if default in JEV_SCORED_STRATEGIES and (
         not isinstance(value, str) or normalize_search_strategy(value) not in SEARCH_STRATEGIES
     ):
         # The engine falls back to global JEV for unknown modes. Resolve that
@@ -260,7 +261,7 @@ class SearchContextTool(Tool):
             strategy=strategy,
             top_k=limit,
         )
-        is_jev = strategy == "multi_jev"
+        is_jev = strategy in JEV_SCORED_STRATEGIES
         if is_jev:
             outcome = await retrieval
             event_scores: dict[tuple[str, str], float] = {}
@@ -324,7 +325,7 @@ class SearchContextTool(Tool):
         for c in citations:
             c["n"] = c["n"] + offset
         content = _format_sections(sections, offset, list(graph.events) if graph is not None else None)
-        if strategy == "multi_jev" and outcome.stats.get("fallback_used"):
+        if is_jev and outcome.stats.get("fallback_used"):
             content = "（JEV 精排未完成，本次返回粗排结果）\n" + content
         return ToolResult(
             content=content,
