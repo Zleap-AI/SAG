@@ -641,6 +641,7 @@
     "switchHint": "搜索和问答时仍可临时切换。",
     "pillTooltip": "默认检索模式：{label}；搜索和问答时仍可临时切换",
     "scopeDefaultHint": "信源默认",
+    "personaDefaultHint": "人格默认",
     "keyRequiredToSubmit": "填写 JEV API Key 后才能保存这个默认模式。",
     "jevSetupTitle": "先配置 JEV 服务",
     "jevSetupDescription": "这个模式会把问题和候选证据发给 JEV 服务打分，需要一个 API Key。",
@@ -1171,7 +1172,8 @@
     "reject": "拒绝",
     "allowOnce": "允许一次",
     "thinking": "正在思考…",
-    "sessionMissing": "对话运行实例不存在：{id}"
+    "sessionMissing": "对话运行实例不存在：{id}",
+    "dismissNotice": "关闭提示"
   },
   "Citations": {
     "visitExternal": "访问外部来源：{title}",
@@ -1816,7 +1818,10 @@
     "jevFallback": "本次未完成 JEV 精排，已返回粗排结果。",
     "jevUsage": "本次 JEV 评分：{requests} 次请求 · {judgments} 次判定{tokens}",
     "jevUsageTokens": " · {tokens} 输入 token",
-    "partial": "部分结果：部分信源未完成检索。"
+    "partial": "部分结果：部分信源未完成检索。",
+    "origin": "按{origin}使用 {mode}",
+    "originPersona": "人格默认",
+    "originSourceDefault": "信源默认"
   },
   "ClientAccess": {
     "title": "CLI 与自动化",

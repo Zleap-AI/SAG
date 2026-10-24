@@ -345,12 +345,17 @@ def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict])
     timeout_seconds = None
     if name == "search_context":
         from sag_api.core.config import MAX_JEV_RANKING_TIMEOUT_SECONDS, settings
-        from sag_api.tools.builtin import knowledge_search_strategy
+        from sag_api.tools.builtin import knowledge_search_strategy, knowledge_search_strategy_origin
 
         configuration = getattr(host_context.engine_manager, "_settings", settings)
-        strategy = knowledge_search_strategy(host_context.persona, configuration, host_context.sources)
-        # Keep this run's mode stable while the model prepares the tool call.
-        host_context = replace(host_context, persona={**host_context.persona, "search_strategy": strategy})
+        strategy = knowledge_search_strategy(
+            host_context.persona, configuration, host_context.sources, host_context.requested_strategy,
+        )
+        # Freeze execution and provenance together without rewriting the persona.
+        origin = knowledge_search_strategy_origin(
+            host_context.persona, host_context.sources, host_context.requested_strategy,
+        )
+        host_context = replace(host_context, search_strategy_snapshot=(strategy, origin))
         if strategy == "multi_jev":
             source_count = min(len(host_context.sources), configuration.search_source_candidate_limit)
             waves = max(1, ceil(source_count / configuration.search_source_concurrency))

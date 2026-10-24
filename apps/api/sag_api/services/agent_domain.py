@@ -472,6 +472,7 @@ class AskPlan:
     source_ids: list[str] | None = None  # @范围：限定循环内检索工具可见的信源
     source_scope: list[dict[str, str]] | None = None
     user_message_id: str | None = None
+    strategy: str | None = None  # 本轮显式选择的检索模式
 
 
 def build_ask_context(
@@ -510,6 +511,7 @@ async def prepare_ask(
     attachments: list[str] | None = None,
     source_ids: list[str] | None = None,
     llm=None,
+    strategy: str | None = None,
 ) -> AskPlan:
     """落库用户消息（含图片附件 meta）、解析历史（超上下文阈值时主动压缩），组装计划。"""
     resolved: list[dict] = []
@@ -554,6 +556,7 @@ async def prepare_ask(
     )
     plan.user_message_id = user_msg.id
     plan.source_scope = source_scope
+    plan.strategy = strategy
     return plan
 
 

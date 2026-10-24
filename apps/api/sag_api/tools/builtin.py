@@ -80,8 +80,12 @@ def _events_by_section(events: list | None) -> dict[tuple[str, str], list]:
     return grouped
 
 
-def knowledge_search_strategy(persona: dict[str, Any], configuration: Any = settings, sources=()) -> str:
-    """Persona choice → shared source default → legacy default (vector unless a JEV mode is global)."""
+def knowledge_search_strategy(
+    persona: dict[str, Any], configuration: Any = settings, sources=(), requested: str | None = None,
+) -> str:
+    """Explicit turn choice → persona → shared source default → legacy default (vector unless a JEV mode is global)."""
+    if requested:
+        return requested
     configured = normalize_search_strategy(configuration.search_strategy)
     default = configured if configured in JEV_SCORED_STRATEGIES else "vector"
     value = persona.get("search_strategy") or common_source_default_strategy(sources) or default
@@ -94,6 +98,19 @@ def knowledge_search_strategy(persona: dict[str, Any], configuration: Any = sett
     # Existing persona values, including legacy aliases, retain the engine's
     # resolution rules; preparing an unused tool must not add validation gates.
     return value
+
+
+def knowledge_search_strategy_origin(
+    persona: dict[str, Any], sources=(), requested: str | None = None,
+) -> str:
+    """Which input decided ``knowledge_search_strategy``; reported to the UI as ``strategy_origin``."""
+    if requested:
+        return "request"
+    if persona.get("search_strategy"):
+        return "persona"
+    if common_source_default_strategy(sources):
+        return "source_default"
+    return "global"
 
 
 def _format_sections(sections: list, offset: int = 0, events: list | None = None) -> str:
@@ -250,7 +267,13 @@ class SearchContextTool(Tool):
         if not query or not ctx.sources:
             return ToolResult(content="（无相关资料）", citations=[], data={"section_count": 0})
         persona = ctx.persona or {}
-        strategy = knowledge_search_strategy(persona, getattr(ctx.engine_manager, "_settings", settings), ctx.sources)
+        if ctx.search_strategy_snapshot is not None:
+            strategy, strategy_origin = ctx.search_strategy_snapshot
+        else:
+            strategy = knowledge_search_strategy(
+                persona, getattr(ctx.engine_manager, "_settings", settings), ctx.sources, ctx.requested_strategy,
+            )
+            strategy_origin = knowledge_search_strategy_origin(persona, ctx.sources, ctx.requested_strategy)
         top_k = args.get("top_k") or persona.get("top_k")
         limit = max(1, min(int(top_k or 8), 50))
         source_refs = {s.sag_source_config_id: {"id": s.id, "name": s.name} for s in ctx.sources}
@@ -339,7 +362,8 @@ class SearchContextTool(Tool):
                 "candidate_count": int(outcome.stats.get("candidates") or len(sections)),
                 "event_count": len(graph.events) if graph is not None else 0,
                 "event_candidates": len(event_scores),
-                "retrieval_stats": outcome.stats,
+                # The tool passes an explicit strategy to retrieval, so restate where it came from.
+                "retrieval_stats": {**outcome.stats, "strategy_origin": strategy_origin},
                 "_graph": graph,
             },
         )
