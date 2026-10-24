@@ -159,9 +159,8 @@ async def test_source_default_mode_is_validated_persisted_and_clearable(source_c
     assert cleared.status_code == 200, cleared.text
     assert cleared.json()["default_search_strategy"] is None
     assert cleared.json()["name"] == "改名"
-
-    for sid in (source_id, plain.json()["id"]):
-        await client.delete(f"/api/v1/sources/{sid}")
+    # Sources are left in place: a background delete job would still be writing
+    # while the app shuts down and contend for the SQLite lock at teardown.
 
 
 async def test_global_search_uses_shared_source_default(source_client, monkeypatch):
@@ -203,7 +202,6 @@ async def test_global_search_uses_shared_source_default(source_client, monkeypat
         assert explicit.json()["stats"]["strategy_origin"] == "request"
     finally:
         app.dependency_overrides.pop(get_engine_manager, None)
-        await client.delete(f"/api/v1/sources/{source_id}")
 
 
 def test_require_strategy_available_matches_capability_report():
