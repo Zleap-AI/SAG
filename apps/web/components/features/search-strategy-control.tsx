@@ -42,6 +42,7 @@ export function SearchStrategyControl({
   onValueChange,
   disabledMap,
   hint,
+  disabled,
 }: {
   value: SearchStrategy;
   defaultValue: SearchStrategy;
@@ -53,6 +54,8 @@ export function SearchStrategyControl({
   disabledMap?: SearchStrategyDisabledMap;
   /** Short muted note on where the current value came from (e.g. the scoped source's default). */
   hint?: string;
+  /** Lock the control while a request is in flight, like the toolbar toggles around it. */
+  disabled?: boolean;
 }) {
   const t = useTranslations("SearchStrategies");
   const currentStrategy = getSearchStrategy(value);
@@ -61,12 +64,13 @@ export function SearchStrategyControl({
   return (
     <TooltipProvider delayDuration={150}>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
+        <DropdownMenuTrigger asChild disabled={disabled}>
           <button
             type="button"
+            disabled={disabled}
             aria-label={t("modeAria", { strategy: t(currentStrategy.labelKey) })}
             data-testid="search-strategy"
-            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground"
+            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent disabled:hover:text-muted-foreground data-[state=open]:bg-muted data-[state=open]:text-foreground"
           >
             <CurrentIcon className="size-3.5" />
             <span>{t(currentStrategy.labelKey)}</span>

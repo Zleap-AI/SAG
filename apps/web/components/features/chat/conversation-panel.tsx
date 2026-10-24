@@ -3,6 +3,7 @@
 import * as React from "react";
 import { ArrowUp, Check, Copy, FileUp, Globe2, ImagePlus, Library, Plus, RotateCcw, Square, Trash2, X } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
+import Link from "next/link";
 import { toast } from "sonner";
 
 import { toolArgumentsPreview } from "@/lib/agent-run-activity";
@@ -15,6 +16,16 @@ import {
   isComposerCompositionKeyEvent,
   shouldSubmitAfterEnter,
 } from "@/lib/composer-keyboard";
+import {
+  DEFAULT_SEARCH_STRATEGY,
+  getScopeDefaultStrategy,
+  getSearchStrategiesDisabled,
+  isSearchStrategy,
+  isSearchStrategyRejectionCode,
+  type SearchStrategy,
+} from "@/lib/retrieval-config";
+import { settingsTabHref } from "@/lib/settings-config";
+import { AgentHttpError } from "@/lib/sse";
 import type { Citation, MessageSourceScope, Source } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { copyText } from "@/lib/clipboard";
@@ -35,6 +46,7 @@ import {
   type ConversationMessageRenderContext,
 } from "@/components/features/chat/conversation-transcript";
 import { PromptPreview } from "@/components/features/chat/prompt-preview";
+import { SearchStrategyControl } from "@/components/features/search-strategy-control";
 import { AuthImage } from "@/components/features/auth-image";
 import { Button } from "@/components/ui/button";
 import {
@@ -59,6 +71,18 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+
+/** Where a rejected JEV mode gets fixed; the same section the mode menu links to. */
+const JEV_SETTINGS_HREF = settingsTabHref("knowledge", "jev");
+
+/** Who decided the mode shown in the composer when nothing is pinned. */
+type ChatStrategyOrigin = "pinned" | "persona" | "source_default" | "global";
+
+/** A pre-stream rejection of the chosen retrieval mode, shown above the composer. */
+interface StrategyNotice {
+  code: string;
+  message: string;
+}
 
 function MessageActions({
   content,
@@ -186,9 +210,11 @@ export function ConversationPanel({
   onToolMatchClick,
 }: ConversationPanelProps) {
   const t = useTranslations("Conversation");
+  const searchStrategies = useTranslations("SearchStrategies");
+  const retrievalModes = useTranslations("RetrievalModes");
   const locale = useLocale();
   const resolvedPlaceholder = placeholder ?? t("defaultPlaceholder");
-  const { capabilities } = useApp();
+  const { capabilities, agent } = useApp();
   const runtime = useConversationRuntime();
   const session = useConversationSession(sessionId);
   const detailPanel = useDetailPanel();
@@ -205,6 +231,9 @@ export function ConversationPanel({
     useConversationComposer(sessionId);
   const imagesRef = React.useRef(images);
   const [sources, setSources] = React.useState<Source[]>([]);
+  // An explicit pick lives with this panel only; it is sent as `strategy` until the panel unmounts.
+  const [pinnedStrategy, setPinnedStrategy] = React.useState<SearchStrategy | null>(null);
+  const [strategyNotice, setStrategyNotice] = React.useState<StrategyNotice | null>(null);
   const [mentionOpen, setMentionOpen] = React.useState(false);
   const [mentionIdx, setMentionIdx] = React.useState(0);
   const [uploading, setUploading] = React.useState(false);
@@ -267,6 +296,46 @@ export function ConversationPanel({
     return q ? sources.filter((s) => s.name.toLowerCase().includes(q)) : sources;
   }, [sources, mentionQuery]);
   React.useEffect(() => setMentionIdx(0), [mentionQuery]);
+
+  // Mirror the backend's resolution order so the composer shows the mode a turn will actually use:
+  // pinned pick → agent persona → shared default of the scoped sources → global default.
+  const unsupportedStrategyMessage = searchStrategies("unsupportedBackend");
+  const strategyDisabledMap = React.useMemo(
+    () => getSearchStrategiesDisabled(capabilities, unsupportedStrategyMessage),
+    [capabilities, unsupportedStrategyMessage],
+  );
+  const personaStrategy = React.useMemo(() => {
+    const value = agent?.persona?.search_strategy;
+    return isSearchStrategy(value) && !strategyDisabledMap[value] ? value : null;
+  }, [agent?.persona?.search_strategy, strategyDisabledMap]);
+  // Scopes only carry id + name; the loaded source list supplies each one's default.
+  // A scope whose source is not loaded yet counts as "no default", like the backend treats null.
+  const scopeDefaultStrategy = React.useMemo(() => getScopeDefaultStrategy(
+    scoped.map((scope) => ({
+      default_search_strategy: sources.find((source) => source.id === scope.id)?.default_search_strategy ?? null,
+    })),
+    strategyDisabledMap,
+  ), [scoped, sources, strategyDisabledMap]);
+  const globalStrategy = isSearchStrategy(capabilities?.search_strategy)
+    ? capabilities.search_strategy
+    : DEFAULT_SEARCH_STRATEGY;
+  const resolvedStrategy = personaStrategy ?? scopeDefaultStrategy ?? globalStrategy;
+  const strategyOrigin: ChatStrategyOrigin = pinnedStrategy
+    ? "pinned"
+    : personaStrategy
+      ? "persona"
+      : scopeDefaultStrategy
+        ? "source_default"
+        : "global";
+  const strategyHint = strategyOrigin === "persona"
+    ? retrievalModes("personaDefaultHint")
+    : strategyOrigin === "source_default"
+      ? retrievalModes("scopeDefaultHint")
+      : undefined;
+  const pinStrategy = React.useCallback((value: SearchStrategy) => {
+    setPinnedStrategy(value);
+    setStrategyNotice(null);
+  }, []);
   React.useEffect(() => {
     mentionListRef.current
       ?.querySelector(`[data-idx="${mentionIdx}"]`)
@@ -537,6 +606,7 @@ export function ConversationPanel({
 
     uploadingRef.current = true;
     setUploading(true);
+    setStrategyNotice(null);
     try {
       const uploaded = pendingImages.length
         ? await Promise.all(pendingImages.map((item) => api.uploadAttachment(item.file)))
@@ -547,6 +617,8 @@ export function ConversationPanel({
         attachmentIds: uploaded.map((item) => item.id),
         sourceScope: selectedScope,
         webEnabled,
+        // Omitted unless pinned so the backend applies persona / source / global defaults itself.
+        ...(pinnedStrategy ? { strategy: pinnedStrategy } : {}),
       });
 
       // send 在首次 await 前就登记 run；未登记表示被全局并发边界拒绝，保留草稿。
@@ -563,7 +635,13 @@ export function ConversationPanel({
       followOutputRef.current = true;
 
       void request.catch((error) => {
-        toast.error(error instanceof Error ? error.message : t("connectionInterrupted"));
+        // A mode this deployment cannot serve is rejected before streaming; keep that
+        // explanation next to the mode control instead of letting it vanish with a toast.
+        if (error instanceof AgentHttpError && isSearchStrategyRejectionCode(error.code)) {
+          setStrategyNotice({ code: error.code, message: error.message });
+        } else {
+          toast.error(error instanceof Error ? error.message : t("connectionInterrupted"));
+        }
         getDiagnosticsStore().record("qa.error", {
           context: "conversation.send",
           error_message: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
@@ -737,6 +815,31 @@ export function ConversationPanel({
 
       <div className="shrink-0 border-t bg-background/95 px-3 py-3 sm:px-4">
         <div className="mx-auto max-w-3xl">
+          {strategyNotice && (
+            <div
+              role="alert"
+              data-testid="strategy-notice"
+              data-code={strategyNotice.code}
+              className="mb-2 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            >
+              <span className="min-w-0 flex-1 leading-5">{strategyNotice.message}</span>
+              <Link
+                href={JEV_SETTINGS_HREF}
+                data-testid="strategy-notice-settings"
+                className="shrink-0 font-medium leading-5 underline-offset-2 hover:underline"
+              >
+                {searchStrategies("openSettings")}
+              </Link>
+              <button
+                type="button"
+                aria-label={t("dismissNotice")}
+                onClick={() => setStrategyNotice(null)}
+                className="grid size-5 shrink-0 place-items-center rounded-sm text-destructive/70 transition-colors hover:bg-destructive/15 hover:text-destructive"
+              >
+                <X className="size-3" />
+              </button>
+            </div>
+          )}
           <div className="relative flex flex-col gap-1.5 rounded-2xl border bg-card px-3 py-2 shadow-soft transition-[border-color,box-shadow] focus-within:border-foreground/20 focus-within:shadow-lift">
           {images.length > 0 && (
             <div className="flex flex-wrap gap-2 px-1">
@@ -945,6 +1048,14 @@ export function ConversationPanel({
                     : t("webDisabledDescription")}
                 </TooltipContent>
               </Tooltip>
+              <SearchStrategyControl
+                value={pinnedStrategy ?? resolvedStrategy}
+                defaultValue={resolvedStrategy}
+                onValueChange={pinStrategy}
+                disabledMap={strategyDisabledMap}
+                hint={strategyHint}
+                disabled={streaming || submitting}
+              />
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span className="min-w-0 max-w-[42vw] truncate px-1 text-xs text-muted-foreground sm:max-w-56">
