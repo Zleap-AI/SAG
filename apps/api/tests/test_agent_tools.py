@@ -156,7 +156,7 @@ async def test_search_tool_preserves_old_modes_and_only_adds_opted_in_jev(
 
     engine = EngineManager(Settings(
         _env_file=None, search_strategy=global_strategy, sag_vector_provider="lancedb",
-        jev_endpoint="https://jev.invalid/score",
+        jev_endpoint="https://jev.invalid/score", jev_api_key="synthetic-jev-key",
     ))
     source = await publication_source("compatibility", "config-compatibility", "document-compatibility")
     selected = []
@@ -187,7 +187,7 @@ def test_unknown_legacy_strategy_gets_jev_budget_after_explicit_global_jev_selec
 
     engine = EngineManager(Settings(
         _env_file=None, search_strategy="multi_jev", sag_vector_provider="lancedb",
-        jev_endpoint="https://jev.invalid/score", agent_tool_timeout_seconds=5,
+        jev_endpoint="https://jev.invalid/score", jev_api_key="synthetic-jev-key", agent_tool_timeout_seconds=5,
     ))
     adapted = _adapt_tool(
         SearchContextTool(),

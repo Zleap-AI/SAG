@@ -11,7 +11,7 @@ from typing import Any, Literal, Protocol
 
 from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
-from sag_api.enums import normalize_search_strategy
+from sag_api.enums import JEV_SCORED_STRATEGIES, normalize_search_strategy
 from sag_api.sag import RetrievedSection, SearchOutcome
 from sag_api.services.query_analysis import (
     QueryAnalysis,
@@ -326,9 +326,9 @@ async def retrieve_relevant_sections(
     configuration = getattr(engine_manager, "_settings", settings)
     requested_strategy = strategy or configuration.search_strategy
     mode = normalize_search_strategy(requested_strategy)
-    if mode == "multi_jev":
-        # The profile owns recall and final scoring. Adding application lexical
-        # hits afterwards would mix unscored evidence into the ranked list.
+    if mode in JEV_SCORED_STRATEGIES:
+        # The JEV-scored profile owns recall and final scoring. Adding application
+        # lexical hits afterwards would mix unscored evidence into the ranked list.
         requested_limit = max(1, min(int(top_k or configuration.search_top_k), 50))
         published = await published_document_inputs(sources)
         visible_sources = [source for source in sources if published.get(source.sag_source_config_id)]

@@ -19,6 +19,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from sag_api.enums import JEV_SCORED_STRATEGIES
 from sag_api.services.insight_service import find_entity_context
 from sag_api.services.outline_service import build_outline, render_outline_text
 from sag_api.services.retrieval_service import get_published_chunk, grep_published_chunks, retrieve_relevant_sections
@@ -227,7 +228,7 @@ def build_source_mcp(
             top_k=max(1, min(top_k, 50)),
         )
         text = _sections_to_text(outcome.sections, selected)
-        if outcome.stats.get("requested_strategy") == "multi_jev" and outcome.stats.get("fallback_used"):
+        if outcome.stats.get("requested_strategy") in JEV_SCORED_STRATEGIES and outcome.stats.get("fallback_used"):
             text = "（JEV 精排未完成，本次返回粗排结果）\n" + text
         return text
 
