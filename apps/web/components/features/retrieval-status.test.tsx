@@ -39,6 +39,25 @@ describe("retrieval execution status", () => {
   });
 });
 
+describe("retrieval mode origin", () => {
+  const ran = { requested_strategy: "sag2", effective_strategy: "sag2", ranking: { method: "jev", fallback_reason: null } };
+  it("says the mode came from the agent persona", async () => {
+    expect(await render({ ...ran, strategy_origin: "persona" }, "sag2")).toBe("Using SAG2 evidence retrieval (persona default)");
+  });
+  it("says the mode came from the scoped sources", async () => {
+    expect(await render({ ...ran, strategy_origin: "source_default" }, "sag2")).toBe("Using SAG2 evidence retrieval (source default)");
+  });
+  it.each(["request", "global", "unexpected"])("stays silent for a %s origin when the execution is unchanged", async (origin) => {
+    expect(await render({ ...ran, strategy_origin: origin }, "sag2")).toBe("");
+  });
+  it("keeps the origin next to a changed execution", async () => {
+    const text = await render({ requested_strategy: "sag2", effective_strategy: "vector", strategy_origin: "source_default" }, "sag2");
+    expect(text).toContain("Using SAG2 evidence retrieval (source default)");
+    expect(text).toContain("Requested: SAG2 evidence retrieval");
+    expect(text).toContain("Actual: Fast (vector)");
+  });
+});
+
 describe("SAG2 execution status", () => {
   const success = {
     requested_strategy: "sag2", effective_strategy: "sag2", fallback_used: false,

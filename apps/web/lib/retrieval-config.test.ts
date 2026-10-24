@@ -5,6 +5,7 @@ import {
   isJevConfigDisabledReason,
   isJevScoredStrategy,
   isSearchStrategy,
+  isSearchStrategyRejectionCode,
   JEV_SCORED_STRATEGIES,
   needsJevQuickSetup,
   SEARCH_STRATEGIES,
@@ -98,6 +99,13 @@ describe("source default strategy", () => {
     expect(needsJevQuickSetup("multi", { multi: { reason: "jev_api_key_missing", message: "Key" } })).toBe(false);
     expect(needsJevQuickSetup("sag2", {})).toBe(false);
     expect(needsJevQuickSetup(null, disabled)).toBe(false);
+  });
+  it("recognises the ask rejections that mean the chosen mode cannot be served", () => {
+    for (const code of ["jev_not_configured", "jev_api_key_missing", "vector_provider_lacks_lexical", "sag2_relational_unsupported"]) {
+      expect(isSearchStrategyRejectionCode(code)).toBe(true);
+    }
+    expect(isSearchStrategyRejectionCode("stream_error")).toBe(false);
+    expect(isSearchStrategyRejectionCode(undefined)).toBe(false);
   });
   it("has an icon for every mode", () => {
     for (const strategy of SEARCH_STRATEGIES) expect(SEARCH_STRATEGY_ICONS[strategy.value]).toBeTypeOf("object");

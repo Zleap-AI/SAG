@@ -83,6 +83,21 @@ export function isJevConfigDisabledReason(reason: unknown): boolean {
   return JEV_CONFIG_DISABLED_REASONS.some((candidate) => candidate === reason);
 }
 
+/**
+ * Error codes the ask endpoint returns (HTTP 400, before streaming) when the
+ * requested mode cannot be served by this deployment. They mirror the reasons
+ * in `search_strategies_disabled`, so the UI treats them the same way.
+ */
+export const SEARCH_STRATEGY_REJECTION_CODES = [
+  ...JEV_CONFIG_DISABLED_REASONS,
+  "vector_provider_lacks_lexical",
+  "sag2_relational_unsupported",
+] as const;
+
+export function isSearchStrategyRejectionCode(code: unknown): boolean {
+  return SEARCH_STRATEGY_REJECTION_CODES.some((candidate) => candidate === code);
+}
+
 export function isSearchStrategy(value: unknown): value is SearchStrategy {
   return (
     typeof value === "string" &&

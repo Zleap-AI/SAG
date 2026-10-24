@@ -122,7 +122,7 @@ class FakeTransport implements ConversationTransport {
   readonly deleteCalls: string[] = [];
   readonly historyPages: MessagePage[] = [];
   readonly historyCursors: Array<string | null | undefined> = [];
-  readonly streamCalls: Array<{ webEnabled: boolean; knowledgeOnly?: boolean; sourceIds?: string[] }> = [];
+  readonly streamCalls: Array<{ webEnabled: boolean; knowledgeOnly?: boolean; sourceIds?: string[]; strategy?: string }> = [];
   approvalResult: Promise<void> | null = null;
   onEvent: ((event: AgentEvent) => void) | null = null;
   streamSignal: AbortSignal | null = null;
@@ -143,6 +143,7 @@ class FakeTransport implements ConversationTransport {
       webEnabled: input.webEnabled,
       knowledgeOnly: input.knowledgeOnly,
       sourceIds: input.sourceIds,
+      strategy: input.strategy,
     });
     this.onEvent = input.onEvent;
     this.streamSignal = input.signal;
@@ -190,6 +191,7 @@ class SequentialTransport extends FakeTransport {
       webEnabled: input.webEnabled,
       knowledgeOnly: input.knowledgeOnly,
       sourceIds: input.sourceIds,
+      strategy: input.strategy,
     });
     this.onEvent = input.onEvent;
     this.streamSignal = input.signal;
@@ -567,6 +569,21 @@ describe("conversation runtime", () => {
       { webEnabled: true, knowledgeOnly: undefined },
       { webEnabled: false, knowledgeOnly: undefined },
     ]);
+  });
+
+  it("forwards a pinned retrieval mode and omits it when nothing is pinned", async () => {
+    const transport = new FakeTransport();
+    const conversations = runtime(transport);
+    const sessionId = conversations.forThread("thread-1", { activate: true });
+
+    const first = conversations.send(sessionId, { query: "按 SAG2 检索", strategy: "sag2" });
+    expect(transport.streamCalls[0].strategy).toBe("sag2");
+    transport.streamResult.resolve({ status: "completed", runId: "run-1" });
+    await first;
+
+    await conversations.send(sessionId, { query: "跟随默认模式" });
+    expect(transport.streamCalls[1]).not.toHaveProperty("strategy", expect.anything());
+    expect(transport.streamCalls[1].strategy).toBeUndefined();
   });
 
   it("replaces buffered stream text with the canonical terminal answer and citations", async () => {
