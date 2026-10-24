@@ -35,10 +35,10 @@ function pointerEvent(type: string) {
   Object.defineProperties(event, { pointerId: { value: 1 }, pointerType: { value: "mouse" } });
   return event;
 }
-async function open(disabledMap?: SearchStrategyDisabledMap, value: SearchStrategy = "vector") {
+async function open(disabledMap?: SearchStrategyDisabledMap, value: SearchStrategy = "vector", hint?: string) {
   await act(async () => root.render(
     <NextIntlClientProvider locale="en-US" messages={messages}>
-      <SearchStrategyControl value={value} defaultValue="vector" onValueChange={onValueChange} disabledMap={disabledMap} />
+      <SearchStrategyControl value={value} defaultValue="vector" onValueChange={onValueChange} disabledMap={disabledMap} hint={hint} />
     </NextIntlClientProvider>,
   ));
   const trigger = container.querySelector<HTMLElement>('[data-testid="search-strategy"]')!;
@@ -59,6 +59,14 @@ describe("search strategy dropdown", () => {
     expect(item(items, "Fast (vector)").textContent).not.toContain("Paid");
     expect(item(items, "SAG2 evidence retrieval").textContent).toContain("BM25 recall scored over several JEV rounds");
     expect(document.body.querySelector('[data-testid$="-settings"]')).toBeNull();
+  });
+  it("shows where the current mode came from when a hint is given", async () => {
+    await open(undefined, "sag2", "Source default");
+    const hint = container.querySelector('[data-testid="search-strategy-hint"]');
+    expect(hint?.textContent).toContain("Source default");
+    expect(document.body.querySelector('[role="menu"]')?.textContent).toContain("Source default");
+    await open(undefined, "sag2");
+    expect(container.querySelector('[data-testid="search-strategy-hint"]')).toBeNull();
   });
   it("selects SAG2 when it is enabled", async () => {
     const items = await open();

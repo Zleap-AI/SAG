@@ -71,6 +71,12 @@ export interface Source {
   connector_kind: string;
   status: SourceStatus;
   deletion_job?: BackgroundJob | null;
+  /**
+   * Default retrieval mode for search and chat scoped to this source.
+   * `null` follows the global default; older backends omit the field, which
+   * callers must treat the same way (`source.default_search_strategy ?? null`).
+   */
+  default_search_strategy: SearchStrategy | null;
   document_count: number;
   chunk_count: number;
   event_count: number;

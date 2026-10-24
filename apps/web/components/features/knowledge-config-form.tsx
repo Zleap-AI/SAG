@@ -30,6 +30,12 @@ import {
   SEARCH_STRATEGIES,
   type JevScoredStrategy,
 } from "@/lib/retrieval-config";
+import {
+  JEV_DEFAULT_MODEL,
+  JEV_ENDPOINTS,
+  providerForEndpoint,
+  type JevProvider,
+} from "@/lib/jev-config";
 import type { ModelConfig, ModelConfigPatch } from "@/lib/types";
 import {
   Tooltip,
@@ -38,12 +44,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-const JEV_DEFAULT_MODEL = "jev-latest";
-const JEV_ENDPOINTS = {
-  "302": "https://api.302.ai/typesafeai/v1/systemone",
-  official: "https://api.typesafe.ai/v1/systemone",
-} as const;
-type JevProvider = keyof typeof JEV_ENDPOINTS | "custom";
 type SavedJevDraft = {
   endpoint: string;
   model: string;
@@ -51,12 +51,6 @@ type SavedJevDraft = {
   failurePolicy: ModelConfig["jev_failure_policy"];
   strategy: ModelConfig["search_strategy"];
 };
-
-function providerForEndpoint(endpoint: string): JevProvider {
-  if (!endpoint.trim() || endpoint.trim() === JEV_ENDPOINTS["302"]) return "302";
-  if (endpoint.trim() === JEV_ENDPOINTS.official) return "official";
-  return "custom";
-}
 
 export function KnowledgeConfigForm() {
   const t = useTranslations("KnowledgeConfig");
