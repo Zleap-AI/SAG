@@ -23,6 +23,7 @@ from sag_api.enums import JEV_SCORED_STRATEGIES, SEARCH_STRATEGIES, normalize_se
 from sag_api.generation import build_citations
 from sag_api.sag import RetrievedSection
 from sag_api.services.retrieval_service import (
+    common_source_default_strategy,
     event_scores_from_evidence,
     published_document_inputs,
     recall_event_scores,
@@ -79,11 +80,11 @@ def _events_by_section(events: list | None) -> dict[tuple[str, str], list]:
     return grouped
 
 
-def knowledge_search_strategy(persona: dict[str, Any], configuration: Any = settings) -> str:
-    """Keep the legacy vector default unless the user explicitly enables a JEV-scored mode."""
+def knowledge_search_strategy(persona: dict[str, Any], configuration: Any = settings, sources=()) -> str:
+    """Persona choice → shared source default → legacy default (vector unless a JEV mode is global)."""
     configured = normalize_search_strategy(configuration.search_strategy)
     default = configured if configured in JEV_SCORED_STRATEGIES else "vector"
-    value = persona.get("search_strategy") or default
+    value = persona.get("search_strategy") or common_source_default_strategy(sources) or default
     if default in JEV_SCORED_STRATEGIES and (
         not isinstance(value, str) or normalize_search_strategy(value) not in SEARCH_STRATEGIES
     ):
@@ -249,7 +250,7 @@ class SearchContextTool(Tool):
         if not query or not ctx.sources:
             return ToolResult(content="（无相关资料）", citations=[], data={"section_count": 0})
         persona = ctx.persona or {}
-        strategy = knowledge_search_strategy(persona, getattr(ctx.engine_manager, "_settings", settings))
+        strategy = knowledge_search_strategy(persona, getattr(ctx.engine_manager, "_settings", settings), ctx.sources)
         top_k = args.get("top_k") or persona.get("top_k")
         limit = max(1, min(int(top_k or 8), 50))
         source_refs = {s.sag_source_config_id: {"id": s.id, "name": s.name} for s in ctx.sources}

@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from sag_api.enums import ConnectorKind, SourceStatus, SourceType
+from sag_api.enums import ConnectorKind, SearchStrategy, SourceStatus, SourceType
 from sag_api.schemas.job import JobOut
 
 
@@ -22,12 +22,16 @@ class SourceCreate(BaseModel):
     description: str = ""
     connector_kind: ConnectorKind = ConnectorKind.FILE_UPLOAD
     config: dict[str, Any] = Field(default_factory=dict)
+    # 默认检索模式；None 表示跟随全局默认。
+    default_search_strategy: SearchStrategy | None = None
 
 
 class SourceUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     description: str | None = None
     status: SourceStatus | None = None
+    # 显式传 null 表示改回跟随全局默认；未出现则保持不变。
+    default_search_strategy: SearchStrategy | None = None
 
 
 class SourceOut(BaseModel):
@@ -42,6 +46,7 @@ class SourceOut(BaseModel):
     document_count: int
     chunk_count: int
     event_count: int
+    default_search_strategy: SearchStrategy | None = None
     created_at: datetime
     updated_at: datetime
     deletion_job: JobOut | None = None

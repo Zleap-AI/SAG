@@ -348,7 +348,7 @@ def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict])
         from sag_api.tools.builtin import knowledge_search_strategy
 
         configuration = getattr(host_context.engine_manager, "_settings", settings)
-        strategy = knowledge_search_strategy(host_context.persona, configuration)
+        strategy = knowledge_search_strategy(host_context.persona, configuration, host_context.sources)
         # Keep this run's mode stable while the model prepares the tool call.
         host_context = replace(host_context, persona={**host_context.persona, "search_strategy": strategy})
         if strategy == "multi_jev":
