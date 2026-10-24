@@ -5,19 +5,25 @@ import dynamic from "next/dynamic";
 import { useTranslations } from "next-intl";
 import {
   Clock,
+  Columns2,
   History,
   Library,
   List,
   Search as SearchIcon,
   Sparkles,
+  Trophy,
   Waypoints,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
 
+import type { EvalStrategyResult } from "@/lib/api";
 import {
   getSearchStrategy,
   getSearchStrategiesDisabled,
+  isJevScoredStrategy,
+  SEARCH_STRATEGIES,
+  SEARCH_STRATEGY_ICONS,
   type SearchStrategy,
 } from "@/lib/retrieval-config";
 import type { SearchResultSort } from "@/lib/search-result-sort";
@@ -28,6 +34,7 @@ import type {
   Citation,
   SearchEvent,
   SearchResponse,
+  Section,
   Source,
 } from "@/lib/types";
 import { useApp } from "@/components/features/app-shell";
@@ -45,9 +52,17 @@ import {
   SearchSummaryCard,
   sectionCitation,
 } from "@/components/features/search/search-panel-sections";
+import { SearchCompareResults } from "@/components/features/search/search-compare-results";
+import {
+  COMPARE_MAX_STRATEGIES,
+  COMPARE_MIN_STRATEGIES,
+  useSearchCompare,
+} from "@/components/features/search/use-search-compare";
 import { SearchStrategyControl } from "@/components/features/search-strategy-control";
+import { strategyBadgeClassName } from "@/components/features/retrieval-compare-parts";
 import { EmptyState } from "@/components/features/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { Toggle } from "@/components/ui/toggle";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
@@ -135,6 +150,18 @@ export function SearchPanel({
   const hydrationKeyRef = React.useRef("");
   const contentView = search.contentView;
   const changeContentView = search.setContentView;
+  const disabledMap = React.useMemo(
+    () => getSearchStrategiesDisabled(capabilities, searchStrategies("unsupportedBackend")),
+    [capabilities, searchStrategies],
+  );
+  const enabledStrategies = React.useMemo(
+    () => SEARCH_STRATEGIES.map((item) => item.value).filter((value) => !disabledMap[value]),
+    [disabledMap],
+  );
+  const compare = useSearchCompare({
+    enabledStrategies,
+    judgeAvailable: Boolean(capabilities?.llm_configured),
+  });
 
   const executeSearch = React.useCallback(
     async (options: {
@@ -166,6 +193,62 @@ export function SearchPanel({
     },
     [changeContentView, onSearchComplete, onSearchError, onSearchStart, search, t],
   );
+
+  const compareRun = compare.run;
+  const runCompare = React.useCallback(async (query?: string) => {
+    const text = (query ?? search.query).trim();
+    if (!text) return null;
+    setMentionOpen(false);
+    changeContentView("results");
+    // Same scope resolution as the normal search: no scope means every source.
+    return compareRun({
+      query: text,
+      sourceIds: search.scoped.length ? search.scoped.map((source) => source.id) : undefined,
+      topK: search.topK,
+    });
+  }, [changeContentView, compareRun, search.query, search.scoped, search.topK]);
+
+  function toggleCompare(on: boolean) {
+    if (on) compare.enable(search.strategy);
+    else compare.disable();
+  }
+
+  /** Pin the compared mode and land in the regular results with the same question. */
+  function adoptStrategy(strategy: SearchStrategy) {
+    const query = (compare.result?.query || compare.lastQuery || search.query).trim();
+    search.setStrategy(strategy);
+    compare.disable();
+    if (!query) return;
+    search.setQuery(query);
+    void executeSearch({ query, strategy, saveExploration: false });
+  }
+
+  /** A compared passage opens through the same detail flow as the normal list. */
+  function openCompareSection(section: Section, index: number, column: EvalStrategyResult) {
+    const citation = sectionCitation(section, index);
+    if (onCitationClick) {
+      onCitationClick(citation, {
+        query: compare.result?.query ?? compare.lastQuery,
+        sections: column.sections,
+        events: [],
+        entities: [],
+        relations: [],
+        source_hits: [],
+        summary: "",
+        exploration_id: null,
+        stats: column.stats,
+      });
+      return;
+    }
+    if (!section.chunk_id || !section.source_id) return;
+    open({
+      kind: "chunk",
+      sourceId: section.source_id,
+      chunkId: section.chunk_id,
+      heading: section.heading,
+      sourceName: section.source_name ?? undefined,
+    });
+  }
 
   const activitySourceIds = React.useMemo(
     () => search.scoped.map((source) => source.id).sort(),
@@ -286,6 +369,10 @@ export function SearchPanel({
 
   async function run(e?: React.FormEvent) {
     e?.preventDefault();
+    if (compare.enabled) {
+      await runCompare();
+      return;
+    }
     await executeSearch({
       saveExploration: false,
     });
@@ -301,7 +388,7 @@ export function SearchPanel({
   }
 
   const activeView = showGraphView ? view : "list";
-  const graphViewActive = activeView === "graph" && Boolean(search.result?.events.length);
+  const graphViewActive = !compare.enabled && activeView === "graph" && Boolean(search.result?.events.length);
   const citations = React.useMemo(
     () => search.result?.sections.map(sectionCitation) ?? [],
     [search.result],
@@ -328,6 +415,24 @@ export function SearchPanel({
     current: currentViewLabel,
     next: nextViewLabel,
   });
+  // In compare mode the scope chips move under the mode chips so the input keeps its room.
+  const scopeChips = search.scoped.map((sc) => (
+    <span
+      key={sc.id}
+      className="inline-flex max-w-[min(100%,12rem)] items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary"
+    >
+      <Library className="size-3 shrink-0" />
+      <span className="truncate">{sc.name}</span>
+      <button
+        type="button"
+        aria-label={t("removeSource", { name: sc.name })}
+        onClick={() => search.removeSource(sc.id)}
+        className="rounded-sm text-primary/70 hover:bg-primary/15 hover:text-primary"
+      >
+        <X className="size-2.5" />
+      </button>
+    </span>
+  ));
 
   return (
     <div
@@ -352,29 +457,13 @@ export function SearchPanel({
               <button
                 type="submit"
                 aria-label={t("search")}
-                disabled={!search.query.trim() || search.busy}
+                disabled={!search.query.trim() || (compare.enabled ? !compare.canRun : search.busy)}
                 className="absolute left-2 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none"
               >
                 <SearchIcon className="size-4" />
               </button>
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
-                {search.scoped.map((sc) => (
-                  <span
-                    key={sc.id}
-                    className="inline-flex max-w-[min(100%,12rem)] items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary"
-                  >
-                    <Library className="size-3 shrink-0" />
-                    <span className="truncate">{sc.name}</span>
-                    <button
-                      type="button"
-                      aria-label={t("removeSource", { name: sc.name })}
-                      onClick={() => search.removeSource(sc.id)}
-                      className="rounded-sm text-primary/70 hover:bg-primary/15 hover:text-primary"
-                    >
-                      <X className="size-2.5" />
-                    </button>
-                  </span>
-                ))}
+                {!compare.enabled && scopeChips}
                 <input
                   ref={inputRef}
                   type="text"
@@ -385,6 +474,7 @@ export function SearchPanel({
                     const nextMentionOpen = mentionTerm(v) !== null;
                     const cancelledSearch = search.busy && !v.trim();
                     search.setQuery(v);
+                    if (!v.trim()) compare.reset();
                     if (cancelledSearch) onSearchCancel?.();
                     setMentionOpen(nextMentionOpen);
                   }}
@@ -428,6 +518,7 @@ export function SearchPanel({
                   onClick={() => {
                     const cancelledSearch = search.busy;
                     search.clear();
+                    compare.reset();
                     if (cancelledSearch) onSearchCancel?.();
                     setMentionOpen(false);
                     inputRef.current?.focus();
@@ -438,13 +529,26 @@ export function SearchPanel({
                   <X className="size-3.5" />
                 </button>
               )}
-              <SearchStrategyControl
-                value={search.strategy}
-                defaultValue={search.defaultStrategy}
-                onValueChange={changeStrategy}
-                disabledMap={getSearchStrategiesDisabled(capabilities, searchStrategies("unsupportedBackend"))}
-                hint={search.strategyOrigin === "scope" ? retrievalModes("scopeDefaultHint") : undefined}
-              />
+              <Toggle
+                size="sm"
+                pressed={compare.enabled}
+                onPressedChange={toggleCompare}
+                aria-label={t("compareAria")}
+                data-testid="search-compare-toggle"
+                className="h-7 min-w-0 shrink-0 gap-1 rounded-md px-2 text-[11px] font-normal text-muted-foreground hover:bg-muted hover:text-foreground data-[state=on]:bg-primary/10 data-[state=on]:text-primary [&_svg]:size-3.5"
+              >
+                <Columns2 />
+                {t("compare")}
+              </Toggle>
+              {!compare.enabled && (
+                <SearchStrategyControl
+                  value={search.strategy}
+                  defaultValue={search.defaultStrategy}
+                  onValueChange={changeStrategy}
+                  disabledMap={disabledMap}
+                  hint={search.strategyOrigin === "scope" ? retrievalModes("scopeDefaultHint") : undefined}
+                />
+              )}
             </div>
             {mentionOpen && (
               <div className="absolute left-0 top-full z-20 mt-2 w-full">
@@ -490,6 +594,7 @@ export function SearchPanel({
               type="button"
               onClick={() => {
                 search.cancel();
+                compare.cancel();
                 onSearchCancel?.();
                 onCancel?.();
               }}
@@ -499,6 +604,63 @@ export function SearchPanel({
             </button>
           )}
         </div>
+        {compare.enabled && (
+          <div
+            data-testid="search-compare-config"
+            className="flex flex-col gap-2 rounded-lg border bg-card/60 px-3 py-2"
+          >
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              <ToggleGroup
+                type="multiple"
+                size="sm"
+                value={compare.strategies}
+                onValueChange={compare.selectStrategies}
+                aria-label={t("compareModesAria")}
+                className="flex-wrap justify-start gap-1.5"
+              >
+                {enabledStrategies.map((value) => {
+                  const Icon = SEARCH_STRATEGY_ICONS[value];
+                  const on = compare.strategies.includes(value);
+                  return (
+                    <ToggleGroupItem
+                      key={value}
+                      value={value}
+                      disabled={!on && compare.strategies.length >= COMPARE_MAX_STRATEGIES}
+                      data-testid={`search-compare-chip-${value}`}
+                      className="h-7 min-w-0 gap-1.5 rounded-full border border-border bg-transparent px-2.5 text-xs font-normal text-muted-foreground hover:text-foreground data-[state=on]:border-primary/40 data-[state=on]:bg-primary/10 data-[state=on]:text-primary [&_svg]:size-3.5"
+                    >
+                      <Icon />
+                      {searchStrategies(getSearchStrategy(value).labelKey)}
+                      {isJevScoredStrategy(value) && (
+                        <span className={strategyBadgeClassName}>{searchStrategies("paid")}</span>
+                      )}
+                    </ToggleGroupItem>
+                  );
+                })}
+              </ToggleGroup>
+              <span className="text-[11px] text-muted-foreground" data-testid="search-compare-hint">
+                {compare.strategies.length < COMPARE_MIN_STRATEGIES ? t("compareMin") : t("compareHint")}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
+              {compare.judgeAvailable && (
+                <label className="flex items-center gap-2">
+                  <Trophy className="size-3.5" />
+                  {t("judgeToggle")}
+                  <Switch
+                    checked={compare.judge}
+                    onCheckedChange={compare.setJudge}
+                    aria-label={t("judgeToggle")}
+                    data-testid="search-compare-judge"
+                  />
+                </label>
+              )}
+              <div className="flex min-w-0 flex-wrap items-center gap-1">
+                {search.scoped.length ? scopeChips : <span>{t("compareScopeAll")}</span>}
+              </div>
+            </div>
+          </div>
+        )}
       </form>
 
       {showRecentActivity && showContentSwitcher && (
@@ -516,7 +678,7 @@ export function SearchPanel({
             <ToggleGroupItem
               value="history"
               className="gap-1.5 px-3"
-              disabled={search.busy}
+              disabled={search.busy || compare.busy}
             >
               <History className="size-3.5" />
               {t("history")}
@@ -524,7 +686,7 @@ export function SearchPanel({
             <ToggleGroupItem
               value="activity"
               className="gap-1.5 px-3"
-              disabled={search.busy}
+              disabled={search.busy || compare.busy}
             >
               <List className="size-3.5" />
               {t("recentActivity")}
@@ -533,7 +695,44 @@ export function SearchPanel({
         </div>
       )}
 
-      {contentView === "results" && search.busy && search.result === null ? (
+      {compare.enabled && contentView === "results" ? (
+        <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-2" data-testid="search-compare-results">
+          {compare.busy || compare.result || compare.error ? (
+            <>
+              <div className="flex items-center justify-between gap-3 px-1">
+                <h2 className="flex items-center gap-2 text-sm font-medium">
+                  {t("results")}
+                  <span className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground">
+                    <Columns2 className="size-3" />
+                    {t("compare")}
+                  </span>
+                </h2>
+                {!compact && compare.lastQuery && (
+                  <span className="min-w-0 truncate text-xs text-muted-foreground">{compare.lastQuery}</span>
+                )}
+              </div>
+              <SearchCompareResults
+                data={compare.result}
+                busy={compare.busy}
+                pendingStrategies={compare.pendingStrategies}
+                error={compare.error}
+                compact={compact}
+                onAdopt={adoptStrategy}
+                onOpenSection={openCompareSection}
+                onRetry={() => void runCompare(compare.lastQuery)}
+              />
+            </>
+          ) : (
+            <div className="flex flex-1 items-center justify-center px-6 py-10 text-center">
+              <div>
+                <Columns2 className="mx-auto size-6 text-muted-foreground/55" />
+                <p className="mt-2 text-sm font-medium">{t("compareStartTitle")}</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("compareHint")}</p>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : contentView === "results" && search.busy && search.result === null ? (
         <div className="mx-auto w-full max-w-3xl">
           <SearchScanning />
         </div>
