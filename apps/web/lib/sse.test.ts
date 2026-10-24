@@ -40,4 +40,17 @@ describe("agent ask transport", () => {
       web_enabled: webEnabled,
     });
   });
+
+  it("sends the retrieval mode only when the caller pinned one", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(completedResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    await streamAgentAsk("agent-1", "thread-1", { query: "问", web_enabled: false, strategy: "sag2" }, vi.fn());
+    fetchMock.mockResolvedValue(completedResponse());
+    await streamAgentAsk("agent-1", "thread-1", { query: "问", web_enabled: false }, vi.fn());
+
+    const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String((call[1] as RequestInit).body)));
+    expect(bodies[0]).toMatchObject({ strategy: "sag2" });
+    expect(bodies[1]).not.toHaveProperty("strategy");
+  });
 });

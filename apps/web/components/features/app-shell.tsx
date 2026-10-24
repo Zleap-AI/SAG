@@ -133,6 +133,7 @@ const CONVERSATION_TRANSPORT: ConversationTransport = {
     sourceIds,
     knowledgeOnly,
     webEnabled,
+    strategy,
     onEvent,
     signal,
   }) => {
@@ -145,6 +146,7 @@ const CONVERSATION_TRANSPORT: ConversationTransport = {
       attachment_count: attachmentIds?.length ?? 0,
       source_ids: sourceIds,
       web_enabled: webEnabled,
+      strategy,
     });
     const promise = streamAgentAsk(
       agentId,
@@ -155,6 +157,8 @@ const CONVERSATION_TRANSPORT: ConversationTransport = {
         source_ids: sourceIds,
         knowledge_only: knowledgeOnly === true || !webEnabled,
         web_enabled: webEnabled,
+        // Only an explicit per-turn pick travels; otherwise the backend resolves the mode.
+        ...(strategy ? { strategy } : {}),
       },
       (event) => {
         // 只记录关键事件，跳过高频 message.delta

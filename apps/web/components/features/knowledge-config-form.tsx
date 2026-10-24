@@ -22,7 +22,20 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { api, ApiError } from "@/lib/api";
-import { getSearchStrategiesDisabled, SEARCH_STRATEGIES } from "@/lib/retrieval-config";
+import {
+  getSearchStrategiesDisabled,
+  isJevConfigDisabledReason,
+  isJevScoredStrategy,
+  JEV_SCORED_STRATEGIES,
+  SEARCH_STRATEGIES,
+  type JevScoredStrategy,
+} from "@/lib/retrieval-config";
+import {
+  JEV_DEFAULT_MODEL,
+  JEV_ENDPOINTS,
+  providerForEndpoint,
+  type JevProvider,
+} from "@/lib/jev-config";
 import type { ModelConfig, ModelConfigPatch } from "@/lib/types";
 import {
   Tooltip,
@@ -31,12 +44,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-const JEV_DEFAULT_MODEL = "jev-latest";
-const JEV_ENDPOINTS = {
-  "302": "https://api.302.ai/typesafeai/v1/systemone",
-  official: "https://api.typesafe.ai/v1/systemone",
-} as const;
-type JevProvider = keyof typeof JEV_ENDPOINTS | "custom";
 type SavedJevDraft = {
   endpoint: string;
   model: string;
@@ -44,12 +51,6 @@ type SavedJevDraft = {
   failurePolicy: ModelConfig["jev_failure_policy"];
   strategy: ModelConfig["search_strategy"];
 };
-
-function providerForEndpoint(endpoint: string): JevProvider {
-  if (!endpoint.trim() || endpoint.trim() === JEV_ENDPOINTS["302"]) return "302";
-  if (endpoint.trim() === JEV_ENDPOINTS.official) return "official";
-  return "custom";
-}
 
 export function KnowledgeConfigForm() {
   const t = useTranslations("KnowledgeConfig");
@@ -82,10 +83,26 @@ export function KnowledgeConfigForm() {
     const url = new URL(jevEndpoint.trim());
     validEndpoint = ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
   } catch { /* An empty or incomplete draft cannot enable JEV. */ }
-  const jevDraftReady = validEndpoint && Boolean(jevModel.trim());
+  // A saved key only applies to the endpoint it was saved for.
+  const savedKeyApplies = jevKeySet && jevEndpoint.trim() === savedJevEndpoint;
+  // JEV is a paid service: a key saved for this exact endpoint or typed into the draft is required.
+  const jevKeyReady = savedKeyApplies || Boolean(jevKey.trim());
+  const jevServiceDraftValid = validEndpoint && Boolean(jevModel.trim());
+  const jevDraftReady = jevServiceDraftValid && jevKeyReady;
   const disabledStrategies = getSearchStrategiesDisabled(capabilities, strategies("unsupportedBackend"), jevDraftReady);
   const jevStorageUnsupported = disabledStrategies.multi_jev?.reason === "vector_provider_lacks_lexical";
-  const jevUnsupported = jevStorageUnsupported || disabledStrategies.multi_jev?.reason === "unsupported_backend";
+  const sag2StorageUnsupported = disabledStrategies.sag2?.reason === "sag2_relational_unsupported";
+  // A JEV mode is serviceable when only its (shared) service configuration stands in the way.
+  const jevServiceable = (mode: JevScoredStrategy) => {
+    const reason = disabledStrategies[mode]?.reason;
+    return reason === undefined || isJevConfigDisabledReason(reason);
+  };
+  const jevUnsupported = !JEV_SCORED_STRATEGIES.some(jevServiceable);
+  // Only hide the service form when storage rules out every JEV mode; PostgreSQL
+  // still runs SAG2 even though JEV reranking lacks lexical search there.
+  const jevFormHidden = jevStorageUnsupported && !jevServiceable("sag2");
+  const savedJevModeBlocked = savedJevDraft !== null && isJevScoredStrategy(savedJevDraft.strategy)
+    && Boolean(disabledStrategies[savedJevDraft.strategy]) && !jevServiceable(savedJevDraft.strategy);
   const strategyChanged = savedJevDraft !== null && strategy !== savedJevDraft.strategy;
   const legacyVectorFallback = !strategyChanged && strategy === "multi_es_fast"
     && disabledStrategies.multi_es_fast?.reason === "vector_provider_lacks_lexical";
@@ -93,12 +110,13 @@ export function KnowledgeConfigForm() {
   const storageName = vectorProvider ? ({
     lancedb: "LanceDB", es: "Elasticsearch", pgvector: "PostgreSQL (pgvector)", oceanbase: "OceanBase",
   }[vectorProvider] ?? vectorProvider) : null;
-  const invalidJevDraft = !jevUnsupported && (
-    (Boolean(jevEndpoint.trim()) && !jevDraftReady)
+  const jevTimeoutValid = Number.isFinite(jevTimeout) && jevTimeout >= 0.1 && jevTimeout <= 120;
+  const jevDraftFieldsInvalid = (Boolean(jevEndpoint.trim()) && !jevServiceDraftValid)
     || !jevModel.trim()
-    || !Number.isFinite(jevTimeout) || jevTimeout < 0.1 || jevTimeout > 120
-    || (strategy === "multi_jev" && !jevDraftReady)
-  );
+    || !jevTimeoutValid;
+  const jevModeSelected = isJevScoredStrategy(strategy);
+  const jevKeyMissing = jevModeSelected && !jevKeyReady;
+  const invalidJevDraft = !jevUnsupported && (jevDraftFieldsInvalid || (jevModeSelected && !jevDraftReady));
 
   const hydrate = React.useCallback((config: ModelConfig) => {
     const endpoint = config.jev_endpoint?.trim() || JEV_ENDPOINTS["302"];
@@ -179,7 +197,8 @@ export function KnowledgeConfigForm() {
         || jevTimeout !== savedJevDraft.timeout
         || jevFailurePolicy !== savedJevDraft.failurePolicy
         || Boolean(jevKey.trim())
-        || (strategy === "multi_jev" && savedJevDraft.strategy !== "multi_jev")
+        // Enabling either JEV-scored mode persists the (possibly untouched) service draft with it.
+        || (isJevScoredStrategy(strategy) && strategy !== savedJevDraft.strategy)
       );
       const patch: ModelConfigPatch = {
         document_chunk_max_tokens: chunkMaxTokens,
@@ -371,6 +390,11 @@ export function KnowledgeConfigForm() {
                         <SelectItem key={value} value={value} disabled={Boolean(info)}>
                           <span className="flex items-center gap-1.5">
                             {strategies(labelKey)}
+                            {isJevScoredStrategy(value) && (
+                              <span className="rounded bg-muted px-1 py-0.5 text-[10px] leading-none text-muted-foreground">
+                                {strategies("paid")}
+                              </span>
+                            )}
                             {info && (
                               <span className="text-[10px] text-muted-foreground">
                                 {strategies("disabledSuffix")}
@@ -409,15 +433,27 @@ export function KnowledgeConfigForm() {
             </Field>
           </div>
         </SettingsRow>
-        <SettingsRow title={t("jevTitle")} description={jevStorageUnsupported
+        <div data-settings-section="jev" tabIndex={-1} className="scroll-mt-6 border-t outline-none">
+        <SettingsRow title={t("jevTitle")} description={jevFormHidden
           ? t("jevStorageUnavailable", { provider: storageName ?? vectorProvider ?? "" })
-          : t("jevDescription")}>
-          {jevStorageUnsupported ? (
+          : <>
+            {t("jevDescription")}
+            <span className="mt-1 block">{t("jevSharedNotice")}</span>
+          </>}>
+          {jevFormHidden ? (
             <div className="space-y-2 text-sm leading-6 text-muted-foreground">
-              <p>{t(savedJevDraft?.strategy === "multi_jev" ? "jevStorageSelectCompatible" : "jevStorageUnchanged")}</p>
+              <p>{t(savedJevModeBlocked ? "jevStorageSelectCompatible" : "jevStorageUnchanged")}</p>
+              {sag2StorageUnsupported && <p>{t("sag2StorageUnavailable")}</p>}
               <p>{t("jevStorageNoChanges")}</p>
             </div>
           ) : <>
+          {(jevStorageUnsupported || sag2StorageUnsupported || savedJevModeBlocked) && (
+            <div className="mb-4 space-y-1 text-sm leading-6 text-muted-foreground">
+              {jevStorageUnsupported && <p>{t("jevStorageUnavailable", { provider: storageName ?? vectorProvider ?? "" })}</p>}
+              {sag2StorageUnsupported && <p>{t("sag2StorageUnavailable")}</p>}
+              {savedJevModeBlocked && <p>{t("jevStorageSelectCompatible")}</p>}
+            </div>
+          )}
           <fieldset disabled={jevUnsupported || saving || testingJev} className="grid min-w-0 gap-4 sm:grid-cols-2">
             <Field className="sm:col-span-2">
               <FieldLabel htmlFor="kb-jev-provider">{t("jevProvider")}</FieldLabel>
@@ -447,8 +483,9 @@ export function KnowledgeConfigForm() {
             <Field>
               <FieldLabel htmlFor="kb-jev-api-key">{t("jevKey")}</FieldLabel>
               <Input id="kb-jev-api-key" type="password" autoComplete="new-password" value={jevKey}
-                placeholder={jevKeySet && jevEndpoint.trim() === savedJevEndpoint ? t("jevKeyConfigured")
-                  : jevProvider === "custom" ? t("jevKeyOptional")
+                aria-invalid={jevKeyMissing || undefined}
+                placeholder={savedKeyApplies ? t("jevKeyConfigured")
+                  : jevProvider === "custom" ? t("jevKeyRequiredPlaceholder")
                     : t("jevKeyProviderPlaceholder", { provider: jevProvider === "302" ? "302.AI" : "TypeSafe" })}
                 onChange={(event) => { setJevKey(event.target.value); setJevTestResult(null); }} />
               {jevProvider !== "custom" && <FieldDescription>{t("jevKeyProviderDescription", { provider: jevProvider === "302" ? "302.AI" : "TypeSafe" })}</FieldDescription>}
@@ -474,10 +511,10 @@ export function KnowledgeConfigForm() {
             </Field>
           </fieldset>
           {jevUnsupported && <p className="text-sm text-muted-foreground">{strategies("unsupportedBackend")}</p>}
-          {invalidJevDraft && <p role="alert" className="text-sm text-destructive">{t("jevInvalidDraft")}</p>}
+          {invalidJevDraft && <p role="alert" className="text-sm text-destructive">{t(jevDraftFieldsInvalid ? "jevInvalidDraft" : "jevKeyRequired")}</p>}
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <Button type="button" variant="outline" size="sm" onClick={() => void testJev()}
-              disabled={jevUnsupported || !jevDraftReady || invalidJevDraft || saving || testingJev}>
+              disabled={jevUnsupported || !jevDraftReady || jevDraftFieldsInvalid || saving || testingJev}>
               {testingJev ? <Spinner /> : <FlaskConical />}
               {testingJev ? t("jevTesting") : t("jevTest")}
             </Button>
@@ -486,6 +523,7 @@ export function KnowledgeConfigForm() {
           </div>
           </>}
         </SettingsRow>
+        </div>
       </SettingsSection>
 
       <div className="flex justify-end border-t pt-4">

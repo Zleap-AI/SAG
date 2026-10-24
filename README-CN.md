@@ -62,7 +62,7 @@ SAG 不是传统 RAG 与 GraphRAG 的融合，而是一套替代二者的原创�
 | 能力 | 解决的问题 |
 | --- | --- |
 | 知识导入 | 文件与网页信源、文档解析、分块、向量化、事件/实体抽取、后台处理 |
-| 检索 | 跨信源或指定信源检索，支持快速（`vector` / `multi_es_fast`）、精确（`multi`）与可选 JEV 精排（`multi_jev`）模式 |
+| 检索 | 跨信源或指定信源检索，支持快速（`vector` / `multi_es_fast`）、精确（`multi`）、可选 JEV 精排（`multi_jev`）与 SAG2 证据检索（`sag2`）模式 |
 | 原文溯源 | 每条检索结果和引用都能打开对应的原文块 |
 | 知识图谱 | 查看事件、实体及其可查询的关联关系 |
 | Agent 对话 | 基于指定信源进行多轮问答，并提供可点击引用 |
@@ -566,12 +566,17 @@ config = EngineConfig.from_env()
 | 快速（multi_es-fast） | `multi_es_fast` | BM25 实体召回与事件多跳检索，跳过 LLM 精排 |
 | 精确 | `multi` | 结合实体关系与 LLM 精排，结果更完整 |
 | JEV 精排 | `multi_jev` | 召回与图扩展后，通过独立 JEV 服务为候选证据评分 |
+| SAG2 证据检索 | `sag2` | 由 [zleap-sag2](https://pypi.org/project/zleap-sag2/) 只读直搜关系库：BM25 召回后用 JEV 服务多轮评分，不依赖向量库 |
 
-这里列出的是应用/API 策略名称；应用将 `multi` 映射到 Python 引擎的 `full_expand`，将 `multi_es_fast` 映射到 `pruned_expand_rff`。可用性取决于存储能力：`multi_es_fast` 需要词法检索支持。
+这里列出的是应用/API 策略名称；应用将 `multi` 映射到 Python 引擎的 `full_expand`，将 `multi_es_fast` 映射到 `pruned_expand_rff`，`sag2` 由独立的 `zleap-sag2` 引擎执行。可用性取决于存储能力：`multi_es_fast` 与 `multi_jev` 需要词法检索支持，`sag2` 需要 SQLite 或 PostgreSQL 关系库。
 
-在“设置 → 知识库 → 检索”配置 302.AI、TypeSafe 官方或自定义 JEV 服务（默认 `jev-latest`，独立 API Key），再选择 **JEV 精排**。仅保存服务不会启用；默认限时 30 秒、失败报错，可选择粗排降级。
+每个信源可在创建或编辑时设置**默认检索模式**；未设置则跟随全局默认。探索页与问答页的输入框都提供模式控件，可为当前查询或当前轮次临时切换；探索页还可开启「对比」，用同一问题并排比较 2–3 种模式的耗时、召回与用量，并一键采用其中一种。搜索与问答按“本次显式选择 → Agent 人格 → 范围内信源的共同默认 → 全局默认”解析模式，范围内信源默认不一致时按全局默认处理；结果 `stats.strategy_origin` 标明来源。该设置只影响检索，不改变文档入库流程。
 
-支持 LanceDB、Elasticsearch，暂不支持 pgvector；PostgreSQL 作为关系库不受影响。未启用时沿用原检索策略，已有文档无需重新入库。效果与成本见[更新日志](CHANGELOG.md#jev-reranking)。
+在“设置 → 知识库 → 检索”配置 302.AI、TypeSafe 官方或自定义 JEV 服务（默认 `jev-latest`，独立 API Key），再选择 **JEV 精排** 或 **SAG2 证据检索**；创建信源时选择 JEV 模式也可在对话框内直接完成该配置。JEV 是付费服务：仅保存服务不会启用，选择任一 JEV 模式前必须填写 API Key。JEV 精排默认限时 30 秒、失败报错，可选择粗排降级。
+
+**SAG2 证据检索**与 JEV 精排共用同一服务配置，但不经向量库：它直接只读 SAG 的 SQLite / PostgreSQL 关系库（首期不支持 MySQL / OceanBase），文档分块入库后即可检索，不要求事件抽取完成，pgvector 单库部署也可使用。每次检索会扫描所选信源的全部段落并多轮调用 JEV，用量高于 JEV 精排；失败直接报错，不支持粗排降级。候选数、超时、并发与范围上限等调优参数见 `apps/api/.env.example` 的 `SAG_SAG2_*`。使用 PostgreSQL 时，连接用户需能在目标 schema 创建并读写 `sag2_state`、`sag2_search_sessions` 两张辅助表，并对 `sag2_state` 执行 `LOCK TABLE`；SAG 的业务表保持只读。
+
+JEV 精排支持 LanceDB、Elasticsearch，暂不支持 pgvector；PostgreSQL 作为关系库不受影响。未启用时沿用原检索策略，已有文档无需重新入库。效果与成本见[更新日志](CHANGELOG.md#jev-reranking)。
 
 #### 存储后端
 

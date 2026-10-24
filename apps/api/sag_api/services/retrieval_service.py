@@ -11,7 +11,7 @@ from typing import Any, Literal, Protocol
 
 from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
-from sag_api.enums import normalize_search_strategy
+from sag_api.enums import JEV_SCORED_STRATEGIES, normalize_search_strategy
 from sag_api.sag import RetrievedSection, SearchOutcome
 from sag_api.services.query_analysis import (
     QueryAnalysis,
@@ -30,6 +30,47 @@ class SearchSource(Protocol):
 
 EventScoreMap = dict[tuple[str, str], float]
 DocumentSourceScope = dict[str, tuple[str, ...]]
+StrategyOrigin = Literal["request", "persona", "source_default", "global"]
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedSearchStrategy:
+    """The mode a retrieval will run with and where that choice came from."""
+
+    strategy: str
+    origin: StrategyOrigin
+
+
+def common_source_default_strategy(sources) -> str | None:
+    """范围内每个信源都设置了同一默认模式时返回它；有信源未设置或不一致则返回 None。
+
+    混合范围不猜测：一个信源的偏好不应改变其他信源的检索方式。
+    """
+    defaults: set[str] = set()
+    for source in sources:
+        value = getattr(source, "default_search_strategy", None)
+        if not value:
+            return None
+        defaults.add(normalize_search_strategy(str(value)))
+    return next(iter(defaults)) if len(defaults) == 1 else None
+
+
+def resolve_search_strategy(
+    *,
+    requested: str | None = None,
+    persona_strategy: str | None = None,
+    sources=(),
+    configuration: Any = settings,
+) -> ResolvedSearchStrategy:
+    """显式请求 → Agent 人格 → 范围内信源的共同默认 → 全局默认。"""
+    if requested:
+        return ResolvedSearchStrategy(requested, "request")
+    if persona_strategy:
+        return ResolvedSearchStrategy(persona_strategy, "persona")
+    common = common_source_default_strategy(sources)
+    if common:
+        return ResolvedSearchStrategy(common, "source_default")
+    return ResolvedSearchStrategy(configuration.search_strategy, "global")
 
 
 def event_scores_from_evidence(sections: list[RetrievedSection]) -> EventScoreMap:
@@ -324,11 +365,12 @@ async def retrieve_relevant_sections(
 
     total_start = time.perf_counter()
     configuration = getattr(engine_manager, "_settings", settings)
-    requested_strategy = strategy or configuration.search_strategy
+    resolved = resolve_search_strategy(requested=strategy, sources=sources, configuration=configuration)
+    requested_strategy = resolved.strategy
     mode = normalize_search_strategy(requested_strategy)
-    if mode == "multi_jev":
-        # The profile owns recall and final scoring. Adding application lexical
-        # hits afterwards would mix unscored evidence into the ranked list.
+    if mode in JEV_SCORED_STRATEGIES:
+        # The JEV-scored profile owns recall and final scoring. Adding application
+        # lexical hits afterwards would mix unscored evidence into the ranked list.
         requested_limit = max(1, min(int(top_k or configuration.search_top_k), 50))
         published = await published_document_inputs(sources)
         visible_sources = [source for source in sources if published.get(source.sag_source_config_id)]
@@ -351,6 +393,7 @@ async def retrieve_relevant_sections(
         return SearchOutcome(query=outcome.query or query, sections=visible_sections[:requested_limit], stats={
             **outcome.stats,
             "requested_strategy": requested_strategy,
+            "strategy_origin": resolved.origin,
             "requested_top_k": requested_limit,
             "candidate_top_k": requested_limit,
             "candidates": len(outcome.sections),
@@ -416,6 +459,7 @@ async def retrieve_relevant_sections(
     stats = {
         **outcome.stats,
         "requested_strategy": requested_strategy,
+        "strategy_origin": resolved.origin,
         "requested_top_k": requested_limit,
         "candidate_top_k": candidate_limit,
         "candidates": reranked.candidate_count,

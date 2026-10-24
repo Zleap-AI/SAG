@@ -4,7 +4,7 @@ import { getDiagnosticsStore } from "./diagnostics";
 import { generateUuidV4 } from "./uuid";
 import { readClientLocale } from "../i18n/client";
 import { clientErrorMessage, serverErrorMessage } from "../i18n/client-errors";
-import type { SearchStrategy } from "./retrieval-config";
+import { isJevScoredStrategy, type SearchStrategy } from "./retrieval-config";
 import type {
   ActivityItem,
   ClientAccessInfo,
@@ -153,7 +153,7 @@ const SEARCH_STREAM_IDLE_TIMEOUT_MS = 45_000;
 
 function usesServerSearchDeadline(strategy?: SearchStrategy): boolean {
   // An omitted strategy may inherit JEV from the global configuration.
-  return strategy === undefined || strategy === "multi_jev";
+  return strategy === undefined || isJevScoredStrategy(strategy);
 }
 
 function isSearchResponse(value: unknown): value is SearchResponse {
@@ -786,7 +786,12 @@ export const api = {
   // 信源
   listSources: () => request<Source[]>("/api/v1/sources"),
   getSource: (id: string) => request<Source>(`/api/v1/sources/${id}`),
-  createSource: (b: { name: string; description?: string }) =>
+  createSource: (b: {
+    name: string;
+    description?: string;
+    /** Omit (or send null) to follow the global default retrieval mode. */
+    default_search_strategy?: SearchStrategy | null;
+  }) =>
     request<Source>("/api/v1/sources", {
       method: "POST",
       body: JSON.stringify(b),
@@ -1020,7 +1025,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(b),
       signal,
-      timeoutMs: b.strategies.includes("multi_jev") ? null : undefined,
+      timeoutMs: b.strategies.some(isJevScoredStrategy) ? null : undefined,
     }),
 
   // 知识宇宙：统计轮廓 + 原子时间线与显式探索

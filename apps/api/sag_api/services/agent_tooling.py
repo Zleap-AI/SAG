@@ -348,8 +348,11 @@ def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict])
         from sag_api.tools.builtin import knowledge_search_strategy
 
         configuration = getattr(host_context.engine_manager, "_settings", settings)
-        strategy = knowledge_search_strategy(host_context.persona, configuration)
-        # Keep this run's mode stable while the model prepares the tool call.
+        strategy = knowledge_search_strategy(
+            host_context.persona, configuration, host_context.sources, host_context.requested_strategy,
+        )
+        # Keep this run's mode stable while the model prepares the tool call; the
+        # explicit turn choice stays in requested_strategy so its origin is reported.
         host_context = replace(host_context, persona={**host_context.persona, "search_strategy": strategy})
         if strategy == "multi_jev":
             source_count = min(len(host_context.sources), configuration.search_source_candidate_limit)
@@ -360,6 +363,16 @@ def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict])
             timeout_seconds = max(
                 configuration.agent_tool_timeout_seconds,
                 (waves + 1) * (recall_timeout + MAX_JEV_RANKING_TIMEOUT_SECONDS) + recall_timeout,
+            )
+        elif strategy == "sag2":
+            from sag_api.sag.search_reader import search_admission_timeout_seconds
+
+            # One read-only request covers every source. Its whole-search budget is
+            # also the settings-publication wait, so allow one of each plus recall.
+            whole_search = search_admission_timeout_seconds(configuration, strategy) or 0.0
+            timeout_seconds = max(
+                configuration.agent_tool_timeout_seconds,
+                2 * whole_search + max(1.0, configuration.search_source_timeout),
             )
 
     async def execute(

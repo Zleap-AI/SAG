@@ -1,8 +1,9 @@
 "use client";
 
-import { Check, ChevronDown, ShieldQuestion, Sparkles, Zap } from "lucide-react";
+import { Check, ChevronDown, Settings2 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import type { ComponentType } from "react";
+import Link from "next/link";
+import { Fragment } from "react";
 
 import {
   DropdownMenu,
@@ -20,23 +21,28 @@ import {
 import { cn } from "@/lib/utils";
 import {
   getSearchStrategy,
+  isJevConfigDisabledReason,
+  isJevScoredStrategy,
   SEARCH_STRATEGIES,
+  SEARCH_STRATEGY_ICONS,
   type SearchStrategy,
   type SearchStrategyDisabledMap,
 } from "@/lib/retrieval-config";
+import { settingsTabHref } from "@/lib/settings-config";
 
-const STRATEGY_ICONS: Record<SearchStrategy, ComponentType<{ className?: string }>> = {
-  vector: Zap,
-  multi_es_fast: ShieldQuestion,
-  multi: Sparkles,
-  multi_jev: Sparkles,
-};
+/** The shared JEV service section inside the knowledge settings tab. */
+const JEV_SETTINGS_HREF = settingsTabHref("knowledge", "jev");
+
+const badgeClassName =
+  "rounded bg-muted px-1 py-0.5 text-[10px] font-normal leading-none text-muted-foreground";
 
 export function SearchStrategyControl({
   value,
   defaultValue,
   onValueChange,
   disabledMap,
+  hint,
+  disabled,
 }: {
   value: SearchStrategy;
   defaultValue: SearchStrategy;
@@ -46,38 +52,52 @@ export function SearchStrategyControl({
    * key 缺失即启用,存在即灰置 + Tooltip 展示 message。
    */
   disabledMap?: SearchStrategyDisabledMap;
+  /** Short muted note on where the current value came from (e.g. the scoped source's default). */
+  hint?: string;
+  /** Lock the control while a request is in flight, like the toolbar toggles around it. */
+  disabled?: boolean;
 }) {
   const t = useTranslations("SearchStrategies");
   const currentStrategy = getSearchStrategy(value);
-  const CurrentIcon = STRATEGY_ICONS[currentStrategy.value];
+  const CurrentIcon = SEARCH_STRATEGY_ICONS[currentStrategy.value];
 
   return (
     <TooltipProvider delayDuration={150}>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
+        <DropdownMenuTrigger asChild disabled={disabled}>
           <button
             type="button"
+            disabled={disabled}
             aria-label={t("modeAria", { strategy: t(currentStrategy.labelKey) })}
             data-testid="search-strategy"
-            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground"
+            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent disabled:hover:text-muted-foreground data-[state=open]:bg-muted data-[state=open]:text-foreground"
           >
             <CurrentIcon className="size-3.5" />
             <span>{t(currentStrategy.labelKey)}</span>
+            {hint && (
+              <span className="opacity-60" data-testid="search-strategy-hint">
+                · {hint}
+              </span>
+            )}
             <ChevronDown className="size-3 opacity-60" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-72 p-1.5">
-          <DropdownMenuLabel className="px-2 pb-1 pt-1 text-[11px]">
+          <DropdownMenuLabel className="flex items-baseline justify-between gap-2 px-2 pb-1 pt-1 text-[11px]">
             {t("mode")}
+            {hint && <span className="font-normal text-muted-foreground">{hint}</span>}
           </DropdownMenuLabel>
           {SEARCH_STRATEGIES.map((strategy) => {
-            const Icon = STRATEGY_ICONS[strategy.value];
+            const Icon = SEARCH_STRATEGY_ICONS[strategy.value];
             const selected = strategy.value === value;
             const isDefault = strategy.value === defaultValue;
+            const paid = isJevScoredStrategy(strategy.value);
             const disabledInfo = disabledMap?.[strategy.value];
+            // A disabled Radix item ignores pointer events, so the settings
+            // shortcut lives in its own selectable row right below the item.
+            const needsJevSettings = paid && isJevConfigDisabledReason(disabledInfo?.reason);
             const item = (
               <DropdownMenuItem
-                key={strategy.value}
                 disabled={Boolean(disabledInfo)}
                 onSelect={(event) => {
                   if (disabledInfo) {
@@ -95,18 +115,15 @@ export function SearchStrategyControl({
               >
                 <Icon className="mt-0.5 size-3.5 shrink-0" />
                 <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                  <span className="flex flex-wrap items-center gap-1.5 text-xs font-medium text-foreground">
                     {t(strategy.labelKey)}
-                    {isDefault && (
-                      <span className="rounded bg-muted px-1 py-0.5 text-[10px] font-normal leading-none text-muted-foreground">
-                        {t("default")}
+                    {isDefault && <span className={badgeClassName}>{t("default")}</span>}
+                    {paid && (
+                      <span className={badgeClassName} data-testid={`search-strategy-${strategy.value}-paid`}>
+                        {t("paid")}
                       </span>
                     )}
-                    {disabledInfo && (
-                      <span className="rounded bg-muted px-1 py-0.5 text-[10px] font-normal leading-none text-muted-foreground">
-                        {t("disabledSuffix")}
-                      </span>
-                    )}
+                    {disabledInfo && <span className={badgeClassName}>{t("disabledSuffix")}</span>}
                   </span>
                   <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">
                     {disabledInfo?.message ?? t(strategy.descriptionKey)}
@@ -120,14 +137,28 @@ export function SearchStrategyControl({
                 />
               </DropdownMenuItem>
             );
-            if (!disabledInfo) return item;
             return (
-              <Tooltip key={strategy.value}>
-                <TooltipTrigger asChild>{item}</TooltipTrigger>
-                <TooltipContent side="left" className="max-w-[220px] text-left">
-                  {disabledInfo.message}
-                </TooltipContent>
-              </Tooltip>
+              <Fragment key={strategy.value}>
+                {disabledInfo ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>{item}</TooltipTrigger>
+                    <TooltipContent side="left" className="max-w-[220px] text-left">
+                      {disabledInfo.message}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : item}
+                {needsJevSettings && (
+                  <DropdownMenuItem asChild className="ml-8 mr-2 mb-1 gap-1.5 px-2 py-1 text-[11px] text-foreground">
+                    <Link
+                      href={JEV_SETTINGS_HREF}
+                      data-testid={`search-strategy-${strategy.value}-settings`}
+                    >
+                      <Settings2 className="size-3.5" />
+                      {t("openSettings")}
+                    </Link>
+                  </DropdownMenuItem>
+                )}
+              </Fragment>
             );
           })}
         </DropdownMenuContent>

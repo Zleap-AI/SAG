@@ -14,6 +14,7 @@ from sag_api.sag.engine_manager import EngineManager
 def jev_settings(**changes):
     return Settings(_env_file=None).model_copy(update={
         "jev_endpoint": "https://jev.invalid/score",
+        "jev_api_key": "synthetic-jev-key",
         "jev_ranking_timeout_seconds": 30.0,
         "jev_failure_policy": "error",
         "sag_vector_provider": "lancedb",
@@ -37,6 +38,15 @@ def test_jev_mode_requires_both_connection_and_lexical_capability():
     assert error.value.code == "jev_not_configured"
     report = manager.strategies_capability_report(manager._settings)
     assert report["disabled"]["multi_jev"]["reason"] == "jev_not_configured"
+
+    # JEV is a paid service: a saved endpoint without a key must not enable any JEV-scored mode.
+    manager = EngineManager(jev_settings(jev_api_key=None))
+    with pytest.raises(ConfigurationError) as error:
+        manager._effective_search_strategy("multi_jev")
+    assert error.value.code == "jev_api_key_missing"
+    report = manager.strategies_capability_report(manager._settings)
+    assert report["disabled"]["multi_jev"]["reason"] == "jev_api_key_missing"
+    assert report["disabled"]["sag2"]["reason"] == "jev_api_key_missing"
 
     manager = EngineManager(jev_settings(sag_vector_provider="pgvector"))
     with pytest.raises(ConfigurationError) as error:

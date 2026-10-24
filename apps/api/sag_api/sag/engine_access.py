@@ -96,6 +96,9 @@ class EngineAccess:
     async def search_chunk_vectors(self, *args: Any, **kwargs: Any) -> Any:
         return await self._manager._search_chunk_vectors(*args, **kwargs)
 
+    async def sag2_search(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._manager._sag2_search(*args, **kwargs)
+
     async def universe_entity_event_counts(self, *args: Any, **kwargs: Any) -> Any:
         return await self._manager._universe_entity_event_counts(*args, **kwargs)
 

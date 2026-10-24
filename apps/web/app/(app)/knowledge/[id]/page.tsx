@@ -26,6 +26,7 @@ import {
   FolderImportDialog,
   type FolderImportDialogHandle,
 } from "@/components/features/folder-import-dialog";
+import { RetrievalModePill } from "@/components/features/retrieval-mode-pill";
 import { RetrievalTestDialog } from "@/components/features/retrieval-test-dialog";
 import { SourceIdCopy } from "@/components/features/source-id-copy";
 import { SourceGraph } from "@/components/features/source-graph";
@@ -123,9 +124,14 @@ export default function SourceDetailPage() {
           </Link>
           {source ? (
             <>
-              <h1 className="font-display text-xl font-semibold tracking-tight text-foreground">
-                {source.name}
-              </h1>
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <h1 className="font-display text-xl font-semibold tracking-tight text-foreground">
+                  {source.name}
+                </h1>
+                {source.default_search_strategy && (
+                  <RetrievalModePill strategy={source.default_search_strategy} />
+                )}
+              </div>
               <p className="mt-1.5 text-sm text-muted-foreground">
                 {t("sourceStats", {
                   documents: source.document_count,
