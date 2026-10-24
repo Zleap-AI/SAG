@@ -47,6 +47,8 @@ for package in (
 # OpenAI, Anthropic, and Gemini, so freezing every LiteLLM module would pull
 # unrelated server/CLI dependencies into the desktop sidecar.
 datas += collect_data_files("litellm")
+# zleap-sag2 的 Unicode 排序在运行时读取 pyuca 的 allkeys-*.txt，冻结包需显式收集。
+datas += collect_data_files("pyuca")
 datas += collect_data_files("certifi")
 for package in (
     "litellm.litellm_core_utils",
