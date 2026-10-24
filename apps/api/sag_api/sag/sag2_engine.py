@@ -9,13 +9,18 @@
 
 对 zleap-sag2 内部结构的依赖集中在 ``_sag_schema_present`` 与 ``_count_scope`` 两个
 函数里（``engine.store.engine`` 是其关系库连接）；升级 ``zleap-sag2`` 版本时需复核这两处。
+
+zleap-sag2 0.1.0 在构建内存语料时会在事件循环线程上同步分词、建倒排表，范围越大阻塞越久。
+为此只读引擎及其全部协程都运行在一个专用线程的事件循环里（``_EngineLoop``），
+API 事件循环只负责排队、超时与取消，不被扫描阻塞。
 """
 
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -226,9 +231,48 @@ class _AdmissionGate:
             await self._condition.wait_for(lambda: self._active == 0)
 
 
+class _EngineLoop:
+    """专用线程上的事件循环：承载只读引擎的连接、扫描与评分，不占用 API 循环。
+
+    ``run`` 从 API 循环提交协程并等待结果；等待方被取消（如整次超时）时同步取消
+    专用循环里的协程，避免遗留仍在扫描的工作。
+    """
+
+    def __init__(self, name: str = "sag2-engine") -> None:
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._serve, name=name, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        try:
+            self._loop.run_forever()
+        finally:
+            self._loop.close()
+
+    @property
+    def alive(self) -> bool:
+        return self._thread.is_alive()
+
+    async def run(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
+        future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+        try:
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+            future.cancel()
+            raise
+
+    def stop(self, timeout: float = 5.0) -> None:
+        if not self._thread.is_alive():
+            return
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=timeout)
+
+
 class Sag2EngineHolder:
     """按配置指纹懒建、复用、重建一个只读 zleap-sag2 引擎，并限制并发检索数。
 
+    引擎只在专用线程的事件循环里创建和使用；``_gate`` 与整次超时留在 API 循环。
     ``scorer_factory`` 仅供测试注入离线评分器；缺省由引擎按 ``JevConfig`` 创建真实客户端。
     """
 
@@ -239,6 +283,12 @@ class Sag2EngineHolder:
         self._fingerprint: tuple[Any, ...] | None = None
         self._lock = asyncio.Lock()
         self._gate = _AdmissionGate(settings.sag2_max_concurrent_searches)
+        self._loop: _EngineLoop | None = None
+
+    def _engine_loop(self) -> _EngineLoop:
+        if self._loop is None or not self._loop.alive:
+            self._loop = _EngineLoop()
+        return self._loop
 
     @property
     def started(self) -> bool:
@@ -258,8 +308,18 @@ class Sag2EngineHolder:
         await self._gate.set_limit(settings.sag2_max_concurrent_searches)
 
     async def aclose(self) -> None:
-        """等待在途检索结束后关闭引擎；与 ``EngineManager._close_all_slots`` 等待空闲的语义一致。"""
+        """等待在途检索结束后关闭引擎并停掉专用循环；与 ``_close_all_slots`` 等待空闲的语义一致。"""
         await self._gate.drain()
+        loop, self._loop = self._loop, None
+        if loop is not None and loop.alive:
+            try:
+                await loop.run(self._locked_close())
+            finally:
+                await asyncio.to_thread(loop.stop)
+        else:
+            await self._locked_close()
+
+    async def _locked_close(self) -> None:
         async with self._lock:
             await self._close()
 
@@ -352,43 +412,54 @@ class Sag2EngineHolder:
         source_ids: tuple[str, ...] | None,
         top_k: int,
     ) -> tuple[Any, int]:
+        async with self._gate:
+            # 排队在 API 循环完成；引擎工作整体交给专用循环，扫描不阻塞其他请求。
+            return await self._engine_loop().run(self._execute(query, data_source_ids, source_ids, top_k))
+
+    async def _execute(
+        self,
+        query: str,
+        data_source_ids: list[str],
+        source_ids: tuple[str, ...] | None,
+        top_k: int,
+    ) -> tuple[Any, int]:
+        """在专用循环里运行：取引擎、范围护栏、构造请求、检索与异常翻译。"""
         from zleap.sag2 import SearchOptions, SearchRequest, SearchScope
 
-        async with self._gate:
-            engine = await self.engine()
-            settings = self._settings
-            scope_chunks = await self._count_scope(engine, data_source_ids)
-            limit = int(settings.sag2_max_scope_chunks)
-            if limit and scope_chunks > limit:
-                raise ValidationError(
-                    f"检索范围过大：包含 {scope_chunks:,} 个段落，超过 SAG2 证据检索上限 {limit:,}，请缩小信源范围",
-                    layer=ErrorLayer.ENGINE,
-                    stage=ErrorStage.RETRIEVE,
-                )
-            scope_values: dict[str, Any] = {"data_source_ids": tuple(data_source_ids)}
-            if source_ids is not None:
-                scope_values["source_ids"] = source_ids
-            request = SearchRequest(
-                query=query,
-                scope=SearchScope(**scope_values),
-                options=SearchOptions(
-                    candidate_k=settings.sag2_candidate_k,
-                    seed_k=settings.sag2_seed_k,
-                    max_hops=settings.sag2_max_hops,
-                    expansion_term_limit=settings.sag2_expansion_term_limit,
-                    top_k=max(1, min(int(top_k), 1000)),
-                ),
+        engine = await self.engine()
+        settings = self._settings
+        scope_chunks = await self._count_scope(engine, data_source_ids)
+        limit = int(settings.sag2_max_scope_chunks)
+        if limit and scope_chunks > limit:
+            raise ValidationError(
+                f"检索范围过大：包含 {scope_chunks:,} 个段落，超过 SAG2 证据检索上限 {limit:,}，请缩小信源范围",
+                layer=ErrorLayer.ENGINE,
+                stage=ErrorStage.RETRIEVE,
             )
-            started = time.perf_counter()
-            try:
-                result = await engine.search(request)
-            except Exception as error:  # noqa: BLE001 - translated below
-                raise self._translate(error) from error
-            log.info(
-                "SAG2 检索完成 sources=%d scope_chunks=%d hits=%d elapsed=%.0fms",
-                len(data_source_ids), scope_chunks, len(result.chunks), (time.perf_counter() - started) * 1000,
-            )
-            return result, scope_chunks
+        scope_values: dict[str, Any] = {"data_source_ids": tuple(data_source_ids)}
+        if source_ids is not None:
+            scope_values["source_ids"] = source_ids
+        request = SearchRequest(
+            query=query,
+            scope=SearchScope(**scope_values),
+            options=SearchOptions(
+                candidate_k=settings.sag2_candidate_k,
+                seed_k=settings.sag2_seed_k,
+                max_hops=settings.sag2_max_hops,
+                expansion_term_limit=settings.sag2_expansion_term_limit,
+                top_k=max(1, min(int(top_k), 1000)),
+            ),
+        )
+        started = time.perf_counter()
+        try:
+            result = await engine.search(request)
+        except Exception as error:  # noqa: BLE001 - translated below
+            raise self._translate(error) from error
+        log.info(
+            "SAG2 检索完成 sources=%d scope_chunks=%d hits=%d elapsed=%.0fms",
+            len(data_source_ids), scope_chunks, len(result.chunks), (time.perf_counter() - started) * 1000,
+        )
+        return result, scope_chunks
 
     @staticmethod
     async def _sag_schema_present(engine: Any) -> bool:

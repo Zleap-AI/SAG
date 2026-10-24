@@ -1,6 +1,8 @@
 """Offline contracts for the SAG2 evidence strategy (zleap-sag2 read-only search)."""
 
 import asyncio
+import threading
+import time
 
 import pytest
 
@@ -308,7 +310,8 @@ async def test_refresh_applies_new_concurrency_limit_without_dropping_inflight_s
 
     configuration = sag2_settings(sag2_max_concurrent_searches=1)
     holder = Sag2EngineHolder(configuration)
-    release, first_running = asyncio.Event(), asyncio.Event()
+    # The engine runs on the holder's dedicated loop thread, so signal across threads.
+    release, first_running = threading.Event(), threading.Event()
     active = peak = 0
 
     class Engine:
@@ -317,7 +320,7 @@ async def test_refresh_applies_new_concurrency_limit_without_dropping_inflight_s
             active += 1
             peak = max(peak, active)
             first_running.set()
-            await release.wait()
+            await asyncio.to_thread(release.wait, 5)
             active -= 1
             return SearchResult(query=request.query, original_query=request.query)
 
@@ -336,15 +339,73 @@ async def test_refresh_applies_new_concurrency_limit_without_dropping_inflight_s
         ))
 
     first, second = run(), run()
-    await asyncio.wait_for(first_running.wait(), timeout=1)
-    await asyncio.sleep(0.01)
+    assert await asyncio.to_thread(first_running.wait, 1)
+    await asyncio.sleep(0.05)
     assert active == 1  # the second search queues behind the limit of 1
     await holder.refresh(configuration.model_copy(update={"sag2_max_concurrent_searches": 2}))
-    await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
     assert active == 2  # the raised limit admits the queued search; the first keeps running
     release.set()
     await asyncio.gather(first, second)
     assert peak == 2
+    await holder.aclose()
+
+
+@pytest.mark.asyncio
+async def test_engine_work_runs_off_the_api_loop_and_timeouts_cancel_it(monkeypatch):
+    from zleap.sag2 import SearchResult
+
+    holder = Sag2EngineHolder(sag2_settings())
+    cancelled = threading.Event()
+
+    class Engine:
+        async def search(self, request):
+            if request.query == "block":
+                time.sleep(0.3)  # synchronous corpus build: must not stall the API loop
+                return SearchResult(query=request.query, original_query=request.query)
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return SearchResult(query=request.query, original_query=request.query)
+
+    async def engine():
+        return Engine()
+
+    async def count(_engine, _data_source_ids):
+        return 1
+
+    monkeypatch.setattr(holder, "engine", engine)
+    monkeypatch.setattr(holder, "_count_scope", count)
+
+    def run(query):
+        return holder.search(
+            [("cfg-1", None)], query, top_k=3, requested_sources=1, source_limit_applied=False,
+            source_ids_by_config=None,
+        )
+
+    # While the engine blocks its own thread, the API loop keeps ticking.
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+            ticks += 1
+
+    await asyncio.gather(run("block"), ticker())
+    assert ticks == 10
+    assert threading.current_thread() is threading.main_thread()
+
+    # The whole-search timeout cancels the coroutine inside the dedicated loop.
+    holder._settings.sag2_search_timeout_seconds = 1.0
+    with pytest.raises(ServiceUnavailableError):
+        await run("hang")
+    assert cancelled.wait(1)
+    assert holder._gate.active == 0
+    await holder.aclose()
+    assert holder._loop is None
 
 
 @pytest.mark.parametrize(("status", "expected_type", "expected_message"), [
