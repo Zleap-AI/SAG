@@ -1,6 +1,7 @@
 import { API_BASE } from "./api";
 import { getToken } from "./auth";
 import { getDiagnosticsStore } from "./diagnostics";
+import type { SearchStrategy } from "./retrieval-config";
 import { readClientLocale } from "../i18n/client";
 import { clientErrorMessage, serverErrorMessage } from "../i18n/client-errors";
 
@@ -240,6 +241,8 @@ export function streamAgentAsk(
     source_ids?: string[];
     knowledge_only?: boolean;
     web_enabled: boolean;
+    /** Only present when the user explicitly picked a mode for this turn. */
+    strategy?: SearchStrategy;
   },
   onEvent: (event: AgentEvent) => void,
   signal?: AbortSignal,

@@ -21,6 +21,22 @@ function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * Origins worth a line of their own: the user did not pick the mode and it is
+ * not simply the global default, so say where it came from. "request" and
+ * "global" stay silent unless the execution changed.
+ */
+const EXPLAINED_ORIGINS = {
+  persona: "originPersona",
+  source_default: "originSourceDefault",
+} as const;
+
+function explainedOrigin(value: unknown): keyof typeof EXPLAINED_ORIGINS | null {
+  return typeof value === "string" && Object.hasOwn(EXPLAINED_ORIGINS, value)
+    ? value as keyof typeof EXPLAINED_ORIGINS
+    : null;
+}
+
 /** Explain execution changes without treating same-profile coarse ranking as JEV success. */
 export function RetrievalStatus({ stats, requestedStrategy }: {
   stats: Record<string, unknown>;
@@ -50,11 +66,15 @@ export function RetrievalStatus({ stats, requestedStrategy }: {
     })
     : null;
   const executionChanged = jevFallback || partial || changed;
-  if (!executionChanged && usageText === null) return null;
+  const origin = explainedOrigin(stats.strategy_origin);
+  // The origin describes the resolved (requested) mode; a changed execution is reported separately.
+  const originMode = requested ?? effective;
+  if (!executionChanged && usageText === null && !(origin && originMode)) return null;
   function label(mode: string) {
     return isSearchStrategy(mode) ? strategies(getSearchStrategy(mode).labelKey) : mode;
   }
   return <div role="status" className="flex flex-col gap-1 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+    {origin && originMode && <p data-testid="retrieval-origin">{t("origin", { mode: label(originMode), origin: t(EXPLAINED_ORIGINS[origin]) })}</p>}
     {executionChanged && requested && <p>{t("requested", { mode: label(requested) })}{" · "}{t("actual", { mode: jevFallback ? t("coarse") : label(effective ?? requested) })}</p>}
     {jevFallback && <p>{t("jevFallback")}</p>}
     {partial && <p>{t("partial")}</p>}

@@ -180,6 +180,8 @@ export interface Persona {
   system_prompt?: string;
   greeting?: string;
   tools?: string[];
+  /** Retrieval mode this agent asks with unless the user picks one per turn. */
+  search_strategy?: SearchStrategy;
 }
 
 export interface ActivityItem {

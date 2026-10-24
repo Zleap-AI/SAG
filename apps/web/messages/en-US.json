@@ -641,6 +641,7 @@
     "switchHint": "You can still switch modes per search or chat.",
     "pillTooltip": "Default retrieval mode: {label}. You can still switch modes per search or chat.",
     "scopeDefaultHint": "Source default",
+    "personaDefaultHint": "Persona default",
     "keyRequiredToSubmit": "Enter a JEV API key to save this default mode.",
     "jevSetupTitle": "Set up the JEV service first",
     "jevSetupDescription": "This mode sends your question and candidate evidence to the JEV service for scoring, which needs an API key.",
@@ -1171,7 +1172,8 @@
     "reject": "Reject",
     "allowOnce": "Allow once",
     "thinking": "Thinking…",
-    "sessionMissing": "Conversation runtime session not found: {id}"
+    "sessionMissing": "Conversation runtime session not found: {id}",
+    "dismissNotice": "Dismiss notice"
   },
   "Citations": {
     "visitExternal": "Visit external source: {title}",
@@ -1816,7 +1818,10 @@
     "jevFallback": "JEV reranking did not complete; these results include coarse ranking.",
     "jevUsage": "JEV scoring this run: {requests} requests · {judgments} judgments{tokens}",
     "jevUsageTokens": " · {tokens} input tokens",
-    "partial": "Partial results: some sources did not complete."
+    "partial": "Partial results: some sources did not complete.",
+    "origin": "Using {mode} ({origin})",
+    "originPersona": "persona default",
+    "originSourceDefault": "source default"
   },
   "ClientAccess": {
     "title": "CLI and automation",
