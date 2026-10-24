@@ -33,6 +33,9 @@ class Source(IDMixin, TimestampMixin, Base):
     document_count: Mapped[int] = mapped_column(Integer, default=0)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     event_count: Mapped[int] = mapped_column(Integer, default=0)
+    # 该信源的默认检索模式；None 表示跟随全局默认。搜索与问答在范围内信源一致时采用，
+    # 不改变文档入库流程。
+    default_search_strategy: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     @hybrid_property
     def is_deleting(self) -> bool:

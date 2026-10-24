@@ -5,7 +5,7 @@ import { useTranslations } from "next-intl";
 
 import { api, ApiError } from "@/lib/api";
 import { isSourceDeleting } from "@/lib/source-activity";
-import type { SearchStrategy } from "@/lib/retrieval-config";
+import { getScopeDefaultStrategy, type SearchStrategy } from "@/lib/retrieval-config";
 import type { ActivityItem, SearchResponse, Source } from "@/lib/types";
 import {
   activationFromSearch,
@@ -31,7 +31,12 @@ export type { SearchPhase, SearchRunIntent } from "@/components/features/search/
 export interface SearchScope {
   id: string;
   name: string;
+  /** Carried over from the full source when known, so the scope default resolves before the source list loads. */
+  default_search_strategy?: SearchStrategy | null;
 }
+
+/** Where the strategy shown in the search control came from. */
+export type SearchStrategyOrigin = "pinned" | "scope" | "global";
 
 export interface SearchRunOptions {
   query?: string;
@@ -49,7 +54,10 @@ interface SearchWorkspaceState extends SearchLifecycleState {
   query: string;
   scoped: SearchScope[];
   sources: Source[];
+  /** The user's explicit pick while `strategyPinned`; otherwise mirrors the global default. */
   strategy: SearchStrategy;
+  /** True once the user picked a strategy in this session; scope defaults no longer override it. */
+  strategyPinned: boolean;
   activity: ActivityItem[] | null;
   history: string[];
   contentView: SearchContentView;
@@ -58,6 +66,9 @@ interface SearchWorkspaceState extends SearchLifecycleState {
 
 interface SearchWorkspaceContextValue extends SearchWorkspaceState {
   defaultStrategy: SearchStrategy;
+  /** Common non-null default of every scoped source, or null when they disagree or nothing is scoped. */
+  scopeDefaultStrategy: SearchStrategy | null;
+  strategyOrigin: SearchStrategyOrigin;
   canLoadMore: boolean;
   setQuery: (query: string) => void;
   setStrategy: (strategy: SearchStrategy) => void;
@@ -186,6 +197,7 @@ export function SearchProvider({
     committedSearchKey: "",
     lastQuery: "",
     strategy: defaultStrategy,
+    strategyPinned: false,
     lastStrategy: defaultStrategy,
     topK: DEFAULT_SEARCH_TOP_K,
     hasMore: false,
@@ -232,10 +244,28 @@ export function SearchProvider({
       setState((current) => ({
         ...current,
         strategy: defaultStrategy,
+        strategyPinned: false,
         lastStrategy: defaultStrategy,
       }));
     }
   }, [defaultStrategy]);
+
+  // Sources scoped through the picker carry their own default; scopes restored
+  // from a URL only have an id, so fall back to the loaded source list.
+  const scopeDefaultStrategy = React.useMemo(() => getScopeDefaultStrategy(
+    state.scoped.map((scope) => state.sources.find((source) => source.id === scope.id) ?? scope),
+    disabledMap,
+  ), [disabledMap, state.scoped, state.sources]);
+  const effectiveStrategy = state.strategyPinned
+    ? state.strategy
+    : (scopeDefaultStrategy ?? defaultStrategy);
+  const strategyOrigin: SearchStrategyOrigin = state.strategyPinned
+    ? "pinned"
+    : scopeDefaultStrategy
+      ? "scope"
+      : "global";
+  const effectiveStrategyRef = React.useRef(effectiveStrategy);
+  effectiveStrategyRef.current = effectiveStrategy;
 
   const cancel = React.useCallback(() => {
     const activeRequest = activeRequestRef.current;
@@ -346,7 +376,7 @@ export function SearchProvider({
       return null;
     }
 
-    const strategy = options.strategy ?? snapshot.strategy;
+    const strategy = options.strategy ?? effectiveStrategyRef.current;
     const sourceIds = options.sourceIds
       ?? (snapshot.scoped.length ? snapshot.scoped.map((source) => source.id) : undefined);
     const requestedKey = createSearchKey({ query, strategy, sourceIds });
@@ -495,7 +525,7 @@ export function SearchProvider({
   }, [clear, t]);
 
   const setStrategy = React.useCallback((strategy: SearchStrategy) => {
-    setState((current) => ({ ...current, strategy }));
+    setState((current) => ({ ...current, strategy, strategyPinned: true }));
   }, []);
 
   // capabilities 变化后,如果当前选中的策略已被后端标记为不可用,
@@ -505,7 +535,7 @@ export function SearchProvider({
     setState((current) => {
       if (!disabledMap[current.strategy]) return current;
       if (current.strategy === defaultStrategy) return current;
-      return { ...current, strategy: defaultStrategy };
+      return { ...current, strategy: defaultStrategy, strategyPinned: false };
     });
   }, [disabledMap, defaultStrategy]);
 
@@ -518,7 +548,11 @@ export function SearchProvider({
       ...current,
       scoped: current.scoped.some((item) => item.id === source.id)
         ? current.scoped.filter((item) => item.id !== source.id)
-        : [...current.scoped, { id: source.id, name: source.name }],
+        : [...current.scoped, {
+          id: source.id,
+          name: source.name,
+          default_search_strategy: source.default_search_strategy ?? null,
+        }],
     }));
   }, []);
 
@@ -562,7 +596,7 @@ export function SearchProvider({
 
   const draftSearchKey = createSearchKey({
     query: state.query,
-    strategy: state.strategy,
+    strategy: effectiveStrategy,
     sourceIds: state.scoped.map((source) => source.id),
   });
   const canLoadMore = canLoadMoreSearch({
@@ -577,7 +611,10 @@ export function SearchProvider({
   const value = React.useMemo<SearchWorkspaceContextValue>(
     () => ({
       ...state,
+      strategy: effectiveStrategy,
       defaultStrategy,
+      scopeDefaultStrategy,
+      strategyOrigin,
       canLoadMore,
       setQuery,
       setStrategy,
@@ -599,6 +636,9 @@ export function SearchProvider({
       canLoadMore,
       clear,
       defaultStrategy,
+      effectiveStrategy,
+      scopeDefaultStrategy,
+      strategyOrigin,
       ensureActivity,
       ensureSources,
       clearHistory,

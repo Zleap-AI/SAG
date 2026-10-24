@@ -21,7 +21,7 @@ from sag_api.core.embedding_presets import QUICK_SETUP_EMBEDDINGS, EmbeddingSetu
 from sag_api.core.errors import ConfigurationError, ConflictError
 from sag_api.core.logging import get_logger
 from sag_api.core.model_providers import get_model_provider
-from sag_api.db.models import Document, Setting
+from sag_api.db.models import Document, Setting, Source
 from sag_api.enums import JEV_SCORED_STRATEGIES, SEARCH_STRATEGIES, normalize_search_strategy
 from sag_api.schemas.system import ModelConfigUpdate
 
@@ -507,17 +507,28 @@ async def _save_model_config_locked(session: AsyncSession, patch: dict) -> dict:
     elif "jev_endpoint" in patch and candidate["jev_endpoint"] != raw.get("jev_endpoint", _settings.jev_endpoint):
         stored["jev_api_key"] = None
     if patch.keys() & {"jev_endpoint", "jev_api_key"}:
-        # Changing the scoring connection must not leave a paid JEV mode as the default
-        # without a usable key; the caller either switches mode or supplies the key.
+        # Connection changes must preserve both global and source-level defaults.
+        # Reject atomically rather than silently changing a saved retrieval mode.
         from sag_api.sag.sag2_engine import jev_connection_issue
 
         final = {**candidate, **{key: stored[key] for key in ("jev_endpoint", "jev_api_key") if key in stored}}
-        if normalize_search_strategy(str(final["search_strategy"])) in JEV_SCORED_STRATEGIES:
-            issue = jev_connection_issue(_settings.model_copy(update=final))
-            if issue is not None:
-                code, message = issue
+        issue = jev_connection_issue(_settings.model_copy(update=final))
+        if issue is not None:
+            code, message = issue
+            if normalize_search_strategy(str(final["search_strategy"])) in JEV_SCORED_STRATEGIES:
                 raise ConfigurationError(
                     f"{message} 当前默认检索模式为 JEV 模式；请先改为其他模式，或补填该服务的 API Key。", code=code,
+                )
+            source_default = await session.scalar(
+                select(Source.id).where(
+                    Source.is_deleting.is_(False),
+                    Source.default_search_strategy.in_(JEV_SCORED_STRATEGIES),
+                ).limit(1)
+            )
+            if source_default is not None:
+                raise ConfigurationError(
+                    f"{message} 已有信源默认使用 JEV 模式；请先修改信源默认模式，或补填该服务的 API Key。",
+                    code=code,
                 )
     identity = ("llm_provider", "llm_responses_provider", "llm_responses_endpoint")
     if (

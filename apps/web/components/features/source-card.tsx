@@ -11,6 +11,7 @@ import { relativeTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EditSourceDialog } from "@/components/features/edit-source-dialog";
+import { RetrievalModePill } from "@/components/features/retrieval-mode-pill";
 import { useOctxExports } from "@/components/features/octx-export-provider";
 import { useApp } from "@/components/features/app-shell";
 import { SourceIdCopy } from "@/components/features/source-id-copy";
@@ -27,6 +28,7 @@ export function SourceCard({ source, onChanged }: { source: Source; onChanged?: 
 
   const { startExport, isSourceExporting } = useOctxExports();
   const exportRunning = isSourceExporting(source.id);
+  const defaultMode = source.default_search_strategy ?? null;
 
   const handleExport = React.useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -50,10 +52,13 @@ export function SourceCard({ source, onChanged }: { source: Source; onChanged?: 
       </Link>}
 
       <div className="pointer-events-none relative z-10 flex h-full min-w-0 flex-col">
-        <div className="flex min-w-0 items-start justify-between gap-3 pr-28">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pr-28">
           <h3 className="min-w-0 break-words font-display text-lg font-medium leading-tight text-foreground">
             {source.name}
           </h3>
+          {defaultMode && (
+            <RetrievalModePill strategy={defaultMode} className="pointer-events-auto" />
+          )}
         </div>
         <p className="mb-3 mt-1.5 line-clamp-2 min-h-[2.5rem] text-sm text-muted-foreground">
           {source.description || t("noDescription")}

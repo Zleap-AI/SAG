@@ -221,6 +221,87 @@ async def test_jev_service_rejects_invalid_explicit_fields_before_persisting(jev
     assert resets == []
 
 
+@pytest.mark.parametrize("strategy", ["multi_jev", "sag2"])
+@pytest.mark.parametrize("endpoint", [None, "https://replacement.example/score"])
+async def test_jev_connection_change_preserves_source_defaults_atomically(jev_config_client, strategy, endpoint):
+    from sag_api.core.db import SessionLocal
+    from sag_api.db.models import Setting, Source
+
+    client, headers, resets = jev_config_client
+    initial = await client.put(
+        "/api/v1/system/model-config", headers=headers,
+        json={"search_strategy": "vector", "jev_endpoint": "https://saved.example/score",
+              "jev_api_key": "synthetic-saved-key"},
+    )
+    assert initial.status_code == 200, initial.text
+    source_id = uuid4().hex
+    async with SessionLocal() as session:
+        session.add(Source(id=source_id, name="Protected source", sag_source_config_id=source_id,
+                           default_search_strategy=strategy))
+        await session.commit()
+        row = await session.scalar(select(Setting).where(Setting.scope == "global", Setting.key == "model_config"))
+        stored_before = dict(row.value)
+    settings_before = settings.model_dump()
+    reset_count = len(resets)
+    try:
+        rejected = await client.put(
+            "/api/v1/system/model-config", headers=headers, json={"jev_endpoint": endpoint},
+        )
+        assert rejected.status_code == 400, rejected.text
+        assert rejected.json()["error"]["code"] in {"jev_not_configured", "jev_api_key_missing"}
+        assert "信源" in rejected.json()["error"]["message"]
+        assert settings.model_dump() == settings_before
+        assert len(resets) == reset_count
+        async with SessionLocal() as session:
+            row = await session.scalar(select(Setting).where(Setting.scope == "global", Setting.key == "model_config"))
+            assert row.value == stored_before
+            assert (await session.get(Source, source_id)).default_search_strategy == strategy
+
+        # Supplying a key for the new destination keeps the saved source usable.
+        replaced = await client.put(
+            "/api/v1/system/model-config", headers=headers,
+            json={"jev_endpoint": "https://replacement.example/score", "jev_api_key": "synthetic-new-key"},
+        )
+        assert replaced.status_code == 200, replaced.text
+    finally:
+        async with SessionLocal() as session:
+            await session.execute(delete(Source).where(Source.id == source_id))
+            await session.commit()
+
+
+async def test_stale_source_default_does_not_block_unrelated_settings_or_deleted_sources(jev_config_client):
+    from sag_api.core.db import SessionLocal
+    from sag_api.db.models import Source
+    from sag_api.enums import SourceStatus
+
+    client, headers, _resets = jev_config_client
+    settings.search_strategy = "vector"
+    settings.jev_endpoint = None
+    settings.jev_api_key = None
+    source_id = uuid4().hex
+    async with SessionLocal() as session:
+        session.add(Source(id=source_id, name="Stale source", sag_source_config_id=source_id,
+                           default_search_strategy="sag2"))
+        await session.commit()
+    try:
+        unrelated = await client.put(
+            "/api/v1/system/model-config", headers=headers, json={"search_top_k": 9},
+        )
+        assert unrelated.status_code == 200, unrelated.text
+        async with SessionLocal() as session:
+            (await session.get(Source, source_id)).status = SourceStatus.DELETING
+            await session.commit()
+        draft = await client.put(
+            "/api/v1/system/model-config", headers=headers,
+            json={"jev_endpoint": "https://draft.example/score"},
+        )
+        assert draft.status_code == 200, draft.text
+    finally:
+        async with SessionLocal() as session:
+            await session.execute(delete(Source).where(Source.id == source_id))
+            await session.commit()
+
+
 @pytest.mark.parametrize(
     ("relational_provider", "vector_provider", "endpoint", "expected_code"),
     [

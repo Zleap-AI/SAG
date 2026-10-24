@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  getScopeDefaultStrategy,
   getSearchStrategiesDisabled,
   isJevConfigDisabledReason,
   isJevScoredStrategy,
   isSearchStrategy,
   JEV_SCORED_STRATEGIES,
+  needsJevQuickSetup,
   SEARCH_STRATEGIES,
+  SEARCH_STRATEGY_ICONS,
   SEARCH_STRATEGY_REQUIREMENTS,
 } from "./retrieval-config";
 
@@ -66,5 +69,37 @@ describe("SAG2 strategy availability", () => {
     expect(isJevConfigDisabledReason("vector_provider_lacks_lexical")).toBe(false);
     expect(isJevConfigDisabledReason("jev_api_key_missing")).toBe(true);
     expect(isJevConfigDisabledReason("jev_not_configured")).toBe(true);
+  });
+});
+
+describe("source default strategy", () => {
+  it("resolves a scope default only when every scoped source shares the same non-null value", () => {
+    expect(getScopeDefaultStrategy([])).toBeNull();
+    expect(getScopeDefaultStrategy([{ default_search_strategy: "sag2" }])).toBe("sag2");
+    expect(getScopeDefaultStrategy([{ default_search_strategy: "sag2" }, { default_search_strategy: "sag2" }])).toBe("sag2");
+    expect(getScopeDefaultStrategy([{ default_search_strategy: "sag2" }, { default_search_strategy: "multi" }])).toBeNull();
+    expect(getScopeDefaultStrategy([{ default_search_strategy: "sag2" }, { default_search_strategy: null }])).toBeNull();
+    expect(getScopeDefaultStrategy([{ default_search_strategy: "multi" }, {}])).toBeNull();
+    expect(getScopeDefaultStrategy([{ default_search_strategy: null }, {}])).toBeNull();
+  });
+  it("ignores a scope default the deployment currently cannot serve", () => {
+    const blocked = { sag2: { reason: "jev_api_key_missing", message: "Add a key" } };
+    expect(getScopeDefaultStrategy([{ default_search_strategy: "sag2" }], blocked)).toBeNull();
+    expect(getScopeDefaultStrategy([{ default_search_strategy: "multi" }], blocked)).toBe("multi");
+  });
+  it("offers the inline JEV setup only for JEV modes blocked by a missing configuration", () => {
+    const disabled = {
+      multi_jev: { reason: "vector_provider_lacks_lexical", message: "Lexical" },
+      sag2: { reason: "jev_api_key_missing", message: "Key" },
+    };
+    expect(needsJevQuickSetup("sag2", disabled)).toBe(true);
+    expect(needsJevQuickSetup("sag2", { sag2: { reason: "jev_not_configured", message: "Configure" } })).toBe(true);
+    expect(needsJevQuickSetup("multi_jev", disabled)).toBe(false);
+    expect(needsJevQuickSetup("multi", { multi: { reason: "jev_api_key_missing", message: "Key" } })).toBe(false);
+    expect(needsJevQuickSetup("sag2", {})).toBe(false);
+    expect(needsJevQuickSetup(null, disabled)).toBe(false);
+  });
+  it("has an icon for every mode", () => {
+    for (const strategy of SEARCH_STRATEGIES) expect(SEARCH_STRATEGY_ICONS[strategy.value]).toBeTypeOf("object");
   });
 });

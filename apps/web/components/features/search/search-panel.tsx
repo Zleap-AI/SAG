@@ -120,6 +120,7 @@ export function SearchPanel({
 }: SearchPanelProps) {
   const t = useTranslations("Search");
   const searchStrategies = useTranslations("SearchStrategies");
+  const retrievalModes = useTranslations("RetrievalModes");
   const search = useSearchWorkspace();
   const { capabilities } = useApp();
   const ensureSources = search.ensureSources;
@@ -269,8 +270,10 @@ export function SearchPanel({
   }, [search]);
 
   function changeStrategy(value: SearchStrategy) {
-    if (value === search.strategy) return;
+    const changed = value !== search.strategy;
+    // Pin even an unchanged pick so a later scope change no longer overrides it.
     search.setStrategy(value);
+    if (!changed) return;
     const activeQuery = search.query.trim() || search.lastQuery;
     if ((search.result !== null || search.busy) && activeQuery) {
       void executeSearch({
@@ -440,6 +443,7 @@ export function SearchPanel({
                 defaultValue={search.defaultStrategy}
                 onValueChange={changeStrategy}
                 disabledMap={getSearchStrategiesDisabled(capabilities, searchStrategies("unsupportedBackend"))}
+                hint={search.strategyOrigin === "scope" ? retrievalModes("scopeDefaultHint") : undefined}
               />
             </div>
             {mentionOpen && (
