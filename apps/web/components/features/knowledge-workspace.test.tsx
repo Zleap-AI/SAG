@@ -14,6 +14,7 @@ const source: Source = {
   source_type: "document",
   connector_kind: "file_upload",
   status: "active",
+  default_search_strategy: null,
   document_count: 2,
   chunk_count: 2,
   event_count: 4,

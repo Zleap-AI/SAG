@@ -425,11 +425,16 @@ class EngineManager:
         return {"enabled": enabled, "disabled": disabled}
 
     @classmethod
-    def require_jev_capabilities(cls, settings: Settings, strategy: str = "multi_jev") -> None:
-        """Reject explicit JEV-scored mode activation before publishing incompatible settings."""
+    def require_strategy_available(cls, settings: Settings, strategy: str) -> None:
+        """Reject selecting a mode the current deployment cannot serve, with its capability reason."""
         unavailable = cls.strategies_capability_report(settings)["disabled"].get(strategy)
         if unavailable is not None:
             raise ConfigurationError(unavailable["message"], code=unavailable["reason"])
+
+    @classmethod
+    def require_jev_capabilities(cls, settings: Settings, strategy: str = "multi_jev") -> None:
+        """Reject explicit JEV-scored mode activation before publishing incompatible settings."""
+        cls.require_strategy_available(settings, strategy)
 
     def _config_for(self, source: Source | None) -> Any:
         overrides = None

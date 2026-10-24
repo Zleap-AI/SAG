@@ -44,6 +44,7 @@ from sag_api.services.retrieval_service import (
     event_scores_from_evidence,
     published_document_inputs,
     recall_event_scores,
+    resolve_search_strategy,
     retrieve_relevant_sections,
     stream_synthesize_search_answer,
     synthesize_search_answer,
@@ -170,12 +171,14 @@ async def _retrieve_search_evidence(
     body: SearchRequest | GlobalSearchRequest,
 ) -> tuple[SearchOutcome, EventScoreMap, bool]:
     configuration = getattr(engine_manager, "_settings", settings)
-    strategy = body.strategy or configuration.search_strategy
+    # Resolve once for the evidence-shape decision below; the retrieval service
+    # resolves the same inputs again and records where the mode came from.
+    strategy = resolve_search_strategy(requested=body.strategy, sources=sources, configuration=configuration).strategy
     retrieval = retrieve_relevant_sections(
         engine_manager,
         sources,
         body.query,
-        strategy=strategy,
+        strategy=body.strategy,
         top_k=body.top_k,
         include_ranked_candidates=body.include_ranked_candidates,
     )

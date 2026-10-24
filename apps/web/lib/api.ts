@@ -786,7 +786,12 @@ export const api = {
   // 信源
   listSources: () => request<Source[]>("/api/v1/sources"),
   getSource: (id: string) => request<Source>(`/api/v1/sources/${id}`),
-  createSource: (b: { name: string; description?: string }) =>
+  createSource: (b: {
+    name: string;
+    description?: string;
+    /** Omit (or send null) to follow the global default retrieval mode. */
+    default_search_strategy?: SearchStrategy | null;
+  }) =>
     request<Source>("/api/v1/sources", {
       method: "POST",
       body: JSON.stringify(b),

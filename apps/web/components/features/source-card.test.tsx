@@ -16,6 +16,7 @@ const source: Source = {
   source_type: "document",
   connector_kind: "file_upload",
   status: "active",
+  default_search_strategy: null,
   document_count: 2,
   chunk_count: 2,
   event_count: 4,
@@ -23,21 +24,25 @@ const source: Source = {
   updated_at: "2026-07-27T12:00:00Z",
 };
 
+function render(value: Source) {
+  return renderToStaticMarkup(
+    <NextIntlClientProvider
+      locale="zh-CN"
+      timeZone="Asia/Shanghai"
+      messages={messages}
+    >
+      <TooltipProvider>
+        <OctxExportProvider>
+          <SourceCard source={value} />
+        </OctxExportProvider>
+      </TooltipProvider>
+    </NextIntlClientProvider>,
+  );
+}
+
 describe("source card", () => {
   it("exposes an always-visible source id control outside its navigation link", () => {
-    const html = renderToStaticMarkup(
-      <NextIntlClientProvider
-        locale="zh-CN"
-        timeZone="Asia/Shanghai"
-        messages={messages}
-      >
-        <TooltipProvider>
-          <OctxExportProvider>
-            <SourceCard source={source} />
-          </OctxExportProvider>
-        </TooltipProvider>
-      </NextIntlClientProvider>,
-    );
+    const html = render(source);
 
     const navigationEnd = html.indexOf("</a>");
     const copyButton = html.indexOf('aria-label="复制信源 ID"');
@@ -48,5 +53,17 @@ describe("source card", () => {
     );
     expect(navigationEnd).toBeGreaterThanOrEqual(0);
     expect(copyButton).toBeGreaterThan(navigationEnd);
+  });
+
+  it("shows a default retrieval mode pill only when the source sets one", () => {
+    expect(render(source)).not.toContain('data-testid="source-default-mode"');
+    expect(render({ ...source, default_search_strategy: undefined } as unknown as Source))
+      .not.toContain('data-testid="source-default-mode"');
+
+    const html = render({ ...source, default_search_strategy: "sag2" });
+    expect(html).toContain('data-testid="source-default-mode"');
+    expect(html).toContain('data-strategy="sag2"');
+    expect(html).toContain("SAG2 证据检索");
+    expect(html).toContain('aria-label="默认检索模式：SAG2 证据检索；搜索和问答时仍可临时切换"');
   });
 });

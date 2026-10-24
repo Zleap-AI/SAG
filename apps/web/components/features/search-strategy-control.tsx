@@ -1,17 +1,9 @@
 "use client";
 
-import {
-  Check,
-  ChevronDown,
-  ScanSearch,
-  Settings2,
-  ShieldQuestion,
-  Sparkles,
-  Zap,
-} from "lucide-react";
+import { Check, ChevronDown, Settings2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import Link from "next/link";
-import { Fragment, type ComponentType } from "react";
+import { Fragment } from "react";
 
 import {
   DropdownMenu,
@@ -32,18 +24,11 @@ import {
   isJevConfigDisabledReason,
   isJevScoredStrategy,
   SEARCH_STRATEGIES,
+  SEARCH_STRATEGY_ICONS,
   type SearchStrategy,
   type SearchStrategyDisabledMap,
 } from "@/lib/retrieval-config";
 import { settingsTabHref } from "@/lib/settings-config";
-
-const STRATEGY_ICONS: Record<SearchStrategy, ComponentType<{ className?: string }>> = {
-  vector: Zap,
-  multi_es_fast: ShieldQuestion,
-  multi: Sparkles,
-  multi_jev: Sparkles,
-  sag2: ScanSearch,
-};
 
 /** The shared JEV service section inside the knowledge settings tab. */
 const JEV_SETTINGS_HREF = settingsTabHref("knowledge", "jev");
@@ -56,6 +41,7 @@ export function SearchStrategyControl({
   defaultValue,
   onValueChange,
   disabledMap,
+  hint,
 }: {
   value: SearchStrategy;
   defaultValue: SearchStrategy;
@@ -65,10 +51,12 @@ export function SearchStrategyControl({
    * key 缺失即启用,存在即灰置 + Tooltip 展示 message。
    */
   disabledMap?: SearchStrategyDisabledMap;
+  /** Short muted note on where the current value came from (e.g. the scoped source's default). */
+  hint?: string;
 }) {
   const t = useTranslations("SearchStrategies");
   const currentStrategy = getSearchStrategy(value);
-  const CurrentIcon = STRATEGY_ICONS[currentStrategy.value];
+  const CurrentIcon = SEARCH_STRATEGY_ICONS[currentStrategy.value];
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -82,15 +70,21 @@ export function SearchStrategyControl({
           >
             <CurrentIcon className="size-3.5" />
             <span>{t(currentStrategy.labelKey)}</span>
+            {hint && (
+              <span className="opacity-60" data-testid="search-strategy-hint">
+                · {hint}
+              </span>
+            )}
             <ChevronDown className="size-3 opacity-60" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-72 p-1.5">
-          <DropdownMenuLabel className="px-2 pb-1 pt-1 text-[11px]">
+          <DropdownMenuLabel className="flex items-baseline justify-between gap-2 px-2 pb-1 pt-1 text-[11px]">
             {t("mode")}
+            {hint && <span className="font-normal text-muted-foreground">{hint}</span>}
           </DropdownMenuLabel>
           {SEARCH_STRATEGIES.map((strategy) => {
-            const Icon = STRATEGY_ICONS[strategy.value];
+            const Icon = SEARCH_STRATEGY_ICONS[strategy.value];
             const selected = strategy.value === value;
             const isDefault = strategy.value === defaultValue;
             const paid = isJevScoredStrategy(strategy.value);
