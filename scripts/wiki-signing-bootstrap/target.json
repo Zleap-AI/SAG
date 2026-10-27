@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "target": {
+    "repository": "Zleap-AI/SAG-Wiki",
+    "environment": "release",
+    "key_id": "3380204578043523366",
+    "public_key": "hkOy5CM6+Y3LSFZADmvSnbb/MMnWTpCL+U6XQn/PzSU="
+  }
+}
