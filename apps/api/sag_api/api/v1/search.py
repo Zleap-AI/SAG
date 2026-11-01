@@ -22,6 +22,7 @@ from sag_api.core.error_taxonomy import ErrorCode
 from sag_api.core.errors import ApiError, ValidationError
 from sag_api.core.logging import get_logger
 from sag_api.db.models import Source, User
+from sag_api.enums import JEV_SCORED_STRATEGIES
 from sag_api.generation import LLMClient
 from sag_api.sag import EngineManager, RetrievedSection, SearchOutcome
 from sag_api.schemas.insight import EntityOut, GraphRelationOut
@@ -43,6 +44,7 @@ from sag_api.services.retrieval_service import (
     event_scores_from_evidence,
     published_document_inputs,
     recall_event_scores,
+    resolve_search_strategy,
     retrieve_relevant_sections,
     stream_synthesize_search_answer,
     synthesize_search_answer,
@@ -169,16 +171,21 @@ async def _retrieve_search_evidence(
     body: SearchRequest | GlobalSearchRequest,
 ) -> tuple[SearchOutcome, EventScoreMap, bool]:
     configuration = getattr(engine_manager, "_settings", settings)
-    strategy = body.strategy or configuration.search_strategy
+    # Resolve once for the evidence-shape decision below; the retrieval service
+    # resolves the same inputs again and records where the mode came from.
+    strategy = resolve_search_strategy(requested=body.strategy, sources=sources, configuration=configuration).strategy
     retrieval = retrieve_relevant_sections(
         engine_manager,
         sources,
         body.query,
-        strategy=strategy,
+        strategy=body.strategy,
         top_k=body.top_k,
         include_ranked_candidates=body.include_ranked_candidates,
     )
-    if strategy == "multi_jev":
+    if strategy in JEV_SCORED_STRATEGIES or (strategy == "auto" and (
+        configuration.search_strategy == "multi_jev"
+        or any(getattr(source, "engine_kind", "sag1") == "sag2" for source in sources)
+    )):
         outcome = await retrieval
         return outcome, event_scores_from_evidence(outcome.sections), True
     outcome, scores = await asyncio.gather(

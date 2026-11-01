@@ -13,7 +13,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from zleap.sag import DataEngine, EngineConfig
@@ -24,6 +24,7 @@ from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
 from sag_api.core.errors import ConfigurationError, ServiceUnavailableError
 from sag_api.core.logging import get_logger
 from sag_api.enums import (
+    JEV_SCORED_STRATEGIES,
     SEARCH_STRATEGIES,
     SEARCH_STRATEGY_REQUIREMENTS,
     normalize_search_strategy,
@@ -42,7 +43,15 @@ from sag_api.sag.dto import (
 from sag_api.sag.engine_access import EngineAccess
 from sag_api.sag.errors import map_sag_errors
 from sag_api.sag.incremental_processor import IncrementalDocumentProcessor, ProgressCallback
-from sag_api.sag.search_reader import SearchReader, search_source_timeout_seconds
+from sag_api.sag.sag2_engine import (
+    jev_connection_issue,
+    jev_connection_ready,
+    sag2_relational_issue,
+    sag2_relational_supported,
+)
+from sag_api.sag.sag2_native_search import Sag2NativeSearchHolder
+from sag_api.sag.sag2_source_engine import Sag2SourceEngine
+from sag_api.sag.search_reader import SearchReader, search_admission_timeout_seconds
 from sag_api.sag.universe_cursor import (
     decode_universe_cursor,
     encode_universe_cursor,
@@ -184,6 +193,8 @@ class EngineManager:
         self._universe = UniverseReader(self._access)
         self._content = ContentReader(self._access)
         self._search = SearchReader(self._access)
+        # SAG2 证据检索：一个只读 zleap-sag2 引擎覆盖全部信源，随配置发布重建。
+        self._sag2 = Sag2NativeSearchHolder(settings)
 
     async def _relational_session_factory(self, source_config_id: str, source: Source | None = None) -> Any:
         """0.8.2 起 zleap 无全局会话工厂;经引擎注入的 RelationalStore 访问关系库。"""
@@ -327,26 +338,35 @@ class EngineManager:
     def _vector_provider_supports_lexical(self) -> bool:
         return self._VECTOR_PROVIDER_LEXICAL_SUPPORT.get(self._settings.sag_vector_provider, False)
 
-    def _strategy_missing_capabilities(self, strategy: str) -> tuple[str, ...]:
+    # 缺失能力的报告顺序：存储层能力先于服务配置，前端只展示第一个原因。
+    _CAPABILITY_ORDER: tuple[str, ...] = ("lexical_search", "sag2_relational", "jev")
+
+    @classmethod
+    def _missing_capabilities(cls, settings: Settings, strategy: str) -> tuple[str, ...]:
         requirements = SEARCH_STRATEGY_REQUIREMENTS.get(strategy, frozenset())
+        supports_lexical = cls._VECTOR_PROVIDER_LEXICAL_SUPPORT.get(settings.sag_vector_provider, False)
         missing: list[str] = []
-        for capability in requirements:
-            if capability == "lexical_search" and not self._vector_provider_supports_lexical():
+        for capability in sorted(requirements, key=cls._CAPABILITY_ORDER.index):
+            if capability == "lexical_search" and not supports_lexical:
                 missing.append(capability)
-            elif capability == "jev" and not self._settings.jev_endpoint:
+            elif capability == "jev" and not jev_connection_ready(settings):
+                missing.append(capability)
+            elif capability == "sag2_relational" and not sag2_relational_supported(settings):
                 missing.append(capability)
         return tuple(missing)
+
+    def _strategy_missing_capabilities(self, strategy: str) -> tuple[str, ...]:
+        return self._missing_capabilities(self._settings, strategy)
 
     def _effective_search_strategy(self, requested: str | None) -> str:
         """校验请求的门面策略。未识别或能力不满足时按配置策略回退,再兜底 vector。"""
         raw = requested or self._settings.search_strategy
         strategy = normalize_search_strategy(raw)
-        if strategy == "multi_jev":
+        if strategy in JEV_SCORED_STRATEGIES:
             missing = self._strategy_missing_capabilities(strategy)
             if missing:
                 # Explicit/default JEV selection must never silently change mode.
-                capability = "lexical_search" if "lexical_search" in missing else "jev"
-                reason, message = self._capability_disabled_reason(capability, self._settings.sag_vector_provider)
+                reason, message = self._capability_disabled_reason(missing[0], self._settings)
                 raise ConfigurationError(message, code=reason, stage=ErrorStage.RETRIEVE)
             return strategy
         if strategy in SEARCH_STRATEGIES:
@@ -373,15 +393,17 @@ class EngineManager:
         return self._FACADE_TO_ZLEAP_STRATEGY.get(facade_strategy, facade_strategy)
 
     @classmethod
-    def _capability_disabled_reason(cls, capability: str, provider: str) -> tuple[str, str] | None:
-        """给定缺失的能力名 + 当前 provider,产出 (reason_code, 用户可读文案)。"""
+    def _capability_disabled_reason(cls, capability: str, settings: Settings) -> tuple[str, str] | None:
+        """给定缺失的能力名 + 当前配置,产出 (reason_code, 用户可读文案)。"""
         if capability == "lexical_search":
             return (
                 "vector_provider_lacks_lexical",
-                f"当前向量存储 ({provider}) 不支持 BM25 词法检索，无法启用该检索模式。",
+                f"当前向量存储 ({settings.sag_vector_provider}) 不支持 BM25 词法检索，无法启用该检索模式。",
             )
         if capability == "jev":
-            return ("jev_not_configured", "尚未配置 JEV 精排服务，请先保存服务地址。")
+            return jev_connection_issue(settings)
+        if capability == "sag2_relational":
+            return sag2_relational_issue(settings)
         return None
 
     @classmethod
@@ -390,35 +412,30 @@ class EngineManager:
 
         无需持有 EngineManager 实例——所有判据只来自 settings。
         """
-        provider = settings.sag_vector_provider
-        supports_lexical = cls._VECTOR_PROVIDER_LEXICAL_SUPPORT.get(provider, False)
         enabled: list[str] = []
         disabled: dict[str, dict[str, str]] = {}
         for strategy in sorted(SEARCH_STRATEGIES):
-            requirements = SEARCH_STRATEGY_REQUIREMENTS.get(strategy, frozenset())
-            missing: list[tuple[str, str]] = []
-            for capability in sorted(requirements, key=lambda value: value != "lexical_search"):
-                if (
-                    capability == "lexical_search" and not supports_lexical
-                    or capability == "jev" and not settings.jev_endpoint
-                ):
-                    reason = cls._capability_disabled_reason(capability, provider)
-                    if reason is not None:
-                        missing.append(reason)
-            if missing:
+            missing = cls._missing_capabilities(settings, strategy)
+            reason = cls._capability_disabled_reason(missing[0], settings) if missing else None
+            if reason is not None:
                 # 只呈现第一个原因即可满足 UI 灰置 + tooltip 展示。
-                reason_code, message = missing[0]
+                reason_code, message = reason
                 disabled[strategy] = {"reason": reason_code, "message": message}
             else:
                 enabled.append(strategy)
         return {"enabled": enabled, "disabled": disabled}
 
     @classmethod
-    def require_jev_capabilities(cls, settings: Settings) -> None:
-        """Reject explicit JEV activation before publishing incompatible settings."""
-        unavailable = cls.strategies_capability_report(settings)["disabled"].get("multi_jev")
+    def require_strategy_available(cls, settings: Settings, strategy: str) -> None:
+        """Reject selecting a mode the current deployment cannot serve, with its capability reason."""
+        unavailable = cls.strategies_capability_report(settings)["disabled"].get(strategy)
         if unavailable is not None:
             raise ConfigurationError(unavailable["message"], code=unavailable["reason"])
+
+    @classmethod
+    def require_jev_capabilities(cls, settings: Settings, strategy: str = "multi_jev") -> None:
+        """Reject explicit JEV-scored mode activation before publishing incompatible settings."""
+        cls.require_strategy_available(settings, strategy)
 
     def _config_for(self, source: Source | None) -> Any:
         overrides = None
@@ -440,7 +457,10 @@ class EngineManager:
         overrides = (source.config or {}).get("engine") if source is not None else None
         with map_sag_errors(stage=ErrorStage.CONFIG):
             config = build_engine_config(settings, overrides=overrides)
-            return await document_processing_identity(config, settings, source_config_id, path)
+            return await document_processing_identity(
+                config, settings, source_config_id, path,
+                **({"engine_kind": "sag2"} if getattr(source, "engine_kind", "sag1") == "sag2" else {}),
+            )
 
     async def _ensure_engine_schema(self, engine: DataEngine) -> None:
         if self._schema_ready:
@@ -537,6 +557,13 @@ class EngineManager:
                 async with self._lifecycle_gate.write():
                     log.info("构造引擎 source_config_id=%s", source_config_id)
                     config = self._config_for(source)
+                    if getattr(source, "engine_kind", "sag1") == "sag2":
+                        engine = Sag2SourceEngine(self._settings, source_config_id)
+                        await engine.start()
+                        slot = _Slot(engine=engine, config=config)
+                        self._slots[source_config_id] = slot
+                        await self._evict_lru(keep=source_config_id)
+                        return slot
                     engine = DataEngine(
                         config,
                         data_source_id=source_config_id,
@@ -821,6 +848,7 @@ class EngineManager:
                             engine,
                             source_config_id,
                             max_concurrency=frozen.document_extract_concurrency,
+                            language=frozen.sag_language if isinstance(engine, Sag2SourceEngine) else None,
                             chunk_max_tokens=frozen.document_chunk_max_tokens,
                             chunk_mode=frozen.document_chunk_mode,
                             document_title=document_title,
@@ -890,10 +918,7 @@ class EngineManager:
         source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
         include_ranked_candidates: bool = False,
     ) -> SearchOutcome:
-        admission_timeout = (
-            search_source_timeout_seconds(self._settings, strategy)
-            if (strategy or self._settings.search_strategy) == "multi_jev" else None
-        )
+        admission_timeout = search_admission_timeout_seconds(self._settings, strategy)
         try:
             async with self._search_configuration_gate.read(timeout=admission_timeout):
                 return await self._search.search_many(
@@ -910,6 +935,25 @@ class EngineManager:
                     "JEV 检索超时，请稍后重试", layer=ErrorLayer.ENGINE, stage=ErrorStage.RETRIEVE,
                 ) from error
             raise
+
+    async def _sag2_search(
+        self,
+        targets: list[tuple[str, Source | None]],
+        query: str,
+        *,
+        top_k: int,
+        requested_sources: int,
+        source_limit_applied: bool,
+        source_ids_by_config: dict[str, tuple[str, ...]] | None,
+    ) -> SearchOutcome:
+        return await self._sag2.search(
+            targets,
+            query,
+            top_k=top_k,
+            requested_sources=requested_sources,
+            source_limit_applied=source_limit_applied,
+            source_ids_by_config=source_ids_by_config,
+        )
 
     async def _search_chunk_vectors(
         self,
@@ -936,6 +980,10 @@ class EngineManager:
         limit: int | None = None,
         source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
     ) -> dict[tuple[str, str], float]:
+        sources_by_config = {key: source for key, source in sources_by_config.items()
+                             if getattr(source, "engine_kind", "sag1") != "sag2"}
+        if not sources_by_config:
+            return {}
         return await self._search.search_event_scores(
             query, sources_by_config, limit=limit, source_ids_by_config=source_ids_by_config
         )
@@ -949,6 +997,8 @@ class EngineManager:
         bucket_count: int = 8,
         category_limit: int = 8,
     ) -> UniverseSourceStatsInfo:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            return UniverseSourceStatsInfo()
         return await self._universe.universe_overview_stats(
             source_config_id,
             source_ids=source_ids,
@@ -997,6 +1047,8 @@ class EngineManager:
         cursor: str | None = None,
         snapshot_id: str | None = None,
     ) -> UniverseTimelineInfo:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            return UniverseTimelineInfo(snapshot_id=source_revision, direction=direction, as_of=datetime.now(UTC))
         return await self._universe.universe_timeline(
             source_config_id,
             source_ids=source_ids,
@@ -1024,6 +1076,8 @@ class EngineManager:
         after: datetime | None = None,
         before: datetime | None = None,
     ) -> UniverseExpansionInfo | None:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            return None
         return await self._universe.universe_expand(
             source_config_id,
             node_kind,
@@ -1047,6 +1101,8 @@ class EngineManager:
         source_ids: tuple[str, ...],
         source: Source | None = None,
     ) -> dict[str, Any] | None:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            return None
         return await self._universe.universe_node_detail(
             source_config_id, node_kind, node_id, source_ids=source_ids, source=source
         )
@@ -1062,6 +1118,10 @@ class EngineManager:
         edge_limit: int = 96,
         event_scores: dict[tuple[str, str], float] | None = None,
     ) -> SourceGraphInfo:
+        sections = [section for section in sections
+                    if getattr(sources_by_config.get(section.source_config_id), "engine_kind", "sag1") != "sag2"]
+        if not sections and not event_scores:
+            return SourceGraphInfo()
         return await self._content.graph_for_sections(
             sections,
             sources_by_config,
@@ -1081,6 +1141,8 @@ class EngineManager:
         types: list[str] | None = None,
         limit: int = 100,
     ) -> list[EntityInfo]:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            return []
         return await self._content.list_entities(
             source_config_id, source_ids=source_ids, source=source, types=types, limit=limit
         )
@@ -1095,6 +1157,8 @@ class EngineManager:
         entity_limit: int = 1_000,
         expected_event_count: int | None = None,
     ) -> SourceGraphInfo:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            return SourceGraphInfo()
         return await self._content.source_graph(
             source_config_id,
             source_ids,
@@ -1125,6 +1189,11 @@ class EngineManager:
         doc_sag_id: str | None = None,
         limit: int = 300,
     ) -> list[dict]:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            slot = await self._slot(source_config_id, source)
+            rows = await slot.engine.rows((doc_sag_id,) if doc_sag_id else ())
+            return [{"chunk_id": row["chunk_id"], "heading": row.get("heading") or "",
+                     "rank": int(row.get("_rank") or 0)} for row in rows[:limit]]
         return await self._content.list_chunk_headings(
             source_config_id, source=source, doc_sag_id=doc_sag_id, limit=limit
         )
@@ -1136,6 +1205,14 @@ class EngineManager:
         *,
         source: Source | None = None,
     ) -> str | None:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            slot = await self._slot(source_config_id, source)
+            rows = await slot.engine.rows((article_id,))
+            if not rows:
+                return None
+            return rows[0].get("metadata", {}).get("original_text") or "\n\n".join(
+                str(row.get("content") or "") for row in rows
+            )
         return await self._content.get_document_markdown(source_config_id, article_id, source=source)
 
     async def grep_chunks(
@@ -1147,6 +1224,21 @@ class EngineManager:
         limit: int = 20,
         source_ids: tuple[str, ...] | None = None,
     ) -> list[dict]:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            slot = await self._slot(source_config_id, source)
+            rows = await slot.engine.rows(source_ids or ())
+            needle = pattern.casefold()
+            result = []
+            for row in rows:
+                content = str(row.get("content") or "")
+                position = content.casefold().find(needle)
+                if position < 0:
+                    continue
+                result.append({"chunk_id": row["chunk_id"], "heading": row.get("heading") or "",
+                               "source_id": row["source_id"], "snippet": content[max(0, position - 80):position + 700]})
+                if len(result) >= limit:
+                    break
+            return result
         return await self._content.grep_chunks(
             source_config_id, pattern, source=source, limit=limit, source_ids=source_ids
         )
@@ -1159,6 +1251,14 @@ class EngineManager:
         source_ids: tuple[str, ...] | None = None,
         source: Source | None = None,
     ):
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            from sag_api.sag.dto import ChunkInfo
+            slot = await self._slot(source_config_id, source)
+            for input_id in source_ids or ():
+                row = await slot.engine.read_chunk(input_id, chunk_id, data_source_id=source_config_id)
+                if row is not None:
+                    return ChunkInfo(chunk_id=chunk_id, heading=row.heading or "", content=row.content, rank=0)
+            return None
         return await self._content.get_chunk(source_config_id, chunk_id, source_ids=source_ids, source=source)
 
     async def release(self, source_config_id: str) -> None:
@@ -1180,6 +1280,7 @@ class EngineManager:
         async with self._create_lock:
             async with self._lifecycle_gate.write():
                 await self._close_all_slots()
+                await self._sag2.aclose()
 
     async def apply_settings(self, settings: Any, *, reset_engines: bool) -> None:
         """Publish runtime settings and reset slots in the same admission barrier."""
@@ -1190,6 +1291,8 @@ class EngineManager:
                         setattr(self._settings, field_name, getattr(settings, field_name))
                     if reset_engines:
                         await self._close_all_slots()
+                    # 只读 SAG2 引擎按自身指纹判断是否重建，与槽重置解耦。
+                    await self._sag2.refresh(self._settings)
 
     async def _close_all_slots(self) -> None:
         # Caller owns the create lock and lifecycle writer; don't acquire them twice.

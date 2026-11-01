@@ -22,6 +22,9 @@ const config = {
 };
 const provider302Endpoint = "https://api.302.ai/typesafeai/v1/systemone";
 const officialEndpoint = "https://api.typesafe.ai/v1/systemone";
+/** A key already saved for the prefilled 302.AI endpoint satisfies the key requirement without typing. */
+const keyedConfig = { ...config, jev_endpoint: provider302Endpoint, jev_api_key_set: true };
+const keyMissing = { reason: "jev_api_key_missing", message: "Add a JEV API key" };
 let root: Root;
 let container: HTMLDivElement;
 let saved: Record<string, unknown> | undefined;
@@ -66,17 +69,29 @@ function pointerEvent(type: string) {
   Object.defineProperties(event, { pointerId: { value: 1 }, pointerType: { value: "mouse" } });
   return event;
 }
-async function select(id: string, label: string) {
+async function openSelect(id: string) {
   const trigger = container.querySelector<HTMLElement>(id);
   expect(trigger, `missing selector ${id}`).not.toBeNull();
   await act(async () => trigger!.dispatchEvent(pointerEvent("pointerdown")));
-  const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find(item => item.textContent?.includes(label))!;
+  return [...document.body.querySelectorAll<HTMLElement>('[role="option"]')];
+}
+async function closeSelect() {
+  await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+}
+async function select(id: string, label: string) {
+  const option = (await openSelect(id)).find(item => item.textContent?.includes(label))!;
   expect(option).toBeDefined();
   expect(option.getAttribute("aria-disabled")).not.toBe("true");
   await act(async () => {
     option.dispatchEvent(pointerEvent("pointerdown"));
     option.dispatchEvent(pointerEvent("pointerup"));
   });
+}
+async function expectStrategyDisabled(label: string, disabled: boolean) {
+  const option = (await openSelect("#kb-search-strategy")).find(item => item.textContent?.includes(label))!;
+  expect(option, `missing option ${label}`).toBeDefined();
+  expect(option.getAttribute("aria-disabled") === "true").toBe(disabled);
+  await closeSelect();
 }
 
 describe("JEV knowledge settings", () => {
@@ -95,6 +110,10 @@ describe("JEV knowledge settings", () => {
     expect(container.textContent).toContain("Documents are not translated");
     expect(container.textContent).toContain("does not change JEV's scoring language");
     expect(container.textContent).toContain("latest stable JEV release");
+    expect(container.textContent).toContain("API key (required for JEV modes)");
+    expect(container.textContent).toContain("JEV is a paid service shared by JEV reranking and SAG2 evidence retrieval");
+    expect(container.textContent).toContain("The failure policy applies to JEV reranking only");
+    expect(container.querySelector('[data-settings-section="jev"]')).not.toBeNull();
   });
   it.each(["", "   "])("prefills the latest alias when the stored model is blank (%j)", async model => {
     vi.mocked(api.getModelConfig).mockResolvedValue({ ...config, jev_model: model } as never);
@@ -125,16 +144,29 @@ describe("JEV knowledge settings", () => {
     { label: "unconfigured", jev_endpoint: null, search_strategy: "vector" },
     { label: "configured but inactive", jev_endpoint: officialEndpoint, search_strategy: "vector" },
     { label: "already enabled", jev_endpoint: officialEndpoint, search_strategy: "multi_jev" },
+    { label: "already running SAG2", jev_endpoint: officialEndpoint, search_strategy: "sag2" },
   ])("saves document settings without changing $label JEV configuration", async stored => {
     vi.mocked(api.getModelConfig).mockResolvedValue({ ...config, ...stored } as never);
     await mount();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
     await edit("#kb-extract-concurrency", "12");
     await act(async () => button("Save and apply").click());
     expect(saved).toMatchObject({ document_extract_concurrency: 12 });
     expect(saved).not.toHaveProperty("search_strategy");
     expect(Object.keys(saved!).filter(key => key.startsWith("jev_"))).toEqual([]);
   });
+  it("keeps JEV modes disabled until an API key is entered, then saves the key with the mode", async () => {
+    await mount();
+    await expectStrategyDisabled("JEV reranking", false);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(button("Save and apply").disabled).toBe(false);
+    await edit("#kb-jev-api-key", "synthetic-302-key");
+    await select("#kb-search-strategy", "JEV");
+    await act(async () => button("Save and apply").click());
+    expect(saved).toMatchObject({ jev_endpoint: provider302Endpoint, jev_model: "jev-latest", jev_api_key: "synthetic-302-key", search_strategy: "multi_jev", jev_ranking_timeout_seconds: 30, jev_failure_policy: "error" });
+  });
   it("saves untouched provider defaults only when the user enables JEV", async () => {
+    vi.mocked(api.getModelConfig).mockResolvedValue(keyedConfig as never);
     await mount();
     await select("#kb-search-strategy", "JEV");
     await act(async () => button("Save and apply").click());
@@ -142,6 +174,7 @@ describe("JEV knowledge settings", () => {
     expect(saved).not.toHaveProperty("jev_api_key");
   });
   it("does not persist provider defaults after the user cancels enabling JEV", async () => {
+    vi.mocked(api.getModelConfig).mockResolvedValue(keyedConfig as never);
     await mount();
     await select("#kb-search-strategy", "JEV");
     await select("#kb-search-strategy", "Fast (vector)");
@@ -150,9 +183,11 @@ describe("JEV knowledge settings", () => {
     expect(Object.keys(saved!).filter(key => key.startsWith("jev_"))).toEqual([]);
   });
   it("does not persist a tested but unedited default JEV draft", async () => {
+    vi.mocked(api.getModelConfig).mockResolvedValue(keyedConfig as never);
     await mount();
     await act(async () => button("Test JEV connection").click());
     expect(tested).toMatchObject({ jev_endpoint: provider302Endpoint, jev_model: "jev-latest" });
+    expect(tested).not.toHaveProperty("jev_api_key");
     await edit("#kb-extract-concurrency", "12");
     await act(async () => button("Save and apply").click());
     expect(Object.keys(saved!).filter(key => key.startsWith("jev_"))).toEqual([]);
@@ -175,9 +210,11 @@ describe("JEV knowledge settings", () => {
     expect(container.querySelector<HTMLInputElement>("#kb-jev-model")!.value).toBe("jev-latest");
     expect(container.querySelector<HTMLInputElement>("#kb-jev-api-key")!.value).toBe("");
     expect(container.textContent).not.toContain("Draft connected");
+    // The new destination needs its own key before it can be tested.
+    expect(button("Test JEV connection").disabled).toBe(true);
+    await edit("#kb-jev-api-key", "synthetic-official-key");
     await act(async () => button("Test JEV connection").click());
-    expect(tested).toMatchObject({ jev_endpoint: officialEndpoint, jev_model: "jev-latest" });
-    expect(tested).not.toHaveProperty("jev_api_key");
+    expect(tested).toMatchObject({ jev_endpoint: officialEndpoint, jev_model: "jev-latest", jev_api_key: "synthetic-official-key" });
     expect(tested).not.toHaveProperty("llm_api_key");
     await select("#kb-jev-provider", "302.AI");
     await act(async () => button("Save and apply").click());
@@ -186,14 +223,18 @@ describe("JEV knowledge settings", () => {
     expect(saved).not.toHaveProperty("jev_api_key");
     expect(saved).not.toHaveProperty("jev_provider");
   });
-  it("allows a custom full URL and custom model while keeping a blank independent key", async () => {
+  it("requires a key before testing a custom full URL and custom model", async () => {
     await mount();
     await select("#kb-jev-provider", "Custom");
     await edit("#kb-jev-endpoint", "https://gateway.invalid/custom/score");
     await edit("#kb-jev-model", "gateway-jev");
+    expect(container.querySelector<HTMLInputElement>("#kb-jev-api-key")!.placeholder).toBe("Enter the API key for your JEV service");
+    expect(button("Test JEV connection").disabled).toBe(true);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await edit("#kb-jev-api-key", "synthetic-gateway-key");
+    expect(button("Test JEV connection").disabled).toBe(false);
     await act(async () => button("Test JEV connection").click());
-    expect(tested).toMatchObject({ jev_endpoint: "https://gateway.invalid/custom/score", jev_model: "gateway-jev" });
-    expect(tested).not.toHaveProperty("jev_api_key");
+    expect(tested).toMatchObject({ jev_endpoint: "https://gateway.invalid/custom/score", jev_model: "gateway-jev", jev_api_key: "synthetic-gateway-key" });
   });
   it("clears a draft key and test result when a custom destination changes", async () => {
     await mount();
@@ -206,15 +247,16 @@ describe("JEV knowledge settings", () => {
     expect(container.querySelector<HTMLInputElement>("#kb-jev-api-key")!.value).toBe("");
     expect(container.textContent).not.toContain("Draft connected");
   });
-  it("saves a service draft and JEV mode together while leaving a blank key untouched", async () => {
+  it("saves a service draft, its key and JEV mode together", async () => {
     await mount();
     await select("#kb-jev-provider", "Custom");
     await edit("#kb-jev-endpoint", "https://jev.invalid/score");
     await edit("#kb-jev-model", "gateway-model");
+    await expectStrategyDisabled("JEV reranking", false);
+    await edit("#kb-jev-api-key", "synthetic-gateway-key");
     await select("#kb-search-strategy", "JEV");
     await act(async () => button("Save and apply").click());
-    expect(saved).toMatchObject({ jev_endpoint: "https://jev.invalid/score", jev_model: "gateway-model", search_strategy: "multi_jev", jev_ranking_timeout_seconds: 30, jev_failure_policy: "error" });
-    expect(saved).not.toHaveProperty("jev_api_key");
+    expect(saved).toMatchObject({ jev_endpoint: "https://jev.invalid/score", jev_model: "gateway-model", jev_api_key: "synthetic-gateway-key", search_strategy: "multi_jev", jev_ranking_timeout_seconds: 30, jev_failure_policy: "error" });
     expect(state.refreshCapabilities).toHaveBeenCalled();
   });
   it.each([
@@ -241,8 +283,10 @@ describe("JEV knowledge settings", () => {
   });
   it("starts clean after saving JEV and switching away from it", async () => {
     await mount();
+    await edit("#kb-jev-api-key", "synthetic-302-key");
     await select("#kb-search-strategy", "JEV");
     await act(async () => button("Save and apply").click());
+    expect(saved).toMatchObject({ search_strategy: "multi_jev", jev_api_key: "synthetic-302-key" });
     await act(async () => button("Save and apply").click());
     expect(saved).not.toHaveProperty("search_strategy");
     expect(Object.keys(saved!).filter(key => key.startsWith("jev_"))).toEqual([]);
@@ -271,6 +315,23 @@ describe("JEV knowledge settings", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("valid full HTTP(S) URL");
     expect(saved).toBeUndefined();
     expect(tested).toBeUndefined();
+  });
+  it("blocks saving a JEV mode whose key was cleared by changing the destination", async () => {
+    state.capabilities = { vector_provider: "lancedb", search_strategies: ["vector", "multi", "multi_es_fast", "multi_jev", "sag2"] };
+    vi.mocked(api.getModelConfig).mockResolvedValue({ ...config, jev_endpoint: officialEndpoint, search_strategy: "multi_jev" } as never);
+    await mount();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await select("#kb-jev-provider", "302.AI");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Enter the JEV API key before selecting JEV reranking or SAG2 evidence retrieval");
+    expect(container.querySelector("#kb-jev-api-key")?.getAttribute("aria-invalid")).toBe("true");
+    expect(button("Save and apply").disabled).toBe(true);
+    expect(button("Test JEV connection").disabled).toBe(true);
+    await edit("#kb-jev-api-key", "synthetic-302-key");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(button("Save and apply").disabled).toBe(false);
+    await act(async () => button("Save and apply").click());
+    expect(saved).toMatchObject({ jev_endpoint: provider302Endpoint, jev_api_key: "synthetic-302-key" });
+    expect(saved).not.toHaveProperty("search_strategy");
   });
   it.each([
     ["pgvector", "PostgreSQL (pgvector)"],
@@ -319,8 +380,82 @@ describe("JEV knowledge settings", () => {
     expect(saved).toMatchObject({ search_strategy: "vector" });
     expect(Object.keys(saved!).filter(key => key.startsWith("jev_"))).toEqual([]);
   });
+  it("hides the JEV service form when storage rules out both JEV modes", async () => {
+    state.capabilities = {
+      vector_provider: "oceanbase", search_strategies: ["vector", "multi"],
+      search_strategies_disabled: {
+        multi_jev: { reason: "vector_provider_lacks_lexical", message: "Lexical search required" },
+        sag2: { reason: "sag2_relational_unsupported", message: "SQLite or PostgreSQL required" },
+      },
+    };
+    vi.mocked(api.getModelConfig).mockResolvedValue({ ...config, search_strategy: "sag2", jev_endpoint: officialEndpoint } as never);
+    await mount();
+    expect(container.querySelector("#kb-jev-provider")).toBeNull();
+    expect(container.textContent).toContain("SAG2 evidence retrieval currently supports only SQLite and PostgreSQL");
+    expect(container.querySelector("#kb-search-strategy")?.textContent).toContain("Fast (vector)");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(button("Save and apply").disabled).toBe(false);
+  });
+  it("keeps the JEV service form for SAG2 on PostgreSQL when only JEV reranking lacks lexical search", async () => {
+    state.capabilities = {
+      vector_provider: "pgvector", search_strategies: ["vector", "multi", "sag2"],
+      search_strategies_disabled: {
+        multi_jev: { reason: "vector_provider_lacks_lexical", message: "Lexical search required" },
+        multi_es_fast: { reason: "vector_provider_lacks_lexical", message: "Lexical search required" },
+      },
+    };
+    vi.mocked(api.getModelConfig).mockResolvedValue(keyedConfig as never);
+    await mount();
+    expect(container.querySelector("#kb-jev-provider")).not.toBeNull();
+    expect(container.textContent).toContain("requires lexical search");
+    expect(container.textContent).not.toContain("Your existing retrieval settings remain unchanged");
+    expect(button("Test JEV connection").disabled).toBe(false);
+    await expectStrategyDisabled("JEV reranking", true);
+    const options = await openSelect("#kb-search-strategy");
+    expect(options.some(option => option.textContent?.includes("SAG2"))).toBe(false);
+    await closeSelect();
+    await act(async () => button("Save and apply").click());
+    expect(saved).not.toHaveProperty("search_strategy");
+    expect(saved).not.toHaveProperty("jev_api_key");
+  });
+  it("explains the SAG2 relational limitation while keeping JEV reranking configurable", async () => {
+    state.capabilities = {
+      vector_provider: "lancedb", search_strategies: ["vector", "multi", "multi_es_fast", "multi_jev"],
+      search_strategies_disabled: { sag2: { reason: "sag2_relational_unsupported", message: "SQLite or PostgreSQL required" } },
+    };
+    vi.mocked(api.getModelConfig).mockResolvedValue(keyedConfig as never);
+    await mount();
+    expect(container.querySelector("#kb-jev-provider")).not.toBeNull();
+    expect(container.textContent).toContain("SAG2 evidence retrieval currently supports only SQLite and PostgreSQL");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    const options = await openSelect("#kb-search-strategy");
+    expect(options.some(option => option.textContent?.includes("SAG2"))).toBe(false);
+    await closeSelect();
+    await select("#kb-search-strategy", "JEV");
+    await act(async () => button("Save and apply").click());
+    expect(saved).toMatchObject({ search_strategy: "multi_jev" });
+  });
+  it("lifts a missing-key reason for both JEV modes only once a key is typed", async () => {
+    state.capabilities = {
+      vector_provider: "lancedb", search_strategies: ["vector", "multi", "multi_es_fast"],
+      search_strategies_disabled: { multi_jev: keyMissing, sag2: keyMissing },
+    };
+    vi.mocked(api.getModelConfig).mockResolvedValue({ ...config, jev_endpoint: provider302Endpoint, jev_api_key_set: false } as never);
+    await mount();
+    await expectStrategyDisabled("JEV reranking", false);
+    const options = await openSelect("#kb-search-strategy");
+    expect(options.some(option => option.textContent?.includes("SAG2"))).toBe(false);
+    await closeSelect();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await edit("#kb-jev-api-key", "synthetic-302-key");
+    await expectStrategyDisabled("JEV reranking", false);
+    await select("#kb-search-strategy", "JEV");
+    await act(async () => button("Save and apply").click());
+    expect(saved).toMatchObject({ search_strategy: "multi_jev", jev_endpoint: provider302Endpoint, jev_api_key: "synthetic-302-key" });
+  });
   it("disables the JEV option and rejects a draft enable when storage capabilities change", async () => {
     await mount();
+    await edit("#kb-jev-api-key", "synthetic-302-key");
     await select("#kb-search-strategy", "JEV");
     state.capabilities = {
       vector_provider: "pgvector", search_strategies: ["vector", "multi"],
@@ -328,9 +463,7 @@ describe("JEV knowledge settings", () => {
     };
     await mount();
     expect(button("Save and apply").disabled).toBe(true);
-    const trigger = container.querySelector<HTMLElement>("#kb-search-strategy")!;
-    await act(async () => trigger.dispatchEvent(pointerEvent("pointerdown")));
-    const jevOption = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find(item => item.textContent?.includes("JEV"))!;
+    const jevOption = (await openSelect("#kb-search-strategy")).find(item => item.textContent?.includes("JEV"))!;
     expect(jevOption.getAttribute("aria-disabled")).toBe("true");
     expect(saved).toBeUndefined();
   });
@@ -341,16 +474,18 @@ describe("JEV knowledge settings", () => {
     expect(container.textContent).toContain(displayName);
     expect(container.textContent).not.toContain("Currently using vector retrieval");
     expect(container.querySelector("#kb-jev-provider")).not.toBeNull();
+    expect(button("Test JEV connection").disabled).toBe(true);
+    await edit("#kb-jev-api-key", "synthetic-302-key");
     expect(button("Test JEV connection").disabled).toBe(false);
     await select("#kb-search-strategy", "JEV");
     await act(async () => button("Save and apply").click());
-    expect(saved).toMatchObject({ search_strategy: "multi_jev", jev_endpoint: provider302Endpoint });
+    expect(saved).toMatchObject({ search_strategy: "multi_jev", jev_endpoint: provider302Endpoint, jev_api_key: "synthetic-302-key" });
   });
   it("keeps ordinary settings editable against an older API without JEV capability", async () => {
     state.capabilities = { search_strategies: ["vector", "multi"] };
     vi.mocked(api.getModelConfig).mockResolvedValue({ ...config, jev_endpoint: "invalid" } as never);
     await mount();
-    expect(container.textContent).toContain("This server does not advertise JEV support");
+    expect(container.textContent).toContain("This server does not advertise support for this JEV-scored mode");
     expect(button("Test JEV connection").disabled).toBe(true);
     expect(button("Save and apply").disabled).toBe(false);
     await act(async () => button("Save and apply").click());

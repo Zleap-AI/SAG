@@ -6,12 +6,7 @@ import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 import { useApp } from "@/components/features/app-shell";
-import {
-  api,
-  ApiError,
-  type EvalCompareResponse,
-  type EvalStrategyResult,
-} from "@/lib/api";
+import { api, ApiError, type EvalCompareResponse } from "@/lib/api";
 import {
   DEFAULT_SEARCH_STRATEGY,
   getSearchStrategiesDisabled,
@@ -19,6 +14,11 @@ import {
   type SearchStrategy,
 } from "@/lib/retrieval-config";
 import type { Section } from "@/lib/types";
+import {
+  ColumnResult,
+  JudgeVerdicts,
+  SectionRow,
+} from "@/components/features/retrieval-compare-parts";
 import { RetrievalStatus } from "@/components/features/retrieval-status";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -58,7 +58,7 @@ export function RetrievalTestDialog({
   const disabledMap = getSearchStrategiesDisabled(capabilities, strategies("unsupportedBackend"));
 
   const enabledStrategies = SEARCH_STRATEGIES.filter(
-    (item) => !disabledMap[item.value],
+    (item) => item.value !== "auto" && !disabledMap[item.value],
   ).map((item) => item.value);
   const fallbackA: SearchStrategy =
     enabledStrategies[0] ?? DEFAULT_SEARCH_STRATEGY;
@@ -282,7 +282,7 @@ function StrategyPicker({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {SEARCH_STRATEGIES.map(({ value: strategy, labelKey }) => {
+          {SEARCH_STRATEGIES.filter(item => item.value !== "auto").map(({ value: strategy, labelKey }) => {
             const info = disabledMap[strategy];
             const sameAsOther = strategy === otherValue;
             return (
@@ -379,164 +379,12 @@ function CompareColumns({
         />
       </div>
 
-      <div className="rounded-md border px-3 py-2 text-xs">
-        {data.judges.length === 0 ? (
-          <p className="text-muted-foreground">
-            {data.judge_reason || judgeMissingLabel}
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-1.5">
-            {data.judges.map((verdict, i) => {
-              const winner =
-                verdict.winner === "A"
-                  ? strategyLabelFor(verdict.a_strategy)
-                  : verdict.winner === "B"
-                    ? strategyLabelFor(verdict.b_strategy)
-                    : "tie";
-              return (
-                <li key={i} className="flex flex-col gap-0.5">
-                  <span className="text-xs font-medium text-foreground">
-                    <Trophy className="mr-1 inline size-3.5" />
-                    {winner}
-                  </span>
-                  <span className="text-[11px] text-muted-foreground">
-                    {verdict.reason}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ColumnResult({
-  result,
-  label,
-  sectionLabel,
-  emptyLabel,
-}: {
-  result: EvalStrategyResult | undefined;
-  label: string;
-  sectionLabel: string;
-  emptyLabel: string;
-}) {
-  if (!result) return null;
-  return (
-    <div className="flex flex-col gap-1.5">
-      <RetrievalStatus stats={result.stats} requestedStrategy={result.strategy} />
-      <div className="flex items-center justify-between px-1 text-[11px] text-muted-foreground">
-        <span className="font-medium text-foreground">{label}</span>
-        <StatsPill stats={result.stats} />
-      </div>
-      <div className="max-h-[22rem] overflow-y-auto rounded-lg border">
-        {result.error ? (
-          <p className="px-3 py-6 text-center text-xs text-destructive">
-            {result.error}
-          </p>
-        ) : result.sections.length === 0 ? (
-          <p className="px-3 py-6 text-center text-sm text-muted-foreground">
-            {emptyLabel}
-          </p>
-        ) : (
-          result.sections.map((section, i) => (
-            <SectionRow
-              key={`${section.chunk_id ?? "no-chunk"}-${i}`}
-              index={i}
-              section={section}
-              sectionLabel={sectionLabel}
-            />
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-function StatsPill({ stats }: { stats: Record<string, unknown> }) {
-  const latency = pickNumber(stats, "latency_total_ms");
-  const engineLatency = pickNumber(stats, "latency_engine_ms");
-  const candidates = pickNumber(stats, "candidates");
-  const relevant = pickNumber(stats, "relevant");
-  const parts: string[] = [];
-  if (latency != null) parts.push(`${latency.toFixed(0)}ms`);
-  else if (engineLatency != null) parts.push(`${engineLatency.toFixed(0)}ms`);
-  if (candidates != null) parts.push(`cand=${candidates}`);
-  if (relevant != null) parts.push(`rel=${relevant}`);
-  const engineTimings = pickTimings(stats, "engine_timings");
-  const topSteps = engineTimings
-    .filter(([key]) => !/\.total$/.test(key)) // total 已经在 pill 里
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3);
-  if (parts.length === 0 && topSteps.length === 0) return null;
-  return (
-    <div className="flex flex-col gap-0.5">
-      {parts.length > 0 && <span className="font-mono">{parts.join(" · ")}</span>}
-      {topSteps.length > 0 && (
-        <span className="font-mono text-muted-foreground" title={engineTimings.map(([k, v]) => `${k}=${v.toFixed(0)}ms`).join("\n")}>
-          {topSteps.map(([k, v]) => `${shortStep(k)}=${v.toFixed(0)}ms`).join(" · ")}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function pickNumber(stats: Record<string, unknown>, key: string): number | null {
-  const value = stats[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function pickTimings(stats: Record<string, unknown>, key: string): [string, number][] {
-  const value = stats[key];
-  if (!value || typeof value !== "object") return [];
-  const entries: [string, number][] = [];
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof v === "number" && Number.isFinite(v)) entries.push([k, v]);
-  }
-  return entries;
-}
-
-function shortStep(key: string): string {
-  // "multi_es.step5_fast_expand" → "step5_fast_expand";vector.embedding → embedding
-  const idx = key.indexOf(".");
-  return idx >= 0 ? key.slice(idx + 1) : key;
-}
-
-function SectionRow({
-  index,
-  section,
-  sectionLabel,
-}: {
-  index: number;
-  section: Section;
-  sectionLabel: string;
-}) {
-  return (
-    <div className="border-t p-3 first:border-t-0">
-      <div className="mb-1 flex items-center gap-2">
-        <span className="grid size-5 shrink-0 place-items-center rounded-[6px] bg-muted text-[11px] font-semibold text-foreground">
-          {index + 1}
-        </span>
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-          {section.heading || sectionLabel}
-        </span>
-        <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
-          {section.score.toFixed(4)}
-        </span>
-      </div>
-      <div className="mb-1.5 ml-7 h-1 overflow-hidden rounded-full bg-muted">
-        <div
-          className="h-full rounded-full bg-primary"
-          style={{
-            width: `${Math.max(4, Math.min(100, section.score * 100))}%`,
-          }}
-        />
-      </div>
-      <p className="ml-7 line-clamp-2 text-xs text-muted-foreground">
-        {section.content}
-      </p>
+      <JudgeVerdicts
+        judges={data.judges}
+        judgeReason={data.judge_reason}
+        missingLabel={judgeMissingLabel}
+        strategyLabelFor={strategyLabelFor}
+      />
     </div>
   );
 }

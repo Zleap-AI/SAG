@@ -20,6 +20,9 @@ async def probe_jev_connection(configuration: Settings) -> JevConnectionTestResu
     """Score synthetic evidence without persisting settings or exposing provider errors."""
     if not configuration.jev_endpoint:
         return JevConnectionTestResult(ok=False, message="尚未配置 JEV 完整服务地址")
+    if not configuration.jev_api_key:
+        # JEV 是付费服务；没有 Key 的探测既不会成功也不应发出请求。
+        return JevConnectionTestResult(ok=False, message="JEV 为付费服务，请先填写 API Key")
     client = JevClient(
         endpoint=configuration.jev_endpoint,
         model=configuration.jev_model,

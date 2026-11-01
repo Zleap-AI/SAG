@@ -44,8 +44,12 @@ class ToolContext:
     sources: list[Source] = field(default_factory=list)
     persona: dict[str, Any] = field(default_factory=dict)
     agent: Agent | None = None
+    # 本轮显式选择的检索模式；优先于人格与信源默认。
+    requested_strategy: str | None = None
     # 全局证据编号偏移：循环在每次派发前设置，保证 [n] 跨轮递增不重号
     citation_offset: int = 0
+    # 工具准备时固定的模式与来源，不修改用户的人格配置。
+    search_strategy_snapshot: tuple[str, str] | None = None
 
 
 @dataclass

@@ -14,6 +14,7 @@ from sag_api.sag.engine_manager import EngineManager
 def jev_settings(**changes):
     return Settings(_env_file=None).model_copy(update={
         "jev_endpoint": "https://jev.invalid/score",
+        "jev_api_key": "synthetic-jev-key",
         "jev_ranking_timeout_seconds": 30.0,
         "jev_failure_policy": "error",
         "sag_vector_provider": "lancedb",
@@ -37,6 +38,15 @@ def test_jev_mode_requires_both_connection_and_lexical_capability():
     assert error.value.code == "jev_not_configured"
     report = manager.strategies_capability_report(manager._settings)
     assert report["disabled"]["multi_jev"]["reason"] == "jev_not_configured"
+
+    # JEV is a paid service: a saved endpoint without a key must not enable any JEV-scored mode.
+    manager = EngineManager(jev_settings(jev_api_key=None))
+    with pytest.raises(ConfigurationError) as error:
+        manager._effective_search_strategy("multi_jev")
+    assert error.value.code == "jev_api_key_missing"
+    report = manager.strategies_capability_report(manager._settings)
+    assert report["disabled"]["multi_jev"]["reason"] == "jev_api_key_missing"
+    assert report["disabled"]["sag2"]["reason"] == "jev_api_key_missing"
 
     manager = EngineManager(jev_settings(sag_vector_provider="pgvector"))
     with pytest.raises(ConfigurationError) as error:
@@ -217,7 +227,8 @@ async def test_agent_uses_global_jev_and_preserves_order_and_stats(monkeypatch, 
 
     async def retrieve(manager, sources, query, *, strategy, top_k):
         calls.append(strategy)
-        assert manager._effective_search_strategy(strategy) == "multi_jev"
+        expected = "multi_jev" if persona.get("search_strategy") else "auto"
+        assert manager._effective_search_strategy(strategy) == expected
         return SearchOutcome(query=query, sections=[hit("first", 0.2), hit("second", 0.1)],
                              stats={"ranking": {"method": "jev", "fallback_reason": None}})
 
@@ -242,7 +253,7 @@ async def test_agent_uses_global_jev_and_preserves_order_and_stats(monkeypatch, 
     result = await builtin.SearchContextTool().invoke(
         {"query": "q"}, ToolContext(engine_manager=engine, sources=[source], persona=persona),
     )
-    assert calls == ["multi_jev"]
+    assert calls == ["retired_custom_mode" if persona.get("search_strategy") else "auto"]
     assert [section.chunk_id for section in result.data["sections"]] == ["first", "second"]
     assert result.data["retrieval_stats"]["ranking"]["method"] == "jev"
 

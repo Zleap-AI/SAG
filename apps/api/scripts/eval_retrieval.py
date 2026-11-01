@@ -3,7 +3,7 @@
 用法示例:
     uv run python scripts/eval_retrieval.py \\
         --fixture tests/fixtures/golden_queries.yaml \\
-        --strategies vector,multi_es_fast \\
+        --strategies vector,multi_es_fast,multi_jev,sag2 \\
         --mode both \\
         --judge on \\
         --out /tmp/eval_report.json

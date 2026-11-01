@@ -349,10 +349,14 @@ async def test_sigkill_real_queue_restarts_with_manual_gate_and_preserved_chunks
                         async with sessions() as session:
                             bound = (await session.get(Job, identities["jobs"][0])).payload.get("process_request")
                         receipt = await sdk.get_operation_status(bound["context"]["operation_id"]) if bound else None
+                        # The marker can appear after this iteration read an older receipt.
                         reached = (
                             models.blocked.is_set() and receipt is not None
                             and receipt.extraction_progress["chunk_succeeded"] == 1
-                            if kill_at == "successful_chunk" else (root / "prepared.json").exists()
+                            if kill_at == "successful_chunk" else (
+                                (root / "prepared.json").exists() and receipt is not None
+                                and receipt.checkpoint == "extract_prepared"
+                            )
                         )
                         if reached:
                             break

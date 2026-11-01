@@ -21,7 +21,7 @@ from sag_api.core.config import settings
 from sag_api.core.error_taxonomy import ErrorCode
 from sag_api.core.errors import ConflictError, NotFoundError, ValidationError
 from sag_api.db.models import Agent, AgentBinding, Message, Source, Thread
-from sag_api.enums import BindingTargetType, MessageRole, MessageStatus
+from sag_api.enums import JEV_SCORED_STRATEGIES, BindingTargetType, MessageRole, MessageStatus
 from sag_api.generation import build_agent_messages, build_prompt_preview
 from sag_api.generation.prompt import estimate_tokens
 from sag_api.sag import EngineManager
@@ -148,8 +148,8 @@ async def create_agent(session: AsyncSession, *, name: str, avatar: str = "", pe
     name = name.strip()
     if not name:
         raise ValidationError("Agent 名称不能为空")
-    if persona is not None and persona.get("search_strategy") == "multi_jev":
-        EngineManager.require_jev_capabilities(settings)
+    if persona is not None and persona.get("search_strategy") in JEV_SCORED_STRATEGIES:
+        EngineManager.require_jev_capabilities(settings, persona["search_strategy"])
     agent = Agent(name=name, avatar=avatar or name[:1], persona=persona or {})
     session.add(agent)
     await session.commit()
@@ -166,8 +166,8 @@ async def update_agent(
     persona: dict | None = None,
 ) -> Agent:
     agent = await get_agent(session, agent_id)
-    if persona is not None and persona.get("search_strategy") == "multi_jev":
-        EngineManager.require_jev_capabilities(settings)
+    if persona is not None and persona.get("search_strategy") in JEV_SCORED_STRATEGIES:
+        EngineManager.require_jev_capabilities(settings, persona["search_strategy"])
     if name is not None:
         agent.name = name
     if avatar is not None:
@@ -472,6 +472,7 @@ class AskPlan:
     source_ids: list[str] | None = None  # @范围：限定循环内检索工具可见的信源
     source_scope: list[dict[str, str]] | None = None
     user_message_id: str | None = None
+    strategy: str | None = None  # 本轮显式选择的检索模式
 
 
 def build_ask_context(
@@ -510,6 +511,7 @@ async def prepare_ask(
     attachments: list[str] | None = None,
     source_ids: list[str] | None = None,
     llm=None,
+    strategy: str | None = None,
 ) -> AskPlan:
     """落库用户消息（含图片附件 meta）、解析历史（超上下文阈值时主动压缩），组装计划。"""
     resolved: list[dict] = []
@@ -554,6 +556,7 @@ async def prepare_ask(
     )
     plan.user_message_id = user_msg.id
     plan.source_scope = source_scope
+    plan.strategy = strategy
     return plan
 
 

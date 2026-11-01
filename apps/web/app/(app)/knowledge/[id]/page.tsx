@@ -26,6 +26,7 @@ import {
   FolderImportDialog,
   type FolderImportDialogHandle,
 } from "@/components/features/folder-import-dialog";
+import { KnowledgeEnginePill } from "@/components/features/knowledge-engine-pill";
 import { RetrievalTestDialog } from "@/components/features/retrieval-test-dialog";
 import { SourceIdCopy } from "@/components/features/source-id-copy";
 import { SourceGraph } from "@/components/features/source-graph";
@@ -123,9 +124,12 @@ export default function SourceDetailPage() {
           </Link>
           {source ? (
             <>
-              <h1 className="font-display text-xl font-semibold tracking-tight text-foreground">
-                {source.name}
-              </h1>
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <h1 className="font-display text-xl font-semibold tracking-tight text-foreground">
+                  {source.name}
+                </h1>
+                <KnowledgeEnginePill kind={source.engine_kind} />
+              </div>
               <p className="mt-1.5 text-sm text-muted-foreground">
                 {t("sourceStats", {
                   documents: source.document_count,
@@ -186,9 +190,9 @@ export default function SourceDetailPage() {
                 variant="outline"
                 size="icon"
                 onClick={handleExport}
-                disabled={!source || exportRunning}
+                disabled={!source || exportRunning || source.engine_kind === "sag2"}
                 aria-label={tCard("export")}
-                title={tCard("export")}
+                title={source?.engine_kind === "sag2" ? tCard("sag2OctxUnsupported") : tCard("export")}
               >
                 {exportRunning ? (
                   <Spinner className="size-4" />
@@ -197,7 +201,7 @@ export default function SourceDetailPage() {
                 )}
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="bottom">{tCard("export")}</TooltipContent>
+            <TooltipContent side="bottom">{source?.engine_kind === "sag2" ? tCard("sag2OctxUnsupported") : tCard("export")}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -279,6 +283,7 @@ export default function SourceDetailPage() {
               </ToggleGroupItem>
               <ToggleGroupItem
                 value="graph"
+                disabled={source?.engine_kind === "sag2"}
                 className="gap-1.5 px-3 max-sm:flex-1 max-sm:px-2"
                 aria-label={t("graph2dView")}
               >
@@ -288,6 +293,7 @@ export default function SourceDetailPage() {
               </ToggleGroupItem>
               <ToggleGroupItem
                 value="graph3d"
+                disabled={source?.engine_kind === "sag2"}
                 className="gap-1.5 px-3 max-sm:flex-1 max-sm:px-2"
                 aria-label={t("graph3dView")}
               >
@@ -303,7 +309,7 @@ export default function SourceDetailPage() {
                 <Skeleton key={i} className="h-16" />
               ))}
             </div>
-          ) : graphViewActive ? (
+          ) : graphViewActive && source.engine_kind !== "sag2" ? (
             <div className="min-h-0 flex-1">
               <SourceGraph
                 source={source}
@@ -321,10 +327,11 @@ export default function SourceDetailPage() {
             <EmptyState
               icon={FileText}
               title={t("emptyDocuments")}
-              description={t("emptyDocumentsDescription")}
+              description={t(source?.engine_kind === "sag2" ? "sag2UploadDescription" : "emptyDocumentsDescription")}
             />
           ) : (
             <DocumentList
+              engineKind={source.engine_kind}
               sourceId={id}
               sourceName={source.name}
               documents={documents}
@@ -349,7 +356,7 @@ export default function SourceDetailPage() {
             </DialogTitle>
             <DialogDescription>
               {isFileSource
-                ? t("addDialogDescription")
+                ? t(source?.engine_kind === "sag2" ? "sag2UploadDescription" : "addDialogDescription")
                 : t("syncDialogDescription")}
             </DialogDescription>
           </DialogHeader>
@@ -357,6 +364,7 @@ export default function SourceDetailPage() {
             (source.connector_kind === "file_upload" ? (
               <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden">
                 <UploadZone
+                  engineKind={source.engine_kind}
                   sourceId={id}
                   onUploaded={() => {
                     dismissFolderImportDialog(

@@ -14,6 +14,9 @@ class Source(IDMixin, TimestampMixin, Base):
 
     __tablename__ = "sources"
 
+    # Immutable ingestion/retrieval engine; historical sources are always SAG1.
+    engine_kind: Mapped[str] = mapped_column(String(16), default="sag1", server_default="sag1")
+
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str] = mapped_column(Text, default="")
     source_type: Mapped[SourceType] = mapped_column(
@@ -33,6 +36,9 @@ class Source(IDMixin, TimestampMixin, Base):
     document_count: Mapped[int] = mapped_column(Integer, default=0)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     event_count: Mapped[int] = mapped_column(Integer, default=0)
+    # 该信源的默认检索模式；None 表示跟随全局默认。搜索与问答在范围内信源一致时采用，
+    # 不改变文档入库流程。
+    default_search_strategy: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     @hybrid_property
     def is_deleting(self) -> bool:

@@ -167,12 +167,13 @@ export function KnowledgeSourceWorkspace({
           >
             <p className="mb-3 text-xs leading-5 text-muted-foreground">
               {isFileSource
-                ? t("uploadDescription")
+                ? t(source?.engine_kind === "sag2" ? "sag2UploadDescription" : "uploadDescription")
                 : t("syncDescription")}
             </p>
             {source &&
               (isFileSource ? (
                 <UploadZone
+                  engineKind={source.engine_kind}
                   sourceId={sourceId}
                   onUploaded={() => void finishMutation()}
                   maxMb={capabilities?.max_upload_mb ?? 25}
@@ -236,6 +237,7 @@ export function KnowledgeSourceWorkspace({
               <DocumentList
                 sourceId={sourceId}
                 sourceName={source.name}
+                engineKind={source.engine_kind}
                 documents={documents}
                 activities={documentActivities}
                 onAction={mutateDocument}

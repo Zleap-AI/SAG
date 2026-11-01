@@ -221,6 +221,80 @@ async def test_jev_service_rejects_invalid_explicit_fields_before_persisting(jev
     assert resets == []
 
 
+@pytest.mark.parametrize("strategy", ["multi_jev", "sag2"])
+@pytest.mark.parametrize("endpoint", [None, "https://replacement.example/score"])
+async def test_retired_source_preferences_do_not_block_jev_connection_changes(jev_config_client, strategy, endpoint):
+    from sag_api.core.db import SessionLocal
+    from sag_api.db.models import Source
+
+    client, headers, resets = jev_config_client
+    initial = await client.put(
+        "/api/v1/system/model-config", headers=headers,
+        json={"search_strategy": "vector", "jev_endpoint": "https://saved.example/score",
+              "jev_api_key": "synthetic-saved-key"},
+    )
+    assert initial.status_code == 200, initial.text
+    source_id = uuid4().hex
+    async with SessionLocal() as session:
+        session.add(Source(id=source_id, name="Protected source", sag_source_config_id=source_id,
+                           default_search_strategy=strategy))
+        await session.commit()
+    try:
+        changed = await client.put(
+            "/api/v1/system/model-config", headers=headers, json={"jev_endpoint": endpoint},
+        )
+        assert changed.status_code == 200, changed.text
+        assert changed.json()["config"]["jev_api_key_set"] is False
+        async with SessionLocal() as session:
+            legacy = await session.get(Source, source_id)
+            assert legacy.default_search_strategy == strategy
+            assert legacy.engine_kind == "sag1"
+
+        # Supplying a key for the new destination keeps the saved source usable.
+        replaced = await client.put(
+            "/api/v1/system/model-config", headers=headers,
+            json={"jev_endpoint": "https://replacement.example/score", "jev_api_key": "synthetic-new-key"},
+        )
+        assert replaced.status_code == 200, replaced.text
+    finally:
+        async with SessionLocal() as session:
+            await session.execute(delete(Source).where(Source.id == source_id))
+            await session.commit()
+
+
+async def test_stale_source_default_does_not_block_unrelated_settings_or_deleted_sources(jev_config_client):
+    from sag_api.core.db import SessionLocal
+    from sag_api.db.models import Source
+    from sag_api.enums import SourceStatus
+
+    client, headers, _resets = jev_config_client
+    settings.search_strategy = "vector"
+    settings.jev_endpoint = None
+    settings.jev_api_key = None
+    source_id = uuid4().hex
+    async with SessionLocal() as session:
+        session.add(Source(id=source_id, name="Stale source", sag_source_config_id=source_id,
+                           default_search_strategy="sag2"))
+        await session.commit()
+    try:
+        unrelated = await client.put(
+            "/api/v1/system/model-config", headers=headers, json={"search_top_k": 9},
+        )
+        assert unrelated.status_code == 200, unrelated.text
+        async with SessionLocal() as session:
+            (await session.get(Source, source_id)).status = SourceStatus.DELETING
+            await session.commit()
+        draft = await client.put(
+            "/api/v1/system/model-config", headers=headers,
+            json={"jev_endpoint": "https://draft.example/score"},
+        )
+        assert draft.status_code == 200, draft.text
+    finally:
+        async with SessionLocal() as session:
+            await session.execute(delete(Source).where(Source.id == source_id))
+            await session.commit()
+
+
 @pytest.mark.parametrize(
     ("relational_provider", "vector_provider", "endpoint", "expected_code"),
     [
@@ -291,9 +365,21 @@ async def test_lexical_backends_can_enable_jev_and_save_its_endpoint_in_the_same
     settings.jev_endpoint = None
     settings.llm_model = "existing-model"
     settings.llm_api_key = "existing-key"
-    response = await client.put(
+    # JEV is a paid service: enabling the mode with an endpoint but no key rejects the whole save.
+    rejected = await client.put(
         "/api/v1/system/model-config", headers=headers,
         json={"search_strategy": "multi_jev", "jev_endpoint": "https://jev.example/score"},
+    )
+    assert rejected.status_code == 400, rejected.text
+    assert rejected.json()["error"]["code"] == "jev_api_key_missing"
+    assert settings.search_strategy == "vector" and settings.jev_endpoint is None
+
+    response = await client.put(
+        "/api/v1/system/model-config", headers=headers,
+        json={
+            "search_strategy": "multi_jev", "jev_endpoint": "https://jev.example/score",
+            "jev_api_key": "synthetic-jev-key",
+        },
     )
 
     assert response.status_code == 200, response.text
@@ -304,7 +390,8 @@ async def test_lexical_backends_can_enable_jev_and_save_its_endpoint_in_the_same
     async with SessionLocal() as session:
         row = await session.scalar(select(Setting).where(Setting.scope == "global", Setting.key == "model_config"))
         assert row.value == {
-            "search_strategy": "multi_jev", "jev_endpoint": "https://jev.example/score", "jev_api_key": None,
+            "search_strategy": "multi_jev", "jev_endpoint": "https://jev.example/score",
+            "jev_api_key": "synthetic-jev-key",
         }
 
 
@@ -505,13 +592,15 @@ async def test_jev_draft_checks_protocol_without_mutating_saved_configuration(je
     assert all(question["type"] == "noul" for question in payload["questions"].values())
     assert "synthetic-saved-key" not in response.text
 
+    call_count = len(transport.calls)
     response = await client.post(
         "/api/v1/system/model-config/jev/test", headers=headers,
         json={"jev_endpoint": "https://draft.example/score", "jev_api_key": ""},
     )
-    assert response.json()["ok"] is True  # An unauthenticated gateway is supported.
-    assert transport.calls[-1][0] == "https://draft.example/score"
-    assert transport.calls[-1][1]["Authorization"] == "Bearer "
+    # JEV is a paid service: a new endpoint without its own key is rejected before any request.
+    assert response.json()["ok"] is False
+    assert "API Key" in response.json()["message"]
+    assert len(transport.calls) == call_count
     assert settings.model_dump() == before
     assert app.state.knowledge_runtime._settings.model_dump() == runtime_before
     assert len(resets) == reset_count

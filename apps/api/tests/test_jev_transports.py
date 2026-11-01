@@ -63,13 +63,14 @@ async def test_agent_tool_keeps_the_strategy_selected_when_the_run_was_prepared(
 
     class RecordingSearchTool(SearchTool):
         async def invoke(self, _arguments, context):
-            used.append(context.persona.get("search_strategy"))
+            used.append(context.search_strategy_snapshot)
+            assert context.persona == {}  # Freezing a run must not rewrite the persona.
             return ToolResult(content="evidence")
 
     adapted = _adapt_tool(RecordingSearchTool(), ToolContext(engine_manager=object()), [])
     active.search_strategy = "multi_jev"
     await adapted.execute({}, SimpleNamespace(cancellation=SimpleNamespace(raise_if_cancelled=lambda: None)))
-    assert used == ["vector"]
+    assert used == [("auto", "global")]
 
 
 @pytest.mark.asyncio

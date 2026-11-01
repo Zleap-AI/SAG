@@ -548,7 +548,7 @@ def test_strategies_capability_report_marks_multi_es_disabled_on_pgvector(monkey
     monkeypatch.setattr(settings, "sag_vector_provider", "pgvector")
     report = EngineManager.strategies_capability_report(settings)
 
-    assert set(report["enabled"]) == {"vector", "multi"}
+    assert set(report["enabled"]) == {"auto", "vector", "multi"}
     assert "multi_es_fast" in report["disabled"]
     disabled_entry = report["disabled"]["multi_es_fast"]
     assert disabled_entry["reason"] == "vector_provider_lacks_lexical"
@@ -556,7 +556,7 @@ def test_strategies_capability_report_marks_multi_es_disabled_on_pgvector(monkey
 
     monkeypatch.setattr(settings, "sag_vector_provider", "lancedb")
     ok_report = EngineManager.strategies_capability_report(settings)
-    assert set(ok_report["enabled"]) == {"vector", "multi", "multi_es_fast"}
+    assert set(ok_report["enabled"]) == {"auto", "vector", "multi", "multi_es_fast"}
     assert ok_report["disabled"]["multi_jev"]["reason"] == "jev_not_configured"
 
 

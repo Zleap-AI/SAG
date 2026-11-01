@@ -345,13 +345,20 @@ def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict])
     timeout_seconds = None
     if name == "search_context":
         from sag_api.core.config import MAX_JEV_RANKING_TIMEOUT_SECONDS, settings
-        from sag_api.tools.builtin import knowledge_search_strategy
+        from sag_api.tools.builtin import knowledge_search_strategy, knowledge_search_strategy_origin
 
         configuration = getattr(host_context.engine_manager, "_settings", settings)
-        strategy = knowledge_search_strategy(host_context.persona, configuration)
-        # Keep this run's mode stable while the model prepares the tool call.
-        host_context = replace(host_context, persona={**host_context.persona, "search_strategy": strategy})
-        if strategy == "multi_jev":
+        strategy = knowledge_search_strategy(
+            host_context.persona, configuration, host_context.sources, host_context.requested_strategy,
+        )
+        # Freeze execution and provenance together without rewriting the persona.
+        origin = knowledge_search_strategy_origin(
+            host_context.persona, host_context.sources, host_context.requested_strategy,
+        )
+        host_context = replace(host_context, search_strategy_snapshot=(strategy, origin))
+        effective = (host_context.engine_manager._effective_search_strategy(strategy)
+                     if hasattr(host_context.engine_manager, "_effective_search_strategy") else strategy)
+        if effective == "multi_jev" or (effective == "auto" and configuration.search_strategy == "multi_jev"):
             source_count = min(len(host_context.sources), configuration.search_source_candidate_limit)
             waves = max(1, ceil(source_count / configuration.search_source_concurrency))
             recall_timeout = max(1.0, configuration.search_source_timeout)
@@ -360,6 +367,18 @@ def _adapt_tool(host_tool, host_context: HostToolContext, citations: list[dict])
             timeout_seconds = max(
                 configuration.agent_tool_timeout_seconds,
                 (waves + 1) * (recall_timeout + MAX_JEV_RANKING_TIMEOUT_SECONDS) + recall_timeout,
+            )
+        if strategy == "sag2" or (strategy == "auto" and any(
+            getattr(source, "engine_kind", "sag1") == "sag2" for source in host_context.sources
+        )):
+            from sag_api.sag.search_reader import search_admission_timeout_seconds
+
+            # One read-only request covers every source. Its whole-search budget is
+            # also the settings-publication wait, so allow one of each plus recall.
+            whole_search = search_admission_timeout_seconds(configuration, "sag2") or 0.0
+            timeout_seconds = max(
+                timeout_seconds or 0, configuration.agent_tool_timeout_seconds,
+                2 * whole_search + max(1.0, configuration.search_source_timeout),
             )
 
     async def execute(

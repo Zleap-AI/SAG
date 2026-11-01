@@ -36,7 +36,7 @@ export function CreateSourceDialog({
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{t("new")}</DialogTitle>
           <DialogDescription>{t("dialogDescription")}</DialogDescription>

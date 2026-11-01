@@ -545,6 +545,7 @@ async def _process_document_unlocked(
                     runtime_settings,
                     source.sag_source_config_id,
                     input_path,
+                    **({"engine_kind": "sag2"} if getattr(source, "engine_kind", "sag1") == "sag2" else {}),
                 )
             except OSError:
                 raise DocumentRestartRequiredError("resume_input_unavailable") from None
@@ -632,6 +633,7 @@ async def _process_document_unlocked(
                 runtime_settings,
                 source.sag_source_config_id,
                 input_path,
+                **({"engine_kind": "sag2"} if getattr(source, "engine_kind", "sag1") == "sag2" else {}),
             )
             reason = processing_identity_restart_reason(identity, current)
             if reason or candidate.source.original_sha256 != identity["original_sha256"]:
@@ -664,7 +666,8 @@ async def _process_document_unlocked(
                             "process_request": candidate.model_dump(mode="json"),
                             "processing_identity": identity,
                             "control_revision": control_revision,
-                            "vector_identity": configured_embedding_identity(runtime_settings),
+                            "vector_identity": (None if getattr(source, "engine_kind", "sag1") == "sag2"
+                                            else configured_embedding_identity(runtime_settings)),
                         }
                     )
                     .execution_options(synchronize_session=False)

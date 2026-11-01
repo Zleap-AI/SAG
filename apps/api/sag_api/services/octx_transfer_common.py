@@ -37,6 +37,7 @@ from sag_api.enums import (
     OctxTransferStatus,
 )
 from sag_api.octx.storage import FileSignature, OctxStorage, StoredUpload
+from sag_api.services.knowledge_algorithms import require_sag1_octx
 from sag_api.services.octx_checkpoint import merge_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -234,7 +235,9 @@ async def _claim_import_target(session: AsyncSession, transfer: OctxTransfer) ->
     if claimed.rowcount != 1:
         raise ConflictError("OCTX target is being deleted", code=ErrorCode.OCTX_TRANSFER_CANCELLED, retryable=False)
     await _ensure_transfer_active(session, transfer, stage="atomic_switch")
-    return await session.get(Source, target_id, populate_existing=True)
+    source = await session.get(Source, target_id, populate_existing=True)
+    require_sag1_octx(source)
+    return source
 
 
 def _export_document_state(documents: list[Document]) -> tuple[list[dict], list[dict]]:

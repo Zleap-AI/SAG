@@ -64,6 +64,7 @@ export type ParserStatus =
   | "fallback"
   | "failed";
 export interface Source {
+  engine_kind?: "sag1" | "sag2";
   id: string;
   name: string;
   description: string;
@@ -71,6 +72,12 @@ export interface Source {
   connector_kind: string;
   status: SourceStatus;
   deletion_job?: BackgroundJob | null;
+  /**
+   * Default retrieval mode for search and chat scoped to this source.
+   * `null` follows the global default; older backends omit the field, which
+   * callers must treat the same way (`source.default_search_strategy ?? null`).
+   */
+  default_search_strategy: SearchStrategy | null;
   document_count: number;
   chunk_count: number;
   event_count: number;
@@ -174,6 +181,8 @@ export interface Persona {
   system_prompt?: string;
   greeting?: string;
   tools?: string[];
+  /** Retrieval mode this agent asks with unless the user picks one per turn. */
+  search_strategy?: SearchStrategy;
 }
 
 export interface ActivityItem {
@@ -517,6 +526,7 @@ export interface SourceGraphResponse {
 }
 
 export interface Section {
+  metadata?: Record<string, unknown>;
   chunk_id: string | null;
   heading: string;
   content: string;

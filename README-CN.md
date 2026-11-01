@@ -62,7 +62,7 @@ SAG 不是传统 RAG 与 GraphRAG 的融合，而是一套替代二者的原创�
 | 能力 | 解决的问题 |
 | --- | --- |
 | 知识导入 | 文件与网页信源、文档解析、分块、向量化、事件/实体抽取、后台处理 |
-| 检索 | 跨信源或指定信源检索，支持快速（`vector` / `multi_es_fast`）、精确（`multi`）与可选 JEV 精排（`multi_jev`）模式 |
+| 检索 | 跨信源或指定信源检索，支持快速（`vector` / `multi_es_fast`）、精确（`multi`）、可选 JEV 精排（`multi_jev`）与 SAG2 证据检索（`sag2`）模式 |
 | 原文溯源 | 每条检索结果和引用都能打开对应的原文块 |
 | 知识图谱 | 查看事件、实体及其可查询的关联关系 |
 | Agent 对话 | 基于指定信源进行多轮问答，并提供可点击引用 |
@@ -566,12 +566,19 @@ config = EngineConfig.from_env()
 | 快速（multi_es-fast） | `multi_es_fast` | BM25 实体召回与事件多跳检索，跳过 LLM 精排 |
 | 精确 | `multi` | 结合实体关系与 LLM 精排，结果更完整 |
 | JEV 精排 | `multi_jev` | 召回与图扩展后，通过独立 JEV 服务为候选证据评分 |
+| SAG2 证据检索 | `sag2` | 由 [zleap-sag2](https://pypi.org/project/zleap-sag2/) 原生索引检索：BM25 召回后用 JEV 服务多轮评分，不依赖向量库 |
 
-这里列出的是应用/API 策略名称；应用将 `multi` 映射到 Python 引擎的 `full_expand`，将 `multi_es_fast` 映射到 `pruned_expand_rff`。可用性取决于存储能力：`multi_es_fast` 需要词法检索支持。
+这里列出的是应用/API 策略名称；应用将 `multi` 映射到 Python 引擎的 `full_expand`，将 `multi_es_fast` 映射到 `pruned_expand_rff`，`sag2` 由独立的 `zleap-sag2` 引擎执行。可用性取决于存储能力：`multi_es_fast` 与 `multi_jev` 需要词法检索支持，`sag2` 需要 SQLite 或 PostgreSQL 关系库。
 
-在“设置 → 知识库 → 检索”配置 302.AI、TypeSafe 官方或自定义 JEV 服务（默认 `jev-latest`，独立 API Key），再选择 **JEV 精排**。仅保存服务不会启用；默认限时 30 秒、失败报错，可选择粗排降级。
+创建信源时只选择两种固定算法：**事件检索（SAG1）**（默认）或 **证据检索（SAG2）**，创建后不可编辑切换。SAG1 后续上传沿用原有解析、分块、向量化和实体/事项提取；SAG2 后续上传只解析、分块并建立原文索引，不调用抽取或向量模型。已有信源统一保留 SAG1，既有数据无需重建。OCTX 导入/导出目前仅支持 SAG1，SAG2 不允许导出或被 OCTX 覆盖。
 
-支持 LanceDB、Elasticsearch，暂不支持 pgvector；PostgreSQL 作为关系库不受影响。未启用时沿用原检索策略，已有文档无需重新入库。效果与成本见[更新日志](CHANGELOG.md#jev-reranking)。
+搜索和问答默认使用**自动（按知识库算法）**：SAG1 按设置页的 SAG1 检索策略召回，SAG2 按证据检索召回，混合范围合并、去重后回答；某一算法失败会明确提示结果不完整。显式选择 SAG1 子模式只检索 SAG1 信源，选择 SAG2 只检索 SAG2 信源；Agent 人格中的显式策略也遵循此限制。探索页仍可并排对比 2–3 种具体模式。
+
+在“设置 → 知识库 → 检索”配置 302.AI、TypeSafe 官方或自定义 JEV 服务（默认 `jev-latest`，独立 API Key）。JEV 精排和 SAG2 检索共用此服务：搜索/问答选择缺少配置的付费模式时打开配置弹窗，保存成功后才切换，取消保留当前模式和输入。创建 SAG2 信源及上传建索引不要求 JEV Key。JEV 精排默认限时 30 秒、失败报错，可选择粗排降级；SAG2 失败不降级。
+
+**SAG2** 使用独立的 `zleap-sag2` 原生持久化索引，支持 SQLite / PostgreSQL（首期不支持 MySQL / OceanBase），BM25 召回后多轮调用 JEV 评分，不依赖向量库。仅已发布的所选文档进入检索范围和扫描计数。SQLite 数据位于引擎目录的 `sag2.db`；PostgreSQL 使用原数据库的独立 `sag2` schema，连接用户需有创建 schema 和其中表的权限。SAG1 数据表保持原样。候选数、超时、并发与范围上限等参数见 `apps/api/.env.example` 的 `SAG_SAG2_*`。
+
+JEV 精排支持 LanceDB、Elasticsearch，暂不支持 pgvector；PostgreSQL 作为关系库不受影响。未启用时沿用原检索策略，已有文档无需重新入库。效果与成本见[更新日志](CHANGELOG.md#jev-reranking)。
 
 #### 存储后端
 
