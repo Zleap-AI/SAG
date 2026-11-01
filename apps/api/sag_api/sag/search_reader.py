@@ -315,12 +315,15 @@ class SearchReader:
                         "source_limit_applied": requested_sources > len(targets),
                         "candidates": 0,
                         "chunk_recall": "batch-vector-timeout",
+                        "source_failures": [{"source_config_id": scid, "message": "块向量召回超时"}
+                                            for scid, _ in targets],
                     },
                 )
             except Exception as error:  # noqa: BLE001 - use the same scope in per-range fallback
                 log.warning("批量块向量召回失败，回退逐范围检索：%s", error)
 
         semaphore = asyncio.Semaphore(self._access.settings.search_source_concurrency)
+        source_failures = []
 
         async def _one(scid: str, source: Source | None):
             async with semaphore:
@@ -338,7 +341,9 @@ class SearchReader:
                 except Exception as e:  # noqa: BLE001
                     if strategy in JEV_SCORED_STRATEGIES:
                         raise
-                    log.warning("fan-out 检索失败 %s：%s", scid, getattr(e, "message", None) or e)
+                    message = getattr(e, "message", None) or str(e)
+                    log.warning("fan-out 检索失败 %s：%s", scid, message)
+                    source_failures.append({"source_config_id": scid, "message": message})
                     return None
 
         tasks = [asyncio.create_task(_one(scid, src)) for scid, src in targets]
@@ -387,6 +392,7 @@ class SearchReader:
                     candidate.setdefault("source_config_id", scid)
                     ranked_candidates.append(candidate)
         stats: dict[str, Any] = {
+            **({"source_failures": source_failures} if source_failures else {}),
             "sources": len(targets),
             "sources_requested": requested_sources,
             "source_limit_applied": requested_sources > len(targets),

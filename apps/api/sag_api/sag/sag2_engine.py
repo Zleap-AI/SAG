@@ -433,7 +433,7 @@ class Sag2EngineHolder:
         if limit and scope_chunks > limit:
             raise ValidationError(
                 f"信源扫描范围过大：包含 {scope_chunks:,} 个段落，超过 SAG2 证据检索上限 {limit:,}。"
-                "本版引擎先扫描整个信源，选择单篇文档不会减少扫描量；请减少信源，或联系管理员调整扫描上限。",
+                "请缩小所选文档或信源范围，或联系管理员调整扫描上限。",
                 layer=ErrorLayer.ENGINE,
                 stage=ErrorStage.RETRIEVE,
             )

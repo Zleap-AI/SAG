@@ -59,8 +59,8 @@ async function harness(disabledMap?: SearchStrategyDisabledMap) {
   };
 }
 
-describe("search scope default strategy", () => {
-  it("follows the shared default of the scoped sources once they are loaded", async () => {
+describe("search defaults ignore retired per-source mode preferences", () => {
+  it("retains the application default after scoped sources load", async () => {
     const h = await harness();
     try {
       expect(h.read("strategy")).toBe("vector");
@@ -69,9 +69,9 @@ describe("search scope default strategy", () => {
       // Scopes restored by id alone resolve only after the source list arrives.
       expect(h.read("origin")).toBe("global");
       await h.act(() => h.workspace.ensureSources());
-      expect(h.read("strategy")).toBe("sag2");
-      expect(h.read("origin")).toBe("scope");
-      expect(h.read("scope-default")).toBe("sag2");
+      expect(h.read("strategy")).toBe("vector");
+      expect(h.read("origin")).toBe("global");
+      expect(h.read("scope-default")).toBe("none");
       await h.act(() => h.workspace.setScope(scope("a", "c")));
       expect(h.read("strategy")).toBe("vector");
       expect(h.read("origin")).toBe("global");
@@ -81,12 +81,12 @@ describe("search scope default strategy", () => {
       expect(h.read("origin")).toBe("global");
     } finally { await h.cleanup(); }
   });
-  it("uses the default carried by a toggled source before the list loads", async () => {
+  it("ignores retired mode preferences on a toggled source", async () => {
     const h = await harness();
     try {
       await h.act(() => h.workspace.toggleSource(sources[2]));
-      expect(h.read("strategy")).toBe("multi");
-      expect(h.read("origin")).toBe("scope");
+      expect(h.read("strategy")).toBe("vector");
+      expect(h.read("origin")).toBe("global");
     } finally { await h.cleanup(); }
   });
   it("ignores a scope default the deployment can no longer serve", async () => {
@@ -102,7 +102,7 @@ describe("search scope default strategy", () => {
     try {
       await h.act(() => h.workspace.ensureSources());
       await h.act(() => h.workspace.setScope(scope("a", "b")));
-      expect(h.read("strategy")).toBe("sag2");
+      expect(h.read("strategy")).toBe("vector");
       await h.act(() => h.workspace.setStrategy("multi_es_fast"));
       expect(h.read("strategy")).toBe("multi_es_fast");
       expect(h.read("origin")).toBe("pinned");
@@ -113,14 +113,14 @@ describe("search scope default strategy", () => {
       expect(h.requests).toEqual([expect.objectContaining({ strategy: "multi_es_fast", source_ids: ["a"] })]);
     } finally { await h.cleanup(); }
   });
-  it("runs with the scope default when nothing is pinned", async () => {
+  it("runs with the application default when nothing is pinned", async () => {
     const h = await harness();
     try {
       await h.act(() => h.workspace.ensureSources());
       await h.act(() => h.workspace.setScope(scope("b")));
       await h.act(() => h.workspace.run({ query: "question" }).catch(() => {}));
-      expect(h.requests).toEqual([expect.objectContaining({ strategy: "sag2", source_ids: ["b"] })]);
-      expect(h.read("origin")).toBe("scope");
+      expect(h.requests).toEqual([expect.objectContaining({ strategy: "vector", source_ids: ["b"] })]);
+      expect(h.read("origin")).toBe("global");
     } finally { await h.cleanup(); }
   });
 });

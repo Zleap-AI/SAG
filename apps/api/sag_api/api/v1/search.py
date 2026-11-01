@@ -182,7 +182,10 @@ async def _retrieve_search_evidence(
         top_k=body.top_k,
         include_ranked_candidates=body.include_ranked_candidates,
     )
-    if strategy in JEV_SCORED_STRATEGIES:
+    if strategy in JEV_SCORED_STRATEGIES or (strategy == "auto" and (
+        configuration.search_strategy == "multi_jev"
+        or any(getattr(source, "engine_kind", "sag1") == "sag2" for source in sources)
+    )):
         outcome = await retrieval
         return outcome, event_scores_from_evidence(outcome.sections), True
     outcome, scores = await asyncio.gather(

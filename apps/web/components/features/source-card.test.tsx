@@ -55,15 +55,13 @@ describe("source card", () => {
     expect(copyButton).toBeGreaterThan(navigationEnd);
   });
 
-  it("shows a default retrieval mode pill only when the source sets one", () => {
-    expect(render(source)).not.toContain('data-testid="source-default-mode"');
-    expect(render({ ...source, default_search_strategy: undefined } as unknown as Source))
-      .not.toContain('data-testid="source-default-mode"');
-
-    const html = render({ ...source, default_search_strategy: "sag2" });
-    expect(html).toContain('data-testid="source-default-mode"');
-    expect(html).toContain('data-strategy="sag2"');
-    expect(html).toContain("SAG2 证据检索");
-    expect(html).toContain('aria-label="默认检索模式：SAG2 证据检索；搜索和问答时仍可临时切换"');
+  it("shows the immutable algorithm, defaulting legacy sources to SAG1", () => {
+    expect(render(source)).toContain('data-engine-kind="sag1"');
+    const html = render({ ...source, engine_kind: "sag2" });
+    expect(html).toContain('data-testid="source-engine-kind"');
+    expect(html).toContain('data-engine-kind="sag2"');
+    expect(html).toContain("证据检索（SAG2）");
+    expect(html).toContain("SAG2 暂不支持 OCTX 导出");
+    expect(html).not.toContain('data-testid="source-default-mode"');
   });
 });

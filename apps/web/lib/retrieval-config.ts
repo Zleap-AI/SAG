@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 
 export const SEARCH_STRATEGIES = [
+  { value: "auto", labelKey: "autoLabel", descriptionKey: "autoDescription" },
   {
     value: "vector",
     labelKey: "vectorLabel",
@@ -36,10 +37,11 @@ export const SEARCH_STRATEGIES = [
 
 export type SearchStrategy = (typeof SEARCH_STRATEGIES)[number]["value"];
 
-export const DEFAULT_SEARCH_STRATEGY: SearchStrategy = "vector";
+export const DEFAULT_SEARCH_STRATEGY: SearchStrategy = "auto";
 
 /** One icon per mode, shared by the search control, the source pill and the picker. */
 export const SEARCH_STRATEGY_ICONS: Record<SearchStrategy, LucideIcon> = {
+  auto: ScanSearch,
   vector: Zap,
   multi_es_fast: ShieldQuestion,
   multi: Sparkles,
@@ -53,6 +55,7 @@ export const SEARCH_STRATEGY_ICONS: Record<SearchStrategy, LucideIcon> = {
  * 前端只用来在拿不到 disabled map 时兜底渲染,避免用户点了才发现打不通。
  */
 export const SEARCH_STRATEGY_REQUIREMENTS = {
+  auto: [] as const,
   vector: [] as const,
   multi: [] as const,
   multi_es_fast: ["lexical_search"] as const,
@@ -153,24 +156,4 @@ export function needsJevQuickSetup(
 ): boolean {
   return isJevScoredStrategy(strategy)
     && isJevConfigDisabledReason(disabledMap?.[strategy]?.reason);
-}
-
-/**
- * The default mode shared by every source in a search scope. The backend only
- * honours a source default when all scoped sources agree on the same non-null
- * value, so the client mirrors that rule. A scope default the deployment can
- * no longer serve (present in `disabledMap`) is ignored as well.
- */
-export function getScopeDefaultStrategy(
-  sources: ReadonlyArray<{ default_search_strategy?: SearchStrategy | null }>,
-  disabledMap?: SearchStrategyDisabledMap | null,
-): SearchStrategy | null {
-  if (sources.length === 0) return null;
-  const first = sources[0].default_search_strategy ?? null;
-  if (!first) return null;
-  for (const source of sources) {
-    if ((source.default_search_strategy ?? null) !== first) return null;
-  }
-  if (disabledMap?.[first]) return null;
-  return first;
 }

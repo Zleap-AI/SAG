@@ -58,7 +58,7 @@ export function RetrievalTestDialog({
   const disabledMap = getSearchStrategiesDisabled(capabilities, strategies("unsupportedBackend"));
 
   const enabledStrategies = SEARCH_STRATEGIES.filter(
-    (item) => !disabledMap[item.value],
+    (item) => item.value !== "auto" && !disabledMap[item.value],
   ).map((item) => item.value);
   const fallbackA: SearchStrategy =
     enabledStrategies[0] ?? DEFAULT_SEARCH_STRATEGY;
@@ -282,7 +282,7 @@ function StrategyPicker({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {SEARCH_STRATEGIES.map(({ value: strategy, labelKey }) => {
+          {SEARCH_STRATEGIES.filter(item => item.value !== "auto").map(({ value: strategy, labelKey }) => {
             const info = disabledMap[strategy];
             const sameAsOther = strategy === otherValue;
             return (

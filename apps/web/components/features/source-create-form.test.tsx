@@ -58,23 +58,11 @@ async function mount() {
     <NextIntlClientProvider locale="en-US" messages={messages}><SourceCreateForm onCreated={onCreated} /></NextIntlClientProvider>,
   ));
 }
-function pointerEvent(type: string) {
-  const event = new MouseEvent(type, { bubbles: true, button: 0 });
-  Object.defineProperties(event, { pointerId: { value: 1 }, pointerType: { value: "mouse" } });
-  return event;
-}
 async function type(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => {
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value")!.set!.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
-}
-async function pickMode(testId: string) {
-  const trigger = container.querySelector<HTMLElement>('[data-testid="retrieval-mode-picker"]')!;
-  await act(async () => trigger.dispatchEvent(pointerEvent("pointerdown")));
-  const option = document.body.querySelector<HTMLElement>(`[data-testid="${testId}"]`)!;
-  expect(option, `option ${testId}`).not.toBeNull();
-  await act(async () => { option.dispatchEvent(pointerEvent("pointerdown")); option.dispatchEvent(pointerEvent("pointerup")); });
 }
 const nameInput = () => container.querySelector<HTMLInputElement>('input[maxlength="200"]')!;
 const submitButton = () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!;
@@ -83,74 +71,25 @@ async function submit() {
 }
 
 describe("source create form", () => {
-  it("creates a source that follows the global default without sending a strategy", async () => {
-    await mount();
-    await type(nameInput(), "Manuals");
-    expect(container.querySelector('[data-testid="jev-quick-setup"]')).toBeNull();
-    await submit();
-    expect(api.createSource).toHaveBeenCalledWith({ name: "Manuals", description: "" });
+  it("creates a SAG1 source by default without changing model settings", async () => {
+    await mount(); await type(nameInput(), "Manuals"); await submit();
+    expect(api.createSource).toHaveBeenCalledWith({ name: "Manuals", description: "", engine_kind: "sag1" });
     expect(api.saveModelConfig).not.toHaveBeenCalled();
     expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "source-1" }));
   });
-  it("sends the chosen default retrieval mode", async () => {
-    await mount();
-    await type(nameInput(), "Manuals");
-    await pickMode("retrieval-mode-multi");
+  it("can create a SAG2 source without a JEV key because indexing does not use JEV", async () => {
+    await mount(); await type(nameInput(), "Evidence");
+    await act(async () => container.querySelector<HTMLInputElement>('input[value="sag2"]')!.click());
+    expect(submitButton().disabled).toBe(false);
     await submit();
-    expect(api.createSource).toHaveBeenCalledWith({ name: "Manuals", description: "", default_search_strategy: "multi" });
+    expect(api.createSource).toHaveBeenCalledWith({ name: "Evidence", description: "", engine_kind: "sag2" });
     expect(api.saveModelConfig).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="jev-quick-setup"]')).toBeNull();
   });
-  it("blocks creation until a JEV key is entered, then saves the service before creating", async () => {
-    await mount();
-    await type(nameInput(), "Manuals");
-    await pickMode("retrieval-mode-sag2");
-    expect(container.querySelector('[data-testid="jev-quick-setup"]')).not.toBeNull();
-    expect(submitButton().disabled).toBe(true);
-    expect(container.querySelector('[data-testid="source-form-blocked"]')?.textContent).toBe("Enter a JEV API key to save this default mode.");
-
-    await type(container.querySelector<HTMLInputElement>('input[type="password"]')!, "jev-secret");
-    expect(submitButton().disabled).toBe(false);
-    expect(container.querySelector('[data-testid="source-form-blocked"]')).toBeNull();
-
-    await submit();
-    expect(api.saveModelConfig).toHaveBeenCalledWith({
-      jev_endpoint: "https://api.302.ai/typesafeai/v1/systemone", jev_model: "jev-latest", jev_api_key: "jev-secret",
-    });
-    expect(state.refreshCapabilities).toHaveBeenCalledTimes(1);
-    expect(api.createSource).toHaveBeenCalledWith({ name: "Manuals", description: "", default_search_strategy: "sag2" });
-    expect(vi.mocked(api.saveModelConfig).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(api.createSource).mock.invocationCallOrder[0]);
-  });
-  it("keeps a saved custom endpoint instead of replacing it with the preset", async () => {
-    vi.mocked(api.getModelConfig).mockResolvedValue({ jev_endpoint: "https://jev.internal/score", jev_model: "jev-pinned" } as never);
-    await mount();
-    await type(nameInput(), "Manuals");
-    await pickMode("retrieval-mode-multi_jev");
-    const endpoint = container.querySelector<HTMLInputElement>('input[type="url"]')!;
-    expect(endpoint.value).toBe("https://jev.internal/score");
-    expect(endpoint.readOnly).toBe(false);
-    await type(container.querySelector<HTMLInputElement>('input[type="password"]')!, "k");
-    await submit();
-    expect(api.saveModelConfig).toHaveBeenCalledWith({ jev_endpoint: "https://jev.internal/score", jev_model: "jev-pinned", jev_api_key: "k" });
-  });
-  it("shows a JEV save failure inline and does not create the source", async () => {
-    vi.mocked(api.saveModelConfig).mockRejectedValue(new ApiError(400, "jev_invalid", "JEV rejected the key"));
-    await mount();
-    await type(nameInput(), "Manuals");
-    await pickMode("retrieval-mode-sag2");
-    await type(container.querySelector<HTMLInputElement>('input[type="password"]')!, "bad");
-    await submit();
-    expect(container.querySelector('[data-testid="jev-quick-setup-error"]')?.textContent).toBe("JEV rejected the key");
-    expect(api.createSource).not.toHaveBeenCalled();
+  it("does not report creation success after an API failure", async () => {
+    vi.mocked(api.createSource).mockRejectedValue(new ApiError(400, "invalid_source", "Source rejected"));
+    await mount(); await type(nameInput(), "Manuals"); await submit();
     expect(onCreated).not.toHaveBeenCalled();
     expect(submitButton().disabled).toBe(false);
-  });
-  it("shows a backend rejection of the default mode inline", async () => {
-    vi.mocked(api.createSource).mockRejectedValue(new ApiError(400, "vector_provider_lacks_lexical", "Lexical search is required"));
-    await mount();
-    await type(nameInput(), "Manuals");
-    await pickMode("retrieval-mode-multi");
-    await submit();
-    expect(container.querySelector('[data-testid="source-form-error"]')?.textContent).toBe("Lexical search is required");
-    expect(onCreated).not.toHaveBeenCalled();
   });
 });

@@ -157,7 +157,7 @@ describe("JEV knowledge settings", () => {
   });
   it("keeps JEV modes disabled until an API key is entered, then saves the key with the mode", async () => {
     await mount();
-    await expectStrategyDisabled("JEV reranking", true);
+    await expectStrategyDisabled("JEV reranking", false);
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(button("Save and apply").disabled).toBe(false);
     await edit("#kb-jev-api-key", "synthetic-302-key");
@@ -252,7 +252,7 @@ describe("JEV knowledge settings", () => {
     await select("#kb-jev-provider", "Custom");
     await edit("#kb-jev-endpoint", "https://jev.invalid/score");
     await edit("#kb-jev-model", "gateway-model");
-    await expectStrategyDisabled("JEV reranking", true);
+    await expectStrategyDisabled("JEV reranking", false);
     await edit("#kb-jev-api-key", "synthetic-gateway-key");
     await select("#kb-search-strategy", "JEV");
     await act(async () => button("Save and apply").click());
@@ -318,7 +318,7 @@ describe("JEV knowledge settings", () => {
   });
   it("blocks saving a JEV mode whose key was cleared by changing the destination", async () => {
     state.capabilities = { vector_provider: "lancedb", search_strategies: ["vector", "multi", "multi_es_fast", "multi_jev", "sag2"] };
-    vi.mocked(api.getModelConfig).mockResolvedValue({ ...config, jev_endpoint: officialEndpoint, search_strategy: "sag2" } as never);
+    vi.mocked(api.getModelConfig).mockResolvedValue({ ...config, jev_endpoint: officialEndpoint, search_strategy: "multi_jev" } as never);
     await mount();
     expect(container.querySelector('[role="alert"]')).toBeNull();
     await select("#kb-jev-provider", "302.AI");
@@ -392,7 +392,7 @@ describe("JEV knowledge settings", () => {
     await mount();
     expect(container.querySelector("#kb-jev-provider")).toBeNull();
     expect(container.textContent).toContain("SAG2 evidence retrieval currently supports only SQLite and PostgreSQL");
-    expect(container.textContent).toContain("Choose Fast (vector) or Precise above and save");
+    expect(container.querySelector("#kb-search-strategy")?.textContent).toContain("Fast (vector)");
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(button("Save and apply").disabled).toBe(false);
   });
@@ -411,9 +411,11 @@ describe("JEV knowledge settings", () => {
     expect(container.textContent).not.toContain("Your existing retrieval settings remain unchanged");
     expect(button("Test JEV connection").disabled).toBe(false);
     await expectStrategyDisabled("JEV reranking", true);
-    await select("#kb-search-strategy", "SAG2");
+    const options = await openSelect("#kb-search-strategy");
+    expect(options.some(option => option.textContent?.includes("SAG2"))).toBe(false);
+    await closeSelect();
     await act(async () => button("Save and apply").click());
-    expect(saved).toMatchObject({ search_strategy: "sag2", jev_endpoint: provider302Endpoint, jev_model: "jev-latest" });
+    expect(saved).not.toHaveProperty("search_strategy");
     expect(saved).not.toHaveProperty("jev_api_key");
   });
   it("explains the SAG2 relational limitation while keeping JEV reranking configurable", async () => {
@@ -426,7 +428,9 @@ describe("JEV knowledge settings", () => {
     expect(container.querySelector("#kb-jev-provider")).not.toBeNull();
     expect(container.textContent).toContain("SAG2 evidence retrieval currently supports only SQLite and PostgreSQL");
     expect(container.querySelector('[role="alert"]')).toBeNull();
-    await expectStrategyDisabled("SAG2", true);
+    const options = await openSelect("#kb-search-strategy");
+    expect(options.some(option => option.textContent?.includes("SAG2"))).toBe(false);
+    await closeSelect();
     await select("#kb-search-strategy", "JEV");
     await act(async () => button("Save and apply").click());
     expect(saved).toMatchObject({ search_strategy: "multi_jev" });
@@ -438,14 +442,16 @@ describe("JEV knowledge settings", () => {
     };
     vi.mocked(api.getModelConfig).mockResolvedValue({ ...config, jev_endpoint: provider302Endpoint, jev_api_key_set: false } as never);
     await mount();
-    await expectStrategyDisabled("JEV reranking", true);
-    await expectStrategyDisabled("SAG2", true);
+    await expectStrategyDisabled("JEV reranking", false);
+    const options = await openSelect("#kb-search-strategy");
+    expect(options.some(option => option.textContent?.includes("SAG2"))).toBe(false);
+    await closeSelect();
     expect(container.querySelector('[role="alert"]')).toBeNull();
     await edit("#kb-jev-api-key", "synthetic-302-key");
     await expectStrategyDisabled("JEV reranking", false);
-    await select("#kb-search-strategy", "SAG2");
+    await select("#kb-search-strategy", "JEV");
     await act(async () => button("Save and apply").click());
-    expect(saved).toMatchObject({ search_strategy: "sag2", jev_endpoint: provider302Endpoint, jev_api_key: "synthetic-302-key" });
+    expect(saved).toMatchObject({ search_strategy: "multi_jev", jev_endpoint: provider302Endpoint, jev_api_key: "synthetic-302-key" });
   });
   it("disables the JEV option and rejects a draft enable when storage capabilities change", async () => {
     await mount();

@@ -90,15 +90,15 @@ registry.register(ExternalEvidenceTool())
 @pytest.mark.parametrize("persona", [
     {}, {"search_strategy": ""}, {"search_strategy": False}, {"search_strategy": None},
 ])
-def test_existing_assistant_default_stays_vector_until_jev_is_selected(strategy, persona):
-    assert knowledge_search_strategy(persona, SimpleNamespace(search_strategy=strategy)) == "vector"
+def test_unset_assistant_uses_automatic_routing(strategy, persona):
+    assert knowledge_search_strategy(persona, SimpleNamespace(search_strategy=strategy)) == "auto"
 
 
 @pytest.mark.parametrize("persona", [
     {}, {"search_strategy": ""}, {"search_strategy": False}, {"search_strategy": None},
 ])
 def test_unset_assistant_strategy_follows_explicit_global_jev_selection(persona):
-    assert knowledge_search_strategy(persona, SimpleNamespace(search_strategy="multi_jev")) == "multi_jev"
+    assert knowledge_search_strategy(persona, SimpleNamespace(search_strategy="multi_jev")) == "auto"
 
 
 @pytest.mark.parametrize("strategy", ["vector", "multi", "multi_es_fast", "atomic", "multi_jev", "typo"])
@@ -137,11 +137,11 @@ async def test_legacy_persona_does_not_block_tool_preparation_or_chat_without_so
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("global_strategy", "persona", "expected"), [
-    ("multi", {}, "vector"),
-    ("multi_es_fast", {"search_strategy": ""}, "vector"),
-    ("multi", {"search_strategy": False}, "vector"),
-    ("multi", {"search_strategy": None}, "vector"),
-    ("multi_jev", {}, "multi_jev"),
+    ("multi", {}, "auto"),
+    ("multi_es_fast", {"search_strategy": ""}, "auto"),
+    ("multi", {"search_strategy": False}, "auto"),
+    ("multi", {"search_strategy": None}, "auto"),
+    ("multi_jev", {}, "auto"),
     ("multi_jev", {"search_strategy": "vector"}, "vector"),
     ("vector", {"search_strategy": "multi_jev"}, "multi_jev"),
     ("multi", {"search_strategy": "atomic"}, "multi"),
@@ -177,7 +177,7 @@ async def test_search_tool_preserves_old_modes_and_only_adds_opted_in_jev(
         {"query": "查询旧资料"}, ToolContext(engine_manager=engine, sources=[source], persona=persona),
     )
     assert selected == [expected]
-    assert bool(event_calls) is (expected != "multi_jev")
+    assert bool(event_calls) is not (expected == "multi_jev" or (expected == "auto" and global_strategy == "multi_jev"))
     assert result.data["section_count"] == 0
 
 

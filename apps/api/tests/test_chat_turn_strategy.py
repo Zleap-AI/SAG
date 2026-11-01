@@ -44,9 +44,9 @@ def test_turn_choice_precedes_persona_source_default_and_global():
     assert knowledge_search_strategy_origin(persona, scoped, "multi_jev") == "request"
     assert knowledge_search_strategy(persona, configuration, scoped) == "multi"
     assert knowledge_search_strategy_origin(persona, scoped) == "persona"
-    assert knowledge_search_strategy({}, configuration, scoped) == "sag2"
-    assert knowledge_search_strategy_origin({}, scoped) == "source_default"
-    assert knowledge_search_strategy({}, configuration, []) == "vector"
+    assert knowledge_search_strategy({}, configuration, scoped) == "auto"
+    assert knowledge_search_strategy_origin({}, scoped) == "global"
+    assert knowledge_search_strategy({}, configuration, []) == "auto"
     assert knowledge_search_strategy_origin({}, []) == "global"
 
 
@@ -92,7 +92,7 @@ async def test_search_tool_uses_turn_choice_and_reports_origin(monkeypatch, publ
     ))
     assert calls[-1] == "multi" and result.data["retrieval_stats"]["strategy_origin"] == "persona"
     result = await tool.invoke({"query": "q"}, ToolContext(engine_manager=engine, sources=[scoped], persona={}))
-    assert calls[-1] == "sag2" and result.data["retrieval_stats"]["strategy_origin"] == "source_default"
+    assert calls[-1] == "auto" and result.data["retrieval_stats"]["strategy_origin"] == "global"
 
     # The adapted tool's budget follows the turn choice as well.
     adapted = _adapt_tool(tool, ToolContext(
@@ -109,7 +109,7 @@ async def test_search_tool_uses_turn_choice_and_reports_origin(monkeypatch, publ
         return result
 
     monkeypatch.setattr(tool, "invoke", capture)
-    for source_default, expected_origin in [("sag2", "source_default"), (None, "global")]:
+    for source_default, expected_origin in [("sag2", "global"), (None, "global")]:
         scoped.default_search_strategy = source_default
         persona = {}
         adapted = _adapt_tool(tool, ToolContext(engine_manager=engine, sources=[scoped], persona=persona), [])

@@ -19,11 +19,10 @@ import httpx
 from sag_api.connectors.web import extract_web_markdown, extract_web_title
 from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
-from sag_api.enums import JEV_SCORED_STRATEGIES, SEARCH_STRATEGIES, normalize_search_strategy
+from sag_api.enums import JEV_SCORED_STRATEGIES
 from sag_api.generation import build_citations
 from sag_api.sag import RetrievedSection
 from sag_api.services.retrieval_service import (
-    common_source_default_strategy,
     event_scores_from_evidence,
     published_document_inputs,
     recall_event_scores,
@@ -83,21 +82,10 @@ def _events_by_section(events: list | None) -> dict[tuple[str, str], list]:
 def knowledge_search_strategy(
     persona: dict[str, Any], configuration: Any = settings, sources=(), requested: str | None = None,
 ) -> str:
-    """Explicit turn choice → persona → shared source default → legacy default (vector unless a JEV mode is global)."""
+    """Explicit turn choice → persona → automatic per-source engine routing."""
     if requested:
         return requested
-    configured = normalize_search_strategy(configuration.search_strategy)
-    default = configured if configured in JEV_SCORED_STRATEGIES else "vector"
-    value = persona.get("search_strategy") or common_source_default_strategy(sources) or default
-    if default in JEV_SCORED_STRATEGIES and (
-        not isinstance(value, str) or normalize_search_strategy(value) not in SEARCH_STRATEGIES
-    ):
-        # The engine falls back to global JEV for unknown modes. Resolve that
-        # here too so the tool's budget and evidence handling use the same mode.
-        return default
-    # Existing persona values, including legacy aliases, retain the engine's
-    # resolution rules; preparing an unused tool must not add validation gates.
-    return value
+    return persona.get("search_strategy") or "auto"
 
 
 def knowledge_search_strategy_origin(
@@ -108,8 +96,6 @@ def knowledge_search_strategy_origin(
         return "request"
     if persona.get("search_strategy"):
         return "persona"
-    if common_source_default_strategy(sources):
-        return "source_default"
     return "global"
 
 
@@ -285,7 +271,12 @@ class SearchContextTool(Tool):
             strategy=strategy,
             top_k=limit,
         )
-        is_jev = strategy in JEV_SCORED_STRATEGIES
+        effective = (ctx.engine_manager._effective_search_strategy(strategy)
+                     if hasattr(ctx.engine_manager, "_effective_search_strategy") else strategy)
+        is_jev = effective in JEV_SCORED_STRATEGIES or (effective == "auto" and (
+            getattr(ctx.engine_manager, "_settings", settings).search_strategy == "multi_jev"
+            or any(getattr(source, "engine_kind", "sag1") == "sag2" for source in ctx.sources)
+        ))
         if is_jev:
             outcome = await retrieval
             event_scores: dict[tuple[str, str], float] = {}
@@ -349,6 +340,11 @@ class SearchContextTool(Tool):
         for c in citations:
             c["n"] = c["n"] + offset
         content = _format_sections(sections, offset, list(graph.events) if graph is not None else None)
+        if outcome.stats.get("engine_failures"):
+            warnings = "；".join(
+                f"{item['engine_kind']}：{item['message']}" for item in outcome.stats["engine_failures"]
+            )
+            content = f"注意：本次检索结果不完整，以下算法检索失败或不完整：{warnings}。回答须说明此限制。\n\n{content}"
         if is_jev and outcome.stats.get("fallback_used"):
             content = "（JEV 精排未完成，本次返回粗排结果）\n" + content
         return ToolResult(

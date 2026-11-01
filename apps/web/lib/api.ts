@@ -787,6 +787,7 @@ export const api = {
   listSources: () => request<Source[]>("/api/v1/sources"),
   getSource: (id: string) => request<Source>(`/api/v1/sources/${id}`),
   createSource: (b: {
+    engine_kind?: "sag1" | "sag2";
     name: string;
     description?: string;
     /** Omit (or send null) to follow the global default retrieval mode. */

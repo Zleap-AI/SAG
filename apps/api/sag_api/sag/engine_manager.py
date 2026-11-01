@@ -13,7 +13,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from zleap.sag import DataEngine, EngineConfig
@@ -44,12 +44,13 @@ from sag_api.sag.engine_access import EngineAccess
 from sag_api.sag.errors import map_sag_errors
 from sag_api.sag.incremental_processor import IncrementalDocumentProcessor, ProgressCallback
 from sag_api.sag.sag2_engine import (
-    Sag2EngineHolder,
     jev_connection_issue,
     jev_connection_ready,
     sag2_relational_issue,
     sag2_relational_supported,
 )
+from sag_api.sag.sag2_native_search import Sag2NativeSearchHolder
+from sag_api.sag.sag2_source_engine import Sag2SourceEngine
 from sag_api.sag.search_reader import SearchReader, search_admission_timeout_seconds
 from sag_api.sag.universe_cursor import (
     decode_universe_cursor,
@@ -193,7 +194,7 @@ class EngineManager:
         self._content = ContentReader(self._access)
         self._search = SearchReader(self._access)
         # SAG2 证据检索：一个只读 zleap-sag2 引擎覆盖全部信源，随配置发布重建。
-        self._sag2 = Sag2EngineHolder(settings)
+        self._sag2 = Sag2NativeSearchHolder(settings)
 
     async def _relational_session_factory(self, source_config_id: str, source: Source | None = None) -> Any:
         """0.8.2 起 zleap 无全局会话工厂;经引擎注入的 RelationalStore 访问关系库。"""
@@ -456,7 +457,10 @@ class EngineManager:
         overrides = (source.config or {}).get("engine") if source is not None else None
         with map_sag_errors(stage=ErrorStage.CONFIG):
             config = build_engine_config(settings, overrides=overrides)
-            return await document_processing_identity(config, settings, source_config_id, path)
+            return await document_processing_identity(
+                config, settings, source_config_id, path,
+                **({"engine_kind": "sag2"} if getattr(source, "engine_kind", "sag1") == "sag2" else {}),
+            )
 
     async def _ensure_engine_schema(self, engine: DataEngine) -> None:
         if self._schema_ready:
@@ -553,6 +557,13 @@ class EngineManager:
                 async with self._lifecycle_gate.write():
                     log.info("构造引擎 source_config_id=%s", source_config_id)
                     config = self._config_for(source)
+                    if getattr(source, "engine_kind", "sag1") == "sag2":
+                        engine = Sag2SourceEngine(self._settings, source_config_id)
+                        await engine.start()
+                        slot = _Slot(engine=engine, config=config)
+                        self._slots[source_config_id] = slot
+                        await self._evict_lru(keep=source_config_id)
+                        return slot
                     engine = DataEngine(
                         config,
                         data_source_id=source_config_id,
@@ -837,6 +848,7 @@ class EngineManager:
                             engine,
                             source_config_id,
                             max_concurrency=frozen.document_extract_concurrency,
+                            language=frozen.sag_language if isinstance(engine, Sag2SourceEngine) else None,
                             chunk_max_tokens=frozen.document_chunk_max_tokens,
                             chunk_mode=frozen.document_chunk_mode,
                             document_title=document_title,
@@ -968,6 +980,10 @@ class EngineManager:
         limit: int | None = None,
         source_ids_by_config: dict[str, tuple[str, ...]] | None = None,
     ) -> dict[tuple[str, str], float]:
+        sources_by_config = {key: source for key, source in sources_by_config.items()
+                             if getattr(source, "engine_kind", "sag1") != "sag2"}
+        if not sources_by_config:
+            return {}
         return await self._search.search_event_scores(
             query, sources_by_config, limit=limit, source_ids_by_config=source_ids_by_config
         )
@@ -981,6 +997,8 @@ class EngineManager:
         bucket_count: int = 8,
         category_limit: int = 8,
     ) -> UniverseSourceStatsInfo:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            return UniverseSourceStatsInfo()
         return await self._universe.universe_overview_stats(
             source_config_id,
             source_ids=source_ids,
@@ -1029,6 +1047,8 @@ class EngineManager:
         cursor: str | None = None,
         snapshot_id: str | None = None,
     ) -> UniverseTimelineInfo:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            return UniverseTimelineInfo(snapshot_id=source_revision, direction=direction, as_of=datetime.now(UTC))
         return await self._universe.universe_timeline(
             source_config_id,
             source_ids=source_ids,
@@ -1056,6 +1076,8 @@ class EngineManager:
         after: datetime | None = None,
         before: datetime | None = None,
     ) -> UniverseExpansionInfo | None:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            return None
         return await self._universe.universe_expand(
             source_config_id,
             node_kind,
@@ -1079,6 +1101,8 @@ class EngineManager:
         source_ids: tuple[str, ...],
         source: Source | None = None,
     ) -> dict[str, Any] | None:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            return None
         return await self._universe.universe_node_detail(
             source_config_id, node_kind, node_id, source_ids=source_ids, source=source
         )
@@ -1094,6 +1118,10 @@ class EngineManager:
         edge_limit: int = 96,
         event_scores: dict[tuple[str, str], float] | None = None,
     ) -> SourceGraphInfo:
+        sections = [section for section in sections
+                    if getattr(sources_by_config.get(section.source_config_id), "engine_kind", "sag1") != "sag2"]
+        if not sections and not event_scores:
+            return SourceGraphInfo()
         return await self._content.graph_for_sections(
             sections,
             sources_by_config,
@@ -1113,6 +1141,8 @@ class EngineManager:
         types: list[str] | None = None,
         limit: int = 100,
     ) -> list[EntityInfo]:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            return []
         return await self._content.list_entities(
             source_config_id, source_ids=source_ids, source=source, types=types, limit=limit
         )
@@ -1127,6 +1157,8 @@ class EngineManager:
         entity_limit: int = 1_000,
         expected_event_count: int | None = None,
     ) -> SourceGraphInfo:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            return SourceGraphInfo()
         return await self._content.source_graph(
             source_config_id,
             source_ids,
@@ -1157,6 +1189,11 @@ class EngineManager:
         doc_sag_id: str | None = None,
         limit: int = 300,
     ) -> list[dict]:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            slot = await self._slot(source_config_id, source)
+            rows = await slot.engine.rows((doc_sag_id,) if doc_sag_id else ())
+            return [{"chunk_id": row["chunk_id"], "heading": row.get("heading") or "",
+                     "rank": int(row.get("_rank") or 0)} for row in rows[:limit]]
         return await self._content.list_chunk_headings(
             source_config_id, source=source, doc_sag_id=doc_sag_id, limit=limit
         )
@@ -1168,6 +1205,14 @@ class EngineManager:
         *,
         source: Source | None = None,
     ) -> str | None:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            slot = await self._slot(source_config_id, source)
+            rows = await slot.engine.rows((article_id,))
+            if not rows:
+                return None
+            return rows[0].get("metadata", {}).get("original_text") or "\n\n".join(
+                str(row.get("content") or "") for row in rows
+            )
         return await self._content.get_document_markdown(source_config_id, article_id, source=source)
 
     async def grep_chunks(
@@ -1179,6 +1224,21 @@ class EngineManager:
         limit: int = 20,
         source_ids: tuple[str, ...] | None = None,
     ) -> list[dict]:
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            slot = await self._slot(source_config_id, source)
+            rows = await slot.engine.rows(source_ids or ())
+            needle = pattern.casefold()
+            result = []
+            for row in rows:
+                content = str(row.get("content") or "")
+                position = content.casefold().find(needle)
+                if position < 0:
+                    continue
+                result.append({"chunk_id": row["chunk_id"], "heading": row.get("heading") or "",
+                               "source_id": row["source_id"], "snippet": content[max(0, position - 80):position + 700]})
+                if len(result) >= limit:
+                    break
+            return result
         return await self._content.grep_chunks(
             source_config_id, pattern, source=source, limit=limit, source_ids=source_ids
         )
@@ -1191,6 +1251,14 @@ class EngineManager:
         source_ids: tuple[str, ...] | None = None,
         source: Source | None = None,
     ):
+        if getattr(source, "engine_kind", "sag1") == "sag2":
+            from sag_api.sag.dto import ChunkInfo
+            slot = await self._slot(source_config_id, source)
+            for input_id in source_ids or ():
+                row = await slot.engine.read_chunk(input_id, chunk_id, data_source_id=source_config_id)
+                if row is not None:
+                    return ChunkInfo(chunk_id=chunk_id, heading=row.heading or "", content=row.content, rank=0)
+            return None
         return await self._content.get_chunk(source_config_id, chunk_id, source_ids=source_ids, source=source)
 
     async def release(self, source_config_id: str) -> None:

@@ -78,7 +78,7 @@ describe("search strategy dropdown", () => {
   it.each(["jev_not_configured", "jev_api_key_missing"])("offers the settings page when a JEV mode is disabled for %s", async reason => {
     const items = await open({ sag2: { reason, message: "Add a JEV API key" }, multi_jev: { reason, message: "Add a JEV API key" } });
     const sag2 = item(items, "SAG2 evidence retrieval");
-    expect(sag2.getAttribute("aria-disabled")).toBe("true");
+    expect(sag2.getAttribute("aria-disabled")).not.toBe("true");
     expect(sag2.textContent).toContain("Add a JEV API key");
     const link = document.body.querySelector<HTMLAnchorElement>('[data-testid="search-strategy-sag2-settings"]')!;
     expect(link.getAttribute("href")).toBe("/settings?tab=knowledge&section=jev");

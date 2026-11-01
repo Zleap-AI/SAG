@@ -14,6 +14,9 @@ class Source(IDMixin, TimestampMixin, Base):
 
     __tablename__ = "sources"
 
+    # Immutable ingestion/retrieval engine; historical sources are always SAG1.
+    engine_kind: Mapped[str] = mapped_column(String(16), default="sag1", server_default="sag1")
+
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str] = mapped_column(Text, default="")
     source_type: Mapped[SourceType] = mapped_column(

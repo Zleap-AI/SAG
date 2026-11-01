@@ -5,8 +5,8 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-SearchStrategy = Literal["vector", "multi", "multi_es_fast", "multi_jev", "sag2"]
-SEARCH_STRATEGIES = frozenset({"vector", "multi", "multi_es_fast", "multi_jev", "sag2"})
+SearchStrategy = Literal["auto", "vector", "multi", "multi_es_fast", "multi_jev", "sag2"]
+SEARCH_STRATEGIES = frozenset({"auto", "vector", "multi", "multi_es_fast", "multi_jev", "sag2"})
 # 由付费 JEV 决策服务评分的模式：选择前必须保存服务地址与 API Key，失败不回退 vector，
 # 业务层保留引擎给出的证据顺序。
 JEV_SCORED_STRATEGIES = frozenset({"multi_jev", "sag2"})
@@ -14,6 +14,7 @@ JEV_SCORED_STRATEGIES = frozenset({"multi_jev", "sag2"})
 # 策略对底层引擎能力的依赖。缺失能力的部署会在 UI 灰置该选项；后端调用则拒绝。
 # jev：已保存 JEV 服务地址与 API Key；sag2_relational：zleap-sag2 首期只读 SQLite / PostgreSQL 关系库。
 SEARCH_STRATEGY_REQUIREMENTS: dict[str, frozenset[str]] = {
+    "auto": frozenset(),
     "vector": frozenset(),
     "multi": frozenset(),
     "multi_es_fast": frozenset({"lexical_search"}),

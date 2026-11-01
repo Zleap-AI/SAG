@@ -3,7 +3,8 @@
 import { Check, ChevronDown, Settings2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import Link from "next/link";
-import { Fragment } from "react";
+import { Fragment, useState } from "react";
+import { JevModeSetupDialog } from "./jev-mode-setup-dialog";
 
 import {
   DropdownMenu,
@@ -58,6 +59,7 @@ export function SearchStrategyControl({
   disabled?: boolean;
 }) {
   const t = useTranslations("SearchStrategies");
+  const [pending, setPending] = useState<SearchStrategy | null>(null);
   const currentStrategy = getSearchStrategy(value);
   const CurrentIcon = SEARCH_STRATEGY_ICONS[currentStrategy.value];
 
@@ -98,8 +100,12 @@ export function SearchStrategyControl({
             const needsJevSettings = paid && isJevConfigDisabledReason(disabledInfo?.reason);
             const item = (
               <DropdownMenuItem
-                disabled={Boolean(disabledInfo)}
+                disabled={Boolean(disabledInfo) && !needsJevSettings}
                 onSelect={(event) => {
+                  if (needsJevSettings) {
+                    setPending(strategy.value);
+                    return;
+                  }
                   if (disabledInfo) {
                     // Radix 默认会关闭菜单;这里阻断以便 Tooltip 保持可见,
                     // 且不触发无意义的 onValueChange。
@@ -163,6 +169,10 @@ export function SearchStrategyControl({
           })}
         </DropdownMenuContent>
       </DropdownMenu>
+      {pending && <JevModeSetupDialog
+        onClose={() => setPending(null)}
+        onConfigured={() => { onValueChange(pending); setPending(null); }}
+      />}
     </TooltipProvider>
   );
 }

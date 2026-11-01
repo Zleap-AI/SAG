@@ -227,7 +227,8 @@ async def test_agent_uses_global_jev_and_preserves_order_and_stats(monkeypatch, 
 
     async def retrieve(manager, sources, query, *, strategy, top_k):
         calls.append(strategy)
-        assert manager._effective_search_strategy(strategy) == "multi_jev"
+        expected = "multi_jev" if persona.get("search_strategy") else "auto"
+        assert manager._effective_search_strategy(strategy) == expected
         return SearchOutcome(query=query, sections=[hit("first", 0.2), hit("second", 0.1)],
                              stats={"ranking": {"method": "jev", "fallback_reason": None}})
 
@@ -252,7 +253,7 @@ async def test_agent_uses_global_jev_and_preserves_order_and_stats(monkeypatch, 
     result = await builtin.SearchContextTool().invoke(
         {"query": "q"}, ToolContext(engine_manager=engine, sources=[source], persona=persona),
     )
-    assert calls == ["multi_jev"]
+    assert calls == ["retired_custom_mode" if persona.get("search_strategy") else "auto"]
     assert [section.chunk_id for section in result.data["sections"]] == ["first", "second"]
     assert result.data["retrieval_stats"]["ranking"]["method"] == "jev"
 

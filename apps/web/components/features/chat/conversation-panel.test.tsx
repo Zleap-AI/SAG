@@ -57,7 +57,7 @@ vi.mock("@/components/features/markdown-content", () => ({
 vi.mock("./prompt-preview", () => ({ PromptPreview: () => null }));
 vi.mock("./agent-activity-timeline", () => ({ AgentActivityTimeline: () => null }));
 
-const ALL_STRATEGIES = ["vector", "multi_es_fast", "multi", "multi_jev", "sag2"] as const;
+const ALL_STRATEGIES = ["auto", "vector", "multi_es_fast", "multi", "multi_jev", "sag2"] as const;
 const emptySession: ConversationSessionSnapshot = {
   sessionId: "session-1", agentId: "agent-1", threadId: "thread-1", error: null, run: null,
   history: { status: "ready", requestId: 0, hasMore: false, nextCursor: null, error: null }, messages: [],
@@ -173,11 +173,11 @@ describe("retry source scope", () => {
 });
 
 describe("composer retrieval mode", () => {
-  it("shows the global default without a hint when nothing else applies", async () => {
+  it("shows automatic algorithm routing without a hint when nothing is pinned", async () => {
     state.capabilities = { llm_configured: true, search_strategy: "multi_es_fast" };
     await renderPanel();
     // The legacy Agent default is vector for non-JEV global modes.
-    expect(trigger().textContent).toContain("Fast (vector)");
+    expect(trigger().textContent).toContain("Auto (knowledge algorithms)");
     expect(hint()).toBeNull();
     expect(trigger().disabled).toBe(false);
   });
@@ -191,21 +191,21 @@ describe("composer retrieval mode", () => {
     expect(hint()).toContain("Persona default");
   });
 
-  it("falls back to the shared source default when the persona mode cannot be served", async () => {
+  it("falls back to automatic routing when the persona mode cannot be served", async () => {
     // Without an advertised search_strategies list the JEV modes are unsupported.
     state.capabilities = { llm_configured: true, search_strategy: "vector" };
     state.agent = agent("sag2");
     state.sources = [source("composer-source", "multi")];
     await renderPanel();
-    expect(trigger().textContent).toContain("Precise");
-    expect(hint()).toContain("Source default");
+    expect(trigger().textContent).toContain("Auto (knowledge algorithms)");
+    expect(hint()).toBeNull();
   });
 
   it("ignores source defaults that the scoped sources do not share", async () => {
     state.scoped = [{ id: "a", name: "a" }, { id: "b", name: "b" }];
     state.sources = [source("a", "multi"), source("b", "multi_es_fast")];
     await renderPanel();
-    expect(trigger().textContent).toContain("Fast (vector)");
+    expect(trigger().textContent).toContain("Auto (knowledge algorithms)");
     expect(hint()).toBeNull();
   });
 

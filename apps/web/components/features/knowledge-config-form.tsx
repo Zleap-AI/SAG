@@ -126,7 +126,7 @@ export function KnowledgeConfigForm() {
     setChunkMaxTokens(config.document_chunk_max_tokens ?? 1_000);
     setChunkMode(config.document_chunk_mode ?? "standard");
     setExtractConcurrency(config.document_extract_concurrency ?? 30);
-    setStrategy(config.search_strategy);
+    setStrategy(config.search_strategy === "sag2" || config.search_strategy === "auto" ? "vector" : config.search_strategy);
     setTopK(config.search_top_k);
     setLanguage(config.sag_language);
     setJevProvider(providerForEndpoint(config.jev_endpoint ?? ""));
@@ -138,7 +138,7 @@ export function KnowledgeConfigForm() {
     setJevTimeout(timeout);
     setJevFailurePolicy(failurePolicy);
     // Display defaults are a preview; only edits or explicitly enabling JEV save them.
-    setSavedJevDraft({ endpoint, model, timeout, failurePolicy, strategy: config.search_strategy });
+    setSavedJevDraft({ endpoint, model, timeout, failurePolicy, strategy: config.search_strategy === "sag2" || config.search_strategy === "auto" ? "vector" : config.search_strategy });
     setJevTestResult(null);
     setLoaded(true);
   }, []);
@@ -372,7 +372,8 @@ export function KnowledgeConfigForm() {
               <Select
                 value={strategy}
                 onValueChange={(value) => {
-                  if (disabledStrategies[value as ModelConfig["search_strategy"]]) {
+                  if (disabledStrategies[value as ModelConfig["search_strategy"]]
+                      && !isJevConfigDisabledReason(disabledStrategies[value as ModelConfig["search_strategy"]]?.reason)) {
                     // 保险:后端拒的策略这里不允许赋值,避免 save 时 422 起手
                     return;
                   }
@@ -384,10 +385,10 @@ export function KnowledgeConfigForm() {
                 </SelectTrigger>
                 <SelectContent>
                   <TooltipProvider delayDuration={150}>
-                    {SEARCH_STRATEGIES.map(({ value, labelKey }) => {
+                    {SEARCH_STRATEGIES.filter(mode => mode.value !== "auto" && mode.value !== "sag2").map(({ value, labelKey }) => {
                       const info = disabledStrategies[value];
                       const item = (
-                        <SelectItem key={value} value={value} disabled={Boolean(info)}>
+                        <SelectItem key={value} value={value} disabled={Boolean(info) && !isJevConfigDisabledReason(info?.reason)}>
                           <span className="flex items-center gap-1.5">
                             {strategies(labelKey)}
                             {isJevScoredStrategy(value) && (

@@ -14,6 +14,7 @@ from sag_api.db.models import OctxRelease, OctxSourceBinding, OctxTransfer, Sour
 from sag_api.db.models.octx import transition_transfer
 from sag_api.enums import OctxImportAction, OctxTransferStatus
 from sag_api.octx.decision_token import DecisionTokenError, verify_decision_token
+from sag_api.services.knowledge_algorithms import require_sag1_octx
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +212,7 @@ async def confirm_import_decision(
     target_source_id = decision.target_source_id
     if target_source_id is None or target_source_id not in claims.source_revisions:
         raise ValidationError("update target is not present in OCTX decision token")
+    require_sag1_octx(await session.get(Source, target_source_id))
     binding = await session.get(OctxSourceBinding, target_source_id)
     if binding is None or binding.asset_id != claims.asset_id:
         transition_transfer(transfer, OctxTransferStatus.VALIDATING)

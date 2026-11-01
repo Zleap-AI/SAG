@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  getScopeDefaultStrategy,
   getSearchStrategiesDisabled,
   isJevConfigDisabledReason,
   isJevScoredStrategy,
@@ -43,7 +42,7 @@ describe("JEV strategy availability", () => {
 
 describe("SAG2 strategy availability", () => {
   it("lists SAG2 after JEV reranking and marks both as JEV-scored", () => {
-    expect(SEARCH_STRATEGIES.map(strategy => strategy.value)).toEqual(["vector", "multi_es_fast", "multi", "multi_jev", "sag2"]);
+    expect(SEARCH_STRATEGIES.map(strategy => strategy.value)).toEqual(["auto", "vector", "multi_es_fast", "multi", "multi_jev", "sag2"]);
     expect(isSearchStrategy("sag2")).toBe(true);
     expect(JEV_SCORED_STRATEGIES).toEqual(["multi_jev", "sag2"]);
     expect(isJevScoredStrategy("sag2")).toBe(true);
@@ -73,21 +72,7 @@ describe("SAG2 strategy availability", () => {
   });
 });
 
-describe("source default strategy", () => {
-  it("resolves a scope default only when every scoped source shares the same non-null value", () => {
-    expect(getScopeDefaultStrategy([])).toBeNull();
-    expect(getScopeDefaultStrategy([{ default_search_strategy: "sag2" }])).toBe("sag2");
-    expect(getScopeDefaultStrategy([{ default_search_strategy: "sag2" }, { default_search_strategy: "sag2" }])).toBe("sag2");
-    expect(getScopeDefaultStrategy([{ default_search_strategy: "sag2" }, { default_search_strategy: "multi" }])).toBeNull();
-    expect(getScopeDefaultStrategy([{ default_search_strategy: "sag2" }, { default_search_strategy: null }])).toBeNull();
-    expect(getScopeDefaultStrategy([{ default_search_strategy: "multi" }, {}])).toBeNull();
-    expect(getScopeDefaultStrategy([{ default_search_strategy: null }, {}])).toBeNull();
-  });
-  it("ignores a scope default the deployment currently cannot serve", () => {
-    const blocked = { sag2: { reason: "jev_api_key_missing", message: "Add a key" } };
-    expect(getScopeDefaultStrategy([{ default_search_strategy: "sag2" }], blocked)).toBeNull();
-    expect(getScopeDefaultStrategy([{ default_search_strategy: "multi" }], blocked)).toBe("multi");
-  });
+describe("paid mode setup", () => {
   it("offers the inline JEV setup only for JEV modes blocked by a missing configuration", () => {
     const disabled = {
       multi_jev: { reason: "vector_provider_lacks_lexical", message: "Lexical" },

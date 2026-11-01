@@ -496,6 +496,7 @@ async def test_sag2_business_path_preserves_engine_order_limit_and_publication(p
     from sag_api.services import retrieval_service
 
     source = await publication_source("sag2-business", "cfg-1", "document-1")
+    source.engine_kind = "sag2"
 
     class Engine:
         _settings = sag2_settings(search_strategy="sag2")
@@ -513,18 +514,19 @@ async def test_sag2_business_path_preserves_engine_order_limit_and_publication(p
     result = await retrieval_service.retrieve_relevant_sections(Engine(), [source], "q", top_k=2)
     assert [section.chunk_id for section in result.sections] == ["first", "second"]
     assert [section.score for section in result.sections] == [0.21, 0.2]
-    assert result.stats["requested_strategy"] == "sag2"
+    assert result.stats["requested_strategy"] == "auto"
     assert result.stats["publication_filtered"] == 1
     assert result.stats["lexical_candidates"] == 0
 
 
 @pytest.mark.asyncio
-async def test_agent_follows_global_sag2_and_gets_whole_search_budget(monkeypatch, publication_source):
+async def test_agent_auto_routes_native_and_gets_whole_search_budget(monkeypatch, publication_source):
     from sag_api.services.agent_tooling import _adapt_tool
     from sag_api.tools import builtin
     from sag_api.tools.base import ToolContext
 
     source = await publication_source("sag2-agent", "cfg-1", "document-1")
+    source.engine_kind = "sag2"
     engine = EngineManager(sag2_settings(
         search_strategy="sag2", agent_tool_timeout_seconds=5, sag2_search_timeout_seconds=90,
     ))
@@ -532,7 +534,7 @@ async def test_agent_follows_global_sag2_and_gets_whole_search_budget(monkeypatc
 
     async def retrieve(manager, sources, query, *, strategy, top_k):
         calls.append(strategy)
-        assert manager._effective_search_strategy(strategy) == "sag2"
+        assert strategy == "auto"
         return SearchOutcome(query=query, sections=[hit("first", 0.2), hit("second", 0.1)], stats={
             "effective_strategy": "sag2", "ranking": {"method": "jev", "fallback_reason": None},
         })
@@ -554,11 +556,13 @@ async def test_agent_follows_global_sag2_and_gets_whole_search_budget(monkeypatc
     result = await builtin.SearchContextTool().invoke(
         {"query": "q"}, ToolContext(engine_manager=engine, sources=[source], persona={}),
     )
-    assert calls == ["sag2"]
+    assert calls == ["auto"]
     assert [section.chunk_id for section in result.data["sections"]] == ["first", "second"]
     assert result.data["retrieval_stats"]["effective_strategy"] == "sag2"
 
-    adapted = _adapt_tool(builtin.SearchContextTool(), ToolContext(engine_manager=engine, persona={}), [])
+    adapted = _adapt_tool(
+        builtin.SearchContextTool(), ToolContext(engine_manager=engine, sources=[source], persona={}), []
+    )
     assert adapted.spec.timeout_seconds is not None
     assert adapted.spec.timeout_seconds >= 90 + 12
 

@@ -19,14 +19,12 @@ from sag_api.db.base import new_id
 from sag_api.db.models import Document, Job, OctxInstallation, OctxTransfer, Source
 from sag_api.enums import (
     CONNECTOR_SOURCE_TYPE,
-    SEARCH_STRATEGIES,
     DocumentStatus,
     JobStatus,
     JobType,
     OctxTransferStatus,
     SourceStatus,
     SourceType,
-    normalize_search_strategy,
 )
 from sag_api.jobs import JobQueue
 from sag_api.jobs.scheduling import DELETE_PRIORITY, set_scheduler
@@ -99,37 +97,21 @@ async def get_source(session: AsyncSession, source_id: str) -> Source:
     return source
 
 
-def validated_default_search_strategy(value: str | None, configuration=settings) -> str | None:
-    """信源默认检索模式必须是当前部署可用的模式；JEV 付费模式还要求已保存 API Key。
-
-    与设置页、Agent 人格使用同一能力报告，拒绝时带相同原因码供前端提示。
-    """
-    if value is None:
-        return None
-    strategy = normalize_search_strategy(str(value))
-    if strategy not in SEARCH_STRATEGIES:
-        raise ValidationError(f"不支持的检索模式：{value}")
-    EngineManager.require_strategy_available(configuration, strategy)
-    return strategy
-
-
 async def create_source(
     session: AsyncSession, data: SourceCreate, *, engine_manager: EngineManager
 ) -> Source:
     connector = registry.get(data.connector_kind)
     connector.validate_config(data.config)
     source_type = CONNECTOR_SOURCE_TYPE.get(data.connector_kind, SourceType.DOCUMENT)
-    # 与设置页、Agent 人格一致，按全局配置单例判断模式可用性。
-    default_strategy = validated_default_search_strategy(data.default_search_strategy)
 
     source = Source(
         name=data.name,
+        engine_kind=data.engine_kind,
         description=data.description,
         source_type=source_type,
         connector_kind=data.connector_kind,
         sag_source_config_id=f"src_{new_id()[:16]}",
         config=initialize_vector_identity_state(data.config or {}),
-        default_search_strategy=default_strategy,
     )
     session.add(source)
     await session.commit()
@@ -165,9 +147,6 @@ async def update_source(
         source.description = data.description
     if data.status is not None:
         source.status = data.status
-    if "default_search_strategy" in data.model_fields_set:
-        # 显式 null 表示改回跟随全局默认；只影响后续检索，不触发文档重处理。
-        source.default_search_strategy = validated_default_search_strategy(data.default_search_strategy)
     await session.commit()
     await session.refresh(source)
     from sag_api.services.universe_service import schedule_universe_refresh

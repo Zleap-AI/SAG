@@ -223,9 +223,9 @@ async def test_jev_service_rejects_invalid_explicit_fields_before_persisting(jev
 
 @pytest.mark.parametrize("strategy", ["multi_jev", "sag2"])
 @pytest.mark.parametrize("endpoint", [None, "https://replacement.example/score"])
-async def test_jev_connection_change_preserves_source_defaults_atomically(jev_config_client, strategy, endpoint):
+async def test_retired_source_preferences_do_not_block_jev_connection_changes(jev_config_client, strategy, endpoint):
     from sag_api.core.db import SessionLocal
-    from sag_api.db.models import Setting, Source
+    from sag_api.db.models import Source
 
     client, headers, resets = jev_config_client
     initial = await client.put(
@@ -239,23 +239,16 @@ async def test_jev_connection_change_preserves_source_defaults_atomically(jev_co
         session.add(Source(id=source_id, name="Protected source", sag_source_config_id=source_id,
                            default_search_strategy=strategy))
         await session.commit()
-        row = await session.scalar(select(Setting).where(Setting.scope == "global", Setting.key == "model_config"))
-        stored_before = dict(row.value)
-    settings_before = settings.model_dump()
-    reset_count = len(resets)
     try:
-        rejected = await client.put(
+        changed = await client.put(
             "/api/v1/system/model-config", headers=headers, json={"jev_endpoint": endpoint},
         )
-        assert rejected.status_code == 400, rejected.text
-        assert rejected.json()["error"]["code"] in {"jev_not_configured", "jev_api_key_missing"}
-        assert "信源" in rejected.json()["error"]["message"]
-        assert settings.model_dump() == settings_before
-        assert len(resets) == reset_count
+        assert changed.status_code == 200, changed.text
+        assert changed.json()["config"]["jev_api_key_set"] is False
         async with SessionLocal() as session:
-            row = await session.scalar(select(Setting).where(Setting.scope == "global", Setting.key == "model_config"))
-            assert row.value == stored_before
-            assert (await session.get(Source, source_id)).default_search_strategy == strategy
+            legacy = await session.get(Source, source_id)
+            assert legacy.default_search_strategy == strategy
+            assert legacy.engine_kind == "sag1"
 
         # Supplying a key for the new destination keeps the saved source usable.
         replaced = await client.put(

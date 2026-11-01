@@ -34,9 +34,7 @@ import {
 import { DEFAULT_TIME_ZONE } from "@/lib/format";
 import { PetAgent } from "@/lib/pet-agent";
 import {
-  DEFAULT_SEARCH_STRATEGY,
   getSearchStrategiesDisabled,
-  isSearchStrategy,
 } from "@/lib/retrieval-config";
 import {
   SIDEBAR_THREADS_PAGE_SIZE,
@@ -827,11 +825,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     >
       <OctxExportProvider>
         <SearchProvider
-          defaultStrategy={
-            isSearchStrategy(capabilities?.search_strategy)
-              ? capabilities.search_strategy
-              : DEFAULT_SEARCH_STRATEGY
-          }
+          defaultStrategy="auto"
           disabledMap={getSearchStrategiesDisabled(capabilities, searchStrategies("unsupportedBackend"))}
         >
           <KnowledgeProvider>

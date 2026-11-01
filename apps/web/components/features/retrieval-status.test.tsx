@@ -88,3 +88,11 @@ describe("SAG2 execution status", () => {
     expect(text).toContain("0 requests · 0 judgments");
   });
 });
+
+
+it("shows JEV degradation inside automatic mixed retrieval", async () => {
+  const text = await render({ requested_strategy: "auto", effective_strategy: "auto", jev_fallback_used: true,
+    fallback_used: true, engine_failures: [{ engine_kind: "sag1", message: "legacy storage offline" }] }, "auto");
+  expect(text).toContain("JEV reranking did not complete");
+  expect(text).toContain("sag1 retrieval failed or is incomplete: legacy storage offline");
+});

@@ -60,7 +60,10 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 # create_all 只建新表、不改旧表，故对演进列做幂等 ADD COLUMN。
 _COLUMN_UPGRADES: dict[str, dict[str, str]] = {
     "agents": {"is_default": "BOOLEAN NOT NULL DEFAULT FALSE"},
-    "sources": {"default_search_strategy": "VARCHAR(32)"},
+    "sources": {
+        "default_search_strategy": "VARCHAR(32)",
+        "engine_kind": "VARCHAR(16) NOT NULL DEFAULT 'sag1'",
+    },
     "documents": {
         "progress": "INTEGER NOT NULL DEFAULT 0",
         "processing_stage": "VARCHAR(32)",

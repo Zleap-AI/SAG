@@ -48,11 +48,6 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-function pointerEvent(type: string) {
-  const event = new MouseEvent(type, { bubbles: true, button: 0 });
-  Object.defineProperties(event, { pointerId: { value: 1 }, pointerType: { value: "mouse" } });
-  return event;
-}
 async function openDialog(currentSource: Source = source) {
   await act(async () => root.render(
     <NextIntlClientProvider locale="en-US" messages={messages}>
@@ -64,51 +59,22 @@ async function openDialog(currentSource: Source = source) {
   expect(dialog).not.toBeNull();
   return dialog;
 }
-async function pickMode(testId: string) {
-  const trigger = document.body.querySelector<HTMLElement>('[data-testid="retrieval-mode-picker"]')!;
-  await act(async () => trigger.dispatchEvent(pointerEvent("pointerdown")));
-  const option = document.body.querySelector<HTMLElement>(`[data-testid="${testId}"]`)!;
-  expect(option, `option ${testId}`).not.toBeNull();
-  await act(async () => { option.dispatchEvent(pointerEvent("pointerdown")); option.dispatchEvent(pointerEvent("pointerup")); });
-}
-
 describe("edit source dialog", () => {
-  it("preselects the saved default mode without resubmitting it", async () => {
-    const dialog = await openDialog();
-    expect(dialog.textContent).toContain("name, description and default retrieval mode");
-    expect(dialog.querySelector('[data-testid="retrieval-mode-picker"]')?.textContent).toContain("Precise");
+  it.each(["sag1", "sag2"] as const)("shows %s as read-only and only updates metadata", async kind => {
+    const current = { ...source, engine_kind: kind };
+    const dialog = await openDialog(current);
+    expect(dialog.textContent).toContain("cannot be changed");
+    expect(dialog.querySelector('select, [role="combobox"], input[type="radio"]')).toBeNull();
     await act(async () => dialog.querySelector("form")!.requestSubmit());
     expect(api.updateSource).toHaveBeenCalledWith("source-1", { name: "Manuals", description: "Specs" });
-    expect(onUpdated).toHaveBeenCalledWith(expect.objectContaining({ default_search_strategy: "multi" }));
   });
-  it.each(["sag2", "multi_jev"] as const)("allows metadata edits with an unchanged stale %s default", async (mode) => {
-    state.capabilities = {
-      ...state.capabilities,
-      search_strategies_disabled: { [mode]: { reason: "jev_api_key_missing", message: "Configure JEV" } },
-    };
-    const currentSource = { ...source, default_search_strategy: mode };
-    vi.mocked(api.updateSource).mockImplementation(async (_id, body) => ({ ...currentSource, ...body }) as Source);
-    const dialog = await openDialog(currentSource);
+  it("allows editing metadata when the JEV connection is missing", async () => {
+    state.capabilities = { search_strategy: "vector", search_strategies_disabled: {
+      sag2: { reason: "jev_api_key_missing", message: "Configure JEV" },
+    }};
+    const dialog = await openDialog({ ...source, engine_kind: "sag2" });
     expect(dialog.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
     await act(async () => dialog.querySelector("form")!.requestSubmit());
-    expect(api.updateSource).toHaveBeenCalledWith("source-1", { name: "Manuals", description: "Specs" });
-    expect(onUpdated).toHaveBeenCalledWith(expect.objectContaining({ default_search_strategy: mode }));
-  });
-  it("sends null when switching back to the global default", async () => {
-    const dialog = await openDialog();
-    await pickMode("retrieval-mode-global");
-    await act(async () => dialog.querySelector("form")!.requestSubmit());
-    expect(api.updateSource).toHaveBeenCalledWith("source-1", { name: "Manuals", description: "Specs", default_search_strategy: null });
-  });
-  it("blocks saving a JEV mode until the key is entered", async () => {
-    state.capabilities = {
-      ...state.capabilities,
-      search_strategies_disabled: { sag2: { reason: "jev_not_configured", message: "Configure JEV" } },
-    };
-    const dialog = await openDialog();
-    await pickMode("retrieval-mode-sag2");
-    expect(dialog.querySelector('[data-testid="jev-quick-setup"]')).not.toBeNull();
-    expect(dialog.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
-    expect(dialog.querySelector('[data-testid="source-form-blocked"]')).not.toBeNull();
+    expect(api.updateSource).toHaveBeenCalledTimes(1);
   });
 });

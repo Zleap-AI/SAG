@@ -120,9 +120,21 @@ def _responses_identity(settings: Settings) -> dict | None:
 
 
 async def document_processing_identity(
-    config: EngineConfig, settings: Settings, source_config_id: str, path: str,
+    config: EngineConfig, settings: Settings, source_config_id: str, path: str, *, engine_kind: str = "sag1",
 ) -> dict[str, str]:
     raw = await asyncio.to_thread(_input_identity, path)
+    if engine_kind == "sag2":
+        return {
+            "configuration_digest": _digest({
+                "engine_kind": "sag2", "parser": document_parser_identity(path, settings),
+                "chunking": {"strategy": "standard", "max_tokens": settings.document_chunk_max_tokens},
+                "storage": {"data_dir": str(Path(settings.data_dir).resolve()),
+                            "relational_provider": settings.sag_relational_provider,
+                            "pg_host": settings.sag_pg_host, "pg_port": settings.sag_pg_port,
+                            "pg_database": settings.sag_pg_database, "pg_user": settings.sag_pg_user},
+            }),
+            "input_digest": _digest(raw), "original_sha256": raw["sha256"],
+        }
     entity_contract = await _entity_contract(config, source_config_id)
     return {
         "configuration_digest": _digest({

@@ -285,13 +285,19 @@
     "creating": "Creating…",
     "create": "Create source",
     "new": "New source",
-    "dialogDescription": "Sources hold content. Name it, pick a default retrieval mode, then upload documents to search and chat.",
+    "dialogDescription": "Choose a knowledge algorithm, create the source, then upload documents.",
     "updated": "Source updated",
     "updateFailed": "Failed to update source",
     "edit": "Edit source",
-    "editDescription": "Change this source’s name, description and default retrieval mode.",
+    "editDescription": "Edit the name and description. The knowledge algorithm cannot be changed.",
     "saving": "Saving…",
-    "saveChanges": "Save changes"
+    "saveChanges": "Save changes",
+    "algorithm": "Knowledge algorithm",
+    "sag1": "Event retrieval (SAG1)",
+    "sag2": "Evidence retrieval (SAG2)",
+    "sag1Description": "Parse, chunk, embed, and extract entities and events.",
+    "sag2Description": "Parse, chunk and index evidence without entity or event extraction. Retrieval requires a JEV API key.",
+    "algorithmImmutable": "The algorithm is fixed at creation and applies to all future uploads."
   },
   "SourceCard": {
     "deleteSubmitted": "Deletion request submitted",
@@ -347,7 +353,8 @@
       "complete": "Export complete",
       "failed": "Export failed",
       "cancelled": "Cancelled"
-    }
+    },
+    "sag2OctxUnsupported": "OCTX export is not supported for SAG2 yet"
   },
   "UploadZone": {
     "unsupportedType": "{name}: Unsupported file type",
@@ -524,6 +531,7 @@
     "list": "List",
     "graph2dView": "2D graph view",
     "graph3dView": "3D graph view",
+    "sag2UploadDescription": "Uploads are parsed, chunked and indexed as source text, without entity or event extraction.",
     "emptyDocumentsDescription": "Add a document from the upper-right. SAG will parse, chunk, vectorize, and extract events and entities automatically.",
     "addDialogDescription": "The document will be parsed, chunked, and processed for events and entities automatically.",
     "syncDialogDescription": "Fetch the latest connector content and update this source.",
@@ -617,7 +625,9 @@
     "sag2Description": "BM25 recall scored over several JEV rounds; no vector store needed; paid service.",
     "paid": "Paid",
     "openSettings": "Open settings",
-    "unsupportedBackend": "This server does not advertise support for this JEV-scored mode. Upgrade the server to use it."
+    "unsupportedBackend": "This server does not advertise support for this JEV-scored mode. Upgrade the server to use it.",
+    "autoLabel": "Auto (knowledge algorithms)",
+    "autoDescription": "Retrieve with each knowledge source’s bound SAG1 or SAG2 algorithm and merge the evidence."
   },
   "RetrievalModes": {
     "label": "Default retrieval mode",
@@ -658,7 +668,10 @@
     "jevTestFailed": "Connection test failed",
     "jevSaveFailed": "Failed to save the JEV service",
     "jevSharedNote": "Saved once for every JEV mode; change it later under Settings → Knowledge → JEV reranking service.",
-    "jevOpenSettings": "Open settings"
+    "jevOpenSettings": "Open settings",
+    "cancelSetup": "Cancel",
+    "savingSetup": "Saving…",
+    "saveAndUse": "Save and use this mode"
   },
   "RetrievalTest": {
     "failed": "Retrieval failed",
@@ -712,7 +725,7 @@
     "retrievalDescription": "Control knowledge retrieval and reranking services.",
     "retrievalRules": "Retrieval rules",
     "retrievalRulesDescription": "Set the retrieval strategy and result count.",
-    "retrievalStrategy": "Retrieval strategy",
+    "retrievalStrategy": "SAG1 retrieval strategy",
     "chinese": "中文",
     "english": "English",
     "topK": "Results · {count, number}",
@@ -1840,7 +1853,8 @@
     "partial": "Partial results: some sources did not complete.",
     "origin": "Using {mode} ({origin})",
     "originPersona": "persona default",
-    "originSourceDefault": "source default"
+    "originSourceDefault": "source default",
+    "engineFailure": "{engine} retrieval failed or is incomplete: {message}"
   },
   "ClientAccess": {
     "title": "CLI and automation",

@@ -48,7 +48,8 @@ export function RetrievalStatus({ stats, requestedStrategy }: {
   const requested = isSearchStrategy(stats.requested_strategy) ? stats.requested_strategy : requestedStrategy;
   const effective = typeof stats.effective_strategy === "string" ? stats.effective_strategy : requested;
   const fallback = usedFallback(stats) || Object.values(record(stats.source_stats)).some(value => usedFallback(record(value)));
-  const jevFallback = (isJevScoredStrategy(requested) || isJevScoredStrategy(effective)) && fallback;
+  const jevFallback = stats.jev_fallback_used === true
+    || (isJevScoredStrategy(requested) || isJevScoredStrategy(effective)) && fallback;
   const partial = stats.partial === true;
   const changed = requested && effective && requested !== effective;
   // Paid JEV calls are reported per run so users can see what a query cost.
@@ -65,11 +66,12 @@ export function RetrievalStatus({ stats, requestedStrategy }: {
       tokens: usageInputTokens === null ? "" : t("jevUsageTokens", { tokens: format(usageInputTokens) }),
     })
     : null;
+  const engineFailures = Array.isArray(stats.engine_failures) ? stats.engine_failures : [];
   const executionChanged = jevFallback || partial || changed;
   const origin = explainedOrigin(stats.strategy_origin);
   // The origin describes the resolved (requested) mode; a changed execution is reported separately.
   const originMode = requested ?? effective;
-  if (!executionChanged && usageText === null && !(origin && originMode)) return null;
+  if (!executionChanged && usageText === null && !(origin && originMode) && !engineFailures.length) return null;
   function label(mode: string) {
     return isSearchStrategy(mode) ? strategies(getSearchStrategy(mode).labelKey) : mode;
   }
@@ -79,5 +81,8 @@ export function RetrievalStatus({ stats, requestedStrategy }: {
     {jevFallback && <p>{t("jevFallback")}</p>}
     {partial && <p>{t("partial")}</p>}
     {usageText !== null && <p>{usageText}</p>}
+    {engineFailures.map((failure, index) => { const info = record(failure); return <p key={index} className="text-amber-700 dark:text-amber-400">
+      {t("engineFailure", { engine: String(info.engine_kind ?? ""), message: String(info.message ?? "") })}
+    </p>; })}
   </div>;
 }

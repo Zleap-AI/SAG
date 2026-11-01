@@ -54,6 +54,7 @@ from sag_api.octx.runner import BuildPackageRequest, OctxRunner
 from sag_api.octx.semver import bump_semver_patch, parse_semver, validate_semver
 from sag_api.octx.storage import OctxStorage
 from sag_api.sag.octx_snapshot import export_snapshot
+from sag_api.services.knowledge_algorithms import require_sag1_octx
 from sag_api.services.octx_checkpoint import merge_checkpoint
 from sag_api.services.octx_diagnostics_service import append_octx_trace
 
@@ -127,6 +128,7 @@ async def create_export_transfer(
     source = await session.get(Source, source_id)
     if source is None:
         raise NotFoundError("source not found")
+    require_sag1_octx(source)
     documents = (
         (
             await session.execute(
@@ -327,6 +329,7 @@ async def create_document_export_transfer(
     source = await session.get(Source, source_id)
     if source is None:
         raise NotFoundError("source not found")
+    require_sag1_octx(source)
     document = await session.get(Document, document_id)
     if document is None or document.source_id != source_id or not document.is_active:
         raise NotFoundError("document not found")
@@ -530,6 +533,7 @@ async def execute_export(
     source = await session.get(Source, transfer.target_source_id)
     if source is None:
         raise NotFoundError("source not found")
+    require_sag1_octx(source)
     checkpoint = dict(transfer.checkpoint or {})
     selected_document_ids = tuple(checkpoint.get("selected_document_ids") or ())
     selected_article_ids = tuple(checkpoint.get("selected_article_ids") or ())

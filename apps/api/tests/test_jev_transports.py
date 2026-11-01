@@ -70,7 +70,7 @@ async def test_agent_tool_keeps_the_strategy_selected_when_the_run_was_prepared(
     adapted = _adapt_tool(RecordingSearchTool(), ToolContext(engine_manager=object()), [])
     active.search_strategy = "multi_jev"
     await adapted.execute({}, SimpleNamespace(cancellation=SimpleNamespace(raise_if_cancelled=lambda: None)))
-    assert used == [("vector", "global")]
+    assert used == [("auto", "global")]
 
 
 @pytest.mark.asyncio

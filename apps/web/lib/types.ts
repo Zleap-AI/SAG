@@ -64,6 +64,7 @@ export type ParserStatus =
   | "fallback"
   | "failed";
 export interface Source {
+  engine_kind?: "sag1" | "sag2";
   id: string;
   name: string;
   description: string;
@@ -525,6 +526,7 @@ export interface SourceGraphResponse {
 }
 
 export interface Section {
+  metadata?: Record<string, unknown>;
   chunk_id: string | null;
   heading: string;
   content: string;

@@ -5,7 +5,7 @@ import { useTranslations } from "next-intl";
 
 import { api, ApiError } from "@/lib/api";
 import { isSourceDeleting } from "@/lib/source-activity";
-import { getScopeDefaultStrategy, type SearchStrategy } from "@/lib/retrieval-config";
+import { type SearchStrategy } from "@/lib/retrieval-config";
 import type { ActivityItem, SearchResponse, Source } from "@/lib/types";
 import {
   activationFromSearch,
@@ -252,13 +252,8 @@ export function SearchProvider({
 
   // Sources scoped through the picker carry their own default; scopes restored
   // from a URL only have an id, so fall back to the loaded source list.
-  const scopeDefaultStrategy = React.useMemo(() => getScopeDefaultStrategy(
-    state.scoped.map((scope) => state.sources.find((source) => source.id === scope.id) ?? scope),
-    disabledMap,
-  ), [disabledMap, state.scoped, state.sources]);
-  const effectiveStrategy = state.strategyPinned
-    ? state.strategy
-    : (scopeDefaultStrategy ?? defaultStrategy);
+  const scopeDefaultStrategy = null;
+  const effectiveStrategy = state.strategyPinned ? state.strategy : defaultStrategy;
   const strategyOrigin: SearchStrategyOrigin = state.strategyPinned
     ? "pinned"
     : scopeDefaultStrategy

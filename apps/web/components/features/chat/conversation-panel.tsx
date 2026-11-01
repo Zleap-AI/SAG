@@ -17,10 +17,8 @@ import {
   shouldSubmitAfterEnter,
 } from "@/lib/composer-keyboard";
 import {
-  getScopeDefaultStrategy,
   getSearchStrategiesDisabled,
   isSearchStrategy,
-  isJevScoredStrategy,
   isSearchStrategyRejectionCode,
   type SearchStrategy,
 } from "@/lib/retrieval-config";
@@ -310,16 +308,8 @@ export function ConversationPanel({
   }, [agent?.persona?.search_strategy, strategyDisabledMap]);
   // Scopes only carry id + name; the loaded source list supplies each one's default.
   // A scope whose source is not loaded yet counts as "no default", like the backend treats null.
-  const scopeDefaultStrategy = React.useMemo(() => getScopeDefaultStrategy(
-    scoped.map((scope) => ({
-      default_search_strategy: sources.find((source) => source.id === scope.id)?.default_search_strategy ?? null,
-    })),
-    strategyDisabledMap,
-  ), [scoped, sources, strategyDisabledMap]);
-  // Match the Agent's legacy non-JEV default; an explicit pick still overrides it.
-  const globalStrategy = isJevScoredStrategy(capabilities?.search_strategy)
-    ? capabilities.search_strategy
-    : "vector";
+  const scopeDefaultStrategy = null;
+  const globalStrategy: SearchStrategy = "auto";
   const resolvedStrategy = personaStrategy ?? scopeDefaultStrategy ?? globalStrategy;
   // Keep an explicit choice visible, but never submit it after its configuration expires.
   const pinnedStrategyIssue = pinnedStrategy ? strategyDisabledMap[pinnedStrategy] : undefined;

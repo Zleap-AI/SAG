@@ -155,7 +155,7 @@ export function SearchPanel({
     [capabilities, searchStrategies],
   );
   const enabledStrategies = React.useMemo(
-    () => SEARCH_STRATEGIES.map((item) => item.value).filter((value) => !disabledMap[value]),
+    () => SEARCH_STRATEGIES.map((item) => item.value).filter((value) => value !== "auto" && !disabledMap[value]),
     [disabledMap],
   );
   const compare = useSearchCompare({
