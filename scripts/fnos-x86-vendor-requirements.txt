@@ -1,0 +1,5 @@
+# Official PyPI wheels for the fnOS x86 baseline without AVX2/FMA/F16C.
+# Keep the rest of apps/api/uv.lock unchanged; install this overlay once with --no-deps --require-hashes.
+lancedb-compat @ https://files.pythonhosted.org/packages/31/fc/c285f11c645ee357aaec1cf2b790857ee053381875ca6de26529b496309b/lancedb_compat-0.41.0-cp310-abi3-manylinux_2_28_x86_64.whl --hash=sha256:66c26c78d2e8e8fb32cfc041d21b6d289e35682f8a84b3a28ed6f131ebfdf491
+lance-namespace @ https://files.pythonhosted.org/packages/e7/47/cfa33cca1ba7c749fd2918cfc5c8ded788f378cc6424d23e4fead5a14125/lance_namespace-0.13.0-py3-none-any.whl --hash=sha256:438c7b17aef421c21c138196e715f2510d62f07e865372047f87c1e75e618c7a
+lance-namespace-urllib3-client @ https://files.pythonhosted.org/packages/60/4c/7b8f0712a7fe1b8655b711342bc4989696635a79e7027ee56ba3cae23e99/lance_namespace_urllib3_client-0.13.0-py3-none-any.whl --hash=sha256:fb361eb4f6c7f2d1f9e92809609657b73e38241393e9c4516e12d6b6ee643a0a

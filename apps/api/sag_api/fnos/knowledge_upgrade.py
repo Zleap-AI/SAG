@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sag_api.db.models import (
@@ -19,7 +19,7 @@ from sag_api.db.models import (
     UniversePartition,
 )
 from sag_api.enums import BindingTargetType
-from sag_api.fnos.knowledge_compatibility import classify_workspace, committed_marker
+from sag_api.fnos.knowledge_compatibility import classify_workspace, committed_marker, recoverable_bootstrap_uploads
 
 _UPGRADE_KEY = "fnos_knowledge_engine_0_13"
 
@@ -41,11 +41,22 @@ async def reset_legacy_knowledge(
     the complete tenant metadata before allowing install or upgrade to proceed.
     """
     marker = await session.scalar(select(Setting).where(Setting.scope == "global", Setting.key == _UPGRADE_KEY))
+    has_documents = bool(await session.scalar(select(func.count(Document.id))))
+    recoverable = False
+    if has_documents and not (legacy_engine_dir.parent / "engine-v0.13-clean/sag.db").exists():
+        records = {}
+        for table in ("documents", "sources", "jobs"):
+            rows = await session.execute(text(f"SELECT * FROM {table}"))
+            records[table] = [dict(row) for row in rows.mappings()]
+        recoverable = recoverable_bootstrap_uploads(
+            legacy_engine_dir.parent, marker.value if marker is not None else None, records,
+        )
     state = classify_workspace(
         legacy_engine_dir.parent,
         marker.value if marker is not None else None,
         has_sources=bool(await session.scalar(select(func.count(Source.id)))),
-        has_documents=bool(await session.scalar(select(func.count(Document.id)))),
+        has_documents=has_documents,
+        recoverable_uploads=recoverable,
     )
     if state == "compatible" and marker is not None and committed_marker(marker.value):
         return 0

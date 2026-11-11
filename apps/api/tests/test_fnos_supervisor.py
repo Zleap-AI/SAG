@@ -234,6 +234,48 @@ def clock() -> Clock:
     return Clock()
 
 
+@pytest.mark.asyncio
+async def test_supervisor_starts_tenant_with_empty_lancedb_bootstrap(tmp_path):
+    import json
+    import sqlite3
+
+    from sag_api.fnos.supervisor import WorkerSupervisor
+    from sag_api.fnos.workspace import WorkspacePaths
+
+    identity = GatewayIdentity(1000, "Alice", False)
+    paths = WorkspacePaths.for_identity(tmp_path / "data", tmp_path / "temp", identity)
+    paths.prepare()
+    with sqlite3.connect(paths.database_file) as connection:
+        connection.executescript("""
+            CREATE TABLE settings (scope TEXT, key TEXT, value_json TEXT);
+            CREATE TABLE sources (id TEXT);
+            CREATE TABLE documents (id TEXT);
+            INSERT INTO sources VALUES ('first-source');
+        """)
+        connection.execute("INSERT INTO settings VALUES (?, ?, ?)", (
+            "global", "fnos_knowledge_engine_0_13",
+            json.dumps({"engine": "0.13.0", "knowledge_reset": True}),
+        ))
+        connection.execute("INSERT INTO settings VALUES (?, ?, ?)", (
+            "global", "model_config", json.dumps({"llm_api_key": "test-key-preserved"}),
+        ))
+    vector = paths.engine_dir / "lancedb"
+    vector.mkdir()
+    metadata_before = paths.database_file.read_bytes()
+    vector_inode = vector.stat().st_ino
+    factory = FakeFactory()
+    supervisor = WorkerSupervisor(paths.data_root, paths.temp_root, process_factory=factory)
+    try:
+        lease = await supervisor.acquire(identity)
+        assert factory.spawn_count == 1
+        await lease.release()
+    finally:
+        await supervisor.close()
+    assert paths.database_file.read_bytes() == metadata_before
+    assert vector.stat().st_ino == vector_inode
+    assert list(vector.iterdir()) == []
+
+
 @pytest.fixture
 def supervisor(tmp_path: Path, clock: Clock):
     from sag_api.fnos.supervisor import WorkerSupervisor
