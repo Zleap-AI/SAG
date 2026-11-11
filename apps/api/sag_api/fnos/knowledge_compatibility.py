@@ -127,7 +127,104 @@ def engine_format(database: Path) -> str:
     raise ValueError(UNKNOWN_KNOWLEDGE)
 
 
-def classify_workspace(workspace: Path, marker: object, *, has_sources: bool, has_documents: bool = False) -> str:
+def _only_empty_lancedb(directory: Path) -> bool:
+    """Recognize the exact directory-only residue of SDK ensure_local_dirs().
+
+    Reuse it in place: classification must not remove directories or files.
+    Nested directories, sidecars and links are not evidence of an empty engine.
+    """
+    entries = list(directory.iterdir())
+    return (
+        len(entries) == 1
+        and entries[0].name == "lancedb"
+        and not entries[0].is_symlink()
+        and entries[0].is_dir()
+        and not any(entries[0].iterdir())
+    )
+
+
+def recoverable_bootstrap_uploads(workspace: Path, marker: object, records: dict[str, list[dict]]) -> bool:
+    """Admit only never-indexed uploads whose durable first-process jobs can replay.
+
+    This is a read-only exception to the partial-restore guard. Existing results,
+    replacement jobs, missing originals or ambiguous metadata remain protected.
+    """
+    current = workspace / "engine-v0.13-clean"
+    if (
+        not committed_marker(marker)
+        or current.is_symlink()
+        or not current.is_dir()
+        or not _only_empty_lancedb(current)
+    ):
+        return False
+    try:
+        documents, sources, jobs = (records[name] for name in ("documents", "sources", "jobs"))
+        if not documents or any(source["chunk_count"] != 0 or source["event_count"] != 0 for source in sources):
+            return False
+        source_ids = {source["id"] for source in sources}
+        uploads = workspace / "uploads"
+        if uploads.is_symlink() or not uploads.is_dir():
+            return False
+        uploads_root = uploads.resolve(strict=True)
+        for document in documents:
+            source_id = document["source_id"]
+            if (
+                source_id not in source_ids
+                or Path(source_id).name != source_id
+                or source_id in {".", ".."}
+                or document["status"] not in {"PENDING", "LOADING"}
+                or document["chunk_count"] != 0
+                or document["event_count"] != 0
+                or document["token_usage"] != 0
+                or document["sag_source_id"] is not None
+                or document["knowledge_state"] not in {None, "queued", "running"}
+            ):
+                return False
+            path = Path(document["storage_path"])
+            if not path.is_absolute() or path.parent.resolve(strict=True) != uploads_root / source_id:
+                return False
+            # Permit the package's trusted /var/apps alias, but no link within
+            # uploads, including the source directory or the original itself.
+            ancestor = path
+            while ancestor.resolve(strict=True) != uploads_root:
+                if ancestor.is_symlink() or ancestor == ancestor.parent:
+                    return False
+                ancestor = ancestor.parent
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size != document["size_bytes"]:
+                    return False
+            active = [job for job in jobs if job["document_id"] == document["id"]]
+            if not active:
+                return False
+            for job in active:
+                if (
+                    job["type"] != "PROCESS_DOCUMENT"
+                    or job["status"] not in {"QUEUED", "RUNNING"}
+                    or job["source_id"] != source_id
+                    or job["finished_at"] is not None
+                ):
+                    return False
+                raw_payload = job["payload_json"]
+                payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+                if not isinstance(payload, dict):
+                    return False
+                scheduler = payload.get("_scheduler", {})
+                if not isinstance(scheduler, dict) or scheduler.get("blocked_reason"):
+                    return False
+                checkpoint = payload.get("process_checkpoint", {})
+                if not isinstance(checkpoint, dict) or any(checkpoint.values()):
+                    return False
+        return True
+    except (KeyError, OSError, TypeError, ValueError):
+        return False
+
+
+def classify_workspace(
+    workspace: Path, marker: object, *, has_sources: bool, has_documents: bool = False,
+    recoverable_uploads: bool = False,
+) -> str:
     """Classify without using a missing app marker as evidence of incompatibility."""
     current = workspace / "engine-v0.13-clean"
     legacy = workspace / "engine"
@@ -141,9 +238,16 @@ def classify_workspace(workspace: Path, marker: object, *, has_sources: bool, ha
         if engine_format(current / "sag.db") != "compatible":
             raise ValueError(UNKNOWN_KNOWLEDGE)
         return "compatible"
-    if current.exists() and (not current.is_dir() or any(current.iterdir())):
-        raise ValueError(UNKNOWN_KNOWLEDGE)
-    if committed_marker(marker) and has_documents:
+    if current.exists():
+        if not current.is_dir():
+            raise ValueError(UNKNOWN_KNOWLEDGE)
+        if any(current.iterdir()) and ((has_documents and not recoverable_uploads) or not _only_empty_lancedb(current)):
+            # The SDK creates lancedb before its first SQLite connection. An
+            # interrupted bootstrap may resume only when no documents could
+            # lose an index, or intact original uploads have verified replay
+            # jobs and no index results. Keep marker/legacy checks below intact.
+            raise ValueError(UNKNOWN_KNOWLEDGE)
+    if committed_marker(marker) and has_documents and not recoverable_uploads:
         # A partial restore must not pair old document registrations with a
         # fresh empty index merely because a migration marker survived.
         raise ValueError(UNKNOWN_KNOWLEDGE)
@@ -207,7 +311,24 @@ def classify_tenant(workspace: Path) -> str:
             marker = json.loads(row[0]) if row else None
             has_sources = bool(connection.execute("SELECT count(*) FROM sources").fetchone()[0])
             has_documents = bool(connection.execute("SELECT count(*) FROM documents").fetchone()[0])
-            return classify_workspace(workspace, marker, has_sources=has_sources, has_documents=has_documents)
+            recoverable = False
+            current = workspace / "engine-v0.13-clean"
+            if (
+                has_documents and committed_marker(marker) and current.is_dir()
+                and not (current / "sag.db").exists() and _only_empty_lancedb(current)
+            ):
+                records = {}
+                for table in ("documents", "sources", "jobs"):
+                    cursor = connection.execute(f"SELECT * FROM {table}")
+                    columns = [item[0] for item in cursor.description]
+                    records[table] = [
+                        {name: row[index] for index, name in enumerate(columns)} for row in cursor.fetchall()
+                    ]
+                recoverable = recoverable_bootstrap_uploads(workspace, marker, records)
+            return classify_workspace(
+                workspace, marker, has_sources=has_sources, has_documents=has_documents,
+                recoverable_uploads=recoverable,
+            )
     except (OSError, sqlite3.Error, json.JSONDecodeError):
         raise ValueError(UNKNOWN_KNOWLEDGE) from None
 

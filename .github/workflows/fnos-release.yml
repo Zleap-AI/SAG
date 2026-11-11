@@ -142,6 +142,26 @@ jobs:
           node scripts/build-fnos-native-vendor.mjs \
             --platform linux/amd64 \
             --output "$RUNNER_TEMP/vendor"
+
+      - name: Verify x86 package storage without AVX instructions
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user
+          uv python install 3.12
+          python312="$(uv python find 3.12)"
+          export PYTHONPATH="$RUNNER_TEMP/vendor:$GITHUB_WORKSPACE/apps/api"
+          export TIKTOKEN_CACHE_DIR="$RUNNER_TEMP/tiktoken-cache"
+          qemu-x86_64 -cpu Nehalem "$python312" scripts/fnos-native-cpu-smoke.py \
+            --data-dir "$RUNNER_TEMP/cpu-smoke" --mode write --require-no-avx
+          qemu-x86_64 -cpu Nehalem "$python312" scripts/fnos-native-cpu-smoke.py \
+            --data-dir "$RUNNER_TEMP/cpu-smoke" --mode reopen --require-no-avx
+
+      - name: Package verified Native x86 inputs
+        shell: bash
+        run: |
+          set -euo pipefail
           node scripts/build-fnos-native-package.mjs \
             --platform x86 \
             --vendor "$RUNNER_TEMP/vendor" \
