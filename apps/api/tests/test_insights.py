@@ -424,3 +424,105 @@ async def test_source_graph_can_filter_one_or_multiple_documents(monkeypatch):
                 assert source is not None
                 await session.delete(source)
                 await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_find_entity_context_searches_beyond_top_200_by_name_rank():
+    """按名称查实体不受热门 Top-200 截断；精确 > 前缀 > 子串优先于热度；LIKE 通配符按字面匹配。"""
+    from zleap.sag.db.models import (
+        DataSource,
+        Entity,
+        EntityType,
+        EventEntity,
+        SourceEvent,
+    )
+
+    from sag_api.core.db import SessionLocal
+    from sag_api.db.models import Document, Source
+    from sag_api.enums import DocumentStatus
+    from sag_api.main import app
+    from sag_api.services.insight_service import find_entity_context
+
+    async with _draining_app_lifespan(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+            email = f"longtail-{uuid.uuid4().hex}@x.com"
+            reg = await client.post("/api/v1/auth/register", json={"email": email, "password": "password123"})
+            headers = {"Authorization": f"Bearer {reg.json()['access_token']}"}
+            sid = (await client.post("/api/v1/sources", headers=headers, json={"name": "长尾实体库"})).json()["id"]
+        async with SessionLocal() as s:
+            s.add(
+                Document(
+                    id=uuid.uuid4().hex,
+                    source_id=sid,
+                    filename="长尾.md",
+                    content_type="text/markdown",
+                    size_bytes=1,
+                    storage_path="/tmp/longtail.md",
+                    status=DocumentStatus.READY,
+                    chunk_count=1,
+                    sag_source_id="lt-1",
+                )
+            )
+            await s.commit()
+        async with SessionLocal() as s:
+            source = await s.get(Source, sid)
+        scid = source.sag_source_config_id
+
+        # 实体名 → 关联事项数（热度）。排序样本的热度刻意与名称优先级相反。
+        heats = {f"热门人物{i:03d}": 2 for i in range(200)}
+        heats |= {"诸葛亮": 1, "赤壁": 1, "赤壁之战": 2, "火烧赤壁": 3, "满分100%": 1}
+        factory = await app.state.engine_manager.get_sag_session_factory(scid)
+        async with factory() as s:
+            await s.merge(DataSource(id=scid, name="长尾实体库"))
+            entity_type = EntityType(id=uuid.uuid4().hex, type="person", name="人物")
+            events = [
+                SourceEvent(
+                    id=uuid.uuid4().hex,
+                    data_source_id=scid,
+                    source_type="doc",
+                    source_id="lt-1",
+                    title=f"事项{i}",
+                    summary=f"事项{i}",
+                    content=f"事项{i}",
+                    chunk_id="lt-chunk",
+                    rank=i,
+                )
+                for i in range(3)
+            ]
+            entities = {
+                name: Entity(
+                    id=uuid.uuid4().hex,
+                    data_source_id=scid,
+                    entity_type_id=entity_type.id,
+                    type="person",
+                    name=name,
+                    normalized_name=name.lower(),
+                    description="",
+                )
+                for name in heats
+            }
+            s.add_all([entity_type, *events, *entities.values()])
+            await s.flush()
+            s.add_all(
+                EventEntity(id=uuid.uuid4().hex, event_id=event.id, entity_id=entities[name].id, weight=1.0)
+                for name, heat in heats.items()
+                for event in events[:heat]
+            )
+            await s.commit()
+
+        manager = app.state.engine_manager
+
+        async def names(query: str | None, limit: int) -> list[str]:
+            rows = await manager.list_entities(scid, source_ids=("lt-1",), source=source, query=query, limit=limit)
+            return [row.name for row in rows]
+
+        assert "诸葛亮" not in await names(None, 200)
+        for query in ("诸葛亮", "葛亮"):
+            found = await find_entity_context(manager, source, query)
+            assert found is not None and found[0].name == "诸葛亮"
+        assert await names("赤壁", 10) == ["赤壁", "赤壁之战", "火烧赤壁"]
+        assert await names("%", 10) == ["满分100%"]
+
+        async with SessionLocal() as s:
+            await s.delete(await s.get(Source, sid))
+            await s.commit()

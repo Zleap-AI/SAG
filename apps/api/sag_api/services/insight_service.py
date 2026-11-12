@@ -48,14 +48,12 @@ async def find_entity_context(
         source.sag_source_config_id,
         source_ids=input_ids,
         source=source,
-        limit=200,
+        query=name,
+        limit=1,
     )
-    lowered = name.strip().lower()
-    match = next((entity for entity in entities if (entity.name or "").lower() == lowered), None)
-    if match is None:
-        match = next((entity for entity in entities if lowered in (entity.name or "").lower()), None)
-    if match is None:
+    if not entities:
         return None
+    match = entities[0]
     snippets = await engine_manager.entity_context(
         source.sag_source_config_id,
         match.id,
