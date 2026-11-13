@@ -328,11 +328,17 @@ class ContentReader:
         source_ids: tuple[str, ...],
         source: Source | None = None,
         types: list[str] | None = None,
+        query: str | None = None,
         limit: int = 100,
     ) -> list[EntityInfo]:
-        """读取该源的事件—实体图谱，按热度（关联事件数）排序。extract 后才有数据。"""
+        """读取该源的事件—实体图谱，按热度（关联事件数）排序。extract 后才有数据。
+
+        传入 ``query`` 时先按名称过滤全部实体，再按 精确 > 前缀 > 子串、同级热度排序。
+        """
+        if query is not None and not query.strip():
+            return []
         await self._access.slot(source_config_id, source)  # 确保引擎 / DB 已初始化
-        from sqlalchemy import func, select
+        from sqlalchemy import case, func, or_, select
         from zleap.sag.db.models import Entity, EventEntity, SourceEvent
 
         heat = func.count(EventEntity.id)
@@ -344,13 +350,24 @@ class ContentReader:
         ]
         if types:
             conds.append(Entity.type.in_(list(types)))
+        order_by = [heat.desc(), Entity.name, Entity.id]
+        if query is not None:
+            lowered = query.strip().lower()
+            needle = lowered.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+            def _name_like(pattern: str) -> Any:
+                return or_(Entity.normalized_name.like(pattern, escape="\\"), Entity.name.ilike(pattern, escape="\\"))
+
+            exact = or_(Entity.normalized_name == lowered, func.lower(Entity.name) == lowered)
+            conds.append(_name_like(f"%{needle}%"))
+            order_by.insert(0, case((exact, 0), (_name_like(f"{needle}%"), 1), else_=2))
         stmt = (
             select(Entity, heat.label("heat"))
             .join(EventEntity, EventEntity.entity_id == Entity.id)
             .join(SourceEvent, SourceEvent.id == EventEntity.event_id)
             .where(*conds)
             .group_by(Entity.id)
-            .order_by(heat.desc(), Entity.name, Entity.id)
+            .order_by(*order_by)
             .limit(limit)
         )
         sf = await self._access.relational_session_factory(source_config_id)

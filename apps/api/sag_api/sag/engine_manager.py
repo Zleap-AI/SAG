@@ -1079,10 +1079,11 @@ class EngineManager:
         source_ids: tuple[str, ...],
         source: Source | None = None,
         types: list[str] | None = None,
+        query: str | None = None,
         limit: int = 100,
     ) -> list[EntityInfo]:
         return await self._content.list_entities(
-            source_config_id, source_ids=source_ids, source=source, types=types, limit=limit
+            source_config_id, source_ids=source_ids, source=source, types=types, query=query, limit=limit
         )
 
     async def source_graph(

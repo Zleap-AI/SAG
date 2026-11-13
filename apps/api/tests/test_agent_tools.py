@@ -872,3 +872,33 @@ async def test_legacy_persona_can_chat_without_calling_its_search_tool(strategy)
             assert answer.status_code == 200, answer.text
             assert answer.json()["choices"][0]["message"]["content"] == "最终答案"
             assert fake.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_get_entity_aggregates_sources_concurrently_and_isolates_failures(monkeypatch):
+    """多信源并发查询并按信源顺序聚合；单信源异常不阻断其余信源。"""
+    import asyncio
+
+    from sag_api.sag import EntityInfo
+    from sag_api.tools.builtin import GetEntityTool
+
+    c_done = asyncio.Event()
+
+    async def fake_find_entity_context(engine_manager, source, name):
+        if source.id == "src-b":
+            raise RuntimeError("engine failure")
+        if source.id == "src-a":
+            await c_done.wait()  # a 必须等 c 完成后才返回：串行实现会在这里卡死
+        else:
+            c_done.set()
+        return EntityInfo(id=f"ent-{source.id}", name=name, type="person", description=""), [f"{source.name}片段"]
+
+    monkeypatch.setattr("sag_api.services.insight_service.find_entity_context", fake_find_entity_context)
+    sources = [SimpleNamespace(id=f"src-{key}", name=f"{key}库") for key in "abc"]
+    ctx = ToolContext(engine_manager=SimpleNamespace(), sources=sources)
+    result = await asyncio.wait_for(GetEntityTool().invoke({"name": "关羽"}, ctx), timeout=2)
+
+    assert result.content == (
+        "来源：a库（source_id=src-a）\n实体「关羽」（person）：\na库片段\n\n"
+        "来源：c库（source_id=src-c）\n实体「关羽」（person）：\nc库片段"
+    )

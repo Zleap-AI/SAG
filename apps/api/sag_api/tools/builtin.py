@@ -360,16 +360,22 @@ class GetEntityTool(Tool):
             return ToolResult(content="（未找到该实体）")
         from sag_api.services.insight_service import find_entity_context
 
-        for source in ctx.sources:
-            found = await find_entity_context(ctx.engine_manager, source, name)
-            if found is not None:
+        async def _one(source: Any) -> str | None:
+            try:
+                found = await find_entity_context(ctx.engine_manager, source, name)
+                if found is None:
+                    return None
                 match, snippets = found
-                body = "\n\n".join(snippets) if snippets else match.description or ""
-                return ToolResult(
-                    content=f"实体「{match.name}」（{match.type}）：\n{body}".strip(),
-                    data={"entity_id": match.id, "source_id": source.id},
-                )
-        return ToolResult(content="（未找到该实体）")
+                body = "\n\n".join(snippets) if snippets else (match.description or "")
+                prefix = f"来源：{source.name}（source_id={source.id}）\n" if len(ctx.sources) > 1 else ""
+                return f"{prefix}实体「{match.name}」（{match.type}）：\n{body}".strip()
+            except Exception as error:
+                log.warning("查询实体失败 source_id=%s：%s", source.id, error)
+                return None
+
+        results = await asyncio.gather(*(_one(source) for source in ctx.sources))
+        matches = [result for result in results if result]
+        return ToolResult(content="\n\n".join(matches) if matches else "（未找到该实体）")
 
 
 class GetTimeTool(Tool):
