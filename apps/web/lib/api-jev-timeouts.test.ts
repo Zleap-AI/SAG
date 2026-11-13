@@ -71,9 +71,9 @@ describe("JEV request deadlines", () => {
     expect(await result).toEqual({ value: { ok: true, message: "Connected" }, error: undefined });
   });
 
-  it("allows a 35-second synchronous JEV search", async () => {
+  it.each(["multi_jev", "sag2"] as const)("allows a 35-second synchronous %s search", async strategy => {
     slowFetch(35_000, searchResult);
-    const result = outcome(api.globalSearch({ query: "slow query", strategy: "multi_jev" }));
+    const result = outcome(api.globalSearch({ query: "slow query", strategy }));
     await vi.advanceTimersByTimeAsync(35_000);
     expect(await result).toEqual({ value: searchResult, error: undefined });
   });
@@ -112,10 +112,10 @@ describe("JEV request deadlines", () => {
     expect((await result).error).toMatchObject({ code: "timeout" });
   });
 
-  it("lets a comparison containing JEV finish after 35 seconds", async () => {
+  it.each(["multi_jev", "sag2"] as const)("lets a comparison containing %s finish after 35 seconds", async strategy => {
     const comparison = { query: "slow query", results: [], judges: [], judge_enabled: false, judge_reason: null };
     slowFetch(35_000, comparison);
-    const result = outcome(api.evalCompare({ query: "slow query", strategies: ["vector", "multi_jev"] }));
+    const result = outcome(api.evalCompare({ query: "slow query", strategies: ["vector", strategy] }));
     await vi.advanceTimersByTimeAsync(35_000);
     expect(await result).toEqual({ value: comparison, error: undefined });
   });
@@ -157,7 +157,7 @@ function delayedSearchStream(firstResultMs: number, { complete = true, pings = f
 const handlers = () => ({ onResult: vi.fn(), onSummaryDelta: vi.fn(), onCompleted: vi.fn() });
 
 describe("JEV search stream deadlines", () => {
-  it.each(["multi_jev", undefined] as const)("waits 35 seconds for a first result with mode %s", async strategy => {
+  it.each(["multi_jev", "sag2", undefined] as const)("waits 35 seconds for a first result with mode %s", async strategy => {
     delayedSearchStream(35_000, { pings: true });
     const result = outcome(api.streamGlobalSearch({ query: "slow query", strategy }, handlers()));
     await vi.advanceTimersByTimeAsync(35_000);

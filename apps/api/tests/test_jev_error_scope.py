@@ -45,6 +45,7 @@ async def test_reader_classifies_wrapped_timeout_by_actual_request_strategy(monk
     # The configured default deliberately differs from non-JEV request overrides.
     manager = EngineManager(Settings(_env_file=None).model_copy(update={
         "search_strategy": "multi_jev", "jev_endpoint": "https://jev.invalid/score",
+        "jev_api_key": "synthetic-jev-key",
     }))
 
     @asynccontextmanager
@@ -101,6 +102,7 @@ def test_jev_provider_classification_takes_priority_over_nested_timeout(provider
 async def test_non_jev_timeout_still_uses_existing_vector_fallback(monkeypatch, strategy):
     manager = EngineManager(Settings(_env_file=None).model_copy(update={
         "search_strategy": "multi_jev", "jev_endpoint": "https://jev.invalid/score", "search_fallback_vector": True,
+        "jev_api_key": "synthetic-jev-key",
     }))
 
     @asynccontextmanager

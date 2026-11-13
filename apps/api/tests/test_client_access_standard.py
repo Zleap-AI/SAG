@@ -218,6 +218,8 @@ async def test_real_source_writes_have_recoverable_subject_scoped_operations(sta
                 break
             await asyncio.sleep(0.05)
         assert job.json()["status"] == "succeeded", job.text
+        # A completed delete response can precede the worker's final DB cleanup.
+        await asyncio.wait_for(app.state.job_queue._queue.join(), timeout=30)
 
 
 async def test_disabled_user_loses_business_and_refresh_access(standard_client):

@@ -13,7 +13,7 @@ from sag_api.api.v1 import chatbot, system
 from sag_api.core.db import get_session
 from sag_api.core.deps import get_current_user
 from sag_api.core.errors import ApiError
-from sag_api.db.models import Document, Setting
+from sag_api.db.models import Document, Setting, Source
 from sag_api.services import settings_service
 
 
@@ -26,6 +26,7 @@ async def card_client(isolate, database, monkeypatch):
     async with database() as session:
         connection = await session.connection()
         await connection.run_sync(lambda sync: Document.__table__.create(sync))
+        await connection.run_sync(lambda sync: Source.__table__.create(sync))
         await session.commit()
 
     class Runtime:

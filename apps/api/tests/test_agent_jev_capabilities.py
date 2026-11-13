@@ -28,21 +28,24 @@ async def agent_config_client(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("vector_provider", "endpoint", "expected_code"),
+    ("vector_provider", "endpoint", "api_key", "expected_code"),
     [
-        ("pgvector", "https://jev.example/score", "vector_provider_lacks_lexical"),
-        ("pgvector", None, "vector_provider_lacks_lexical"),
-        ("lancedb", None, "jev_not_configured"),
-        ("es", None, "jev_not_configured"),
+        ("pgvector", "https://jev.example/score", "synthetic-jev-key", "vector_provider_lacks_lexical"),
+        ("pgvector", None, None, "vector_provider_lacks_lexical"),
+        ("lancedb", None, None, "jev_not_configured"),
+        ("es", None, None, "jev_not_configured"),
+        # Paid service: an endpoint without a key is not enough to enable JEV.
+        ("lancedb", "https://jev.example/score", None, "jev_api_key_missing"),
     ],
 )
 async def test_unavailable_jev_agent_creation_leaves_no_row(
-    agent_config_client, monkeypatch, vector_provider, endpoint, expected_code,
+    agent_config_client, monkeypatch, vector_provider, endpoint, api_key, expected_code,
 ):
     client = agent_config_client
     monkeypatch.setattr(settings, "sag_relational_provider", "postgres")
     monkeypatch.setattr(settings, "sag_vector_provider", vector_provider)
     monkeypatch.setattr(settings, "jev_endpoint", endpoint)
+    monkeypatch.setattr(settings, "jev_api_key", api_key)
     before = (await client.get("/api/v1/agents")).json()
 
     response = await client.post(
@@ -67,6 +70,7 @@ async def test_pgvector_rejects_jev_agent_update_without_changing_other_fields(a
     monkeypatch.setattr(settings, "sag_relational_provider", "postgres")
     monkeypatch.setattr(settings, "sag_vector_provider", "pgvector")
     monkeypatch.setattr(settings, "jev_endpoint", "https://jev.example/score")
+    monkeypatch.setattr(settings, "jev_api_key", "synthetic-jev-key")
 
     response = await client.patch(
         path, json={"name": "Must not persist", "avatar": "X", "persona": {"search_strategy": "multi_jev"}},
@@ -88,6 +92,7 @@ async def test_lexical_backends_allow_creating_and_updating_jev_agents(
     monkeypatch.setattr(settings, "sag_relational_provider", relational_provider)
     monkeypatch.setattr(settings, "sag_vector_provider", vector_provider)
     monkeypatch.setattr(settings, "jev_endpoint", "https://jev.example/score")
+    monkeypatch.setattr(settings, "jev_api_key", "synthetic-jev-key")
 
     created = await client.post(
         "/api/v1/agents", json={"name": "JEV assistant", "persona": {"search_strategy": "multi_jev"}},
@@ -132,6 +137,7 @@ async def test_pgvector_can_edit_other_fields_and_repair_a_previously_saved_jev_
     client = agent_config_client
     monkeypatch.setattr(settings, "sag_vector_provider", "lancedb")
     monkeypatch.setattr(settings, "jev_endpoint", "https://jev.example/score")
+    monkeypatch.setattr(settings, "jev_api_key", "synthetic-jev-key")
     created = await client.post(
         "/api/v1/agents", json={"name": "Existing JEV assistant", "persona": {"search_strategy": "multi_jev"}},
     )

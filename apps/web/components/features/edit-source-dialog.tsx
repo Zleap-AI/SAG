@@ -92,6 +92,10 @@ export function EditSourceDialog({
         </DialogHeader>
 
         <form onSubmit={submit} className="flex flex-col gap-4">
+          <div className="rounded-md border bg-muted/30 p-3 text-sm">
+            <p>{t("algorithm")}：{t(source.engine_kind ?? "sag1")}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{t("algorithmImmutable")}</p>
+          </div>
           <Field>
             <FieldLabel htmlFor={`source-name-${source.id}`}>{t("name")}</FieldLabel>
             <Input

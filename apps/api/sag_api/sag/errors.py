@@ -31,6 +31,11 @@ from sag_api.core.errors import (
     ValidationError,
 )
 
+# JEV 评分服务的错误文案，`multi_jev`（zleap-sag）与 `sag2`（zleap-sag2）两条路径共用。
+JEV_AUTH_FAILED_MESSAGE = "JEV 鉴权失败，请检查服务地址和 API Key"
+JEV_UNAVAILABLE_MESSAGE = "JEV 精排服务暂不可用，请稍后重试"
+JEV_REQUEST_REJECTED_MESSAGE = "JEV 精排请求被拒绝，请检查模型和候选内容限制"
+
 try:  # jsonschema 是 zleap-sag structured-output 校验的传递依赖
     from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 except Exception:  # noqa: BLE001 - 依赖缺失时退化为不可能匹配的哨兵
@@ -67,17 +72,11 @@ def map_sag_errors(*, stage: ErrorStage = ErrorStage.UNKNOWN, search_strategy: s
             timed_out = timed_out or isinstance(cause, TimeoutError)
             if getattr(cause, "provider", None) == "jev":
                 if isinstance(cause, AIAuthError):
-                    raise ConfigurationError(
-                        "JEV 鉴权失败，请检查服务地址和 API Key", layer=ErrorLayer.ENGINE, stage=stage,
-                    ) from e
+                    raise ConfigurationError(JEV_AUTH_FAILED_MESSAGE, layer=ErrorLayer.ENGINE, stage=stage) from e
                 if isinstance(cause, AITransientError):
-                    raise ServiceUnavailableError(
-                        "JEV 精排服务暂不可用，请稍后重试", layer=ErrorLayer.ENGINE, stage=stage,
-                    ) from e
+                    raise ServiceUnavailableError(JEV_UNAVAILABLE_MESSAGE, layer=ErrorLayer.ENGINE, stage=stage) from e
                 if isinstance(cause, (AIInvalidRequestError, LLMContextLengthError)):
-                    raise ValidationError(
-                        "JEV 精排请求被拒绝，请检查模型和候选内容限制", layer=ErrorLayer.ENGINE, stage=stage,
-                    ) from e
+                    raise ValidationError(JEV_REQUEST_REJECTED_MESSAGE, layer=ErrorLayer.ENGINE, stage=stage) from e
                 if isinstance(cause, AIError):
                     raise UpstreamError("JEV 精排返回无效结果", layer=ErrorLayer.ENGINE, stage=stage) from e
             cause = cause.__cause__

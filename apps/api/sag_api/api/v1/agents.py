@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from sag_agent import AgentRuntime, EventType, RunHandle
+from sag_api.core.config import settings
 from sag_api.core.db import SessionLocal, get_session
 from sag_api.core.deps import (
     get_agent_runtime,
@@ -351,6 +352,9 @@ async def ask(
     thread = await svc.get_thread(session, agent.id, thread_id)
     if not llm.configured:
         raise ConfigurationError("尚未配置 LLM，无法生成回答")
+    if body.strategy is not None:
+        # 本轮显式选择的模式必须可用（付费 JEV 模式需已配置 Key）；在流开始前就拒绝。
+        EngineManager.require_strategy_available(settings, body.strategy)
     plan = await svc.prepare_ask(
         session,
         agent=agent,
@@ -359,6 +363,7 @@ async def ask(
         attachments=body.attachments,
         source_ids=body.source_ids,
         llm=llm,
+        strategy=body.strategy,
     )
     web_enabled = body.effective_web_enabled
 

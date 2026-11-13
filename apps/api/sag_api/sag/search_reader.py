@@ -18,6 +18,7 @@ from zleap.sag.pipeline import RankingOptions, SearchOptions, SearchOutputOption
 from sag_api.core.error_taxonomy import ErrorLayer, ErrorStage
 from sag_api.core.errors import ServiceUnavailableError
 from sag_api.core.logging import get_logger
+from sag_api.enums import JEV_SCORED_STRATEGIES, normalize_search_strategy
 from sag_api.sag._timings_probe import capture_scope as _timings_capture_scope
 from sag_api.sag._timings_probe import release_scope as _timings_release_scope
 from sag_api.sag.dto import RetrievedSection, SearchOutcome
@@ -38,6 +39,20 @@ def search_source_timeout_seconds(settings: Settings, strategy: str | None) -> f
     if (strategy or settings.search_strategy) == "multi_jev":
         timeout += settings.jev_ranking_timeout_seconds
     return timeout
+
+
+def search_admission_timeout_seconds(settings: Settings, strategy: str | None) -> float | None:
+    """How long a JEV-scored search may wait for a settings publication before failing.
+
+    ``multi_jev`` reuses its per-source budget; ``sag2`` uses its whole-search budget.
+    Other modes wait without a deadline, as before.
+    """
+    requested = normalize_search_strategy(strategy or settings.search_strategy)
+    if requested == "multi_jev":
+        return search_source_timeout_seconds(settings, strategy)
+    if requested == "sag2":
+        return max(1.0, float(settings.sag2_search_timeout_seconds))
+    return None
 
 
 def _jev_sort_key(section: RetrievedSection) -> tuple[int, float]:
@@ -162,6 +177,16 @@ class SearchReader:
         requested_strategy = strategy or self._access.settings.search_strategy
         strategy = self._access.effective_search_strategy(strategy)
         top_k = top_k or self._access.settings.search_top_k
+        if strategy == "sag2":
+            # SAG2 不经每源 zleap-sag 引擎；同一只读引擎按范围检索，失败不回退。
+            return await self._access.sag2_search(
+                [(source_config_id, source)],
+                query,
+                top_k=top_k,
+                requested_sources=1,
+                source_limit_applied=False,
+                source_ids_by_config=None if source_ids is None else {source_config_id: tuple(source_ids)},
+            )
         search_options: dict[str, Any] = {
             "source": source,
             "top_k": top_k,
@@ -253,8 +278,20 @@ class SearchReader:
         per_source_k = max(top_k, 4)
         requested_sources = len(targets)
         targets = targets[: self._access.settings.search_source_candidate_limit]
+        source_limit_applied = requested_sources > len(targets)
         if source_ids_by_config is not None:
             targets = [(scid, source) for scid, source in targets if source_ids_by_config.get(scid)]
+
+        if strategy == "sag2":
+            # 一次只读检索覆盖全部目标信源，由 zleap-sag2 给出跨源顺序；任何失败整次报错。
+            return await self._access.sag2_search(
+                targets,
+                query,
+                top_k=top_k,
+                requested_sources=requested_sources,
+                source_limit_applied=source_limit_applied,
+                source_ids_by_config=source_ids_by_config,
+            )
 
         if strategy == "vector" and not include_ranked_candidates and targets:
             try:
@@ -278,12 +315,15 @@ class SearchReader:
                         "source_limit_applied": requested_sources > len(targets),
                         "candidates": 0,
                         "chunk_recall": "batch-vector-timeout",
+                        "source_failures": [{"source_config_id": scid, "message": "块向量召回超时"}
+                                            for scid, _ in targets],
                     },
                 )
             except Exception as error:  # noqa: BLE001 - use the same scope in per-range fallback
                 log.warning("批量块向量召回失败，回退逐范围检索：%s", error)
 
         semaphore = asyncio.Semaphore(self._access.settings.search_source_concurrency)
+        source_failures = []
 
         async def _one(scid: str, source: Source | None):
             async with semaphore:
@@ -299,9 +339,11 @@ class SearchReader:
                     outcome = await self._access.search(scid, query, **options)
                     return scid, outcome
                 except Exception as e:  # noqa: BLE001
-                    if strategy == "multi_jev":
+                    if strategy in JEV_SCORED_STRATEGIES:
                         raise
-                    log.warning("fan-out 检索失败 %s：%s", scid, getattr(e, "message", None) or e)
+                    message = getattr(e, "message", None) or str(e)
+                    log.warning("fan-out 检索失败 %s：%s", scid, message)
+                    source_failures.append({"source_config_id": scid, "message": message})
                     return None
 
         tasks = [asyncio.create_task(_one(scid, src)) for scid, src in targets]
@@ -350,6 +392,7 @@ class SearchReader:
                     candidate.setdefault("source_config_id", scid)
                     ranked_candidates.append(candidate)
         stats: dict[str, Any] = {
+            **({"source_failures": source_failures} if source_failures else {}),
             "sources": len(targets),
             "sources_requested": requested_sources,
             "source_limit_applied": requested_sources > len(targets),

@@ -106,6 +106,7 @@ async def create_source(
 
     source = Source(
         name=data.name,
+        engine_kind=data.engine_kind,
         description=data.description,
         source_type=source_type,
         connector_kind=data.connector_kind,

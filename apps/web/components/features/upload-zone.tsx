@@ -15,12 +15,14 @@ import { Spinner } from "@/components/ui/spinner";
 
 export function UploadZone({
   sourceId,
+  engineKind = "sag1",
   onUploaded,
   maxMb = 25,
   allowedExts,
   compact = false,
 }: {
   sourceId: string;
+  engineKind?: "sag1" | "sag2";
   onUploaded: () => void;
   maxMb?: number;
   allowedExts?: string[];
@@ -161,7 +163,7 @@ export function UploadZone({
           </div>
         )}
       </div>
-      <p className={guidance.textClassName}>
+      {engineKind === "sag1" && <p className={guidance.textClassName}>
         {t("concurrencyHint")}{" "}
         <Link
           href={guidance.href}
@@ -169,7 +171,7 @@ export function UploadZone({
         >
           {t("concurrencyAction")}
         </Link>
-      </p>
+      </p>}
     </div>
   );
 }

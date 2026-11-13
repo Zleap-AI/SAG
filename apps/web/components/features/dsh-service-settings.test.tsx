@@ -42,6 +42,7 @@ const sources: Source[] = [
     source_type: "document",
     connector_kind: "local",
     status: "active",
+    default_search_strategy: null,
     document_count: 0,
     chunk_count: 0,
     event_count: 0,

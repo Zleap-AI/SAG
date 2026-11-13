@@ -335,7 +335,7 @@ async def test_lexical_recall_is_bounded_to_four_terms_per_source(monkeypatch, p
 
 
 @pytest.mark.asyncio
-async def test_total_latency_includes_query_analysis(monkeypatch):
+async def test_total_latency_includes_query_analysis(monkeypatch, publication_source):
     from types import SimpleNamespace
 
     from sag_api.core.db import init_db
@@ -360,10 +360,11 @@ async def test_total_latency_includes_query_analysis(monkeypatch):
     )
     await init_db()
 
+    source = await publication_source("latency", "cfg-latency", "doc-latency")
     outcome = await retrieval_service.retrieve_relevant_sections(
         EmptyEngine(),
-        [],
-        "肉类清汤",
+        [source],
+        "肉类清汤", strategy="vector",
     )
 
     assert outcome.stats["latency_total_ms"] == 250.0

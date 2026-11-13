@@ -6,6 +6,7 @@ import {
   settleActiveSteps,
   type LiveStep,
 } from "./agent-run-activity";
+import type { SearchStrategy } from "./retrieval-config";
 import type { AgentEvent, AgentRunOutcome } from "./sse";
 import { clientErrorMessage } from "../i18n/client-errors";
 import type {
@@ -41,6 +42,8 @@ export interface ConversationTransport {
     sourceIds?: string[];
     knowledgeOnly?: boolean;
     webEnabled: boolean;
+    /** Explicit per-turn retrieval mode; omitted when the backend should resolve it. */
+    strategy?: SearchStrategy;
     onEvent: (event: AgentEvent) => void;
     signal: AbortSignal;
   }): Promise<AgentRunOutcome>;
@@ -148,6 +151,8 @@ export interface ConversationSendInput {
   sourceScope?: MessageSourceScope[];
   knowledgeOnly?: boolean;
   webEnabled?: boolean;
+  /** Retrieval mode pinned by the user for this turn; leave undefined to let the backend resolve it. */
+  strategy?: SearchStrategy;
   title?: string;
 }
 
@@ -657,6 +662,7 @@ export class ConversationRuntime {
         sourceIds: sourceScope.length ? sourceScope.map((source) => source.id) : undefined,
         knowledgeOnly: input.knowledgeOnly,
         webEnabled: input.webEnabled === true,
+        strategy: input.strategy,
         onEvent: (event) => this.handleEvent(operation, event),
         signal: controller.signal,
       });

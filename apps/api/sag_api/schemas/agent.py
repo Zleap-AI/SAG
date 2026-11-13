@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from sag_api.enums import BindingTargetType, MessageRole, MessageStatus
+from sag_api.enums import BindingTargetType, MessageRole, MessageStatus, SearchStrategy
 
 
 class AgentCreate(BaseModel):
@@ -99,6 +99,8 @@ class MessagePageOut(BaseModel):
 
 class AskRequest(BaseModel):
     query: str = Field(default="", max_length=4000)
+    # 本轮检索模式；未传时按 Agent 人格 → 范围内信源共同默认 → 全局默认解析。
+    strategy: SearchStrategy | None = None
     # 图片附件 id 列表（≤4，经 POST /attachments 上传）
     attachments: list[str] = Field(default_factory=list, max_length=4)
     # @知识库 范围限定：仅在这些信源内检索（空=默认全部）

@@ -404,7 +404,7 @@ export function ResultList({
       />
     );
   }
-  if (result.events.length === 0) {
+  if (result.events.length === 0 || result.sections.some(section => section.metadata?.engine_kind === "sag2")) {
     return (
       <div className="flex flex-col gap-3">
         {result.sections.map((section, index) => {

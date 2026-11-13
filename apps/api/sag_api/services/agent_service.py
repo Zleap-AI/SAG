@@ -75,6 +75,7 @@ async def generate_stream(
         sources=sources,
         persona=agent.persona or {},
         agent=agent,
+        requested_strategy=plan.strategy,
     )
 
     try:

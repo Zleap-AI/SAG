@@ -18,7 +18,7 @@ import { KnowledgeWorkspace, SourceRow } from "./knowledge-workspace";
 
 const source: Source = {
   id: "source-1", name: "Reports", description: "", source_type: "document", connector_kind: "file_upload",
-  status: "active", document_count: 2, chunk_count: 4, event_count: 5,
+  status: "active", default_search_strategy: null, document_count: 2, chunk_count: 4, event_count: 5,
   created_at: "2026-10-09T00:00:00Z", updated_at: "2026-10-09T00:00:00Z",
 };
 const deletion: BackgroundJob = {

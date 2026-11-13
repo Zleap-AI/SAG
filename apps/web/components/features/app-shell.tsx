@@ -34,9 +34,7 @@ import {
 import { DEFAULT_TIME_ZONE } from "@/lib/format";
 import { PetAgent } from "@/lib/pet-agent";
 import {
-  DEFAULT_SEARCH_STRATEGY,
   getSearchStrategiesDisabled,
-  isSearchStrategy,
 } from "@/lib/retrieval-config";
 import {
   SIDEBAR_THREADS_PAGE_SIZE,
@@ -133,6 +131,7 @@ const CONVERSATION_TRANSPORT: ConversationTransport = {
     sourceIds,
     knowledgeOnly,
     webEnabled,
+    strategy,
     onEvent,
     signal,
   }) => {
@@ -145,6 +144,7 @@ const CONVERSATION_TRANSPORT: ConversationTransport = {
       attachment_count: attachmentIds?.length ?? 0,
       source_ids: sourceIds,
       web_enabled: webEnabled,
+      strategy,
     });
     const promise = streamAgentAsk(
       agentId,
@@ -155,6 +155,8 @@ const CONVERSATION_TRANSPORT: ConversationTransport = {
         source_ids: sourceIds,
         knowledge_only: knowledgeOnly === true || !webEnabled,
         web_enabled: webEnabled,
+        // Only an explicit per-turn pick travels; otherwise the backend resolves the mode.
+        ...(strategy ? { strategy } : {}),
       },
       (event) => {
         // 只记录关键事件，跳过高频 message.delta
@@ -823,11 +825,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     >
       <OctxExportProvider>
         <SearchProvider
-          defaultStrategy={
-            isSearchStrategy(capabilities?.search_strategy)
-              ? capabilities.search_strategy
-              : DEFAULT_SEARCH_STRATEGY
-          }
+          defaultStrategy="auto"
           disabledMap={getSearchStrategiesDisabled(capabilities, searchStrategies("unsupportedBackend"))}
         >
           <KnowledgeProvider>

@@ -25,6 +25,7 @@ import { useOctxExports } from "@/components/features/octx-export-provider";
 
 export function DocumentList({
   sourceId,
+  engineKind = "sag1",
   sourceName,
   documents,
   activities,
@@ -33,6 +34,7 @@ export function DocumentList({
   onOpenDocument,
 }: {
   sourceId: string;
+  engineKind?: "sag1" | "sag2";
   sourceName: string;
   documents: Doc[];
   activities: Record<string, DocumentActivity>;
@@ -103,7 +105,7 @@ export function DocumentList({
     const buttonClass = compact ? "size-7" : undefined;
     return (
       <div className="flex shrink-0 items-center gap-0.5">
-        {document.has_publication && (
+        {document.has_publication && engineKind !== "sag2" && (
           <Button
             variant="ghost"
             size="icon"
@@ -282,7 +284,7 @@ export function DocumentList({
                 <span>{formatBytes(document.size_bytes, locale)}</span>
                 <span>·</span>
                 <span>{relativeTime(document.created_at, timezone, locale)}</span>
-                {document.has_publication && (
+                {document.has_publication && engineKind !== "sag2" && (
                   <>
                     <span>·</span>
                     <span>

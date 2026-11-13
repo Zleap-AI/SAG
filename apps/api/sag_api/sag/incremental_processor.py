@@ -116,8 +116,10 @@ class IncrementalDocumentProcessor:
         chunk_mode: str = "standard",
         document_title: str | None = None,
         max_entities_per_event: int = 20,
+        language: str | None = None,
     ) -> None:
         self._engine = engine
+        self._language = language
         self._source_config_id = source_config_id
         self._max_concurrency = max(1, min(100, max_concurrency))
         self._chunk_max_tokens = chunk_max_tokens
@@ -138,7 +140,7 @@ class IncrementalDocumentProcessor:
         content_bytes = await asyncio.to_thread(markdown.read_bytes)
         original = Path(original_path) if original_path is not None else markdown
         original_bytes = content_bytes if original == markdown else await asyncio.to_thread(original.read_bytes)
-        language = self._engine.resources.prompts.language
+        language = self._language or self._engine.resources.prompts.language
         return ProcessSourceRequest(
             context=context.model_copy(
                 update={

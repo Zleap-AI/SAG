@@ -11,7 +11,7 @@ from typing import Any, Literal, Protocol
 
 from sag_api.core.config import settings
 from sag_api.core.logging import get_logger
-from sag_api.enums import normalize_search_strategy
+from sag_api.enums import JEV_SCORED_STRATEGIES, normalize_search_strategy
 from sag_api.sag import RetrievedSection, SearchOutcome
 from sag_api.services.query_analysis import (
     QueryAnalysis,
@@ -30,6 +30,30 @@ class SearchSource(Protocol):
 
 EventScoreMap = dict[tuple[str, str], float]
 DocumentSourceScope = dict[str, tuple[str, ...]]
+StrategyOrigin = Literal["request", "persona", "source_default", "global"]
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedSearchStrategy:
+    """The mode a retrieval will run with and where that choice came from."""
+
+    strategy: str
+    origin: StrategyOrigin
+
+
+def resolve_search_strategy(
+    *,
+    requested: str | None = None,
+    persona_strategy: str | None = None,
+    sources=(),
+    configuration: Any = settings,
+) -> ResolvedSearchStrategy:
+    """显式请求 → Agent 人格 → 按信源固定算法自动检索。"""
+    if requested:
+        return ResolvedSearchStrategy(requested, "request")
+    if persona_strategy:
+        return ResolvedSearchStrategy(persona_strategy, "persona")
+    return ResolvedSearchStrategy("auto", "global")
 
 
 def event_scores_from_evidence(sections: list[RetrievedSection]) -> EventScoreMap:
@@ -264,6 +288,7 @@ async def _lexical_sections(
     *,
     analysis: QueryAnalysis,
     source_ids_by_config: DocumentSourceScope,
+    failures: list[dict] | None = None,
 ) -> tuple[list[RetrievedSection], set[tuple[str, str]]]:
     grep_chunks = getattr(engine_manager, "grep_chunks", None)
     terms = analysis.lookup_terms
@@ -289,7 +314,12 @@ async def _lexical_sections(
                     term,
                     **options,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception as error:  # noqa: BLE001
+                if failures is not None and not any(
+                    item["source_config_id"] == source.sag_source_config_id for item in failures
+                ):
+                    failures.append({"source_config_id": source.sag_source_config_id,
+                                     "message": getattr(error, "message", None) or str(error)})
                 return [], False
         sections = [
             RetrievedSection(
@@ -324,11 +354,35 @@ async def retrieve_relevant_sections(
 
     total_start = time.perf_counter()
     configuration = getattr(engine_manager, "_settings", settings)
-    requested_strategy = strategy or configuration.search_strategy
+    resolved = resolve_search_strategy(requested=strategy, sources=sources, configuration=configuration)
+    requested_strategy = resolved.strategy
     mode = normalize_search_strategy(requested_strategy)
-    if mode == "multi_jev":
-        # The profile owns recall and final scoring. Adding application lexical
-        # hits afterwards would mix unscored evidence into the ranked list.
+    if mode == "auto":
+        from sag_api.services.engine_routing import retrieve_automatic
+        sag1_strategy = configuration.search_strategy
+        if sag1_strategy not in {"vector", "multi", "multi_es_fast", "multi_jev"}:
+            sag1_strategy = "vector"
+        async def retrieve(group, mode):
+            return await retrieve_relevant_sections(
+                engine_manager, group, query, strategy=mode, top_k=top_k,
+                include_ranked_candidates=include_ranked_candidates,
+            )
+        outcome = await retrieve_automatic(
+            sources, query, sag1_strategy=sag1_strategy,
+            top_k=max(1, min(int(top_k or configuration.search_top_k), 50)), retrieve=retrieve,
+        )
+        outcome.stats["latency_total_ms"] = round((time.perf_counter() - total_start) * 1000, 2)
+        outcome.stats["strategy_origin"] = resolved.origin
+        return outcome
+    expected_engine = "sag2" if mode == "sag2" else "sag1"
+    sources = [source for source in sources if getattr(source, "engine_kind", "sag1") == expected_engine]
+    if not sources:
+        return SearchOutcome(query=query, sections=[], stats={
+            "requested_strategy": requested_strategy, "effective_strategy": mode, "sources": 0,
+        })
+    if mode in JEV_SCORED_STRATEGIES:
+        # The JEV-scored profile owns recall and final scoring. Adding application
+        # lexical hits afterwards would mix unscored evidence into the ranked list.
         requested_limit = max(1, min(int(top_k or configuration.search_top_k), 50))
         published = await published_document_inputs(sources)
         visible_sources = [source for source in sources if published.get(source.sag_source_config_id)]
@@ -351,6 +405,7 @@ async def retrieve_relevant_sections(
         return SearchOutcome(query=outcome.query or query, sections=visible_sections[:requested_limit], stats={
             **outcome.stats,
             "requested_strategy": requested_strategy,
+            "strategy_origin": resolved.origin,
             "requested_top_k": requested_limit,
             "candidate_top_k": requested_limit,
             "candidates": len(outcome.sections),
@@ -381,6 +436,7 @@ async def retrieve_relevant_sections(
     if include_ranked_candidates:
         search_options["include_ranked_candidates"] = True
     search_options["source_ids_by_config"] = published
+    lexical_failures: list[dict] = []
     outcome, lexical_recall = await asyncio.gather(
         engine_manager.search_many(targets, query, **search_options),
         _lexical_sections(
@@ -388,6 +444,7 @@ async def retrieve_relevant_sections(
             sources,
             analysis=analysis,
             source_ids_by_config=published,
+            failures=lexical_failures,
         ),
     )
     lexical, exact_lexical_keys = lexical_recall
@@ -415,7 +472,9 @@ async def retrieve_relevant_sections(
     total_latency_ms = round((time.perf_counter() - total_start) * 1000, 2)
     stats = {
         **outcome.stats,
+        "source_failures": [*(outcome.stats.get("source_failures") or []), *lexical_failures],
         "requested_strategy": requested_strategy,
+        "strategy_origin": resolved.origin,
         "requested_top_k": requested_limit,
         "candidate_top_k": candidate_limit,
         "candidates": reranked.candidate_count,

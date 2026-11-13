@@ -21,7 +21,7 @@ const paused: Doc = {
 };
 const source: Source = {
   id: "source-1", name: "Reports", description: "", source_type: "document", connector_kind: "file_upload",
-  status: "active", document_count: 1, chunk_count: 20, event_count: 4,
+  status: "active", default_search_strategy: null, document_count: 1, chunk_count: 20, event_count: 4,
   created_at: paused.created_at, updated_at: paused.updated_at,
 };
 

@@ -40,7 +40,7 @@ class EngineAccess:
             return None
         wanted = manager._config_for(source)
         for slot in manager._slots.values():
-            if slot.closing:
+            if slot.closing or not hasattr(slot.engine, "_config"):
                 continue
             actual = slot.engine._config
             if (actual.relational, actual.vector, actual.embedding) == (
@@ -95,6 +95,9 @@ class EngineAccess:
 
     async def search_chunk_vectors(self, *args: Any, **kwargs: Any) -> Any:
         return await self._manager._search_chunk_vectors(*args, **kwargs)
+
+    async def sag2_search(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._manager._sag2_search(*args, **kwargs)
 
     async def universe_entity_event_counts(self, *args: Any, **kwargs: Any) -> Any:
         return await self._manager._universe_entity_event_counts(*args, **kwargs)

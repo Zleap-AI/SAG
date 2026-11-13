@@ -11,6 +11,7 @@ import { relativeTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EditSourceDialog } from "@/components/features/edit-source-dialog";
+import { KnowledgeEnginePill } from "@/components/features/knowledge-engine-pill";
 import { useOctxExports } from "@/components/features/octx-export-provider";
 import { useApp } from "@/components/features/app-shell";
 import { SourceIdCopy } from "@/components/features/source-id-copy";
@@ -27,6 +28,7 @@ export function SourceCard({ source, onChanged }: { source: Source; onChanged?: 
 
   const { startExport, isSourceExporting } = useOctxExports();
   const exportRunning = isSourceExporting(source.id);
+  const sag2 = source.engine_kind === "sag2";
 
   const handleExport = React.useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -50,10 +52,13 @@ export function SourceCard({ source, onChanged }: { source: Source; onChanged?: 
       </Link>}
 
       <div className="pointer-events-none relative z-10 flex h-full min-w-0 flex-col">
-        <div className="flex min-w-0 items-start justify-between gap-3 pr-28">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pr-28">
           <h3 className="min-w-0 break-words font-display text-lg font-medium leading-tight text-foreground">
             {source.name}
           </h3>
+          {(
+            <KnowledgeEnginePill kind={source.engine_kind} className="pointer-events-auto" />
+          )}
         </div>
         <p className="mb-3 mt-1.5 line-clamp-2 min-h-[2.5rem] text-sm text-muted-foreground">
           {source.description || t("noDescription")}
@@ -90,15 +95,15 @@ export function SourceCard({ source, onChanged }: { source: Source; onChanged?: 
               variant="ghost"
               size="icon"
               aria-label={t("export")}
-              title={t("export")}
+              title={sag2 ? t("sag2OctxUnsupported") : t("export")}
               onClick={handleExport}
-              disabled={exportRunning || deletion.active}
+              disabled={exportRunning || deletion.active || sag2}
               className="bg-background/95 text-muted-foreground shadow-soft backdrop-blur-sm hover:text-foreground"
             >
               {exportRunning ? <Spinner className="size-4" /> : <Download className="size-4" />}
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="bottom">{t("export")}</TooltipContent>
+          <TooltipContent side="bottom">{sag2 ? t("sag2OctxUnsupported") : t("export")}</TooltipContent>
         </Tooltip>
         {!deletion.active && <EditSourceDialog
           source={source}

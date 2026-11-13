@@ -60,7 +60,9 @@ function SettingsPageContent() {
         ? '[data-settings-section="assistant-appearance"]'
         : activeTab === "knowledge" && section === "document-processing"
           ? '[data-settings-section="document-processing"]'
-          : null;
+          : activeTab === "knowledge" && section === "jev"
+            ? '[data-settings-section="jev"]'
+            : null;
     if (!selector) return;
     let secondFrame = 0;
     const firstFrame = window.requestAnimationFrame(() => {
