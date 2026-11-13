@@ -17,6 +17,10 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-18181b" /></a>
 </p>
 
+<blockquote>
+  <p align="center">Promotion: Our latest open-source knowledge base app, <strong><a href="https://github.com/Zleap-AI/SAG-Wiki">SAG-Wiki</a></strong>, is faster and lighter, powered by the all-new SAG2.</p>
+</blockquote>
+
 <p align="center"><strong>From now on, this is the only knowledge base app you need.</strong></p>
 
 <p align="center">

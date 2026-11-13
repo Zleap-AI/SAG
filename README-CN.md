@@ -17,6 +17,10 @@
   <a href="LICENSE"><img alt="许可" src="https://img.shields.io/badge/license-MIT-18181b" /></a>
 </p>
 
+<blockquote>
+  <p align="center">推广：我们最新的开源知识库应用 <strong><a href="https://github.com/Zleap-AI/SAG-Wiki">SAG-Wiki</a></strong>，基于全新的 SAG2 技术，更快、更轻。</p>
+</blockquote>
+
 <p align="center"><strong>从今天起，你只需要这一个知识库应用</strong></p>
 
 <p align="center">
