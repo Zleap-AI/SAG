@@ -208,6 +208,12 @@ Docker Compose 或 `.env` 中的 `SAG_LLM_*` 用于提供首次启动时的模�
 
 保存前，可以点击**测试**检查尚未保存的原始或可选模型连接。成功时显示绿色勾和模型名称或向量维度，失败时显示红色错误；测试不会保存草稿。可选连接保存成功后用于后续操作，已经开始的操作继续使用各自保存的配置快照。后台处理文档时，查询可以复用已初始化的兼容引擎，减少等待。运行细节详见[可选 Chatbot 连接](docs/chatbot-connections.md)。
 
+### 在 Railway 一键部署
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/sag)
+
+基于本仓库 Dockerfile 一键部署 `api` 与 `web` 两个服务，SQLite 与 LanceDB 数据保存在 `/data` 持久化卷中。每次部署都会自动生成 JWT 密钥和用于加密已保存 API Key 的密钥，并启用密码登录，第一个账号注册后即关闭注册。部署完成后请立即打开 web 地址创建账号（该账号成为管理员），然后在 **设置 → 模型** 中配置模型连接，或在 `api` 服务中设置 `SAG_LLM_*` / `SAG_EMBEDDING_*` 变量。
+
 ### 导入知识
 
 创建信源后，可以添加 Markdown、文本、PDF、Office 等支持的文档。SAG 会先将文档规范化为 Markdown，再在后台完成分块、向量化、事件抽取和实体抽取。

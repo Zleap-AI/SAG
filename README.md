@@ -208,6 +208,12 @@ Select **OpenAI-compatible**, then choose the **Responses API** format for origi
 
 Use **Test** to check an unsaved original or optional model connection before saving it. Success shows a green check with the model or embedding dimensions; failure shows a red error. Testing does not save the draft. Successful optional connection saves apply to subsequent operations, while operations already running keep their captured configuration. During background document processing, queries can reuse an initialized compatible engine to reduce waiting. See [optional chatbot connections](docs/chatbot-connections.md) for the runtime details.
 
+### Deploy on Railway
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/sag)
+
+One-click deploy of the `api` and `web` services built from this repository's Dockerfiles, with SQLite and LanceDB on a persistent `/data` volume. The JWT secret and the encryption key for saved API keys are generated per deployment, and password auth is enabled with registration closed after the first account. Open the web URL and create your account right away (it becomes the admin), then add your model connections in **Settings → Models** or as `SAG_LLM_*` / `SAG_EMBEDDING_*` variables on the `api` service.
+
 ### Import knowledge
 
 Create a source and add Markdown, text, PDF, Office, or other supported documents. SAG normalizes documents to Markdown, then runs chunking, embedding, event extraction, and entity extraction in the background.
