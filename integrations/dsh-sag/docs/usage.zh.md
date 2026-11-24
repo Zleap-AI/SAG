@@ -8,7 +8,7 @@
 
 ## 兼容版本
 
-当前 dsh-sag **0.2.0** 支持 DeepSeek Harness **0.2.0-rc.2**。
+当前 dsh-sag **0.2.0** 通过 `engines.dsh: ^0.2.0-rc.2` 声明 DeepSeek Harness 兼容范围。版本匹配包含预发布版本，支持从 `0.2.0-rc.2` 起的 `0.2.x`，不包含 `0.3.0` 及其预发布版本。开发与打包验收使用 **0.2.0-rc.2**。
 
 准备 Node.js 24 和 pnpm 11.7.0，确保 `dsh` 与 `pnpm` 在 PATH 中。SAG 需要包含 **设置 → 集成 → 连接 dsh** 和本地连接器 API。
 

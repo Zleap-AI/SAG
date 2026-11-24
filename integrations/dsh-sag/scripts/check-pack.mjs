@@ -121,7 +121,7 @@ if (dshVersion.status !== 0 || actualDshVersion === '') {
     + 'set DSH_BIN to the host version being validated',
   )
 }
-const supportedDshVersion = manifest.peerDependencies['@deepseek-ai/dsh-settings']
+const supportedDshVersion = manifest.devDependencies['@deepseek-ai/dsh-settings']
 if (actualDshVersion !== supportedDshVersion) {
   throw new Error(`check:pack requires dsh ${supportedDshVersion}, got ${actualDshVersion}`)
 }

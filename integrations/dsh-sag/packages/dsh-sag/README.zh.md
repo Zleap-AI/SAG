@@ -4,7 +4,7 @@ dsh-sag 让 DeepSeek Harness 使用 SAG 个人知识库，包括检索、阅读�
 
 ## 兼容版本
 
-- 本源码插件：`0.2.0`；DeepSeek Harness：`0.2.0-rc.2`。
+- 本源码插件：`0.2.0`；DeepSeek Harness 兼容范围：`^0.2.0-rc.2`（包含预发布版本，不包含 `0.3.0` 的预发布版本）。开发与打包验收使用 `0.2.0-rc.2`。
 - Node.js：`^22.19.0` 或 `>=24.0.0`，推荐 Node.js 24；`dsh` 和 `pnpm` 需要在 PATH 中。
 - SAG：包含“连接 dsh”设置和本地连接器 API。
 - embedded 引擎：`zleap-sag==0.15.0`，详见[高级配置](docs/embedded.md)。
