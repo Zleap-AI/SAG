@@ -1,8 +1,10 @@
 import { readFile } from 'node:fs/promises'
+import { satisfies } from 'semver'
 import { describe, expect, it } from 'vitest'
 
 interface PackageManifest {
   readonly type: string
+  readonly engines: Readonly<Record<string, string>>
   readonly bin: Readonly<Record<string, string>>
   readonly files: readonly string[]
   readonly dsh: { readonly bundle: { readonly patch: string } }
@@ -17,7 +19,7 @@ async function readText(relative: string): Promise<string> {
 }
 
 describe('package manifest', () => {
-  it('ships an installable DSH bundle with the supported peer versions', async () => {
+  it('ships an installable DSH bundle with the supported host range', async () => {
     const url = new URL('../package.json', import.meta.url)
     const manifest = JSON.parse(await readFile(url, 'utf8')) as PackageManifest
 
@@ -32,28 +34,29 @@ describe('package manifest', () => {
     expect(manifest.files).toContain('README.md')
     expect(manifest.files).toContain('README.zh.md')
     expect(manifest.peerDependencies['@deepseek-ai/cordis']).toBe('~4.0.4')
-    const supportedHostRange = '0.2.0-rc.2'
-    expect(manifest.peerDependencies['@deepseek-ai/dsh-tools']).toBe(supportedHostRange)
-    expect(manifest.peerDependencies['@deepseek-ai/dsh-subprocess']).toBe(supportedHostRange)
-    for (const hostPeer of [
-      '@deepseek-ai/cordis',
-      '@deepseek-ai/dsh-credentials',
-      '@deepseek-ai/dsh-credentials-local',
-      '@deepseek-ai/dsh-settings',
-      '@deepseek-ai/dsh-home-paths',
-      '@deepseek-ai/dsh-atomic-write',
-      '@deepseek-ai/dsh-app-boot',
-    ]) {
-      expect(manifest.dependencies[hostPeer]).toBeUndefined()
-      expect(manifest.peerDependencies[hostPeer]).toBe(hostPeer === '@deepseek-ai/cordis' ? '~4.0.4' : supportedHostRange)
-    }
+    expect(manifest.engines.dsh).toBe('^0.2.0-rc.2')
+    expect(Object.keys(manifest.peerDependencies)).toEqual(['@deepseek-ai/cordis'])
     expect(Object.keys(manifest.dependencies).filter(name => name in manifest.peerDependencies)).toEqual([])
-    for (const [name, version] of Object.entries(manifest.peerDependencies)) {
-      expect(manifest.devDependencies[name], `${name} must mirror its host peer for development`).toBeDefined()
-      if (name.startsWith('@deepseek-ai/dsh-')) expect(manifest.devDependencies[name]).toBe('0.2.0-rc.2')
-    }
+    expect(manifest.devDependencies['@deepseek-ai/cordis']).toBe('4.0.4')
     expect(manifest.files).toContain('THIRD_PARTY_NOTICES')
     expect(manifest.scripts.build).toContain('build-cli.mjs')
+  })
+
+  it.each([
+    ['0.2.0-rc.2', true],
+    ['0.2.1-rc.2', true],
+    ['0.2.2-rc.2', true],
+    ['0.2.0', true],
+    ['0.2.9', true],
+    ['0.1.9', false],
+    ['0.3.0-rc.1', false],
+    ['0.3.0', false],
+    ['1.0.0', false],
+  ])('checks dsh %s compatibility as %s', async (version, compatible) => {
+    const url = new URL('../package.json', import.meta.url)
+    const manifest = JSON.parse(await readFile(url, 'utf8')) as PackageManifest
+
+    expect(satisfies(version, manifest.engines.dsh, { includePrerelease: true })).toBe(compatible)
   })
 
   it('preserves bundled license comments and generates notices from installed manifests', async () => {
@@ -70,6 +73,8 @@ describe('package manifest', () => {
     expect(packCheck).toContain("['--profile', 'web', '--no-open', '--port', '0']")
     expect(packCheck).toContain("process.env.DSH_BIN ?? 'dsh'")
     expect(packCheck).not.toContain('expectedDshVersion')
+    expect(packCheck).toContain("manifest.devDependencies['@deepseek-ai/dsh-settings']")
+    expect(packCheck).not.toContain("manifest.peerDependencies['@deepseek-ai/dsh-settings']")
     expect(packCheck).toContain('mode: invalid')
     expect(packCheck).toContain("kill('SIGTERM')")
     expect(packCheck).not.toContain("['--profile', 'web', '--help']")

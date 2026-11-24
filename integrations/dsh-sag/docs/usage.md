@@ -8,7 +8,7 @@ The default `local` mode connects to a running SAG application. It uses SAG REST
 
 ## Compatibility
 
-The current dsh-sag **0.2.0** supports DeepSeek Harness **0.2.0-rc.2**.
+The current dsh-sag **0.2.0** declares DeepSeek Harness compatibility through `engines.dsh: ^0.2.0-rc.2`. Version matching includes prereleases, accepting `0.2.x` from `0.2.0-rc.2` and excluding `0.3.0` and its prereleases. Development and package checks use **0.2.0-rc.2**.
 
 Prepare Node.js 24 and pnpm 11.7.0, with `dsh` and `pnpm` on PATH. SAG must include **Settings → Integrations → Connect dsh** and the local connector API.
 
